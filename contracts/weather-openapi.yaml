@@ -1,0 +1,51 @@
+openapi: 3.1.0
+info:
+  title: 本项目天气供应商代理契约
+  version: 1.0.0
+  description: 不预设实际天气厂商。供应商代理须实现此契约，或修改受信任 WeatherAdapter 映射；禁止模型指定地址。
+security: [{serviceBearer: []}]
+paths:
+  /v1/places/resolve:
+    post:
+      operationId: resolvePlace
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              additionalProperties: false
+              required: [query, locale]
+              properties:
+                query: {type: string, minLength: 1, maxLength: 200}
+                locale: {type: string}
+      responses:
+        '200':
+          description: 唯一命中才执行天气查询，零个或多个地点均要求用户澄清。
+          content:
+            application/json:
+              schema: {$ref: './places-response.schema.json'}
+  /v1/weather:
+    post:
+      operationId: getWeather
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              additionalProperties: false
+              required: [place_id, date, units]
+              properties:
+                place_id: {type: string}
+                date: {type: string, format: date, description: 网关按已确认地点时区解析}
+                units: {type: string, enum: [metric, imperial]}
+      responses:
+        '200':
+          description: 明确实况/预报、地点、有效时间、采集时间、单位和来源。real 模式拒绝 is_mock=true。
+          content:
+            application/json:
+              schema: {$ref: './weather-response.schema.json'}
+components:
+  securitySchemes:
+    serviceBearer: {type: http, scheme: bearer}

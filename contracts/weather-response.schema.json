@@ -1,0 +1,130 @@
+{
+  "$defs": {
+    "Place": {
+      "additionalProperties": false,
+      "properties": {
+        "id": {
+          "title": "Id",
+          "type": "string"
+        },
+        "name": {
+          "title": "Name",
+          "type": "string"
+        },
+        "country_code": {
+          "title": "Country Code",
+          "type": "string"
+        },
+        "timezone": {
+          "title": "Timezone",
+          "type": "string"
+        }
+      },
+      "required": [
+        "id",
+        "name",
+        "country_code",
+        "timezone"
+      ],
+      "title": "Place",
+      "type": "object"
+    },
+    "Temperature": {
+      "additionalProperties": false,
+      "properties": {
+        "value": {
+          "title": "Value",
+          "type": "number"
+        },
+        "unit": {
+          "enum": [
+            "C",
+            "F"
+          ],
+          "title": "Unit",
+          "type": "string"
+        }
+      },
+      "required": [
+        "value",
+        "unit"
+      ],
+      "title": "Temperature",
+      "type": "object"
+    },
+    "WeatherSource": {
+      "additionalProperties": false,
+      "properties": {
+        "provider": {
+          "title": "Provider",
+          "type": "string"
+        },
+        "is_mock": {
+          "title": "Is Mock",
+          "type": "boolean"
+        }
+      },
+      "required": [
+        "provider",
+        "is_mock"
+      ],
+      "title": "WeatherSource",
+      "type": "object"
+    }
+  },
+  "additionalProperties": false,
+  "properties": {
+    "status": {
+      "const": "ok",
+      "title": "Status",
+      "type": "string"
+    },
+    "place": {
+      "$ref": "#/$defs/Place"
+    },
+    "kind": {
+      "enum": [
+        "current",
+        "forecast"
+      ],
+      "title": "Kind",
+      "type": "string"
+    },
+    "valid_at": {
+      "title": "Valid At",
+      "type": "string"
+    },
+    "fetched_at": {
+      "title": "Fetched At",
+      "type": "string"
+    },
+    "temperature": {
+      "$ref": "#/$defs/Temperature"
+    },
+    "condition": {
+      "maxLength": 500,
+      "title": "Condition",
+      "type": "string"
+    },
+    "source": {
+      "$ref": "#/$defs/WeatherSource"
+    },
+    "stale": {
+      "title": "Stale",
+      "type": "boolean"
+    }
+  },
+  "required": [
+    "status",
+    "place",
+    "kind",
+    "valid_at",
+    "fetched_at",
+    "temperature",
+    "condition",
+    "source",
+    "stale"
+  ],
+  "title": "WeatherResponse",
+  "type": "object"
+}

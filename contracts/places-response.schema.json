@@ -1,0 +1,49 @@
+{
+  "$defs": {
+    "Place": {
+      "additionalProperties": false,
+      "properties": {
+        "id": {
+          "title": "Id",
+          "type": "string"
+        },
+        "name": {
+          "title": "Name",
+          "type": "string"
+        },
+        "country_code": {
+          "title": "Country Code",
+          "type": "string"
+        },
+        "timezone": {
+          "title": "Timezone",
+          "type": "string"
+        }
+      },
+      "required": [
+        "id",
+        "name",
+        "country_code",
+        "timezone"
+      ],
+      "title": "Place",
+      "type": "object"
+    }
+  },
+  "additionalProperties": false,
+  "properties": {
+    "places": {
+      "items": {
+        "$ref": "#/$defs/Place"
+      },
+      "maxItems": 10,
+      "title": "Places",
+      "type": "array"
+    }
+  },
+  "required": [
+    "places"
+  ],
+  "title": "PlacesResponse",
+  "type": "object"
+}

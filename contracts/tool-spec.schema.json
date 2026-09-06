@@ -1,0 +1,109 @@
+{
+  "additionalProperties": false,
+  "properties": {
+    "name": {
+      "title": "Name",
+      "type": "string"
+    },
+    "version": {
+      "title": "Version",
+      "type": "string"
+    },
+    "description": {
+      "title": "Description",
+      "type": "string"
+    },
+    "display_name": {
+      "title": "Display Name",
+      "type": "string"
+    },
+    "mode_ref": {
+      "title": "Mode Ref",
+      "type": "string"
+    },
+    "input_schema": {
+      "additionalProperties": true,
+      "title": "Input Schema",
+      "type": "object"
+    },
+    "output_schema": {
+      "additionalProperties": true,
+      "title": "Output Schema",
+      "type": "object"
+    },
+    "adapter_id": {
+      "title": "Adapter Id",
+      "type": "string"
+    },
+    "endpoint_ref": {
+      "title": "Endpoint Ref",
+      "type": "string"
+    },
+    "secret_ref": {
+      "title": "Secret Ref",
+      "type": "string"
+    },
+    "permission_scope": {
+      "title": "Permission Scope",
+      "type": "string"
+    },
+    "timeout_ms": {
+      "maximum": 12000,
+      "minimum": 100,
+      "title": "Timeout Ms",
+      "type": "integer"
+    },
+    "read_only": {
+      "const": true,
+      "title": "Read Only",
+      "type": "boolean"
+    },
+    "enabled": {
+      "title": "Enabled",
+      "type": "boolean"
+    },
+    "allowed_tenants": {
+      "items": {
+        "type": "string"
+      },
+      "title": "Allowed Tenants",
+      "type": "array"
+    },
+    "result_limit": {
+      "maximum": 32768,
+      "minimum": 1024,
+      "title": "Result Limit",
+      "type": "integer"
+    },
+    "retry_policy": {
+      "additionalProperties": true,
+      "title": "Retry Policy",
+      "type": "object"
+    },
+    "audit_policy": {
+      "const": "evidence_only",
+      "title": "Audit Policy",
+      "type": "string"
+    }
+  },
+  "required": [
+    "name",
+    "version",
+    "description",
+    "display_name",
+    "mode_ref",
+    "adapter_id",
+    "endpoint_ref",
+    "secret_ref",
+    "permission_scope",
+    "timeout_ms",
+    "read_only",
+    "enabled",
+    "allowed_tenants",
+    "result_limit",
+    "retry_policy",
+    "audit_policy"
+  ],
+  "title": "ToolSpec",
+  "type": "object"
+}

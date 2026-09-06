@@ -1,0 +1,123 @@
+import asyncio
+import json
+import time
+from typing import Literal
+
+import yaml
+from app.config import ROOT
+from app.contracts import DomainError, StrictModel
+from app.storage.models import ToolRun
+from app.tools.adapters import RagAdapter, WeatherAdapter
+from pydantic import Field, ValidationError
+
+
+class ToolSpec(StrictModel):
+    name: str
+    version: str
+    description: str
+    display_name: str
+    mode_ref: str
+    input_schema: dict = Field(default_factory=dict)
+    output_schema: dict = Field(default_factory=dict)
+    adapter_id: str
+    endpoint_ref: str
+    secret_ref: str
+    permission_scope: str
+    timeout_ms: int = Field(ge=100, le=12000)
+    read_only: Literal[True]
+    enabled: bool
+    allowed_tenants: list[str]
+    result_limit: int = Field(ge=1024, le=32768)
+    retry_policy: dict
+    audit_policy: Literal["evidence_only"]
+
+
+class ToolRegistry:
+    def __init__(self, settings, client, store):
+        self.store = store
+        self.adapters = {
+            "rag_http": RagAdapter(settings, client),
+            "weather_http": WeatherAdapter(settings, client),
+        }
+        config = yaml.safe_load((ROOT / "config/tools.yaml").read_text())
+        self.version = config["version"]
+        self.specs = {s.name: s for s in map(ToolSpec.model_validate, config["tools"])}
+        for spec in self.specs.values():
+            if spec.adapter_id not in self.adapters:
+                raise ValueError("Unregistered trusted adapter")
+            adapter = self.adapters[spec.adapter_id]
+            spec.input_schema = adapter.input_model.model_json_schema()
+            spec.output_schema = adapter.output_adapter.json_schema()
+
+    async def allowed(self, principal):
+        if principal.expires_at is not None and principal.expires_at <= time.time():
+            return set()
+        return {
+            name
+            for name, spec in self.specs.items()
+            if spec.enabled
+            and spec.permission_scope in principal.scopes
+            and ("*" in spec.allowed_tenants or principal.tenant_id in spec.allowed_tenants)
+            and await self.store.enabled(name)
+        }
+
+    async def invoke(self, name, arguments, ctx):
+        started = time.monotonic()
+        status, output = "ok", {}
+        saved_evidence, saved_cards, saved_slots = dict(ctx.evidence), list(ctx.cards), dict(ctx.slots)
+        try:
+            spec = self.specs.get(name)
+            if not spec or name not in ctx.allowed_tools or name not in await self.allowed(ctx.principal):
+                raise DomainError("FORBIDDEN", "此工具未获授权或已停用", 403)
+            if not await self.store.current(ctx.conversation_id, ctx.epoch, ctx.turn_id):
+                raise DomainError("STALE_EPOCH", "该轮查询已取消", 409)
+            if await self.store.tool_revision(name) != ctx.tool_versions.get(name, 0):
+                raise DomainError("FORBIDDEN", "工具配置已变更，请重新提问", 403)
+            adapter = self.adapters[spec.adapter_id]
+            args = adapter.input_model.model_validate(arguments)
+            ctx.invoked.add(name)
+            async with asyncio.timeout(spec.timeout_ms / 1000):
+                output = await adapter.invoke(args, ctx)
+                output = adapter.output_adapter.validate_python(output).model_dump(mode="json")
+            if len(json.dumps(output, ensure_ascii=False).encode()) > spec.result_limit:
+                raise DomainError("TOOL_BAD_RESPONSE", "查询结果过大", 502)
+            if not await self.store.enabled(name):
+                raise DomainError("FORBIDDEN", "查询期间工具已被停用", 403)
+            return output
+        except TimeoutError:
+            status = "TOOL_TIMEOUT"
+            ctx.tool_errors.append(status)
+            return {"status": "failed", "code": status, "message": "查询超时，请稍后重试"}
+        except (ValidationError, ValueError):
+            status = "TOOL_BAD_RESPONSE"
+            ctx.tool_errors.append(status)
+            return {"status": "failed", "code": status, "message": "工具参数或返回格式不符合契约"}
+        except DomainError as exc:
+            status = exc.code
+            ctx.tool_errors.append(status)
+            return {"status": "failed", "code": status, "message": exc.message}
+        except asyncio.CancelledError:
+            status = "canceled"
+            raise
+        except Exception:
+            status = "TOOL_FAILED"
+            ctx.tool_errors.append(status)
+            return {"status": "failed", "code": status, "message": "查询服务发生错误，请稍后重试"}
+        finally:
+            if status != "ok":
+                ctx.evidence, ctx.cards, ctx.slots = saved_evidence, saved_cards, saved_slots
+            async with self.store.transaction() as db:
+                db.add(
+                    ToolRun(
+                        conversation_id=ctx.conversation_id,
+                        turn_id=ctx.turn_id,
+                        epoch=ctx.epoch,
+                        name=name,
+                        status=status,
+                        duration_ms=int((time.monotonic() - started) * 1000),
+                        evidence={
+                            "citations": [x.model_dump() for x in ctx.evidence.values()],
+                            "cards": ctx.cards,
+                        },
+                    )
+                )

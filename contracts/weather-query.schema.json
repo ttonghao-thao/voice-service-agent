@@ -1,0 +1,38 @@
+{
+  "additionalProperties": false,
+  "properties": {
+    "place": {
+      "maxLength": 200,
+      "minLength": 1,
+      "title": "Place",
+      "type": "string"
+    },
+    "date": {
+      "anyOf": [
+        {
+          "maxLength": 32,
+          "type": "string"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null,
+      "title": "Date"
+    },
+    "units": {
+      "default": "metric",
+      "enum": [
+        "metric",
+        "imperial"
+      ],
+      "title": "Units",
+      "type": "string"
+    }
+  },
+  "required": [
+    "place"
+  ],
+  "title": "WeatherInput",
+  "type": "object"
+}

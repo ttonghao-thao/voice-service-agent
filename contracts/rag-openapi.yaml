@@ -1,0 +1,41 @@
+openapi: 3.1.0
+info:
+  title: 本项目 RAG HTTP 适配契约
+  version: 1.0.0
+  description: 这是本项目约定；现有知识库若不同，应在 RagAdapter 内映射。不是通用厂商标准。
+paths:
+  /v1/retrieve:
+    post:
+      operationId: retrieve
+      security: [{serviceBearer: []}]
+      parameters:
+        - {in: header, name: X-Tenant-ID, required: true, schema: {type: string}, description: 由已认证网关确定，知识库须再次验证}
+        - {in: header, name: X-User-ID, required: true, schema: {type: string}}
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              additionalProperties: false
+              required: [request_id, query, knowledge_base_ids, top_k, locale, filters]
+              properties:
+                request_id: {type: string}
+                query: {type: string, minLength: 1, maxLength: 2000}
+                knowledge_base_ids: {type: array, items: {type: string}, description: 由服务端身份计算的授权交集}
+                top_k: {type: integer, minimum: 1, maximum: 10, default: 5}
+                locale: {type: string, default: zh-CN}
+                filters: {type: object, additionalProperties: true}
+      responses:
+        '200':
+          description: 请求关联 ID 必须回显；空 hits 表示无依据；conflict 表示来源冲突。
+          content:
+            application/json:
+              schema: {$ref: './rag-response.schema.json'}
+        '401': {description: 无效服务凭据}
+        '403': {description: 租户或知识库 ACL 不允许}
+        '429': {description: 配额限制，不自动重试}
+        '503': {description: 上游暂不可用，总预算内最多重试一次}
+components:
+  securitySchemes:
+    serviceBearer: {type: http, scheme: bearer}

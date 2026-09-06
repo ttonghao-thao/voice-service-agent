@@ -1,0 +1,132 @@
+name: voice-service-agent
+
+x-logging: &default-logging
+  driver: json-file
+  options:
+    max-size: "10m"
+    max-file: "5"
+
+services:
+  postgres:
+    image: postgres:17-alpine@sha256:18cfe3ef5e6815560c98237d6216d1e5119702fb0f3894c8785dd58b8bbe5d73
+    environment:
+      POSTGRES_DB: voice_service
+      POSTGRES_USER: voice_service
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?Set POSTGRES_PASSWORD in .env.production}
+    volumes:
+      - postgres-data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U voice_service -d voice_service"]
+      interval: 5s
+      timeout: 3s
+      retries: 20
+    restart: unless-stopped
+    security_opt: ["no-new-privileges:true"]
+    networks: [data]
+    logging: *default-logging
+
+  redis:
+    image: redis:7.4-alpine@sha256:ff02b58f971e7d7d156a1267e283fcbbeee91773b6aa36c49dac28ecfe28eadf
+    environment:
+      REDIS_PASSWORD: ${REDIS_PASSWORD:?Set REDIS_PASSWORD in .env.production}
+    command:
+      - /bin/sh
+      - -ec
+      - exec redis-server --appendonly yes --requirepass "$${REDIS_PASSWORD}"
+    volumes:
+      - redis-data:/data
+    healthcheck:
+      test: ["CMD-SHELL", "redis-cli --no-auth-warning -a \"$$REDIS_PASSWORD\" ping | grep -q PONG"]
+      interval: 5s
+      timeout: 3s
+      retries: 20
+    restart: unless-stopped
+    security_opt: ["no-new-privileges:true"]
+    networks: [data]
+    logging: *default-logging
+
+  migrate:
+    image: ${API_IMAGE:-voice-service-agent-api:local}
+    build:
+      context: ..
+      dockerfile: deploy/Dockerfile.api
+    env_file: ${PRODUCTION_ENV_FILE:-../.env.production}
+    environment: &application-environment
+      APP_ENV: production
+      AUTO_CREATE_SCHEMA: "false"
+      DATABASE_URL: postgresql+asyncpg://voice_service:${POSTGRES_PASSWORD}@postgres/voice_service
+      REDIS_URL: redis://:${REDIS_PASSWORD}@redis:6379/0
+    command: ["alembic", "-c", "apps/api/alembic.ini", "upgrade", "head"]
+    depends_on:
+      postgres: {condition: service_healthy}
+    restart: "no"
+    security_opt: ["no-new-privileges:true"]
+    networks: [data]
+    logging: *default-logging
+
+  api:
+    image: ${API_IMAGE:-voice-service-agent-api:local}
+    build:
+      context: ..
+      dockerfile: deploy/Dockerfile.api
+    env_file: ${PRODUCTION_ENV_FILE:-../.env.production}
+    environment:
+      <<: *application-environment
+      PUBLIC_ORIGIN: ${PUBLIC_ORIGIN:?Set the public HTTPS origin in .env.production}
+    depends_on:
+      migrate: {condition: service_completed_successfully}
+      redis: {condition: service_healthy}
+    healthcheck:
+      test:
+        - CMD
+        - python
+        - -c
+        - import urllib.request; urllib.request.urlopen('http://localhost:8000/health/ready')
+      interval: 10s
+      timeout: 3s
+      retries: 12
+      start_period: 10s
+    read_only: true
+    tmpfs:
+      - /tmp:size=64m,mode=1777
+    stop_grace_period: 30s
+    restart: unless-stopped
+    security_opt: ["no-new-privileges:true"]
+    networks: [data, app, egress]
+    logging: *default-logging
+
+  web:
+    image: ${WEB_IMAGE:-voice-service-agent-web:local}
+    build:
+      context: ..
+      dockerfile: deploy/Dockerfile.web
+    ports:
+      - "${WEB_BIND_ADDRESS:-127.0.0.1}:${WEB_PORT:-8080}:80"
+    depends_on:
+      api: {condition: service_healthy}
+    healthcheck:
+      test: ["CMD-SHELL", "wget -q -O /dev/null http://127.0.0.1/health/live"]
+      interval: 10s
+      timeout: 3s
+      retries: 6
+    read_only: true
+    tmpfs:
+      - /var/cache/nginx:size=32m
+      - /var/run:size=1m
+      - /tmp:size=16m
+    restart: unless-stopped
+    security_opt: ["no-new-privileges:true"]
+    networks: [app, edge]
+    logging: *default-logging
+
+networks:
+  data:
+    internal: true
+  app:
+    internal: true
+  edge:
+  egress:
+
+volumes:
+  postgres-data:
+  redis-data:
