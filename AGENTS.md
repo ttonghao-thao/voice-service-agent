@@ -23,6 +23,8 @@
 
 ## 必须保持的边界
 
+- 编码阶段没有 CueKB 和 VoiceChat 真实接口；按已确认的接口规范实现并用契约测试、受控夹具验证处理逻辑即可。不尝试真实调用，不因缺少真实接口阻塞编码交付；真实联调归入后续部署验收。
+- 编码阶段没有 Docker 环境；必要时静态检查 Dockerfile、Compose、镜像制作及启动脚本。不安装 Docker、不搭建容器环境、不拉取或构建镜像、不启动容器；实际镜像/容器验证归入后续部署阶段。
 - 简单客户语音门户 → 本项目消息接口；VoiceChat、CueKB 独立部署。天气/股票按接入启用，不是所有部署的必需依赖。
 - 保留 SessionCoordinator → BusinessRuntime → ToolRegistry；供应商语音事件限于 `app/voice`，Agents SDK 限于 `app/agent_runtime`。
 - 中文能力由云端语音服务提供，本项目不训练模型、不引入 NeMo/CUDA、不过滤中文。

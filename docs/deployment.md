@@ -4,6 +4,8 @@
 
 ## 部署方式边界
 
+编码阶段没有 Docker 环境。必要时只静态检查 Dockerfile、Compose、镜像制作和启动脚本；不安装 Docker、不搭建替代容器环境、不拉取或构建镜像、不启动容器。本文中的容器构建和运行命令用于后续具备环境的部署阶段，不属于当前编码验证步骤。CueKB/VoiceChat 真实联调同样在后续部署阶段执行。
+
 云端服务器只使用 Docker Compose 构建、迁移和运行，不直接在宿主机启动 Python、Node.js、PostgreSQL 或 Redis。生产入口为 `deploy/compose.production.yaml`，配置模板为 `.env.production.example`，统一命令为 `scripts/deploy-cloud.sh`。
 
 本地开发仍使用 README 中的 Python/Node.js 启动和验证命令；需要检查容器拓扑时也可继续使用 `deploy/compose.yaml`。两种路径互不替代，本地测试通过不代表云端容器验收通过。
