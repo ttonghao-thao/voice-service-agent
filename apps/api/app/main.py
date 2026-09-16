@@ -139,6 +139,7 @@ def create_app(settings=None):
             "text_configured": caps["text_configured"],
             "voice_configured": caps["voice_available"],
             "is_mock": caps["is_mock"],
+            "enabled_tools": caps["enabled_tools"],
             "voice_capacity_available": len(request.app.state.voice.sessions) < settings.max_voice_sessions,
         }
 

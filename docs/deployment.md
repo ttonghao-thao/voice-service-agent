@@ -1,6 +1,6 @@
 # 部署与运行
 
-> 2026-09-16：本文描述当前代码的运行方式，不代表真实服务已经验收。当前生产使用 CueKB 专用配置，但仍强制天气代理配置；按启用工具校验见 [任务板](TASK_BOARD.md) D06。不要为满足启动条件接入假天气；完成 D06 与真实验收后再按最终配置部署。最终系统边界见 [架构](architecture.md)。
+> 2026-09-16：本文描述当前代码的运行方式，不代表真实服务已经验收。生产依 `ENABLED_TOOLS` 仅校验启用工具；默认生产模板为 CueKB-only，不需要天气代理配置。不要为满足启动条件接入假天气；真实验收仍须按 [任务板](TASK_BOARD.md) D07 执行。最终系统边界见 [架构](architecture.md)。
 
 ## 部署方式边界
 
@@ -36,11 +36,11 @@ chmod 600 .env.production
 ./scripts/deploy-cloud.sh .env.production
 ```
 
-部署脚本会在发现示例值、非 production 模式或非 HTTPS `PUBLIC_ORIGIN` 时停止，然后校验 Compose、构建锁定依赖的镜像、等待 PostgreSQL/Redis 健康、单独执行 Alembic，最后启动 API 与 Web 并等待健康检查。真实 `.env.production` 被 Git 和 Docker build context 排除。
+部署脚本会在发现示例值、非 production 模式或非 HTTPS `PUBLIC_ORIGIN` 时停止，然后校验 Compose、构建锁定依赖的镜像、等待 PostgreSQL/Redis 健康、单独执行 Alembic，最后启动 API，并在容器内执行 `/health/ready` 的部署配置核验，再启动 Web。该核验会拒绝 mock 或与 `ENABLED_TOOLS` 不一致的 API；它仅证明容器就绪，不能替代 CueKB、VoiceChat、SSO 或口述答案验收。真实 `.env.production` 被 Git 和 Docker build context 排除。
 
 生产 Compose 默认将 Web 映射到云端宿主机 `127.0.0.1:8080`，供同机 HTTPS 反向代理使用。若使用云平台负载均衡访问主机端口，可按网络边界设置 `WEB_BIND_ADDRESS`；不得把此 HTTP 端口无 TLS 地直接暴露到公网。PostgreSQL 和 Redis 只在 Docker 内部网络可见，API 另接 egress 网络访问模型、VoiceChat、CueKB、天气和 OIDC。
 
-- 设置 `APP_ENV=production`、`AUTH_MODE=oidc`、组织/SSO、真实文本模型、真实 CueKB/天气。CueKB 的 KB 列表必须是 UUID；应用启动会拒绝 mock 和缺失的主要认证/工具配置。
+- 设置 `APP_ENV=production`、`AUTH_MODE=oidc`、组织/SSO、真实文本模型和 `ENABLED_TOOLS`。CueKB-only 使用 `ENABLED_TOOLS=search_knowledge`；启用天气才加入 `weather` 并提供真实天气配置。CueKB 的 KB 列表必须是 UUID；应用启动会拒绝 mock 和缺失的启用认证/工具配置。
 - 设置精确 HTTPS `PUBLIC_ORIGIN`。Nginx 配置是内网入口模板；在前置网关终止 TLS，将 HTTPS/WSS 和 Origin 原样转发。外层代理同样不得记录 ticket、OIDC code/state、Authorization 或 Cookie。
 - 内网 DB/Redis 使用部署凭据/网络控制；跨不可信网络时为 DB/Redis 配置 TLS 连接串。Redis 故障会关闭活跃输出，不能退回内存继续假装持有租约。
 - Nginx 关闭 SSE buffering、支持 WS upgrade、限制请求大小和请求速率，设置 CSP、同源麦克风权限与 frame 禁止策略。

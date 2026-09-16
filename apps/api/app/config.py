@@ -41,6 +41,7 @@ class Settings(BaseSettings):
     cuekb_api_key: SecretStr = SecretStr("")
     cuekb_search_mode: Literal["auto", "exact", "hybrid", "related"] = "auto"
     cuekb_top_k: int = 5
+    enabled_tools: str = "search_knowledge,weather"
     weather_mode: Literal["mock", "real"] = "mock"
     weather_provider: Literal["http_contract"] = "http_contract"
     weather_base_url: str = ""
@@ -67,6 +68,18 @@ class Settings(BaseSettings):
     def optional_urls(cls, value):
         return value or None
 
+    @field_validator("enabled_tools")
+    @classmethod
+    def normalized_enabled_tools(cls, value):
+        names = [name.strip() for name in value.split(",") if name.strip()]
+        if (
+            not names
+            or len(names) != len(set(names))
+            or any(not re.fullmatch(r"[a-z][a-z0-9_]{0,79}", name) for name in names)
+        ):
+            raise ValueError("ENABLED_TOOLS must contain unique tool names")
+        return ",".join(names)
+
     @model_validator(mode="after")
     def check(self):
         if self.agent_deadline_ms < 100 or self.max_voice_sessions < 1 or self.max_agent_runs < 1:
@@ -90,40 +103,40 @@ class Settings(BaseSettings):
         if self.app_env == "production":
             if self.auto_create_schema:
                 raise ValueError("Production schema changes must use migrations")
-            if self.auth_mode != "oidc" or any(
-                x == "mock"
-                for x in (self.agent_provider, self.cuekb_mode, self.weather_mode, self.voice_provider)
-            ):
+            if self.auth_mode != "oidc" or self.agent_provider == "mock" or self.voice_provider == "mock":
                 raise ValueError("Production forbids dev identity and mock providers")
             if not self.database_url.startswith("postgresql+asyncpg:") or not self.redis_url:
                 raise ValueError("Production requires PostgreSQL and Redis")
             if not self.agent_model or not self.openai_api_key.get_secret_value():
                 raise ValueError("Production requires a configured text model")
-            if not all(
-                (
-                    self.cuekb_base_url,
-                    self.cuekb_api_key.get_secret_value(),
-                    self.cuekb_api_revision,
-                    self.weather_base_url,
-                    self.weather_api_key.get_secret_value(),
-                )
+            if "search_knowledge" in self.enabled_tool_names and (
+                self.cuekb_mode != "real"
+                or not all((self.cuekb_base_url, self.cuekb_api_key.get_secret_value(), self.cuekb_api_revision))
             ):
-                raise ValueError("Production requires real tool providers")
+                raise ValueError("Production requires a configured real CueKB when search_knowledge is enabled")
+            if "weather" in self.enabled_tool_names and (
+                self.weather_mode != "real"
+                or not all((self.weather_base_url, self.weather_api_key.get_secret_value()))
+            ):
+                raise ValueError("Production requires a configured real weather provider when weather is enabled")
             if (
                 not self.public_origin.startswith("https://")
                 or len(self.auth_cookie_secret.get_secret_value()) < 32
             ):
                 raise ValueError("Production requires HTTPS and a strong cookie signing secret")
-            for url in (
+            urls = [
                 self.oidc_issuer,
                 self.oidc_jwks_url,
                 self.oidc_authorization_url,
                 self.oidc_token_url,
-                self.cuekb_base_url,
-                self.weather_base_url,
                 self.agent_base_url,
                 self.voicechat_health_url,
-            ):
+            ]
+            if "search_knowledge" in self.enabled_tool_names:
+                urls.append(self.cuekb_base_url)
+            if "weather" in self.enabled_tool_names:
+                urls.append(self.weather_base_url)
+            for url in urls:
                 if url and urlparse(url).scheme != "https":
                     raise ValueError("Production HTTP integrations require TLS")
             if self.voicechat_ws_url and not self.voicechat_ws_url.startswith("wss://"):
@@ -145,4 +158,15 @@ class Settings(BaseSettings):
 
     @property
     def mock(self) -> bool:
-        return "mock" in (self.agent_provider, self.cuekb_mode, self.weather_mode, self.voice_provider)
+        enabled_modes = [self.agent_provider]
+        if self.voice_provider != "disabled":
+            enabled_modes.append(self.voice_provider)
+        if "search_knowledge" in self.enabled_tool_names:
+            enabled_modes.append(self.cuekb_mode)
+        if "weather" in self.enabled_tool_names:
+            enabled_modes.append(self.weather_mode)
+        return "mock" in enabled_modes
+
+    @property
+    def enabled_tool_names(self) -> frozenset[str]:
+        return frozenset(self.enabled_tools.split(","))

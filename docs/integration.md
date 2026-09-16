@@ -94,7 +94,7 @@ Runtime 复用授权工具和证据校验，输出 display_text、短 speech_tex
 
 沿用 ToolSpec + trusted adapter + ToolRegistry：受信任代码定义参数/返回类型、调用实现、固定 endpoint/凭据引用、权限、预算、版本及错误映射。工具启停/修订后旧 run 不得继续使用失效工具。
 
-目标可用工具集合为部署启用 ∩ 当前健康策略允许 ∩ 用户授权；必需依赖只检查启用项。未配置天气/股票时不注册、不对客户承诺，也不影响 CueKB-only 启动。当前生产校验仍有天气硬依赖，后续同时修改配置、capabilities/health、部署模板和测试。
+目标可用工具集合为部署启用 `ENABLED_TOOLS` ∩ 管理员当前启用 ∩ 用户授权；必需依赖只检查部署启用项。未配置天气/股票时不得暴露或调用，也不影响 CueKB-only 启动。部署白名单不能由管理员 API 重新开启；管理员只能在白名单内临时启停，运行中的旧任务会因版本或可用性变化被拒绝。`/capabilities` 返回部署集合和当前身份的 `available_tools`，`/health/ready` 返回非敏感部署集合。
 
 已有天气示例契约仍见 [weather-openapi.yaml](../contracts/weather-openapi.yaml)，路径为 `/v1/places/resolve` 和 `/v1/weather`。这是应用供应商代理契约，没有证明已接通任何厂商；保留当前代码/schema 避免文档清理改变行为。新增股票等工具时按实际 API 另建 adapter，不能复用天气字段冒充通用事实。
 

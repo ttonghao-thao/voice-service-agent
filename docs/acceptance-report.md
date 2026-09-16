@@ -1,16 +1,17 @@
 # 验收状态与真实服务门槛
 
-更新：2026-09-16。目标架构已定稿，**D01–D05 已完成代码和本地自动化验证，真实服务与生产验收仍未完成**。缺口和实施顺序见 [任务板](TASK_BOARD.md)。
+更新：2026-09-16。目标架构已定稿，**D01–D06 已完成代码和本地自动化验证，D07 的部署前检查代码已具备；真实服务与生产验收仍未完成**。缺口和实施顺序见 [任务板](TASK_BOARD.md)。
 
 编码阶段约束（2026-09-16 确认）：CueKB/VoiceChat 无真实接口可调用，满足已确认接口规范和处理逻辑并通过相应契约/本地测试，即满足该阶段验收要求。Docker 环境不提供，仅在必要时静态检查镜像制作和启动代码，不搭建环境或执行镜像构建。以下真实服务与容器验收项留待后续部署阶段，不作为编码完成的阻塞项。
 
-## 1. 本轮 D01–D05 验证
+## 1. 本轮 D01–D06 与 D07 部署前检查验证
 
-- Python `pytest`：57 passed；除 D01/D02 边界外，覆盖 CueKB `/v1/search` 请求、UUID KB 注入、trace/status/version/anchor 映射、降级和 HTTP 错误区分、旧 Citation 读取兼容、任务 supersede/cancel、重启恢复、晚到结果拒绝、停止播报不取消查询，以及仅有输入活动/附和时不取消。仍有一条 Starlette/AnyIO 上游弃用警告。
+- Python `pytest`：60 passed；除 D01/D02 边界外，覆盖 CueKB `/v1/search` 请求、UUID KB 注入、trace/status/version/anchor 映射、降级和 HTTP 错误区分、旧 Citation 读取兼容、任务 supersede/cancel、重启恢复、晚到结果拒绝、停止播报不取消查询，以及仅有输入活动/附和时不取消。D06 另覆盖 CueKB-only 生产配置、部署白名单与管理员/身份权限的交集；D07 覆盖 readiness 报告拒绝 mock 或不匹配的工具集合。仍有一条 Starlette/AnyIO 上游弃用警告。
 - Ruff：`apps/api`、`scripts`、`tests` 通过；生成 HTTP、上下行事件及答案 schema 后差异检查通过。
 - 前端：6 项 Node 音频测试通过；TypeScript/Vite 生产构建通过。
 - Playwright：启动隔离的开发 API/Vite 后 4 passed；覆盖中文文字/证据/刷新/窄屏、无依据、麦克风拒绝，以及合成麦克风连续帧/静音/停止播报/新 epoch 重建/释放。客户页面不含管理工作台；合成设备不证明真实语音质量。
 - Alembic：临时空 SQLite 执行 0001→0004、downgrade base、再次 upgrade head 通过；0004 新增 request revision、parent/native call、取消原因、delivery status 和输出抑制字段。真实 PostgreSQL 迁移仍未执行。
+- 发布脚本经 `sh -n` 静态检查；Compose 启动 API 后会在容器内核验 `/health/ready` 的真实非 mock 配置和 `ENABLED_TOOLS` 一致性。该检查没有执行 Docker，也不代表外部服务调用成功。
 - 探测脚本 CLI 通过；当前未配置/调用真实 VoiceChat，没有生成事件报告或音频，不将脚本存在当作能力通过。
 - `git diff --check` 通过。真实 PostgreSQL、Redis、Docker、OIDC、CueKB 和 VoiceChat 均未在本轮运行。
 

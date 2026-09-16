@@ -115,6 +115,7 @@ def capabilities(s):
         "agent_provider": s.agent_provider,
         "cuekb_mode": s.cuekb_mode,
         "weather_mode": s.weather_mode,
+        "enabled_tools": sorted(s.enabled_tool_names),
         "voice_available": s.voice_provider == "mock"
         or bool(
             s.voicechat_ws_url
@@ -146,7 +147,10 @@ def capabilities(s):
 
 @router.get("/capabilities")
 async def get_capabilities(request: Request, user: User):
-    return capabilities(request.app.state.settings)
+    return {
+        **capabilities(request.app.state.settings),
+        "available_tools": sorted(await request.app.state.registry.allowed(user)),
+    }
 
 
 async def limited(request, user):
@@ -414,7 +418,8 @@ async def tool_list(request: Request, user: User):
                 "description": s.description,
                 "display_name": s.display_name,
                 "version": s.version,
-                "enabled": await registry.store.enabled(s.name),
+                "deployment_enabled": registry.deployment_enabled(s.name),
+                "enabled": await registry.available(s.name),
                 "read_only": s.read_only,
                 "timeout_ms": s.timeout_ms,
             }
@@ -431,8 +436,11 @@ class ToolPatch(StrictModel):
 @router.patch("/admin/tools/{name}")
 async def toggle_tool(name: str, body: ToolPatch, request: Request, user: User):
     admin(user)
-    if name not in request.app.state.registry.specs:
+    registry = request.app.state.registry
+    if name not in registry.specs:
         raise DomainError("TOOL_NOT_FOUND", "工具不存在", 404)
+    if body.enabled and not registry.deployment_enabled(name):
+        raise DomainError("TOOL_NOT_DEPLOYED", "该工具未在当前部署中启用", 409)
     async with request.app.state.store.transaction() as db:
         config = await db.get(ToolConfig, name)
         if config:
@@ -458,6 +466,10 @@ async def test_tool(name: str, request: Request, user: User):
     spec = registry.specs.get(name)
     if not spec:
         raise DomainError("TOOL_NOT_FOUND", "工具不存在", 404)
+    if not registry.deployment_enabled(name):
+        raise DomainError("TOOL_NOT_DEPLOYED", "该工具未在当前部署中启用", 409)
+    if not await registry.store.enabled(name):
+        raise DomainError("TOOL_DISABLED", "该工具已被管理员停用", 409)
     mode = getattr(s, spec.mode_ref)
     if mode == "mock":
         return {"status": "mock", "message": "演示适配器，不代表真实服务连接成功"}

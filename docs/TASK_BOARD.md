@@ -15,11 +15,11 @@
 
 已有 FastAPI 会话 API、HTTP/SSE/WSS、VoiceChat native bridge、单写入器、票据、epoch/revision 隔离、BusinessRuntime、CueKBAdapter、ToolRegistry、PostgreSQL/Redis 接入、AudioWorklet 及简单客户门户。
 
-客户页面已移除工具管理工作台；客户/operator/admin 仍由服务端权限区分。知识工具使用 CueKB `/v1/search`；生产配置仍强制天气，归 D06。硬打断保留为兼容接口，门户已将停止播报、取消查询和结束语音分开；默认 105 秒在安静边界自动轮换。
+客户页面已移除工具管理工作台；客户/operator/admin 仍由服务端权限区分。知识工具使用 CueKB `/v1/search`；部署白名单与管理员启停共同约束工具，CueKB-only 不要求天气。硬打断保留为兼容接口，门户已将停止播报、取消查询和结束语音分开；默认 105 秒在安静边界自动轮换。
 
 ## 实施里程碑
 
-D01–D05 已完成代码和本地自动化验证。编码阶段没有 CueKB/VoiceChat 真实接口，也没有 Docker 环境；D01–D06 按接口规范、处理逻辑、契约及本地自动化测试验收，真实联调和容器运行不作为编码交付前提。下一步是 D06 的按启用工具配置与 D07 的部署环境生产验收。
+D01–D06 已完成代码和本地自动化验证。编码阶段没有 CueKB/VoiceChat 真实接口，也没有 Docker 环境；D01–D06 按接口规范、处理逻辑、契约及本地自动化测试验收，真实联调和容器运行不作为编码交付前提。D07 的部署前代码与静态验证已具备，真实部署环境生产验收仍待执行。
 
 | ID | 任务与影响模块 | 完成条件 | 状态 |
 | --- | --- | --- | --- |
@@ -28,8 +28,8 @@ D01–D05 已完成代码和本地自动化验证。编码阶段没有 CueKB/Voi
 | D03 | CueKBAdapter、证据契约与引用。`tools/`、`contracts/`、Runtime/存储 | `/v1/search`、UUID KB、trace/status/version/anchor 按规范正确映射；空命中/降级/错误和权限的受控测试通过；真实 CueKB 闭环归 D07 | 编码阶段完成；真实 CueKB/ACL 在 D07 验收 |
 | D04 | 简单 HTML 客户门户。`apps/web/`、门户消息接口 | 开始/结束、字幕、语音播放、状态、答案/引用、窄屏及可选文字；不含管理工作台；复用现有音频模块 | 编码阶段完成；真实设备体验在 D07 验收 |
 | D05 | 任务 revision、停止播报/取消/改问分离、pending call 恢复、长会话。`sessions/`、`voice/`、`storage/` | 晚到旧结果不提交、不播报；旧 call 结清或关闭；新会话无旧音频；附和不误取消；迁移与恢复测试通过 | 编码阶段完成；连续交谈仍受 D01 真实能力门槛限制 |
-| D06 | 按部署及用户选择启用工具。`config.py`、registry、capabilities/health、部署模板 | CueKB-only 模式不要求天气；仅暴露已启用且授权工具；新增第三方不改语音主流程 | 待实施 |
-| D07 | 真实端到端、故障、性能、Docker 与上线。部署及测试模块 | 客户语音→CueKB→实际口述正确；PostgreSQL/Redis/SSO/容器与长会话通过；记录版本、样本和阈值 | 待实施 |
+| D06 | 按部署及用户选择启用工具。`config.py`、registry、capabilities/health、部署模板 | CueKB-only 模式不要求天气；仅暴露部署启用、管理员启用且授权工具；新增第三方不改语音主流程 | 编码及本地测试完成 |
+| D07 | 真实端到端、故障、性能、Docker 与上线。部署及测试模块 | 客户语音→CueKB→实际口述正确；PostgreSQL/Redis/SSO/容器与长会话通过；记录版本、样本和阈值 | 部署前检查、Compose 与探针代码完成；真实生产验收待执行 |
 
 ## 实施约束与暂缓项
 

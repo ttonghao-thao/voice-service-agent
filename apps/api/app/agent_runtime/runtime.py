@@ -35,6 +35,8 @@ class BusinessRuntime:
             name: await self.registry.store.tool_revision(name) for name in ctx.allowed_tools
         }
         if self.settings.agent_provider == "mock":
+            if "search_knowledge" not in ctx.allowed_tools:
+                return self.failure("AGENT_NO_AUTHORIZED_TOOL", "当前身份没有可用于演示查询的已启用知识工具。")
             result = await self.registry.invoke("search_knowledge", {"query": request}, ctx)
             citations = list(ctx.evidence.values())
             return AnswerBundle(
@@ -136,6 +138,7 @@ class BusinessRuntime:
         if not all(
             [
                 await self.registry.store.enabled(name)
+                and self.registry.deployment_enabled(name)
                 and await self.registry.store.tool_revision(name) == ctx.tool_versions.get(name, 0)
                 for name in ctx.invoked
             ]

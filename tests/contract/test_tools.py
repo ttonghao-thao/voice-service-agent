@@ -251,6 +251,7 @@ async def test_new_registered_tool_needs_no_chat_or_voice_changes(app, conversat
         audit_policy="evidence_only",
     )
     registry.specs[spec.name] = spec
+    app.state.settings.enabled_tools += ",read_reference"
     t, _, _ = await app.state.store.begin_turn(dev_user(), conversation, "new-tool", "读取引用", "text")
     ctx = RunContext(
         dev_user(),
@@ -262,3 +263,15 @@ async def test_new_registered_tool_needs_no_chat_or_voice_changes(app, conversat
     )
     result = await registry.invoke(spec.name, {"reference": "中文型号-A1"}, ctx)
     assert result == {"status": "ok", "reference": "中文型号-A1"}
+
+
+async def test_deployment_allowlist_cannot_be_overridden_by_admin_or_principal(client, app):
+    app.state.settings.enabled_tools = "search_knowledge"
+    caps = await client.get("/api/v1/capabilities")
+    assert caps.json()["enabled_tools"] == ["search_knowledge"]
+    assert caps.json()["available_tools"] == ["search_knowledge"]
+    tools = await client.get("/api/v1/admin/tools")
+    weather = next(item for item in tools.json()["items"] if item["name"] == "weather")
+    assert weather["deployment_enabled"] is False and weather["enabled"] is False
+    response = await client.patch("/api/v1/admin/tools/weather", json={"enabled": True})
+    assert response.status_code == 409 and response.json()["code"] == "TOOL_NOT_DEPLOYED"

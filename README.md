@@ -10,7 +10,7 @@ HTML 语音门户 ⇄ HTTPS / SSE / WSS ⇄ Voice Service Agent
                                    └─ PostgreSQL / Redis
 ```
 
-**当前状态：最终设计已整理，D01–D05 代码已完成本地验证。** 门户事件契约已冻结为严格联合类型，VoiceChat 能力声明绑定 API 版本/镜像 digest/真实探测模式；OIDC 已支持受限 `customer` 角色、会话隔离、KB 交集及历史撤权脱敏。CueKB 原生适配、简单客户门户及独立任务 revision/停播/取消语义已经实现；真实 VoiceChat、SSO、CueKB、PostgreSQL/Redis/Docker 和生产验收未完成。默认开发 mock 有明确标识，不能作为真实语音或知识查询结果。
+**当前状态：最终设计已整理，D01–D06 代码已完成本地验证，D07 部署前检查代码已具备。** 门户事件契约已冻结为严格联合类型，VoiceChat 能力声明绑定 API 版本/镜像 digest/真实探测模式；OIDC 已支持受限 `customer` 角色、会话隔离、KB 交集及历史撤权脱敏。工具仅在 `ENABLED_TOOLS` 部署白名单、管理员启用和用户授权同时满足时可用，生产默认 CueKB-only；真实 VoiceChat、SSO、CueKB、PostgreSQL/Redis/Docker 和生产验收仍未执行。默认开发 mock 有明确标识，不能作为真实语音或知识查询结果。
 
 ## 按需阅读
 
@@ -78,7 +78,7 @@ PYTHONPATH=apps/api uv run python scripts/probe_voicechat.py \
 ./scripts/deploy-cloud.sh .env.production
 ```
 
-配置准备、现有生产天气硬依赖、TLS、迁移、粘性路由和回滚见 [部署文档](docs/deployment.md)。当前不能只配置 CueKB 地址就宣称符合最终方案。
+配置准备、`ENABLED_TOOLS`、TLS、迁移、粘性路由和回滚见 [部署文档](docs/deployment.md)。CueKB-only 可只启用知识工具，但仍必须完成真实服务验收后才能放行。
 
 ## 代码入口
 

@@ -105,6 +105,33 @@ def test_verified_voicechat_requires_pinned_contract_and_capability_mode():
     assert settings.voicechat_capability_mode == "basic"
 
 
+def test_production_cuekb_only_does_not_require_weather_configuration():
+    settings = Settings(
+        _env_file=None,
+        app_env="production",
+        auth_mode="oidc",
+        public_origin="https://portal.example.invalid",
+        database_url="postgresql+asyncpg://service:secret@postgres/service",
+        redis_url="redis://:secret@redis:6379/0",
+        oidc_issuer="https://id.example.invalid/",
+        oidc_audience="portal",
+        oidc_jwks_url="https://id.example.invalid/jwks.json",
+        tenant_id="tenant",
+        agent_provider="openai",
+        agent_model="configured-model",
+        openai_api_key="configured-key",
+        enabled_tools="search_knowledge",
+        cuekb_mode="real",
+        cuekb_base_url="https://cuekb.example.invalid",
+        cuekb_api_key="configured-key",
+        cuekb_api_revision="fixture-revision",
+        weather_mode="mock",
+        voice_provider="disabled",
+        auth_cookie_secret="x" * 32,
+    )
+    assert settings.enabled_tool_names == {"search_knowledge"} and settings.mock is False
+
+
 @pytest.mark.parametrize(
     "override",
     [

@@ -34,7 +34,7 @@ class ToolSpec(StrictModel):
 
 class ToolRegistry:
     def __init__(self, settings, client, store):
-        self.store = store
+        self.settings, self.store = settings, store
         self.adapters = {
             "cuekb_http": CueKBAdapter(settings, client),
             "weather_http": WeatherAdapter(settings, client),
@@ -42,6 +42,9 @@ class ToolRegistry:
         config = yaml.safe_load((ROOT / "config/tools.yaml").read_text())
         self.version = config["version"]
         self.specs = {s.name: s for s in map(ToolSpec.model_validate, config["tools"])}
+        unknown_enabled_tools = settings.enabled_tool_names - self.specs.keys()
+        if unknown_enabled_tools:
+            raise ValueError("ENABLED_TOOLS contains unregistered tools: " + ", ".join(sorted(unknown_enabled_tools)))
         for spec in self.specs.values():
             if spec.adapter_id not in self.adapters:
                 raise ValueError("Unregistered trusted adapter")
@@ -49,13 +52,19 @@ class ToolRegistry:
             spec.input_schema = adapter.input_model.model_json_schema()
             spec.output_schema = adapter.output_adapter.json_schema()
 
+    def deployment_enabled(self, name):
+        return name in self.settings.enabled_tool_names and self.specs[name].enabled
+
+    async def available(self, name):
+        return self.deployment_enabled(name) and await self.store.enabled(name)
+
     async def allowed(self, principal):
         if principal.expires_at is not None and principal.expires_at <= time.time():
             return set()
         return {
             name
             for name, spec in self.specs.items()
-            if spec.enabled
+            if self.deployment_enabled(name)
             and spec.permission_scope in principal.scopes
             and ("*" in spec.allowed_tenants or principal.tenant_id in spec.allowed_tenants)
             and await self.store.enabled(name)
@@ -91,7 +100,7 @@ class ToolRegistry:
                 output = adapter.output_adapter.validate_python(output).model_dump(mode="json")
             if len(json.dumps(output, ensure_ascii=False).encode()) > spec.result_limit:
                 raise DomainError("TOOL_BAD_RESPONSE", "查询结果过大", 502)
-            if not await self.store.enabled(name):
+            if not await self.available(name):
                 raise DomainError("FORBIDDEN", "查询期间工具已被停用", 403)
             return output
         except TimeoutError:

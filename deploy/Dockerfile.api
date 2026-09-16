@@ -5,6 +5,7 @@ COPY pyproject.toml uv.lock ./
 RUN uv sync --locked --no-dev --no-install-project
 COPY apps/api apps/api
 COPY config config
+COPY scripts/verify_deployment.py scripts/verify_deployment.py
 ENV PYTHONPATH=/app/apps/api PATH=/app/.venv/bin:$PATH PYTHONUNBUFFERED=1
 RUN groupadd --gid 10001 service && useradd --uid 10001 --gid service --no-create-home service && mkdir /app/data && chown service:service /app/data
 USER service
