@@ -1,6 +1,7 @@
 import asyncio
 
 import pytest
+from app.api.routes import _answer_for_principal, _event_for_principal
 from app.contracts import AnswerBundle, DomainError, Principal
 from app.storage.models import Turn
 from sqlalchemy import select
@@ -144,6 +145,91 @@ async def test_tool_revocation_and_admin_permissions(client, app, conversation):
     assert not answer.citations
     app.state.settings.dev_admin = False
     assert (await client.get("/api/v1/admin/tools")).status_code == 403
+
+
+async def test_customer_isolation_admin_denial_and_kb_revocation(client, app):
+    app.state.settings.knowledge_base_ids = "kb_support,kb_private"
+    identity = {
+        "principal": Principal(
+            user_id="customer-a",
+            tenant_id="dev-tenant",
+            roles=frozenset({"customer"}),
+            scopes=frozenset({"knowledge:read"}),
+            knowledge_base_ids=("kb_private", "kb_support"),
+        )
+    }
+
+    async def current_principal(_request):
+        return identity["principal"]
+
+    app.state.auth.principal = current_principal
+    created = await client.post("/api/v1/conversations", json={})
+    assert created.status_code == 201
+    cid = created.json()["id"]
+    sent = await client.post(
+        f"/api/v1/conversations/{cid}/messages",
+        headers={"Idempotency-Key": "customer-answer"},
+        json={"text": "联调示例"},
+    )
+    assert sent.status_code == 202
+    await app.state.coordinator.tasks[cid]
+    assert (await client.get("/api/v1/admin/tools")).status_code == 403
+    before = (await client.get(f"/api/v1/conversations/{cid}/messages")).json()
+    assert before["items"][0]["answer"]["citations"]
+    legacy_answer = dict(before["items"][0]["answer"])
+    legacy_answer["citations"] = [dict(legacy_answer["citations"][0])]
+    legacy_answer["citations"][0].pop("authorized_kb_ids")
+    assert (
+        _answer_for_principal(legacy_answer, identity["principal"], app.state.settings)[
+            "reason_code"
+        ]
+        == "KB_ACCESS_REVOKED"
+    )
+    async with app.state.store.sessions() as db:
+        current_epoch = (await app.state.store.get(db, cid)).epoch
+    await app.state.store.record(
+        cid,
+        current_epoch,
+        "voicechat_transcript",
+        "spoken-private",
+        {
+            "response_id": "spoken-private",
+            "text": "旧授权范围的口述内容",
+            "_authorized_kb_ids": ["kb_private", "kb_support"],
+        },
+    )
+
+    identity["principal"] = identity["principal"].model_copy(
+        update={"knowledge_base_ids": ("kb_support",)}
+    )
+    after = (await client.get(f"/api/v1/conversations/{cid}/messages")).json()
+    assert after["items"][0]["answer"]["reason_code"] == "KB_ACCESS_REVOKED"
+    assert after["items"][0]["answer"]["citations"] == []
+    assert not any(record["source_id"] == "spoken-private" for record in after["records"])
+    async with app.state.store.sessions() as db:
+        stored_history = (await app.state.store.get(db, cid)).history
+    visible_history = app.state.coordinator.authorized_history(
+        stored_history, identity["principal"]
+    )
+    assert not any(item["role"] == "assistant" for item in visible_history)
+
+    voice = await client.post(f"/api/v1/conversations/{cid}/voice-sessions", json={})
+    assert voice.status_code == 201
+    session = app.state.voice.sessions[voice.json()["voice_session_id"]]
+    assert "合成联调资料" not in session.summary
+
+    async with app.state.store.sessions() as db:
+        from app.storage.models import Event
+
+        events = (
+            await db.execute(select(Event).where(Event.conversation_id == cid))
+        ).scalars()
+        event = next(row for row in events if row.payload["type"] == "portal.answer.final")
+    safe = _event_for_principal(event.payload, identity["principal"], app.state.settings)
+    assert safe["payload"]["reason_code"] == "KB_ACCESS_REVOKED"
+
+    identity["principal"] = identity["principal"].model_copy(update={"user_id": "customer-b"})
+    assert (await client.get(f"/api/v1/conversations/{cid}/messages")).status_code == 404
 
 
 async def test_origin_and_limits(client, app):

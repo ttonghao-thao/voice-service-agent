@@ -1,14 +1,28 @@
-# 声桥 · 客服智能体门户
+# Voice Service Agent · 语音客服 Agent
 
-Python 3.12 / FastAPI 后端，OpenAI Agents SDK 业务推理，React / TypeScript 中文门户，独立 VoiceChat WebSocket 适配器。
+客户通过简单 HTML 门户发起语音服务。本项目管理会话、业务推理、工具和回答，后台连接独立的 **NVIDIA VoiceChat** 与 **CueKB**；第三方查询按实际接入启用。
 
-已实现应用代码和本地验证路径。真实 VoiceChat、文本模型、RAG、天气、SSO 需要填写集成配置；**当前默认是有醒目标识的开发 mock，不能作为生产或真实语音验收结果。**
+```text
+HTML 语音门户 ⇄ HTTPS / SSE / WSS ⇄ Voice Service Agent
+                                   ├─ VoiceChatAdapter ⇄ 独立 VoiceChat
+                                   ├─ 后台客服 Agent ⇄ 文本推理模型
+                                   │                 └─ ToolRegistry → CueKB / 可选第三方系统
+                                   └─ PostgreSQL / Redis
+```
 
-云端服务器统一使用 Docker Compose 构建、执行 Alembic 迁移并运行全部服务；不在云端宿主机直接启动 Python、Node.js 或数据库进程。本机启动和验证方式保持如下，不受云端部署方式影响。
+**当前状态：最终设计已整理，D01/D02 代码已完成本地验证。** 门户事件契约已冻结为严格联合类型，VoiceChat 能力声明绑定 API 版本/镜像 digest/真实探测模式；OIDC 已支持受限 `customer` 角色、会话隔离、KB 交集及历史撤权脱敏。CueKB 原生适配、简单门户及任务 revision 仍待实施；真实 VoiceChat、SSO、CueKB 和生产验收未完成。默认开发 mock 有明确标识，不能作为真实语音或知识查询结果。
 
-## 本机启动
+## 按需阅读
 
-需要 Python 3.12、uv、Node.js 22。仓库根目录执行：
+- 产品和架构：[最终设计](docs/architecture.md)。
+- 接入 HTML 客户端：[门户消息/语音契约](docs/portal-protocol.md)。
+- 对接 CueKB、VoiceChat、身份和第三方：[接入说明](docs/integration.md)。
+- 下一步和现状差距：[任务板](docs/TASK_BOARD.md)。
+- 其余主题：[文档索引](docs/README.md)。Codex 从 [AGENTS.md](AGENTS.md) 按任务读取，无需全量加载。
+
+## 本机启动（当前实现）
+
+Python 3.12、uv、Node.js 22；仓库根目录执行：
 
 ```sh
 cp .env.example .env
@@ -24,18 +38,20 @@ npm ci --prefix apps/web
 npm run dev --prefix apps/web -- --port 5173
 ```
 
-浏览器打开 [客服工作台](http://localhost:5173)。`PUBLIC_ORIGIN` 必须与访问地址一致，尤其不能把 `localhost` 与 `127.0.0.1` 混用；麦克风依赖安全上下文。输入“联调示例”可检查中文文字、合成引用和历史；其他未命中的公司问题明确返回依据不足。Mock 语音只验证采集/传输与状态，不识别、不合成业务语音。默认开发身份不是管理员；本地需要管理工具时在 `.env` 设置 `DEV_ADMIN=true` 后重启后端。
+访问 [本地门户](http://localhost:5173)。`PUBLIC_ORIGIN` 必须与浏览器地址一致；不要混用 localhost 与 127.0.0.1。当前启动的是已有 React 工作台，尚不是精简后的客户页面。
 
-## 验证
+“联调示例”仅验证合成文字、引用和历史；mock 语音只验证传输，不识别或合成业务语音。开发身份默认不是管理员，需要本地管理功能时才设置 `DEV_ADMIN=true`。不将开发身份用于生产。
+
+## 验证命令
 
 ```sh
-uv run pytest -q
-uv run ruff check apps/api tests scripts
+uv run --locked pytest -q
+uv run --locked ruff check apps/api tests scripts
 npm test --prefix apps/web
 npm run build --prefix apps/web
 ```
 
-启动上述后端和前端后执行浏览器测试：
+启动本地后端和前端后，按需要执行浏览器测试：
 
 ```sh
 cd apps/web
@@ -43,41 +59,36 @@ npx playwright install chromium
 npm run test:e2e
 ```
 
-浏览器测试包含显式合成麦克风。截图和报告写入被 Git 忽略的 `artifacts/`、`apps/web/test-results/`。真实云端探测不使用 mock 回退：
+测试产物写入被忽略的 artifacts/test-results 等目录。真实语音探测：
 
 ```sh
-PYTHONPATH=apps/api uv run python scripts/probe_voicechat.py --wav /path/to/authorized-24k-mono-pcm16.wav
+PYTHONPATH=apps/api uv run python scripts/probe_voicechat.py \
+  --wav /path/to/authorized-first-question.wav \
+  --barge-in-wav /path/to/authorized-distinct-second-question.wav \
+  --output-wav artifacts/authorized-review-output.wav
 ```
 
-未配置云端地址时脚本输出 `blocked`。工具回传内容是明确标记的合成联调结果，不是天气或政策事实；脚本不自动打开生产能力开关。
+探测前必须配置目标 `VOICECHAT_API_VERSION` 和 `VOICECHAT_IMAGE_DIGEST`。脚本默认延迟工具结果 5 秒，第二段录音用于观察等待阶段插话；报告只给出事件时序和候选证据，实际音频必须人工复核。脚本不会自动设置 `VOICECHAT_CAPABILITY_MODE` 或生产开关。未配置地址时输出 blocked；合成工具返回不能证明真实 CueKB/第三方业务通过。已执行范围见 [验收记录](docs/acceptance-report.md)。
 
-## 云端 Docker 部署
+## 云端部署
 
-云端复制 `.env.production.example` 为 `.env.production`，替换所有示例地址和凭据后执行：
+云端只使用 Docker Compose 构建、迁移和运行，不直接启动宿主 Python/Node。配置完成后使用：
 
 ```sh
 ./scripts/deploy-cloud.sh .env.production
 ```
 
-该脚本只使用 `deploy/compose.production.yaml`，依次构建镜像、等待 PostgreSQL/Redis、执行 Alembic，再启动并检查 API 与 Web。默认 Web 只绑定宿主机 `127.0.0.1:8080`，由云端 HTTPS 网关转发；完整配置、升级和回滚方式见部署文档。
+配置准备、现有生产天气硬依赖、TLS、迁移、粘性路由和回滚见 [部署文档](docs/deployment.md)。当前不能只配置 CueKB 地址就宣称符合最终方案。
 
 ## 代码入口
 
-- `apps/api/app/api/`：HTTP、SSE、OIDC/JWT、管理及 WebSocket 入口。
-- `apps/api/app/sessions/`：业务任务、取消、租约与 epoch。
-- `apps/api/app/agent_runtime/`：真实 `Runner.run` / `Runner.run_streamed`、工具封装、最终答案校验。
-- `apps/api/app/tools/`：YAML 注册、权限、输入/输出 schema、预算、HTTP RAG/天气适配、证据审计。
-- `apps/api/app/voice/`：官方事件映射、单写入器、有界队列、原生工具桥接。
-- `apps/api/app/storage/` 和 `apps/api/migrations/`：SQLAlchemy 表与 Alembic 迁移。
-- `apps/web/src/`、`apps/web/public/`：中文工作台、AudioWorklet、64-tap 抗混叠重采样、连续播放环形缓冲。
-
-## 文档
-
-- [设计方案](docs/VoiceChat_AgentsSDK_Codex_Design.md)
-- [实施记录](docs/implementation-plan.md)
-- [能力核对及 P0 阻塞项](docs/capability-report.md)
-- [API、工具与认证接入](docs/integration.md)
-- [部署、扩容、升级与回滚](docs/deployment.md)
-- [A01–A22 验收记录](docs/acceptance-report.md)
-
-生产不得采用开发身份或 mock；所有真实事实和语音验收均以实际服务报告为准。
+| 位置 | 责任 |
+| --- | --- |
+| `apps/api/app/api/` | HTTP/SSE/WS、认证、管理 |
+| `apps/api/app/voice/` | VoiceChat 适配、音频与工具桥接 |
+| `apps/api/app/sessions/` | 会话、任务、epoch、租约与取消 |
+| `apps/api/app/agent_runtime/` | 后台客服 Agent、SDK 循环、答案校验 |
+| `apps/api/app/tools/` | 工具注册、权限、契约与服务适配 |
+| `apps/api/app/storage/`、`apps/api/migrations/` | 持久化和 Alembic |
+| `apps/web/src/`、`apps/web/public/` | 门户与浏览器音频 |
+| `contracts/` | 当前代码生成的接口，非未来设计已实现证明 |

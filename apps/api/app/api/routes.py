@@ -21,7 +21,68 @@ router = APIRouter(prefix="/api/v1")
 User = Annotated[Principal, Depends(principal)]
 
 
+def _configured_kbs(settings):
+    return {value.strip() for value in settings.knowledge_base_ids.split(",") if value.strip()}
+
+
+def _answer_for_principal(answer, user, settings):
+    if not answer:
+        return answer
+    current = set(user.knowledge_base_ids)
+    configured = _configured_kbs(settings)
+    for citation in answer.get("citations", []):
+        scope = citation.get("authorized_kb_ids")
+        # Old rows predate authorization scope tagging. Customers never receive
+        # them; privileged roles need the complete current deployment scope.
+        if (scope is None and ("customer" in user.roles or current != configured)) or (
+            scope is not None and not set(scope).issubset(current)
+        ):
+            return {
+                **answer,
+                "status": "failed",
+                "display_text": "知识权限已变更，请重新提问。",
+                "speech_text": "",
+                "citations": [],
+                "cards": [],
+                "reason_code": "KB_ACCESS_REVOKED",
+            }
+    return answer
+
+
+def _event_for_principal(payload, user, settings):
+    if payload.get("type") != "portal.answer.final":
+        return payload
+    return {
+        **payload,
+        "payload": _answer_for_principal(payload.get("payload"), user, settings),
+    }
+
+
+def _record_for_principal(record, user, settings):
+    payload = dict(record.payload)
+    scope = payload.pop("_authorized_kb_ids", None)
+    if record.kind == "voicechat_transcript":
+        current = set(user.knowledge_base_ids)
+        configured = _configured_kbs(settings)
+        if (scope is None and ("customer" in user.roles or current != configured)) or (
+            scope is not None and not set(scope).issubset(current)
+        ):
+            return None
+    return {
+        "kind": record.kind,
+        "epoch": record.epoch,
+        "source_id": record.source_id,
+        "payload": payload,
+    }
+
+
 def capabilities(s):
+    voice_verified = bool(
+        s.voice_provider == "nvidia"
+        and s.voicechat_integration_verified
+        and s.voicechat_api_version
+        and s.voicechat_capability_mode in ("basic", "enhanced")
+    )
     return {
         "provider": s.voice_provider,
         "is_mock": s.mock,
@@ -35,10 +96,11 @@ def capabilities(s):
         ),
         "text_configured": s.agent_provider == "mock"
         or bool(s.agent_model and s.openai_api_key.get_secret_value()),
-        "native_full_duplex": s.voice_provider == "nvidia",
-        "function_result_return": s.voice_provider == "nvidia",
+        "streaming_audio": s.voice_provider in ("mock", "nvidia"),
+        "native_full_duplex": voice_verified and s.voicechat_capability_mode == "enhanced",
+        "function_result_return": voice_verified,
         "native_cancel_response": False,
-        "native_tool_phase_barge_in": False,
+        "native_tool_phase_barge_in": voice_verified and s.voicechat_capability_mode == "enhanced",
         "dynamic_instructions": False,
         "arbitrary_text_to_speech": False,
         "required_voice_languages": ["zh-CN"],
@@ -47,6 +109,10 @@ def capabilities(s):
         if s.voicechat_integration_verified and s.voicechat_api_version
         else [],
         "api_version": s.voicechat_api_version or None,
+        "voice_image_digest": s.voicechat_image_digest or None,
+        "voice_capability_mode": s.voicechat_capability_mode,
+        "voice_integration_verified": voice_verified,
+        "cuekb_api_revision": s.cuekb_api_revision or None,
         "tool_phase_recovery": "close_and_reconnect",
         "voice_session_max_seconds": s.voice_session_max_seconds,
     }
@@ -136,14 +202,16 @@ async def messages(
                     "user_text": t.user_text,
                     "channel": t.channel,
                     "status": t.status,
-                    "answer": t.answer,
+                    "answer": _answer_for_principal(t.answer, user, request.app.state.settings),
                     "created_at": t.created_at.isoformat(),
                 }
                 for t in reversed(turns)
             ],
             "records": [
-                {"kind": r.kind, "epoch": r.epoch, "source_id": r.source_id, "payload": r.payload}
+                visible
                 for r in reversed(records)
+                if (visible := _record_for_principal(r, user, request.app.state.settings))
+                is not None
             ],
             "next_before": turns[-1].id if len(turns) == limit else None,
         }
@@ -204,7 +272,10 @@ async def events(
                 )
             for e in rows:
                 cursor = e.server_seq
-                yield f"id: {cursor}\ndata: {json.dumps(e.payload, ensure_ascii=False)}\n\n"
+                safe_payload = _event_for_principal(
+                    e.payload, user, request.app.state.settings
+                )
+                yield f"id: {cursor}\ndata: {json.dumps(safe_payload, ensure_ascii=False)}\n\n"
             if not rows and checked % 30 == 0:
                 yield ": keepalive\n\n"
             await asyncio.sleep(0.3)

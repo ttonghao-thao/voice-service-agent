@@ -6,7 +6,17 @@ import time
 from dataclasses import dataclass
 
 import anyio
-from app.contracts import BridgeArguments, DomainError, PortalEvent, uid
+from app.contracts import (
+    BridgeArguments,
+    DomainError,
+    PortalAudioAppend,
+    PortalEvent,
+    PortalPlaybackAck,
+    PortalSessionClose,
+    portal_client_event_adapter,
+    portal_server_event_adapter,
+    uid,
+)
 from app.voice.provider import BRIDGE_NAME, MockVoiceAdapter, NvidiaVoiceChatAdapter
 
 
@@ -45,6 +55,8 @@ class VoiceGateway:
             if self.coordinator.draining:
                 raise DomainError("SERVICE_DRAINING", "语音服务维护中", 503)
             s = self.settings
+            if s.voice_provider == "disabled":
+                raise DomainError("VOICE_UNAVAILABLE", "当前部署未启用语音，请使用文字", 503)
             if s.voice_provider == "nvidia" and (
                 not s.voicechat_ws_url
                 or (
@@ -67,8 +79,12 @@ class VoiceGateway:
                 c = await self.store.get(db, cid, principal, lock=True)
                 sid, ticket = uid(), secrets.token_urlsafe(32)
                 c.voice_session_id = sid
+                visible_history = self.coordinator.authorized_history(c.history, principal)
+                summary = "\n".join(
+                    str(item.get("content", "")) for item in visible_history[-6:]
+                )[-1500:]
                 session = VoiceSession(
-                    sid, principal, cid, epoch, ticket, s.public_origin, time.monotonic() + 60, c.summary
+                    sid, principal, cid, epoch, ticket, s.public_origin, time.monotonic() + 60, summary
                 )
             self.sessions[sid] = session
             return {
@@ -133,6 +149,7 @@ class VoiceGateway:
                 server_seq=seq,
                 payload=payload,
             ).model_dump(mode="json")
+            portal_server_event_adapter.validate_python(e)
             try:
                 outgoing.put_nowait(e)
             except asyncio.QueueFull as exc:
@@ -231,8 +248,13 @@ class VoiceGateway:
                 if event.kind.endswith(".done") and "text" in event.payload:
                     kind = "voicechat_transcript" if event.kind.startswith("speech") else "user_transcript"
                     source = event.payload.get("item_id") or event.payload["response_id"]
+                    stored_payload = dict(event.payload)
+                    if kind == "voicechat_transcript":
+                        stored_payload["_authorized_kb_ids"] = sorted(
+                            session.principal.knowledge_base_ids
+                        )
                     if not await self.store.record(
-                        session.conversation_id, session.epoch, kind, source, event.payload
+                        session.conversation_id, session.epoch, kind, source, stored_payload
                     ):
                         continue
                 if event.kind == "audio.delta":
@@ -249,40 +271,33 @@ class VoiceGateway:
                 raw = await ws.receive_text()
                 if len(raw) > 10000:
                     raise DomainError("VOICE_PROTOCOL_ERROR", "音频事件超过大小限制", 400)
-                data = json.loads(raw)
+                try:
+                    data = portal_client_event_adapter.validate_json(raw)
+                except Exception as exc:
+                    raise DomainError("VOICE_PROTOCOL_ERROR", "门户语音事件格式错误", 400) from exc
                 if not await current():
                     return
-                if data.get("epoch") != session.epoch:
+                if data.epoch != session.epoch:
                     continue
-                kind, payload = data.get("type"), data.get("payload", {})
-                if kind == "portal.audio.append":
-                    index = data.get("seq")
-                    if type(index) is not int or index < 0:
-                        raise DomainError("VOICE_PROTOCOL_ERROR", "音频序号错误", 400)
+                if isinstance(data, PortalAudioAppend):
+                    index = data.seq
                     if index <= client_seq:
                         continue
                     if client_seq >= 0 and index != client_seq + 1:
                         raise DomainError("AUDIO_BACKPRESSURE", "音频中断，请重新开始语音", 409)
                     client_seq = index
-                    audio = base64.b64decode(payload.get("audio", ""), validate=True)
-                    if (
-                        len(audio) != 3840
-                        or payload.get("format") != "pcm16"
-                        or payload.get("sample_rate") != 24000
-                    ):
-                        raise DomainError("VOICE_PROTOCOL_ERROR", "音频必须为 24kHz 单声道 PCM16、80ms", 400)
                     frames += 1
                     last_input = time.monotonic()
                     if frames * 0.08 - (last_input - started) > 0.5:
                         raise DomainError("AUDIO_BACKPRESSURE", "音频发送过快，请重新开始语音", 409)
                     try:
-                        incoming.put_nowait(payload["audio"])
+                        incoming.put_nowait(data.payload.audio)
                     except asyncio.QueueFull as exc:
                         raise DomainError("AUDIO_BACKPRESSURE", "上行音频积压，请重新开始语音", 409) from exc
                     wake.set()
-                elif kind == "portal.playback.ack":
-                    response_id, samples = payload.get("response_id"), payload.get("played_samples")
-                    if type(samples) is not int or not 0 <= samples <= sent_samples.get(response_id, -1):
+                elif isinstance(data, PortalPlaybackAck):
+                    response_id, samples = data.payload.response_id, data.payload.played_samples
+                    if samples > sent_samples.get(response_id, -1):
                         raise DomainError("VOICE_PROTOCOL_ERROR", "播放确认超出已发送音频范围", 400)
                     if time.monotonic() - last_ack > 0.5:
                         await self.store.record(
@@ -293,12 +308,12 @@ class VoiceGateway:
                             {"response_id": response_id, "played_samples": samples, "estimated": True},
                         )
                         last_ack = time.monotonic()
-                elif kind == "portal.interrupt":
+                elif data.type == "portal.interrupt":
                     await self.coordinator.interrupt(
                         session.principal, session.conversation_id, session.epoch
                     )
                     return
-                elif kind == "portal.session.close":
+                elif isinstance(data, PortalSessionClose):
                     return
                 else:
                     raise DomainError("VOICE_PROTOCOL_ERROR", "未知门户语音事件", 400)
@@ -351,14 +366,14 @@ class VoiceGateway:
                 if error:
                     try:
                         async with asyncio.timeout(1):
-                            await ws.send_json(
-                                PortalEvent(
+                            event = PortalEvent(
                                     type="portal.error",
                                     conversation_id=session.conversation_id,
                                     epoch=session.epoch,
                                     payload=error.payload(),
                                 ).model_dump(mode="json")
-                            )
+                            portal_server_event_adapter.validate_python(event)
+                            await ws.send_json(event)
                     except Exception:
                         pass
                 self.sessions.pop(sid, None)

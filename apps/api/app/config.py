@@ -1,3 +1,4 @@
+import re
 from pathlib import Path
 from typing import Literal
 from urllib.parse import urlparse
@@ -42,12 +43,15 @@ class Settings(BaseSettings):
     weather_provider: Literal["http_contract"] = "http_contract"
     weather_base_url: str = ""
     weather_api_key: SecretStr = SecretStr("")
-    voice_provider: Literal["mock", "nvidia"] = "mock"
+    voice_provider: Literal["disabled", "mock", "nvidia"] = "mock"
     voicechat_ws_url: str = ""
     voicechat_health_url: str = ""
     voicechat_api_key: SecretStr = SecretStr("")
     voicechat_api_version: str = ""
+    voicechat_image_digest: str = ""
+    voicechat_capability_mode: Literal["unverified", "basic", "enhanced"] = "unverified"
     voicechat_integration_verified: bool = False
+    cuekb_api_revision: str = ""
     voice_session_max_seconds: int = 105
     max_voice_sessions: int = 8
     default_locale: str = "zh-CN"
@@ -113,6 +117,19 @@ class Settings(BaseSettings):
                     raise ValueError("Production HTTP integrations require TLS")
             if self.voicechat_ws_url and not self.voicechat_ws_url.startswith("wss://"):
                 raise ValueError("Production VoiceChat requires WSS")
+        if self.voicechat_integration_verified:
+            if (
+                not self.voicechat_api_version
+                or self.voicechat_capability_mode == "unverified"
+                or not re.fullmatch(r"sha256:[0-9a-f]{64}", self.voicechat_image_digest)
+            ):
+                raise ValueError(
+                    "Verified VoiceChat requires an API version, image digest and tested capability mode"
+                )
+        if self.app_env == "production" and self.voice_provider == "nvidia" and not (
+            self.voicechat_ws_url and self.voicechat_integration_verified
+        ):
+            raise ValueError("Production NVIDIA voice requires a verified pinned integration")
         return self
 
     @property

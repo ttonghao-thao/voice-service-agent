@@ -37,4 +37,8 @@ def test_cloud_environment_template_cannot_enable_development_fallbacks():
     assert values["RAG_MODE"] == "real"
     assert values["WEATHER_MODE"] == "real"
     assert values["VOICE_PROVIDER"] != "mock"
+    assert values["VOICECHAT_API_VERSION"]
+    assert values["VOICECHAT_IMAGE_DIGEST"].startswith("sha256:")
+    assert values["VOICECHAT_CAPABILITY_MODE"] == "unverified"
+    assert values["VOICECHAT_INTEGRATION_VERIFIED"] == "false"
     assert values["PUBLIC_ORIGIN"].startswith("https://")

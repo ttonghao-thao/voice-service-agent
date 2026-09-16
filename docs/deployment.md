@@ -1,5 +1,7 @@
 # 部署与运行
 
+> 2026-09-16：本文描述当前代码的运行方式，不代表最终架构已实施。当前生产仍要求旧 RAG/天气代理配置；CueKB 专用适配和按启用工具校验分别见 [任务板](TASK_BOARD.md) D03/D06。不要为满足启动条件接入假天气；完成改造与真实验收后再按最终配置部署。最终系统边界见 [架构](architecture.md)。
+
 ## 部署方式边界
 
 云端服务器只使用 Docker Compose 构建、迁移和运行，不直接在宿主机启动 Python、Node.js、PostgreSQL 或 Redis。生产入口为 `deploy/compose.production.yaml`，配置模板为 `.env.production.example`，统一命令为 `scripts/deploy-cloud.sh`。
@@ -40,7 +42,7 @@ chmod 600 .env.production
 - 设置精确 HTTPS `PUBLIC_ORIGIN`。Nginx 配置是内网入口模板；在前置网关终止 TLS，将 HTTPS/WSS 和 Origin 原样转发。外层代理同样不得记录 ticket、OIDC code/state、Authorization 或 Cookie。
 - 内网 DB/Redis 使用部署凭据/网络控制；跨不可信网络时为 DB/Redis 配置 TLS 连接串。Redis 故障会关闭活跃输出，不能退回内存继续假装持有租约。
 - Nginx 关闭 SSE buffering、支持 WS upgrade、限制请求大小和请求速率，设置 CSP、同源麦克风权限与 frame 禁止策略。
-- 真实语音可先降级关闭，保留真实文字；P0 验收通过并记录服务/API 版本后才允许开放生产语音。
+- 真实语音可先用 `VOICE_PROVIDER=disabled` 关闭并保留真实文字；按验收报告通过基础语音门槛，并配置精确 API 版本、镜像 `sha256` digest、`basic|enhanced` 模式及验证声明后，才切换为 `nvidia`。程序会拒绝缺少这些固定证据的 production NVIDIA 配置，但不会替代人工音频验收。
 
 常用只读运维命令均显式指定生产配置，避免误用本地 Compose：
 

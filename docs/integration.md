@@ -1,53 +1,111 @@
-# 接口与工具接入
+# 后端服务与工具接入
 
-## 配置模式
+更新：2026-09-16。按主题读取。架构决策见 [architecture.md](architecture.md)，当前差距见 [任务板](TASK_BOARD.md)。
 
-默认 `development` + 显式 mock；`integration` 允许未通过验收的真实 VoiceChat 连接，用于 P0 联调，能力表仍区分未验证。`production` 禁止开发身份、mock、自动建表和外部 SDK tracing，要求 PostgreSQL/Redis、真实工具和文本模型。真实语音生产开放需要配置 API 版本并在完成验收后设置 `VOICECHAT_INTEGRATION_VERIFIED=true`。该开关是部署者基于验收报告的声明，不是程序自行测得的中文质量证明。
+## 1. 运行依赖与配置状态
 
-文本模型设置 `AGENT_PROVIDER=openai`、明确的 `AGENT_MODEL` 与 `OPENAI_API_KEY`；使用 Responses API。兼容供应商设置 `AGENT_PROVIDER=compatible` 与 `AGENT_BASE_URL`，使用 Chat Completions；必须另验工具、结构化输出、streaming 和错误语义。绝不把 VoiceChat WS 当成文本模型地址。
+| 依赖 | 最终职责 | 当前实现状态 |
+| --- | --- | --- |
+| VoiceChat | 独立实时语音服务，原生工具调用 | 有 NVIDIA WebSocket adapter；真实部署未验收 |
+| CueKB | 知识检索与版本来源 | 专用 adapter 待实现；现有 RAG 代理 schema 不兼容 |
+| 文本模型 | BusinessRuntime 的推理与业务回答 | 已有 openai / compatible adapter；真实模型未验收 |
+| 第三方工具 | 按实际接入选择启用 | 现有天气代理示例；生产强制天气配置尚待解除 |
+| 身份服务 | 客户身份、组织及知识范围 | OIDC/JWT 已支持 customer/operator/admin；真实 IdP 与 CueKB ACL 待验收 |
 
-语言默认为 `zh-CN`，目前门户仅公开已要求的中文选项。原生 `session.update` 不额外添加语言字段，实际云端有明确版本化语言字段时集中修改 voice adapter。
+当前环境变量名和启动校验以 `apps/api/app/config.py`、`.env.example`、`.env.production.example` 为准。不要添加假想 `CUEKB_*` 变量后宣称现有程序会读取，也不要将 CueKB 地址直接填入旧 RAG 地址并宣称已兼容。
 
-## 身份与组织
+development 使用显式 mock；integration 用于真实联调；production 禁止开发身份、mock、自动建表和外部 SDK tracing。真实语音生产开放需要固定 `VOICECHAT_API_VERSION`、`VOICECHAT_IMAGE_DIGEST`、经人工复核的 `VOICECHAT_CAPABILITY_MODE=basic|enhanced` 和 `VOICECHAT_INTEGRATION_VERIFIED=true`。配置校验会拒绝缺少版本证据的“已验证”声明，但布尔值本身仍是部署者声明，必须附探测报告和授权音频证据。
 
-- 本期单组织部署：`TENANT_ID` 固定服务组织，签名 JWT 的 `tenant_id` 必须一致。
-- OIDC：配置 issuer、JWKS、audience/client ID。仅接受 RS256、校验 issuer/audience/exp/iat/sub；角色声明 `roles` 必须包含 `operator` 或 `admin`。`admin` 具有工具启停和 drain 权限。
-- JWT 的 `knowledge_base_ids` 与部署配置 `KNOWLEDGE_BASE_IDS` 取交集；上游知识库再次校验租户、用户和知识库 ACL。
-- 浏览器登录使用 Authorization Code + PKCE/S256 + nonce/state，经后端兑换；需要 authorization/token URL、client secret（若 IdP 要求）及至少 32 字符 `AUTH_COOKIE_SECRET`。回调地址为 `${PUBLIC_ORIGIN}/api/v1/auth/callback`。
-- ID token 置于 HttpOnly、生产 Secure、SameSite=Strict Cookie；模拟账户不会暴露为匿名生产 admin。现有客服系统也可发送已签名 Bearer JWT。
-- 身份/会话 API 不接受浏览器自己指定租户、scope 或知识库。不是完整的任意 IdP claim 自动映射：供应商字段差异集中修改 `api/auth.py`，不要绕过签名。
+## 2. CueKB 目标契约（D03）
 
-## 工具
+核对本地 CueKB revision：`22c74a335bf88ea50f0df3b171d0b2125c14c77a`；来源为其 `src/cuekb/schemas.py`、API routes/dependencies 与检索实现。部署前核对目标服务 OpenAPI，不把该 revision 当作所有部署版本。
 
-注册在 `config/tools.yaml`。新增工具只需受信任适配器（参数模型、返回 TypeAdapter、invoke）、注册工厂、ToolSpec、测试；无需修改门户聊天核心、原生协议或 SDK 循环。API 连接测试使用注册项的固定 endpoint `/health`，返回“健康端点可达”不表示业务查询通过。
+```http
+POST {server-configured-cuekb-base-url}/v1/search
+Authorization: Bearer <server-side-scoped-key>
+Content-Type: application/json
+```
 
-ToolSpec 的实际 input/output schema 从受信任 adapter 的 Pydantic 模型产生。输入和输出均校验；JSON 单次最多 32 KB，RAG 模型证据预算 6000 字符。只读 HTTP 在总预算内对网络/5xx 最多重试一次；429、4xx、错误 JSON、不符合 schema 和过大正文不重试。默认天气总预算 4 秒，RAG 5 秒，Agent 12 秒；最大 8 次 SDK turn。工具修订号在 run 开始固定；停用或配置修订后，旧 run 不得继续执行该工具，重新启用只对新 run 生效。
+```json
+{
+  "query": "用户问题与已确认条件",
+  "kb_ids": ["00000000-0000-4000-8000-000000000001"],
+  "mode": "auto",
+  "top_k": 5,
+  "filters": {},
+  "include_context": true
+}
+```
 
-### RAG
+示例 UUID 仅说明类型。实际 KB UUID 来自服务端授权映射；旧 `kb_support` 不能直接传入。当前 CueKB query 上限 2000 字符，top_k 支持 1–20；默认选 5 是本应用建议。filters 仅映射其支持的 document_ids、product_model、software_version；条件必须来自明确输入或已确认上下文。
 
-详见 `contracts/rag-openapi.yaml`。默认代理路径 `POST /v1/retrieve`，是本项目契约而非厂商通用标准。header 携带服务凭据及已认证 tenant/user。返回 request_id 必须对应请求，空命中或同一文档多版本冲突不生成有依据答案。
+不向上游发送自造 request_id/locale/deadline 并假定生效。HTTP 超时与应用 deadline 自行执行，取消本地等待不证明 CueKB 后台已停止。
 
-来源元数据和引用 ID 由服务端创建；外链只允许 `RAG_SOURCE_HOSTS` 列表内的 HTTPS 主机，无授权地址则仅展示片段。上游来源内容仅作为资料传给模型，不作为工具 URL/指令执行。引用存在性检查不能证明每个结论都被片段充分支持，仍须业务样本评测。
+### 2.1 结果映射
 
-### 天气
+| CueKB | 内部证据与回答处理 |
+| --- | --- |
+| trace_id | 关联本项目 task/run，不能要求回显不存在的 request_id |
+| retrieval_status | 保留 ok/degraded/not_found，与最终 answer status 分开 |
+| evidence_status | 保留 unassessed 等原值，不能转换成“证据充分” |
+| degraded_reasons、scope_limited | 审计并参与回答决策，必要时告知限制 |
+| content_revisions | 保留知识内容版本线索，不宣称跨系统事务一致性 |
+| hits.document_id / chunk_id / version_id | 引用真实身份与版本；本项目另生成 citation_id |
+| source_text、context | 保留证据原文与上下文，内容相同不重复占预算 |
+| title_path、anchor、metadata | 来源定位及适用条件；缺失标题用“来源片段”，不伪造 |
+| rank、retrieval_sources | 检索排序/来源，不当作事实置信度 |
+| timings_ms、retrieval_path、executed_stages、skipped_stages | 内部诊断，不要求普通客户理解 |
 
-详见 `contracts/weather-openapi.yaml`。因为尚未提供实际供应商，本实现对接**配置的供应商代理契约**：`/v1/places/resolve` → `/v1/weather`。已有厂商路径不同就在 WeatherAdapter 做映射，不虚构特定厂商的成功对接。
+旧 Citation 必填 updated_at，而 CueKB 当前结果没有该字段；需随 D03 演进为可选，不能填当前时间冒充文档更新时间。缺 score 不造分数；version_id 与业务版本区分。引用 schema/历史 JSON/数据库如发生变化，分别处理兼容和 Alembic 迁移。
 
-唯一地名命中后根据 IANA timezone 解析“今天/明天”或 ISO 日期；多个或零个地点要求澄清。校验返回地点/单位/日期及实况/预报，拒绝 real 结果标为 mock。缓存 5 分钟、最多 512 个键，包含租户/地点ID/日期/单位/provider。返回原有效时间和 stale。卡片数字直接来自校验后的结构化结果。已确认地点、单位和最后查询日期单独保存为 slots，历史裁剪后仍可解析“那明天呢”；不缓存历史天气数字为新事实。
+当前 CueKB 的 context 可能等于 source_text，include_context=true 不保证已有相邻段、表头和完整步骤。回答模块仍需检查证据充分性。原件查看需经本项目重新鉴权并固定检索版本；这是待实现入口，不向浏览器暴露服务 Key 或私有下载 URL。
 
-## 会话与流
+### 2.2 身份和错误
 
-完整 HTTP 契约见 `contracts/openapi.json`；开发文档地址 `/api/docs`。
+有效范围取客户授权、部署允许、CueKB Key 可读范围的交集。CueKB 当前鉴权主体是 API Key；自定义 X-Tenant-ID/X-User-ID 不代表它已执行客户级 ACL。不同隔离范围由服务端映射受限 Key/KB，不由工具参数指定。
 
-- 文字 POST 必须有 `Idempotency-Key`，返回 202 + turn_id；同键不同正文返回 409。
-- SSE 仅重放持久业务事件，`Last-Event-ID` 或 `after` 是单会话序号。门户按 event_id 去重。不重放音频，不显示未经验证的 SDK delta。
-- WebSocket ticket 有效 60 秒、一次性、绑定已认证用户/会话/epoch/Origin，日志不得保存 query string。媒体连接不能跨网关迁移。
-- `portal.audio.append` 固定 PCM16 LE、24 kHz mono、80 ms，即 1920 samples/3840 bytes。连续发送，包括静音；seq 严格递增，重复帧丢弃，缺帧/过快/停顿触发显式错误。
-- 原生工具通过 `consult_service_agent` → 同一 BusinessRuntime → 单个原 call_id 结果。调用键包含 conversation/epoch/call_id；完成转写不再触发一次业务处理。
-- 硬打断先清播放器，然后 invalidate epoch、取消业务和关闭旧连接；“打断并重新提问”会建立新连接并提示等待就绪。文字提交先结束语音。
-- playback_ack 只记录浏览器估计播放采样数，校验不能超出已发送量；不推断用户确实听到，也不把 Agent 原文冒充实际语音字幕。
-- 网页后台/离线/采集停顿终止旧连接。应用语音轮换初值 105 秒，是应用资源策略，不是宣称云端 API 会在此时断开。会话结束时需要再次开始语音并重说，不能宣称隐藏状态无缝恢复。
+not_found 表示本次未命中，不能推导事实不存在；degraded 有 hits 时保留原因并判断可用性；401/403 为授权或配置问题，422 为契约问题，429 为负载限制，5xx/超时为服务故障。禁止统一降为“查无资料”。返回答案、读历史证据和原件时都需覆盖撤权策略。
 
-## 保留与诊断
+当前传输 JSON 32 KiB 与模型证据 6000 字符是不同预算，需对中文及 context/anchor 实测。原 5 秒知识工具、12 秒业务预算作为初始值，不能证明真实端到端时延已达标。
 
-默认不存原始录音。SQL 记录会话、轮次、事件、实际字幕、播放确认、工具证据、管理员变更；工具运行记录只保存结构化证据和错误 code，不保存密钥或上游异常正文。会话关闭不删除历史；`RETENTION_DAYS` 控制过期会话和审计清理，启动及每小时执行。外部 tracing 明确关闭。
+## 3. VoiceChat 接入与能力门槛
+
+保留 `session.created → session.update → session.updated`；在首次配置注册 `consult_service_agent(user_request)`，只允许既定函数和 schema。
+
+原生事件 `response.function_call_arguments.done` 进入网关后调用后台业务任务；结果经 `conversation.item.create` / `function_call_output` 以同一有效 call_id 回传。当前网关只支持一个 pending 原生调用；转写完成不能再次触发相同任务。
+
+适配器明确校验在线 API 的 24 kHz PCM16 输入/输出，门户 80 ms 上行。模型卡内部音频采样率不能直接替换在线接口格式；变更须以服务契约及握手为准。
+
+目标部署必须记录容器 digest、服务/API revision、语言、事件样例和验收时间。`scripts/probe_voicechat.py` 固定目标版本，支持工具结果延迟 5 秒、等待期间发送不同的第二段录音、记录无正文的事件时间线，并可选择保存授权输出 WAV 供人工复核。等待提示语、持续收音、工具等待时自由回答、停止播报、取消推理仍是分别验证的能力；脚本不自动提升模式。已核对模型卡与限制页，但尚无目标容器的真实验证。
+
+- 基础：同 call 工具往返、中文音频、硬打断/关闭重连及旧连接隔离。
+- 增强：延迟工具 5 秒，期间新问题在旧结果返回前得到实际回答；改问后旧答案不交付，原 call 安全结清并可继续新调用。ACK 不计为新问题回答。
+- 不发送未证实的 response.cancel、动态 instructions、任意文本 TTS 或后台结果推送事件。失败不意味着服务支持的全部功能都不存在，只表示本部署未建立契约和证据。
+
+来源：[在线 API](https://github.com/NVIDIA-NeMo/Speech/blob/nemotron-labs-voicechat/voicechat_realtime_instructions/api-reference.md)、[部署](https://github.com/NVIDIA-NeMo/Speech/blob/nemotron-labs-voicechat/voicechat_realtime_instructions/deploy.md)、[模型卡](https://huggingface.co/nvidia/NVIDIA-NemotronLabs-VoiceChat-11B/blob/main/README.md)。当前 adapter 最初依据 NVIDIA revision `097dfe9e2f55baf653b83035868bdc89849f1b47`（API blob `06252330444f0a81679fdeb1f25c8ee067ac8c90`）；2026-09-16 模型卡页面显示 README 修订 `bd32b9997858b0acd9af64f26e4306cf91ad1c82`。这些均不是云端镜像版本。
+
+## 4. 文本模型与业务 Agent
+
+当前 `AGENT_PROVIDER=openai` 使用 Responses API，明确配置模型/API key；`compatible` 配置独立 HTTP base URL 并使用 Chat Completions。这些是本仓库适配器行为，真实供应商必须另验工具调用、结构化输出、streaming 和错误语义。VoiceChat WSS 地址不能代替文本模型 endpoint。
+
+Runtime 复用授权工具和证据校验，输出 display_text、短 speech_text、引用和业务状态；SDK 的工具循环与耗时受整轮 deadline 约束。复杂知识子 agent 若启用，权限/预算继承并缩小，独立临时上下文，只返回候选结果。
+
+## 5. 第三方扩展（D06）
+
+沿用 ToolSpec + trusted adapter + ToolRegistry：受信任代码定义参数/返回类型、调用实现、固定 endpoint/凭据引用、权限、预算、版本及错误映射。工具启停/修订后旧 run 不得继续使用失效工具。
+
+目标可用工具集合为部署启用 ∩ 当前健康策略允许 ∩ 用户授权；必需依赖只检查启用项。未配置天气/股票时不注册、不对客户承诺，也不影响 CueKB-only 启动。当前生产校验仍有天气硬依赖，后续同时修改配置、capabilities/health、部署模板和测试。
+
+已有天气示例契约仍见 [weather-openapi.yaml](../contracts/weather-openapi.yaml)，路径为 `/v1/places/resolve` 和 `/v1/weather`。这是应用供应商代理契约，没有证明已接通任何厂商；保留当前代码/schema 避免文档清理改变行为。新增股票等工具时按实际 API 另建 adapter，不能复用天气字段冒充通用事实。
+
+只读 HTTP 按剩余预算做有限重试；当前对网络/5xx 最多一次，429/4xx/错误 JSON/超大正文不自动重试。缓存必须包含权限范围、查询条件、供应商和有效期，不能把历史数字作为新实时事实。
+
+## 6. 客户身份接入（D02）
+
+复用现有 OIDC/JWT 校验：issuer、JWKS、audience、签名、有效期、组织和主体；浏览器 Authorization Code + PKCE，票据和 Cookie 遵守同源/TLS 约束。具体配置见 `.env.example` 和当前 auth 实现。
+
+已实现 `customer`、`operator`、`admin` 的保守映射：customer 只有 `knowledge:read`；operator 另有现有天气读取；只有 admin 拥有 `tools:admin`。用户、tenant、角色和 KB 范围只来自已验证 JWT，KB 取签名 claim 与部署允许列表的交集，严格请求模型拒绝正文覆盖。
+
+每条新知识引用记录本轮服务端授权 KB 范围。历史消息和 SSE 重放在读取时复核当前范围；范围被缩小后，涉及已撤销范围的整个旧答案会替换为 `KB_ACCESS_REVOKED`，不只隐藏链接。送入后续 Agent 的历史也执行相同裁剪，避免旧证据通过上下文再次泄露。升级前没有范围标签的旧引用不向 customer 展示；operator/admin 仅在仍拥有部署完整 KB 范围时兼容读取。
+
+默认不启用访客模式；若客服系统要求免登录，另定义可撤销、有资源限额的受限访客身份，不开放匿名管理能力。本地测试已覆盖客户不能访问管理 API、不同用户会话隔离、KB 交集和撤权后历史/SSE 脱敏；真实 IdP 即时撤权传播、CueKB Key/ACL 和并发会话仍需验收。

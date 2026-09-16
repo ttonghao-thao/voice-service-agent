@@ -1,8 +1,9 @@
+import base64
 from datetime import UTC, datetime
-from typing import Any, Literal
+from typing import Annotated, Any, Literal
 from uuid import uuid4
 
-from pydantic import BaseModel, ConfigDict, Field
+from pydantic import BaseModel, ConfigDict, Field, TypeAdapter, field_validator
 
 
 def uid() -> str:
@@ -20,6 +21,7 @@ class StrictModel(BaseModel):
 class Principal(StrictModel):
     user_id: str
     tenant_id: str
+    roles: frozenset[str] = frozenset()
     scopes: frozenset[str] = frozenset()
     knowledge_base_ids: tuple[str, ...] = ()
     expires_at: float | None = None
@@ -52,6 +54,9 @@ class Citation(StrictModel):
     updated_at: str
     content: str
     retrieval_id: str
+    # The exact server-authorized KB scope used for this retrieval. It is not
+    # supplied by the browser and is used to redact history after revocation.
+    authorized_kb_ids: tuple[str, ...] = ()
     is_mock: bool = False
 
 
@@ -83,6 +88,203 @@ class PortalEvent(StrictModel):
     server_seq: int = 0
     timestamp: datetime = Field(default_factory=now)
     payload: dict[str, Any] = Field(default_factory=dict)
+
+
+class EmptyEventPayload(StrictModel):
+    message: str | None = Field(default=None, max_length=500)
+
+
+class SessionReadyPayload(StrictModel):
+    sample_rate: Literal[24000]
+    format: Literal["pcm16"]
+    chunk_ms: Literal[80]
+    is_mock: bool
+
+
+class TranscriptPayload(StrictModel):
+    item_id: str = Field(min_length=1, max_length=128)
+    response_id: str | None = Field(default=None, min_length=1, max_length=128)
+    text: str = Field(max_length=100000)
+
+
+class SpeechTextPayload(StrictModel):
+    response_id: str = Field(min_length=1, max_length=128)
+    item_id: str | None = Field(default=None, min_length=1, max_length=128)
+    text: str = Field(max_length=100000)
+
+
+class AudioDeltaPayload(StrictModel):
+    response_id: str = Field(min_length=1, max_length=128)
+    item_id: str | None = Field(default=None, min_length=1, max_length=128)
+    audio: str = Field(min_length=1, max_length=64000)
+
+    @field_validator("audio")
+    @classmethod
+    def pcm16_audio(cls, value: str):
+        try:
+            raw = base64.b64decode(value, validate=True)
+        except ValueError as exc:
+            raise ValueError("audio must be valid base64") from exc
+        if len(raw) % 2 or len(raw) > 48000:
+            raise ValueError("audio must be a bounded PCM16 chunk")
+        return value
+
+
+class ResponseDonePayload(StrictModel):
+    response_id: str = Field(min_length=1, max_length=128)
+    item_id: str | None = Field(default=None, min_length=1, max_length=128)
+
+
+class InputStatePayload(StrictModel):
+    state: Literal["speaking", "quiet"]
+
+
+class ToolStartedPayload(StrictModel):
+    message: str = Field(min_length=1, max_length=500)
+    user_text: str | None = Field(default=None, max_length=2000)
+
+
+class PortalErrorPayload(StrictModel):
+    code: str = Field(min_length=1, max_length=80)
+    message: str = Field(min_length=1, max_length=500)
+    retryable: bool
+    trace_id: str = Field(min_length=1, max_length=128)
+
+
+class _ServerEventBase(StrictModel):
+    event_id: str = Field(default_factory=uid)
+    conversation_id: str = Field(min_length=1, max_length=128)
+    epoch: int = Field(ge=0)
+    turn_id: str | None = Field(default=None, max_length=128)
+    server_seq: int = Field(ge=0)
+    timestamp: datetime = Field(default_factory=now)
+
+
+class SessionReadyEvent(_ServerEventBase):
+    type: Literal["portal.session.ready"]
+    payload: SessionReadyPayload
+
+
+class TranscriptDeltaEvent(_ServerEventBase):
+    type: Literal["portal.transcript.delta", "portal.transcript.done"]
+    payload: TranscriptPayload
+
+
+class SpeechTextEvent(_ServerEventBase):
+    type: Literal["portal.speech_text.delta", "portal.speech_text.done"]
+    payload: SpeechTextPayload
+
+
+class AudioDeltaEvent(_ServerEventBase):
+    type: Literal["portal.audio.delta"]
+    payload: AudioDeltaPayload
+
+
+class AudioDoneEvent(_ServerEventBase):
+    type: Literal["portal.audio.done"]
+    payload: ResponseDonePayload
+
+
+class InputStateEvent(_ServerEventBase):
+    type: Literal["portal.input.state"]
+    payload: InputStatePayload
+
+
+class ToolStartedEvent(_ServerEventBase):
+    type: Literal["portal.tool.started"]
+    payload: ToolStartedPayload
+
+
+class AnswerFinalEvent(_ServerEventBase):
+    type: Literal["portal.answer.final"]
+    payload: AnswerBundle
+
+
+class PlaybackClearEvent(_ServerEventBase):
+    type: Literal["portal.playback.clear"]
+    payload: EmptyEventPayload
+
+
+class SessionEndedEvent(_ServerEventBase):
+    type: Literal["portal.session.ended"]
+    payload: EmptyEventPayload
+
+
+class ErrorEvent(_ServerEventBase):
+    type: Literal["portal.error"]
+    payload: PortalErrorPayload
+
+
+PortalServerEvent = Annotated[
+    SessionReadyEvent
+    | TranscriptDeltaEvent
+    | SpeechTextEvent
+    | AudioDeltaEvent
+    | AudioDoneEvent
+    | InputStateEvent
+    | ToolStartedEvent
+    | AnswerFinalEvent
+    | PlaybackClearEvent
+    | SessionEndedEvent
+    | ErrorEvent,
+    Field(discriminator="type"),
+]
+portal_server_event_adapter = TypeAdapter(PortalServerEvent)
+
+
+class PortalAudioPayload(StrictModel):
+    format: Literal["pcm16"]
+    sample_rate: Literal[24000]
+    audio: str = Field(min_length=1, max_length=5120)
+
+    @field_validator("audio")
+    @classmethod
+    def exact_frame(cls, value: str):
+        try:
+            raw = base64.b64decode(value, validate=True)
+        except ValueError as exc:
+            raise ValueError("audio must be valid base64") from exc
+        if len(raw) != 3840:
+            raise ValueError("audio must contain exactly 80ms of PCM16")
+        return value
+
+
+class PlaybackAckPayload(StrictModel):
+    response_id: str = Field(min_length=1, max_length=128)
+    played_samples: int = Field(ge=0)
+
+
+class _ClientEventBase(StrictModel):
+    epoch: int = Field(ge=0)
+
+
+class PortalAudioAppend(_ClientEventBase):
+    type: Literal["portal.audio.append"]
+    event_id: str | None = Field(default=None, min_length=1, max_length=128)
+    seq: int = Field(ge=0)
+    payload: PortalAudioPayload
+
+
+class PortalPlaybackAck(_ClientEventBase):
+    type: Literal["portal.playback.ack"]
+    payload: PlaybackAckPayload
+
+
+class PortalInterrupt(_ClientEventBase):
+    type: Literal["portal.interrupt"]
+    payload: EmptyEventPayload = Field(default_factory=EmptyEventPayload)
+
+
+class PortalSessionClose(_ClientEventBase):
+    type: Literal["portal.session.close"]
+    payload: EmptyEventPayload = Field(default_factory=EmptyEventPayload)
+
+
+PortalClientEvent = Annotated[
+    PortalAudioAppend | PortalPlaybackAck | PortalInterrupt | PortalSessionClose,
+    Field(discriminator="type"),
+]
+portal_client_event_adapter = TypeAdapter(PortalClientEvent)
 
 
 class DomainError(Exception):

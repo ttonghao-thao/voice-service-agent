@@ -1,0 +1,51 @@
+{
+  "date": "2026-09-16",
+  "purpose": "清理前工作区快照，含未提交讨论；不是有效规范，仅显式追溯时读取。",
+  "archive": "pre-consolidation.tar.gz",
+  "archive_sha256": "ef2d17a1b15766ce7dfc6bdf00f893830e867ee3fb24b075c31bbde3741fda90",
+  "files": [
+    {
+      "path": "AGENTS.md",
+      "sha256": "190e3095c3baf214de8d53f6698f3ba189182c950b6896ae5242b22a57dea5e8"
+    },
+    {
+      "path": "README.md",
+      "sha256": "d84c358b825e223bc97b1c850127904535f8451672b6959bba14b4af8e6405c6"
+    },
+    {
+      "path": "docs/VoiceChat_AgentsSDK_Codex_Design.md",
+      "sha256": "31c632f1fe67d087fde53e3b11e83245c95c389397bb3d36e8284722899dda2d"
+    },
+    {
+      "path": "docs/customer-voice-cuekb-proposal.md",
+      "sha256": "ec80f90f5c5ab9f90ff5432630f4c4ab7b49f6a3973385c9a59cd815da22df30"
+    },
+    {
+      "path": "docs/implementation-plan.md",
+      "sha256": "6a99d8f1dd424708a93c660f952dd3d8c70a2c8a92b72b1ff8b74da9f6235db6"
+    },
+    {
+      "path": "docs/capability-report.md",
+      "sha256": "edf6d3759a46556d411dc6d74361983c7452bcf77c017a9df6bd762001ce1b1c"
+    },
+    {
+      "path": "docs/integration.md",
+      "sha256": "408c1972469fa53115acde464fb6d0ec8eff7a6b45819cc785451d76b6d7c0ad"
+    },
+    {
+      "path": "docs/deployment.md",
+      "sha256": "309ed0a741226b1d045134191123ff9d80e9a619afbb79363461468d05434a6c"
+    },
+    {
+      "path": "docs/acceptance-report.md",
+      "sha256": "45d7476165809409b4b8208d2dce09107066a3f5e4be2952bb191f039ebc0b18"
+    }
+  ],
+  "removed_active_documents": [
+    "docs/VoiceChat_AgentsSDK_Codex_Design.md",
+    "docs/customer-voice-cuekb-proposal.md",
+    "docs/implementation-plan.md",
+    "docs/capability-report.md"
+  ],
+  "replacement": "docs/README.md"
+}

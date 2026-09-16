@@ -1,55 +1,1142 @@
 {
-  "additionalProperties": false,
-  "properties": {
-    "type": {
-      "title": "Type",
-      "type": "string"
-    },
-    "event_id": {
-      "title": "Event Id",
-      "type": "string"
-    },
-    "conversation_id": {
-      "title": "Conversation Id",
-      "type": "string"
-    },
-    "epoch": {
-      "title": "Epoch",
-      "type": "integer"
-    },
-    "turn_id": {
-      "anyOf": [
-        {
+  "$defs": {
+    "AnswerBundle": {
+      "additionalProperties": false,
+      "properties": {
+        "answer_id": {
+          "title": "Answer Id",
           "type": "string"
         },
-        {
-          "type": "null"
+        "status": {
+          "enum": [
+            "answered",
+            "needs_clarification",
+            "insufficient_evidence",
+            "failed",
+            "canceled"
+          ],
+          "title": "Status",
+          "type": "string"
+        },
+        "display_text": {
+          "title": "Display Text",
+          "type": "string"
+        },
+        "speech_text": {
+          "title": "Speech Text",
+          "type": "string"
+        },
+        "speech_language": {
+          "default": "zh-CN",
+          "title": "Speech Language",
+          "type": "string"
+        },
+        "citations": {
+          "items": {
+            "$ref": "#/$defs/Citation"
+          },
+          "title": "Citations",
+          "type": "array"
+        },
+        "cards": {
+          "items": {
+            "additionalProperties": true,
+            "type": "object"
+          },
+          "title": "Cards",
+          "type": "array"
+        },
+        "reason_code": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Reason Code"
+        },
+        "is_mock": {
+          "default": false,
+          "title": "Is Mock",
+          "type": "boolean"
         }
+      },
+      "required": [
+        "status",
+        "display_text",
+        "speech_text"
       ],
-      "default": null,
-      "title": "Turn Id"
+      "title": "AnswerBundle",
+      "type": "object"
     },
-    "server_seq": {
-      "default": 0,
-      "title": "Server Seq",
-      "type": "integer"
+    "AnswerFinalEvent": {
+      "additionalProperties": false,
+      "properties": {
+        "event_id": {
+          "title": "Event Id",
+          "type": "string"
+        },
+        "conversation_id": {
+          "maxLength": 128,
+          "minLength": 1,
+          "title": "Conversation Id",
+          "type": "string"
+        },
+        "epoch": {
+          "minimum": 0,
+          "title": "Epoch",
+          "type": "integer"
+        },
+        "turn_id": {
+          "anyOf": [
+            {
+              "maxLength": 128,
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Turn Id"
+        },
+        "server_seq": {
+          "minimum": 0,
+          "title": "Server Seq",
+          "type": "integer"
+        },
+        "timestamp": {
+          "format": "date-time",
+          "title": "Timestamp",
+          "type": "string"
+        },
+        "type": {
+          "const": "portal.answer.final",
+          "title": "Type",
+          "type": "string"
+        },
+        "payload": {
+          "$ref": "#/$defs/AnswerBundle"
+        }
+      },
+      "required": [
+        "conversation_id",
+        "epoch",
+        "server_seq",
+        "type",
+        "payload"
+      ],
+      "title": "AnswerFinalEvent",
+      "type": "object"
     },
-    "timestamp": {
-      "format": "date-time",
-      "title": "Timestamp",
-      "type": "string"
+    "AudioDeltaEvent": {
+      "additionalProperties": false,
+      "properties": {
+        "event_id": {
+          "title": "Event Id",
+          "type": "string"
+        },
+        "conversation_id": {
+          "maxLength": 128,
+          "minLength": 1,
+          "title": "Conversation Id",
+          "type": "string"
+        },
+        "epoch": {
+          "minimum": 0,
+          "title": "Epoch",
+          "type": "integer"
+        },
+        "turn_id": {
+          "anyOf": [
+            {
+              "maxLength": 128,
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Turn Id"
+        },
+        "server_seq": {
+          "minimum": 0,
+          "title": "Server Seq",
+          "type": "integer"
+        },
+        "timestamp": {
+          "format": "date-time",
+          "title": "Timestamp",
+          "type": "string"
+        },
+        "type": {
+          "const": "portal.audio.delta",
+          "title": "Type",
+          "type": "string"
+        },
+        "payload": {
+          "$ref": "#/$defs/AudioDeltaPayload"
+        }
+      },
+      "required": [
+        "conversation_id",
+        "epoch",
+        "server_seq",
+        "type",
+        "payload"
+      ],
+      "title": "AudioDeltaEvent",
+      "type": "object"
     },
-    "payload": {
-      "additionalProperties": true,
-      "title": "Payload",
+    "AudioDeltaPayload": {
+      "additionalProperties": false,
+      "properties": {
+        "response_id": {
+          "maxLength": 128,
+          "minLength": 1,
+          "title": "Response Id",
+          "type": "string"
+        },
+        "item_id": {
+          "anyOf": [
+            {
+              "maxLength": 128,
+              "minLength": 1,
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Item Id"
+        },
+        "audio": {
+          "maxLength": 64000,
+          "minLength": 1,
+          "title": "Audio",
+          "type": "string"
+        }
+      },
+      "required": [
+        "response_id",
+        "audio"
+      ],
+      "title": "AudioDeltaPayload",
+      "type": "object"
+    },
+    "AudioDoneEvent": {
+      "additionalProperties": false,
+      "properties": {
+        "event_id": {
+          "title": "Event Id",
+          "type": "string"
+        },
+        "conversation_id": {
+          "maxLength": 128,
+          "minLength": 1,
+          "title": "Conversation Id",
+          "type": "string"
+        },
+        "epoch": {
+          "minimum": 0,
+          "title": "Epoch",
+          "type": "integer"
+        },
+        "turn_id": {
+          "anyOf": [
+            {
+              "maxLength": 128,
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Turn Id"
+        },
+        "server_seq": {
+          "minimum": 0,
+          "title": "Server Seq",
+          "type": "integer"
+        },
+        "timestamp": {
+          "format": "date-time",
+          "title": "Timestamp",
+          "type": "string"
+        },
+        "type": {
+          "const": "portal.audio.done",
+          "title": "Type",
+          "type": "string"
+        },
+        "payload": {
+          "$ref": "#/$defs/ResponseDonePayload"
+        }
+      },
+      "required": [
+        "conversation_id",
+        "epoch",
+        "server_seq",
+        "type",
+        "payload"
+      ],
+      "title": "AudioDoneEvent",
+      "type": "object"
+    },
+    "Citation": {
+      "additionalProperties": false,
+      "properties": {
+        "citation_id": {
+          "title": "Citation Id",
+          "type": "string"
+        },
+        "document_id": {
+          "title": "Document Id",
+          "type": "string"
+        },
+        "chunk_id": {
+          "title": "Chunk Id",
+          "type": "string"
+        },
+        "title": {
+          "title": "Title",
+          "type": "string"
+        },
+        "source_uri": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Source Uri"
+        },
+        "version": {
+          "title": "Version",
+          "type": "string"
+        },
+        "updated_at": {
+          "title": "Updated At",
+          "type": "string"
+        },
+        "content": {
+          "title": "Content",
+          "type": "string"
+        },
+        "retrieval_id": {
+          "title": "Retrieval Id",
+          "type": "string"
+        },
+        "authorized_kb_ids": {
+          "default": [],
+          "items": {
+            "type": "string"
+          },
+          "title": "Authorized Kb Ids",
+          "type": "array"
+        },
+        "is_mock": {
+          "default": false,
+          "title": "Is Mock",
+          "type": "boolean"
+        }
+      },
+      "required": [
+        "citation_id",
+        "document_id",
+        "chunk_id",
+        "title",
+        "version",
+        "updated_at",
+        "content",
+        "retrieval_id"
+      ],
+      "title": "Citation",
+      "type": "object"
+    },
+    "EmptyEventPayload": {
+      "additionalProperties": false,
+      "properties": {
+        "message": {
+          "anyOf": [
+            {
+              "maxLength": 500,
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Message"
+        }
+      },
+      "title": "EmptyEventPayload",
+      "type": "object"
+    },
+    "ErrorEvent": {
+      "additionalProperties": false,
+      "properties": {
+        "event_id": {
+          "title": "Event Id",
+          "type": "string"
+        },
+        "conversation_id": {
+          "maxLength": 128,
+          "minLength": 1,
+          "title": "Conversation Id",
+          "type": "string"
+        },
+        "epoch": {
+          "minimum": 0,
+          "title": "Epoch",
+          "type": "integer"
+        },
+        "turn_id": {
+          "anyOf": [
+            {
+              "maxLength": 128,
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Turn Id"
+        },
+        "server_seq": {
+          "minimum": 0,
+          "title": "Server Seq",
+          "type": "integer"
+        },
+        "timestamp": {
+          "format": "date-time",
+          "title": "Timestamp",
+          "type": "string"
+        },
+        "type": {
+          "const": "portal.error",
+          "title": "Type",
+          "type": "string"
+        },
+        "payload": {
+          "$ref": "#/$defs/PortalErrorPayload"
+        }
+      },
+      "required": [
+        "conversation_id",
+        "epoch",
+        "server_seq",
+        "type",
+        "payload"
+      ],
+      "title": "ErrorEvent",
+      "type": "object"
+    },
+    "InputStateEvent": {
+      "additionalProperties": false,
+      "properties": {
+        "event_id": {
+          "title": "Event Id",
+          "type": "string"
+        },
+        "conversation_id": {
+          "maxLength": 128,
+          "minLength": 1,
+          "title": "Conversation Id",
+          "type": "string"
+        },
+        "epoch": {
+          "minimum": 0,
+          "title": "Epoch",
+          "type": "integer"
+        },
+        "turn_id": {
+          "anyOf": [
+            {
+              "maxLength": 128,
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Turn Id"
+        },
+        "server_seq": {
+          "minimum": 0,
+          "title": "Server Seq",
+          "type": "integer"
+        },
+        "timestamp": {
+          "format": "date-time",
+          "title": "Timestamp",
+          "type": "string"
+        },
+        "type": {
+          "const": "portal.input.state",
+          "title": "Type",
+          "type": "string"
+        },
+        "payload": {
+          "$ref": "#/$defs/InputStatePayload"
+        }
+      },
+      "required": [
+        "conversation_id",
+        "epoch",
+        "server_seq",
+        "type",
+        "payload"
+      ],
+      "title": "InputStateEvent",
+      "type": "object"
+    },
+    "InputStatePayload": {
+      "additionalProperties": false,
+      "properties": {
+        "state": {
+          "enum": [
+            "speaking",
+            "quiet"
+          ],
+          "title": "State",
+          "type": "string"
+        }
+      },
+      "required": [
+        "state"
+      ],
+      "title": "InputStatePayload",
+      "type": "object"
+    },
+    "PlaybackClearEvent": {
+      "additionalProperties": false,
+      "properties": {
+        "event_id": {
+          "title": "Event Id",
+          "type": "string"
+        },
+        "conversation_id": {
+          "maxLength": 128,
+          "minLength": 1,
+          "title": "Conversation Id",
+          "type": "string"
+        },
+        "epoch": {
+          "minimum": 0,
+          "title": "Epoch",
+          "type": "integer"
+        },
+        "turn_id": {
+          "anyOf": [
+            {
+              "maxLength": 128,
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Turn Id"
+        },
+        "server_seq": {
+          "minimum": 0,
+          "title": "Server Seq",
+          "type": "integer"
+        },
+        "timestamp": {
+          "format": "date-time",
+          "title": "Timestamp",
+          "type": "string"
+        },
+        "type": {
+          "const": "portal.playback.clear",
+          "title": "Type",
+          "type": "string"
+        },
+        "payload": {
+          "$ref": "#/$defs/EmptyEventPayload"
+        }
+      },
+      "required": [
+        "conversation_id",
+        "epoch",
+        "server_seq",
+        "type",
+        "payload"
+      ],
+      "title": "PlaybackClearEvent",
+      "type": "object"
+    },
+    "PortalErrorPayload": {
+      "additionalProperties": false,
+      "properties": {
+        "code": {
+          "maxLength": 80,
+          "minLength": 1,
+          "title": "Code",
+          "type": "string"
+        },
+        "message": {
+          "maxLength": 500,
+          "minLength": 1,
+          "title": "Message",
+          "type": "string"
+        },
+        "retryable": {
+          "title": "Retryable",
+          "type": "boolean"
+        },
+        "trace_id": {
+          "maxLength": 128,
+          "minLength": 1,
+          "title": "Trace Id",
+          "type": "string"
+        }
+      },
+      "required": [
+        "code",
+        "message",
+        "retryable",
+        "trace_id"
+      ],
+      "title": "PortalErrorPayload",
+      "type": "object"
+    },
+    "ResponseDonePayload": {
+      "additionalProperties": false,
+      "properties": {
+        "response_id": {
+          "maxLength": 128,
+          "minLength": 1,
+          "title": "Response Id",
+          "type": "string"
+        },
+        "item_id": {
+          "anyOf": [
+            {
+              "maxLength": 128,
+              "minLength": 1,
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Item Id"
+        }
+      },
+      "required": [
+        "response_id"
+      ],
+      "title": "ResponseDonePayload",
+      "type": "object"
+    },
+    "SessionEndedEvent": {
+      "additionalProperties": false,
+      "properties": {
+        "event_id": {
+          "title": "Event Id",
+          "type": "string"
+        },
+        "conversation_id": {
+          "maxLength": 128,
+          "minLength": 1,
+          "title": "Conversation Id",
+          "type": "string"
+        },
+        "epoch": {
+          "minimum": 0,
+          "title": "Epoch",
+          "type": "integer"
+        },
+        "turn_id": {
+          "anyOf": [
+            {
+              "maxLength": 128,
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Turn Id"
+        },
+        "server_seq": {
+          "minimum": 0,
+          "title": "Server Seq",
+          "type": "integer"
+        },
+        "timestamp": {
+          "format": "date-time",
+          "title": "Timestamp",
+          "type": "string"
+        },
+        "type": {
+          "const": "portal.session.ended",
+          "title": "Type",
+          "type": "string"
+        },
+        "payload": {
+          "$ref": "#/$defs/EmptyEventPayload"
+        }
+      },
+      "required": [
+        "conversation_id",
+        "epoch",
+        "server_seq",
+        "type",
+        "payload"
+      ],
+      "title": "SessionEndedEvent",
+      "type": "object"
+    },
+    "SessionReadyEvent": {
+      "additionalProperties": false,
+      "properties": {
+        "event_id": {
+          "title": "Event Id",
+          "type": "string"
+        },
+        "conversation_id": {
+          "maxLength": 128,
+          "minLength": 1,
+          "title": "Conversation Id",
+          "type": "string"
+        },
+        "epoch": {
+          "minimum": 0,
+          "title": "Epoch",
+          "type": "integer"
+        },
+        "turn_id": {
+          "anyOf": [
+            {
+              "maxLength": 128,
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Turn Id"
+        },
+        "server_seq": {
+          "minimum": 0,
+          "title": "Server Seq",
+          "type": "integer"
+        },
+        "timestamp": {
+          "format": "date-time",
+          "title": "Timestamp",
+          "type": "string"
+        },
+        "type": {
+          "const": "portal.session.ready",
+          "title": "Type",
+          "type": "string"
+        },
+        "payload": {
+          "$ref": "#/$defs/SessionReadyPayload"
+        }
+      },
+      "required": [
+        "conversation_id",
+        "epoch",
+        "server_seq",
+        "type",
+        "payload"
+      ],
+      "title": "SessionReadyEvent",
+      "type": "object"
+    },
+    "SessionReadyPayload": {
+      "additionalProperties": false,
+      "properties": {
+        "sample_rate": {
+          "const": 24000,
+          "title": "Sample Rate",
+          "type": "integer"
+        },
+        "format": {
+          "const": "pcm16",
+          "title": "Format",
+          "type": "string"
+        },
+        "chunk_ms": {
+          "const": 80,
+          "title": "Chunk Ms",
+          "type": "integer"
+        },
+        "is_mock": {
+          "title": "Is Mock",
+          "type": "boolean"
+        }
+      },
+      "required": [
+        "sample_rate",
+        "format",
+        "chunk_ms",
+        "is_mock"
+      ],
+      "title": "SessionReadyPayload",
+      "type": "object"
+    },
+    "SpeechTextEvent": {
+      "additionalProperties": false,
+      "properties": {
+        "event_id": {
+          "title": "Event Id",
+          "type": "string"
+        },
+        "conversation_id": {
+          "maxLength": 128,
+          "minLength": 1,
+          "title": "Conversation Id",
+          "type": "string"
+        },
+        "epoch": {
+          "minimum": 0,
+          "title": "Epoch",
+          "type": "integer"
+        },
+        "turn_id": {
+          "anyOf": [
+            {
+              "maxLength": 128,
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Turn Id"
+        },
+        "server_seq": {
+          "minimum": 0,
+          "title": "Server Seq",
+          "type": "integer"
+        },
+        "timestamp": {
+          "format": "date-time",
+          "title": "Timestamp",
+          "type": "string"
+        },
+        "type": {
+          "enum": [
+            "portal.speech_text.delta",
+            "portal.speech_text.done"
+          ],
+          "title": "Type",
+          "type": "string"
+        },
+        "payload": {
+          "$ref": "#/$defs/SpeechTextPayload"
+        }
+      },
+      "required": [
+        "conversation_id",
+        "epoch",
+        "server_seq",
+        "type",
+        "payload"
+      ],
+      "title": "SpeechTextEvent",
+      "type": "object"
+    },
+    "SpeechTextPayload": {
+      "additionalProperties": false,
+      "properties": {
+        "response_id": {
+          "maxLength": 128,
+          "minLength": 1,
+          "title": "Response Id",
+          "type": "string"
+        },
+        "item_id": {
+          "anyOf": [
+            {
+              "maxLength": 128,
+              "minLength": 1,
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Item Id"
+        },
+        "text": {
+          "maxLength": 100000,
+          "title": "Text",
+          "type": "string"
+        }
+      },
+      "required": [
+        "response_id",
+        "text"
+      ],
+      "title": "SpeechTextPayload",
+      "type": "object"
+    },
+    "ToolStartedEvent": {
+      "additionalProperties": false,
+      "properties": {
+        "event_id": {
+          "title": "Event Id",
+          "type": "string"
+        },
+        "conversation_id": {
+          "maxLength": 128,
+          "minLength": 1,
+          "title": "Conversation Id",
+          "type": "string"
+        },
+        "epoch": {
+          "minimum": 0,
+          "title": "Epoch",
+          "type": "integer"
+        },
+        "turn_id": {
+          "anyOf": [
+            {
+              "maxLength": 128,
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Turn Id"
+        },
+        "server_seq": {
+          "minimum": 0,
+          "title": "Server Seq",
+          "type": "integer"
+        },
+        "timestamp": {
+          "format": "date-time",
+          "title": "Timestamp",
+          "type": "string"
+        },
+        "type": {
+          "const": "portal.tool.started",
+          "title": "Type",
+          "type": "string"
+        },
+        "payload": {
+          "$ref": "#/$defs/ToolStartedPayload"
+        }
+      },
+      "required": [
+        "conversation_id",
+        "epoch",
+        "server_seq",
+        "type",
+        "payload"
+      ],
+      "title": "ToolStartedEvent",
+      "type": "object"
+    },
+    "ToolStartedPayload": {
+      "additionalProperties": false,
+      "properties": {
+        "message": {
+          "maxLength": 500,
+          "minLength": 1,
+          "title": "Message",
+          "type": "string"
+        },
+        "user_text": {
+          "anyOf": [
+            {
+              "maxLength": 2000,
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "User Text"
+        }
+      },
+      "required": [
+        "message"
+      ],
+      "title": "ToolStartedPayload",
+      "type": "object"
+    },
+    "TranscriptDeltaEvent": {
+      "additionalProperties": false,
+      "properties": {
+        "event_id": {
+          "title": "Event Id",
+          "type": "string"
+        },
+        "conversation_id": {
+          "maxLength": 128,
+          "minLength": 1,
+          "title": "Conversation Id",
+          "type": "string"
+        },
+        "epoch": {
+          "minimum": 0,
+          "title": "Epoch",
+          "type": "integer"
+        },
+        "turn_id": {
+          "anyOf": [
+            {
+              "maxLength": 128,
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Turn Id"
+        },
+        "server_seq": {
+          "minimum": 0,
+          "title": "Server Seq",
+          "type": "integer"
+        },
+        "timestamp": {
+          "format": "date-time",
+          "title": "Timestamp",
+          "type": "string"
+        },
+        "type": {
+          "enum": [
+            "portal.transcript.delta",
+            "portal.transcript.done"
+          ],
+          "title": "Type",
+          "type": "string"
+        },
+        "payload": {
+          "$ref": "#/$defs/TranscriptPayload"
+        }
+      },
+      "required": [
+        "conversation_id",
+        "epoch",
+        "server_seq",
+        "type",
+        "payload"
+      ],
+      "title": "TranscriptDeltaEvent",
+      "type": "object"
+    },
+    "TranscriptPayload": {
+      "additionalProperties": false,
+      "properties": {
+        "item_id": {
+          "maxLength": 128,
+          "minLength": 1,
+          "title": "Item Id",
+          "type": "string"
+        },
+        "response_id": {
+          "anyOf": [
+            {
+              "maxLength": 128,
+              "minLength": 1,
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Response Id"
+        },
+        "text": {
+          "maxLength": 100000,
+          "title": "Text",
+          "type": "string"
+        }
+      },
+      "required": [
+        "item_id",
+        "text"
+      ],
+      "title": "TranscriptPayload",
       "type": "object"
     }
   },
-  "required": [
-    "type",
-    "conversation_id",
-    "epoch"
-  ],
-  "title": "PortalEvent",
-  "type": "object"
+  "discriminator": {
+    "mapping": {
+      "portal.answer.final": "#/$defs/AnswerFinalEvent",
+      "portal.audio.delta": "#/$defs/AudioDeltaEvent",
+      "portal.audio.done": "#/$defs/AudioDoneEvent",
+      "portal.error": "#/$defs/ErrorEvent",
+      "portal.input.state": "#/$defs/InputStateEvent",
+      "portal.playback.clear": "#/$defs/PlaybackClearEvent",
+      "portal.session.ended": "#/$defs/SessionEndedEvent",
+      "portal.session.ready": "#/$defs/SessionReadyEvent",
+      "portal.speech_text.delta": "#/$defs/SpeechTextEvent",
+      "portal.speech_text.done": "#/$defs/SpeechTextEvent",
+      "portal.tool.started": "#/$defs/ToolStartedEvent",
+      "portal.transcript.delta": "#/$defs/TranscriptDeltaEvent",
+      "portal.transcript.done": "#/$defs/TranscriptDeltaEvent"
+    },
+    "propertyName": "type"
+  },
+  "oneOf": [
+    {
+      "$ref": "#/$defs/SessionReadyEvent"
+    },
+    {
+      "$ref": "#/$defs/TranscriptDeltaEvent"
+    },
+    {
+      "$ref": "#/$defs/SpeechTextEvent"
+    },
+    {
+      "$ref": "#/$defs/AudioDeltaEvent"
+    },
+    {
+      "$ref": "#/$defs/AudioDoneEvent"
+    },
+    {
+      "$ref": "#/$defs/InputStateEvent"
+    },
+    {
+      "$ref": "#/$defs/ToolStartedEvent"
+    },
+    {
+      "$ref": "#/$defs/AnswerFinalEvent"
+    },
+    {
+      "$ref": "#/$defs/PlaybackClearEvent"
+    },
+    {
+      "$ref": "#/$defs/SessionEndedEvent"
+    },
+    {
+      "$ref": "#/$defs/ErrorEvent"
+    }
+  ]
 }

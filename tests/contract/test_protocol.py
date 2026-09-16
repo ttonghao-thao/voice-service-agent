@@ -2,7 +2,12 @@ import json
 
 import pytest
 from app.config import Settings
-from app.contracts import BridgeArguments, DomainError
+from app.contracts import (
+    BridgeArguments,
+    DomainError,
+    portal_client_event_adapter,
+    portal_server_event_adapter,
+)
 from app.voice.provider import normalize, session_update
 from pydantic import ValidationError
 
@@ -48,6 +53,56 @@ def test_tool_before_transcript_preserves_native_ids():
 def test_missing_response_identity_is_protocol_error():
     with pytest.raises(DomainError):
         normalize({"type": "response.output_audio.delta", "delta": "AAAA"})
+
+
+def test_portal_event_contracts_are_discriminated_and_strict():
+    server = portal_server_event_adapter.validate_python(
+        {
+            "type": "portal.session.ready",
+            "event_id": "event-1",
+            "conversation_id": "conversation-1",
+            "epoch": 2,
+            "server_seq": 1,
+            "timestamp": "2026-09-16T00:00:00Z",
+            "payload": {"sample_rate": 24000, "format": "pcm16", "chunk_ms": 80, "is_mock": False},
+        }
+    )
+    assert server.type == "portal.session.ready"
+    with pytest.raises(ValidationError):
+        portal_server_event_adapter.validate_python(
+            {
+                "type": "portal.unknown",
+                "event_id": "event-1",
+                "conversation_id": "conversation-1",
+                "epoch": 2,
+                "server_seq": 1,
+                "timestamp": "2026-09-16T00:00:00Z",
+                "payload": {},
+            }
+        )
+    with pytest.raises(ValidationError):
+        portal_client_event_adapter.validate_python(
+            {
+                "type": "portal.interrupt",
+                "epoch": 2,
+                "payload": {},
+                "tenant_id": "untrusted",
+            }
+        )
+
+
+def test_verified_voicechat_requires_pinned_contract_and_capability_mode():
+    with pytest.raises(ValidationError, match="Verified VoiceChat"):
+        Settings(_env_file=None, voicechat_integration_verified=True)
+    settings = Settings(
+        _env_file=None,
+        voice_provider="nvidia",
+        voicechat_api_version="v1",
+        voicechat_image_digest="sha256:" + "a" * 64,
+        voicechat_capability_mode="basic",
+        voicechat_integration_verified=True,
+    )
+    assert settings.voicechat_capability_mode == "basic"
 
 
 @pytest.mark.parametrize(

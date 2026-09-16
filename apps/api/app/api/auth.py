@@ -47,13 +47,16 @@ class Auth:
         s = self.settings
         if s.auth_mode == "dev":
             scopes = {"knowledge:read", "weather:read"}
+            roles = {"operator"}
             if s.dev_admin:
                 scopes.add("tools:admin")
+                roles.add("admin")
             return Principal(
                 user_id=s.dev_user_id,
                 tenant_id=s.dev_tenant_id,
+                roles=frozenset(roles),
                 scopes=frozenset(scopes),
-                knowledge_base_ids=tuple(s.knowledge_base_ids.split(",")),
+                knowledge_base_ids=tuple(sorted(x.strip() for x in s.knowledge_base_ids.split(",") if x.strip())),
             )
         header = request.headers.get("authorization", "")
         token = header[7:] if header.startswith("Bearer ") else request.cookies.get("service_session")
@@ -65,17 +68,27 @@ class Auth:
             raise DomainError("FORBIDDEN", "无权访问此组织", 403)
         roles = claims.get("roles", [])
         kbs = claims.get("knowledge_base_ids", [])
-        if not isinstance(roles, list) or not isinstance(kbs, list):
+        if (
+            not isinstance(roles, list)
+            or not all(isinstance(role, str) for role in roles)
+            or not isinstance(kbs, list)
+            or not all(isinstance(kb, str) for kb in kbs)
+        ):
             raise DomainError("FORBIDDEN", "身份权限格式错误", 403)
-        scopes = {"knowledge:read", "weather:read"} if "operator" in roles or "admin" in roles else set()
+        recognized_roles = set(roles) & {"customer", "operator", "admin"}
+        scopes = {"knowledge:read"} if recognized_roles else set()
+        if recognized_roles & {"operator", "admin"}:
+            scopes.add("weather:read")
         if "admin" in roles:
             scopes.add("tools:admin")
         if not scopes:
-            raise DomainError("FORBIDDEN", "没有客服工作台权限", 403)
-        allowed_kbs = set(s.knowledge_base_ids.split(",")) & set(kbs)
+            raise DomainError("FORBIDDEN", "没有客户服务权限", 403)
+        configured_kbs = {x.strip() for x in s.knowledge_base_ids.split(",") if x.strip()}
+        allowed_kbs = configured_kbs & set(kbs)
         return Principal(
             user_id=claims["sub"],
             tenant_id=s.tenant_id,
+            roles=frozenset(recognized_roles),
             scopes=frozenset(scopes),
             knowledge_base_ids=tuple(sorted(allowed_kbs)),
             expires_at=claims["exp"],

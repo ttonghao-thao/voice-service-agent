@@ -121,6 +121,7 @@ class RagAdapter:
                 **hit.model_dump(exclude={"score", "metadata", "source_uri"}),
                 source_uri=uri,
                 retrieval_id=result.retrieval_id,
+                authorized_kb_ids=tuple(sorted(ctx.principal.knowledge_base_ids)),
                 is_mock=self.settings.rag_mode == "mock",
             )
             ctx.evidence[citation_id] = citation

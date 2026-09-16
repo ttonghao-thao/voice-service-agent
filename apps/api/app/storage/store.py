@@ -3,7 +3,7 @@ import hashlib
 from contextlib import asynccontextmanager
 from datetime import timedelta
 
-from app.contracts import DomainError, PortalEvent, now, uid
+from app.contracts import DomainError, PortalEvent, now, portal_server_event_adapter, uid
 from app.storage.models import Base, Conversation, Event, Record, ToolConfig, Turn
 from sqlalchemy import delete, select, text
 from sqlalchemy.ext.asyncio import async_sessionmaker, create_async_engine
@@ -52,6 +52,7 @@ class Store:
             server_seq=c.event_seq,
             payload=payload,
         )
+        portal_server_event_adapter.validate_python(e.model_dump(mode="json"))
         db.add(
             Event(
                 id=e.event_id,

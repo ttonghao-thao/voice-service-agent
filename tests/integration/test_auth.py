@@ -45,7 +45,11 @@ async def test_oidc_signed_acl_tenant_and_expiration():
 
         principal = await auth.principal(request(claims))
         assert principal.tenant_id == "tenant-a" and principal.knowledge_base_ids == ("kb_support",)
+        assert principal.roles == frozenset({"operator"})
         assert "tools:admin" not in principal.scopes
+        customer = await auth.principal(request({**claims, "roles": ["customer"]}))
+        assert customer.scopes == frozenset({"knowledge:read"})
+        assert customer.roles == frozenset({"customer"})
         with pytest.raises(DomainError):
             await auth.principal(request({**claims, "tenant_id": "tenant-b"}))
         with pytest.raises(DomainError):

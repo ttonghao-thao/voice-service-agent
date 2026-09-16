@@ -47,6 +47,14 @@
           "title": "Retrieval Id",
           "type": "string"
         },
+        "authorized_kb_ids": {
+          "default": [],
+          "items": {
+            "type": "string"
+          },
+          "title": "Authorized Kb Ids",
+          "type": "array"
+        },
         "is_mock": {
           "default": false,
           "title": "Is Mock",

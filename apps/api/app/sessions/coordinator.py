@@ -23,6 +23,22 @@ class SessionCoordinator:
             self.locks[cid] = lock
         return lock
 
+    def authorized_history(self, history, principal):
+        current = set(principal.knowledge_base_ids)
+        configured = {
+            value.strip() for value in self.settings.knowledge_base_ids.split(",") if value.strip()
+        }
+        visible = []
+        for item in history:
+            scope = item.get("authorized_kb_ids")
+            if item.get("role") == "assistant":
+                if scope is None and ("customer" in principal.roles or current != configured):
+                    continue
+                if scope is not None and not set(scope).issubset(current):
+                    continue
+            visible.append(dict(item))
+        return visible
+
     async def recover(self):
         # Distributed deployments recover on first ownership acquisition, never invalidate
         # conversations still owned by another healthy gateway.
@@ -85,7 +101,9 @@ class SessionCoordinator:
                 locale=conversation.locale,
                 slots=dict(conversation.slots),
             )
-            task = asyncio.create_task(self.execute(ctx, request, conversation.history, channel))
+            task = asyncio.create_task(
+                self.execute(ctx, request, conversation.history, channel)
+            )
             self.tasks[cid] = task
             self.all_tasks.add(task)
             task.add_done_callback(self.all_tasks.discard)
@@ -106,16 +124,28 @@ class SessionCoordinator:
                         )
 
         try:
+            visible_history = self.authorized_history(history, ctx.principal)
+            runtime_history = [
+                {"role": item["role"], "content": item["content"]}
+                for item in visible_history
+            ]
             try:
                 async with asyncio.timeout(self.settings.agent_deadline_ms / 1000):
                     bundle = await self.runtime.run(
-                        request, ctx, history, progress if channel == "text" else None
+                        request, ctx, runtime_history, progress if channel == "text" else None
                     )
             except TimeoutError:
                 bundle = self.runtime.failure("AGENT_TIMEOUT", "处理超时，请稍后重试。")
-            new_history = history + [
+            answer_scope = sorted(
+                {kb for citation in bundle.citations for kb in citation.authorized_kb_ids}
+            )
+            new_history = visible_history + [
                 {"role": "user", "content": request},
-                {"role": "assistant", "content": bundle.display_text},
+                {
+                    "role": "assistant",
+                    "content": bundle.display_text,
+                    "authorized_kb_ids": answer_scope,
+                },
             ]
             async with self.lock(ctx.conversation_id):
                 await self.coordination.check(ctx.conversation_id)
