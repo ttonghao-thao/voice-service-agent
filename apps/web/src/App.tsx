@@ -3,14 +3,10 @@ import {
   Alert,
   Button,
   Drawer,
-  Empty,
   Input,
-  Modal,
   Slider,
   Spin,
-  Switch,
   Tag,
-  Tooltip,
 } from "antd";
 import {
   AudioOutlined,
@@ -20,7 +16,6 @@ import {
   StopOutlined,
   CustomerServiceOutlined,
   FileTextOutlined,
-  SettingOutlined,
   LinkOutlined,
   MenuOutlined,
   CheckCircleOutlined,
@@ -54,6 +49,8 @@ const statuses: Record<string, string> = {
   insufficient_evidence: "依据不足",
   failed: "查询失败",
   canceled: "已取消",
+  superseded: "已改问",
+  expired: "已过期",
   running: "正在查询",
 };
 
@@ -75,7 +72,6 @@ export default function App() {
     [volume, setVolume] = useState(0.8),
     [inputState, setInputState] = useState("quiet");
   const [selected, setSelected] = useState<Answer | null>(null),
-    [adminOpen, setAdminOpen] = useState(false),
     [sidebar, setSidebar] = useState(false),
     [sourcesOpen, setSourcesOpen] = useState(false),
     [before, setBefore] = useState<string | null>(null);
@@ -83,6 +79,7 @@ export default function App() {
     Record<string, { kind: string; text: string; done: boolean }>
   >({});
   const epoch = useRef(0),
+    requestRevision = useRef(0),
     active = useRef(""),
     voice = useRef<VoiceClient | null>(null),
     lastEvent = useRef(new Set<string>()),
@@ -93,10 +90,15 @@ export default function App() {
       items: Turn[];
       records: RecordItem[];
       epoch: number;
+      request_revision: number;
       next_before: string | null;
     }>(`/conversations/${id}/messages${older ? "?before=" + older : ""}`);
     if (active.current !== id) return;
     epoch.current = Math.max(epoch.current, data.epoch);
+    requestRevision.current = Math.max(
+      requestRevision.current,
+      data.request_revision || 0,
+    );
     setBefore(data.next_before);
     setTurns((previous) =>
       older
@@ -122,6 +124,10 @@ export default function App() {
       if (lastEvent.current.size > 2048)
         lastEvent.current.delete(lastEvent.current.values().next().value!);
       epoch.current = event.epoch;
+      requestRevision.current = Math.max(
+        requestRevision.current,
+        event.request_revision || 0,
+      );
       if (event.type === "portal.tool.started") {
         setProgress(String(event.payload.message || "正在查询"));
         void refresh(event.conversation_id).catch((e) => setError(e.message));
@@ -192,6 +198,7 @@ export default function App() {
   useEffect(() => {
     active.current = cid;
     epoch.current = 0;
+    requestRevision.current = 0;
     setTurns([]);
     setRecords([]);
     setSelected(null);
@@ -240,7 +247,11 @@ export default function App() {
       await voice.current?.stop();
       const id = cid || (await newConversation());
       if (!id) return;
-      const result = await api<{ turn_id: string; epoch: number }>(
+      const result = await api<{
+        turn_id: string;
+        epoch: number;
+        request_revision: number;
+      }>(
         `/conversations/${id}/messages`,
         {
           method: "POST",
@@ -250,6 +261,10 @@ export default function App() {
       );
       if (active.current === id) {
         epoch.current = Math.max(epoch.current, result.epoch);
+        requestRevision.current = Math.max(
+          requestRevision.current,
+          result.request_revision,
+        );
         setDraft("");
         setProgress("正在处理");
         await refresh(id);
@@ -266,25 +281,24 @@ export default function App() {
     const id = cid || (await newConversation());
     if (id) await voice.current?.start(id);
   }
-  async function interrupt() {
+  async function cancelCurrent() {
     const id = cid;
     if (!id) return;
-    const oldEpoch = epoch.current,
-      wasVoice = voiceState === "ready" || voiceState === "connecting";
-    voice.current?.clear();
+    voice.current?.stopPlayback();
     setProgress("");
     try {
-      const result = await api<{ epoch: number }>(
-        `/conversations/${id}/interrupt`,
-        { method: "POST", body: JSON.stringify({ expected_epoch: oldEpoch }) },
+      const result = await api<{ request_revision: number }>(
+        `/conversations/${id}/tasks/current/cancel`,
+        {
+          method: "POST",
+          body: JSON.stringify({
+            expected_epoch: epoch.current,
+            expected_revision: requestRevision.current,
+          }),
+        },
       );
-      epoch.current = result.epoch;
-      await voice.current?.stop();
+      requestRevision.current = result.request_revision;
       await refresh(id);
-      if (wasVoice) {
-        setTranscripts({});
-        await voice.current?.start(id);
-      }
     } catch (e) {
       setError((e as Error).message);
     }
@@ -332,24 +346,22 @@ export default function App() {
           {me?.user_id.slice(0, 1).toUpperCase() || "客"}
         </span>
         <div>
-          <strong>{me?.user_id || "客服工作台"}</strong>
+          <strong>{me?.user_id || "客户服务"}</strong>
           <small>
             {me?.auth_mode === "dev" ? "开发身份" : "已通过组织认证"}
           </small>
         </div>
         {me?.auth_mode === "oidc" && (
-          <Tooltip title="退出登录">
-            <Button
-              type="text"
-              aria-label="退出登录"
-              icon={<LogoutOutlined />}
-              onClick={() =>
-                void fetch("/api/v1/auth/logout", { method: "POST" }).then(() =>
-                  location.reload(),
-                )
-              }
-            />
-          </Tooltip>
+          <Button
+            type="text"
+            aria-label="退出登录"
+            icon={<LogoutOutlined />}
+            onClick={() =>
+              void fetch("/api/v1/auth/logout", { method: "POST" }).then(() =>
+                location.reload(),
+              )
+            }
+          />
         )}
       </div>
     </>
@@ -365,7 +377,7 @@ export default function App() {
         <div className="evidence-placeholder">
           <FileTextOutlined />
           <p>每个答案，都有据可查</p>
-          <small>查询完成后，在这里查看知识来源、版本和天气详情。</small>
+          <small>查询完成后，在这里查看知识来源、版本和适用位置。</small>
         </div>
       ) : (
         <>
@@ -381,10 +393,18 @@ export default function App() {
               </div>
               <p>{c.content}</p>
               <div className="citation-meta">
-                版本 {c.version}
-                <br />
-                {new Date(c.updated_at).toLocaleString("zh-CN")}
+                内容版本 {c.business_version || c.version_id}
+                {c.anchor.page ? ` · 第 ${c.anchor.page} 页` : ""}
+                {c.updated_at && (
+                  <>
+                    <br />
+                    {new Date(c.updated_at).toLocaleString("zh-CN")}
+                  </>
+                )}
               </div>
+              {(c.scope_limited || c.retrieval_status === "degraded") && (
+                <div className="citation-warning">本条来源来自受限或降级检索</div>
+              )}
               {c.source_uri && (
                 <a
                   href={c.source_uri}
@@ -415,7 +435,7 @@ export default function App() {
   if (loading)
     return (
       <div className="login-screen">
-        <Spin size="large" tip="正在进入工作台" />
+        <Spin size="large" tip="正在进入客户服务" />
       </div>
     );
   if (login)
@@ -423,7 +443,7 @@ export default function App() {
       <div className="login-screen">
         <div className="login-card">
           <CustomerServiceOutlined />
-          <h1>声桥客服工作台</h1>
+          <h1>声桥客户服务</h1>
           <p>使用组织账号登录，安全访问您的会话与知识库。</p>
           <Button type="primary" size="large" href="/api/v1/auth/login">
             使用组织账号登录
@@ -445,21 +465,13 @@ export default function App() {
               onClick={() => setSidebar(true)}
             />
             <span className="breadcrumb">
-              客服中心 <span>/</span> 工作台
+              客户服务 <span>/</span> 在线咨询
             </span>
           </div>
           <div className="top-actions">
             <Tag color={caps?.is_mock ? "orange" : "green"}>
               {caps?.is_mock ? "演示环境" : "服务集成环境"}
             </Tag>
-            {me?.scopes.includes("tools:admin") && (
-              <Button
-                icon={<SettingOutlined />}
-                onClick={() => setAdminOpen(true)}
-              >
-                工具管理
-              </Button>
-            )}
           </div>
         </header>
         <div className="workspace-heading">
@@ -523,9 +535,8 @@ export default function App() {
                   </div>
                   <h2>您好，今天有什么可以帮您？</h2>
                   <p>
-                    您可以查询公司知识，也可以询问指定地点的天气。
-                    <br />
-                    我会在需要时请您补充信息。
+                    您可以直接说出或输入问题，我会查询您有权访问的公司知识。
+                    <br />我会在依据不足时请您补充信息。
                   </p>
                   <div className="suggestions">
                     <button
@@ -535,10 +546,10 @@ export default function App() {
                       <strong>查询知识</strong>
                       <span>产品、服务与处理流程</span>
                     </button>
-                    <button onClick={() => setDraft("请查询北京今天的天气")}>
+                    <button onClick={() => setDraft("请说明产品升级前的准备事项")}>
                       <AudioOutlined />
                       <strong>自然提问</strong>
-                      <span>确认地点，获取天气信息</span>
+                      <span>流程、版本与注意事项</span>
                     </button>
                   </div>
                   {caps?.is_mock && (
@@ -663,11 +674,19 @@ export default function App() {
                   {muted ? "取消静音" : "静音"}
                 </Button>
                 <Button
+                  aria-label="停止播报"
                   icon={<StopOutlined />}
-                  disabled={!cid}
-                  onClick={() => void interrupt()}
+                  disabled={voiceState !== "ready"}
+                  onClick={() => voice.current?.stopPlayback()}
                 >
-                  打断并重新提问
+                  停止播报
+                </Button>
+                <Button
+                  danger
+                  disabled={!turns.some((turn) => turn.status === "running")}
+                  onClick={() => void cancelCurrent()}
+                >
+                  取消查询
                 </Button>
                 <Button
                   type="text"
@@ -750,7 +769,7 @@ export default function App() {
         </footer>
       </main>
       <Drawer
-        title="我的工作台"
+        title="我的会话"
         placement="left"
         open={sidebar}
         onClose={() => setSidebar(false)}
@@ -765,7 +784,6 @@ export default function App() {
       >
         {sources}
       </Drawer>
-      <Admin open={adminOpen} close={() => setAdminOpen(false)} />
     </div>
   );
 }
@@ -805,124 +823,5 @@ function WeatherCard({ card }: { card: Record<string, unknown> }) {
         {c.source.is_mock ? "（合成）" : ""}
       </small>
     </article>
-  );
-}
-function Admin({ open, close }: { open: boolean; close: () => void }) {
-  const [tools, setTools] = useState<
-      {
-        name: string;
-        description: string;
-        display_name: string;
-        enabled: boolean;
-        timeout_ms: number;
-      }[]
-    >([]),
-    [errors, setErrors] = useState<{ name: string; code: string }[]>([]),
-    [notice, setNotice] = useState("");
-  const [services, setServices] = useState<{
-    voice_health: string;
-    text_model: string;
-    active_voice_sessions: number;
-    active_business_runs: number;
-  } | null>(null);
-  const load = () =>
-    Promise.all([
-      api<{ items: typeof tools; recent_errors: typeof errors }>(
-        "/admin/tools",
-      ),
-      api<NonNullable<typeof services>>("/admin/services"),
-    ])
-      .then(([x, status]) => {
-        setTools(x.items);
-        setErrors(x.recent_errors);
-        setServices(status);
-      })
-      .catch((e) => setNotice(e.message));
-  useEffect(() => {
-    if (open) void load();
-  }, [open]);
-  return (
-    <Modal
-      title="只读工具管理"
-      open={open}
-      onCancel={close}
-      footer={null}
-      width={620}
-    >
-      {notice && <Alert message={notice} type="info" showIcon />}
-      {services && (
-        <div className="service-health">
-          <p>
-            语音服务：
-            {(
-              {
-                mock: "演示模式",
-                healthy: "健康端点可达",
-                unavailable: "暂不可用",
-                unconfigured: "尚未配置",
-              } as Record<string, string>
-            )[services.voice_health] || services.voice_health}
-          </p>
-          <p>
-            文本模型：
-            {services.text_model === "mock"
-              ? "演示模式"
-              : services.text_model === "configured"
-                ? "已配置，实际推理需联调"
-                : "尚未配置"}
-          </p>
-          <small>
-            本副本活跃语音 {services.active_voice_sessions} · 正在处理{" "}
-            {services.active_business_runs}
-          </small>
-        </div>
-      )}
-      {tools.map((t) => (
-        <div className="admin-tool" key={t.name}>
-          <div>
-            <strong>{t.display_name || t.name}</strong>
-            <p>{t.description}</p>
-            <small>超时预算 {t.timeout_ms / 1000} 秒</small>
-          </div>
-          <Switch
-            aria-label={`启用${t.name}`}
-            checked={t.enabled}
-            onChange={(enabled) =>
-              void api(`/admin/tools/${t.name}`, {
-                method: "PATCH",
-                body: JSON.stringify({ enabled }),
-              })
-                .then(load)
-                .catch((e) => setNotice(e.message))
-            }
-          />
-          <Button
-            onClick={() =>
-              void api<{ message: string }>(`/admin/tools/${t.name}/test`, {
-                method: "POST",
-                body: "{}",
-              })
-                .then((x) => setNotice(x.message))
-                .catch((e) => setNotice(e.message))
-            }
-          >
-            连接测试
-          </Button>
-        </div>
-      ))}
-      <h4>近期错误</h4>
-      {errors.length ? (
-        errors.map((e, i) => (
-          <p key={i}>
-            {e.name} · {e.code}
-          </p>
-        ))
-      ) : (
-        <Empty
-          description="暂无错误记录"
-          image={Empty.PRESENTED_IMAGE_SIMPLE}
-        />
-      )}
-    </Modal>
   );
 }

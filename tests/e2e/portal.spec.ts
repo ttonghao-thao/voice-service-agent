@@ -58,29 +58,3 @@ test("麦克风不可用时仍能文字提问", async ({ page }) => {
     page.getByRole("textbox", { name: "输入您的问题" }),
   ).toBeEnabled();
 });
-
-test("管理员查看服务状态、停用和恢复工具", async ({ page, request }) => {
-  const identity = await (await request.get("/api/v1/auth/me")).json();
-  test.skip(
-    !identity.scopes.includes("tools:admin"),
-    "此项需要 DEV_ADMIN=true 或真实管理员身份",
-  );
-  await page.goto("/");
-  await page.getByRole("button", { name: "工具管理" }).click();
-  await expect(page.getByText("语音服务：演示模式")).toBeVisible();
-  const toggle = page.getByRole("switch", { name: "启用search_knowledge" });
-  await expect(toggle).toBeChecked();
-  try {
-    await toggle.click();
-    await expect(toggle).not.toBeChecked();
-    const tools = await (await request.get("/api/v1/admin/tools")).json();
-    expect(
-      tools.items.find((t: { name: string }) => t.name === "search_knowledge")
-        .enabled,
-    ).toBe(false);
-  } finally {
-    await request.patch("/api/v1/admin/tools/search_knowledge", {
-      data: { enabled: true },
-    });
-  }
-});

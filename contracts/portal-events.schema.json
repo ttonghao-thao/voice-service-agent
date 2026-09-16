@@ -90,6 +90,12 @@
           "title": "Epoch",
           "type": "integer"
         },
+        "request_revision": {
+          "default": 0,
+          "minimum": 0,
+          "title": "Request Revision",
+          "type": "integer"
+        },
         "turn_id": {
           "anyOf": [
             {
@@ -148,6 +154,12 @@
         "epoch": {
           "minimum": 0,
           "title": "Epoch",
+          "type": "integer"
+        },
+        "request_revision": {
+          "default": 0,
+          "minimum": 0,
+          "title": "Request Revision",
           "type": "integer"
         },
         "turn_id": {
@@ -247,6 +259,12 @@
           "title": "Epoch",
           "type": "integer"
         },
+        "request_revision": {
+          "default": 0,
+          "minimum": 0,
+          "title": "Request Revision",
+          "type": "integer"
+        },
         "turn_id": {
           "anyOf": [
             {
@@ -320,21 +338,130 @@
           "default": null,
           "title": "Source Uri"
         },
-        "version": {
-          "title": "Version",
+        "version_id": {
+          "title": "Version Id",
           "type": "string"
         },
+        "business_version": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Business Version"
+        },
         "updated_at": {
-          "title": "Updated At",
-          "type": "string"
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Updated At"
         },
         "content": {
           "title": "Content",
           "type": "string"
         },
+        "context": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Context"
+        },
+        "trace_id": {
+          "title": "Trace Id",
+          "type": "string"
+        },
         "retrieval_id": {
           "title": "Retrieval Id",
           "type": "string"
+        },
+        "retrieval_status": {
+          "default": "ok",
+          "enum": [
+            "ok",
+            "degraded",
+            "not_found",
+            "needs_clarification"
+          ],
+          "title": "Retrieval Status",
+          "type": "string"
+        },
+        "evidence_status": {
+          "default": "unassessed",
+          "enum": [
+            "unassessed",
+            "sufficient",
+            "insufficient",
+            "conflicting"
+          ],
+          "title": "Evidence Status",
+          "type": "string"
+        },
+        "degraded_reasons": {
+          "default": [],
+          "items": {
+            "type": "string"
+          },
+          "title": "Degraded Reasons",
+          "type": "array"
+        },
+        "scope_limited": {
+          "default": false,
+          "title": "Scope Limited",
+          "type": "boolean"
+        },
+        "content_revisions": {
+          "additionalProperties": {
+            "type": "integer"
+          },
+          "title": "Content Revisions",
+          "type": "object"
+        },
+        "rank": {
+          "minimum": 1,
+          "title": "Rank",
+          "type": "integer"
+        },
+        "title_path": {
+          "default": [],
+          "items": {
+            "type": "string"
+          },
+          "title": "Title Path",
+          "type": "array"
+        },
+        "anchor": {
+          "additionalProperties": true,
+          "title": "Anchor",
+          "type": "object"
+        },
+        "retrieval_sources": {
+          "default": [],
+          "items": {
+            "type": "string"
+          },
+          "title": "Retrieval Sources",
+          "type": "array"
+        },
+        "metadata": {
+          "additionalProperties": true,
+          "title": "Metadata",
+          "type": "object"
         },
         "authorized_kb_ids": {
           "default": [],
@@ -355,10 +482,11 @@
         "document_id",
         "chunk_id",
         "title",
-        "version",
-        "updated_at",
+        "version_id",
         "content",
-        "retrieval_id"
+        "trace_id",
+        "retrieval_id",
+        "rank"
       ],
       "title": "Citation",
       "type": "object"
@@ -399,6 +527,12 @@
         "epoch": {
           "minimum": 0,
           "title": "Epoch",
+          "type": "integer"
+        },
+        "request_revision": {
+          "default": 0,
+          "minimum": 0,
+          "title": "Request Revision",
           "type": "integer"
         },
         "turn_id": {
@@ -459,6 +593,12 @@
         "epoch": {
           "minimum": 0,
           "title": "Epoch",
+          "type": "integer"
+        },
+        "request_revision": {
+          "default": 0,
+          "minimum": 0,
+          "title": "Request Revision",
           "type": "integer"
         },
         "turn_id": {
@@ -539,6 +679,12 @@
           "title": "Epoch",
           "type": "integer"
         },
+        "request_revision": {
+          "default": 0,
+          "minimum": 0,
+          "title": "Request Revision",
+          "type": "integer"
+        },
         "turn_id": {
           "anyOf": [
             {
@@ -568,7 +714,7 @@
           "type": "string"
         },
         "payload": {
-          "$ref": "#/$defs/EmptyEventPayload"
+          "$ref": "#/$defs/PlaybackClearPayload"
         }
       },
       "required": [
@@ -579,6 +725,40 @@
         "payload"
       ],
       "title": "PlaybackClearEvent",
+      "type": "object"
+    },
+    "PlaybackClearPayload": {
+      "additionalProperties": false,
+      "properties": {
+        "message": {
+          "anyOf": [
+            {
+              "maxLength": 500,
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Message"
+        },
+        "response_id": {
+          "anyOf": [
+            {
+              "maxLength": 128,
+              "minLength": 1,
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Response Id"
+        }
+      },
+      "title": "PlaybackClearPayload",
       "type": "object"
     },
     "PortalErrorPayload": {
@@ -664,6 +844,12 @@
           "title": "Epoch",
           "type": "integer"
         },
+        "request_revision": {
+          "default": 0,
+          "minimum": 0,
+          "title": "Request Revision",
+          "type": "integer"
+        },
         "turn_id": {
           "anyOf": [
             {
@@ -722,6 +908,12 @@
         "epoch": {
           "minimum": 0,
           "title": "Epoch",
+          "type": "integer"
+        },
+        "request_revision": {
+          "default": 0,
+          "minimum": 0,
+          "title": "Request Revision",
           "type": "integer"
         },
         "turn_id": {
@@ -814,6 +1006,12 @@
         "epoch": {
           "minimum": 0,
           "title": "Epoch",
+          "type": "integer"
+        },
+        "request_revision": {
+          "default": 0,
+          "minimum": 0,
+          "title": "Request Revision",
           "type": "integer"
         },
         "turn_id": {
@@ -915,6 +1113,12 @@
           "title": "Epoch",
           "type": "integer"
         },
+        "request_revision": {
+          "default": 0,
+          "minimum": 0,
+          "title": "Request Revision",
+          "type": "integer"
+        },
         "turn_id": {
           "anyOf": [
             {
@@ -1002,6 +1206,12 @@
         "epoch": {
           "minimum": 0,
           "title": "Epoch",
+          "type": "integer"
+        },
+        "request_revision": {
+          "default": 0,
+          "minimum": 0,
+          "title": "Request Revision",
           "type": "integer"
         },
         "turn_id": {

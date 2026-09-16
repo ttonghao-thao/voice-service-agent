@@ -50,7 +50,7 @@ class BusinessRuntime:
                 speech_text="这是合成联调结果，不代表真实业务答案。",
                 citations=citations,
                 is_mock=True,
-                reason_code=None if result.get("hits") else "RAG_NO_EVIDENCE",
+                reason_code=None if result.get("hits") else "CUEKB_NO_EVIDENCE",
             )
         if not self.client or not self.settings.agent_model:
             return self.failure("AGENT_NOT_CONFIGURED", "文本模型尚未配置，无法进行业务推理。")
@@ -142,23 +142,48 @@ class BusinessRuntime:
         ):
             return self.failure("FORBIDDEN", "查询权限已变更，请重新提问。")
         if answer.status == "answered":
+            conflicting = any(
+                item.get("evidence_status") in ("insufficient", "conflicting")
+                or item.get("retrieval_status") in ("not_found", "needs_clarification")
+                for item in ctx.retrievals
+            )
+            if conflicting:
+                return AnswerBundle(
+                    status="insufficient_evidence",
+                    display_text="当前知识证据不足或存在冲突，请补充信息或转交人工。",
+                    speech_text="当前知识证据不足或存在冲突，请补充信息。",
+                    citations=[ctx.evidence[c] for c in dict.fromkeys(answer.citation_ids)],
+                    reason_code="CUEKB_EVIDENCE_UNSAFE",
+                )
             # Conservative policy: all affirmative business answers need current evidence or structured weather.
             if not answer.citation_ids and not ctx.cards:
                 return AnswerBundle(
                     status="insufficient_evidence",
                     display_text="未查询到足够依据，请补充信息或转交人工。",
                     speech_text="未查询到足够依据，请补充信息。",
-                    reason_code="RAG_NO_EVIDENCE",
+                    reason_code="CUEKB_NO_EVIDENCE",
                 )
             if answer.citation_ids and "search_knowledge" not in ctx.invoked:
                 return self.failure("RAG_INVALID_CITATION", "本轮缺少知识检索记录。")
+        degraded = any(
+            item.get("retrieval_status") == "degraded" or item.get("scope_limited")
+            for item in ctx.retrievals
+        )
+        display_text = answer.display_text
+        speech_text = answer.speech_text
+        reason_code = None
+        if answer.status == "answered" and degraded:
+            display_text = "提示：本次检索范围受限，以下内容仅基于当前可用资料。\n" + display_text
+            speech_text = ("本次检索范围受限。" + speech_text)[:160]
+            reason_code = "CUEKB_DEGRADED"
         return AnswerBundle(
             status=answer.status,
-            display_text=answer.display_text,
-            speech_text=answer.speech_text,
+            display_text=display_text,
+            speech_text=speech_text,
             citations=[ctx.evidence[c] for c in dict.fromkeys(answer.citation_ids)],
             cards=ctx.cards,
             is_mock=any(c.is_mock for c in ctx.evidence.values()),
+            reason_code=reason_code,
         )
 
     @staticmethod

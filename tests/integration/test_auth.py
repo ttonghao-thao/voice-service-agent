@@ -10,6 +10,8 @@ from app.contracts import DomainError
 from cryptography.hazmat.primitives.asymmetric import rsa
 from starlette.requests import Request
 
+KB_SUPPORT = "00000000-0000-4000-8000-000000000001"
+
 
 async def test_oidc_signed_acl_tenant_and_expiration():
     private = rsa.generate_private_key(public_exponent=65537, key_size=2048)
@@ -22,7 +24,7 @@ async def test_oidc_signed_acl_tenant_and_expiration():
         oidc_issuer="https://idp.invalid",
         oidc_audience="portal",
         oidc_jwks_url="https://idp.invalid/keys",
-        knowledge_base_ids="kb_support",
+        knowledge_base_ids=KB_SUPPORT,
     )
     claims = {
         "sub": "alice",
@@ -32,7 +34,7 @@ async def test_oidc_signed_acl_tenant_and_expiration():
         "iat": int(time.time()),
         "tenant_id": "tenant-a",
         "roles": ["operator"],
-        "knowledge_base_ids": ["kb_support", "unapproved-kb"],
+        "knowledge_base_ids": [KB_SUPPORT, "00000000-0000-4000-8000-000000000099"],
     }
     async with httpx.AsyncClient(
         transport=httpx.MockTransport(lambda r: httpx.Response(200, json={"keys": [jwk]}))
@@ -44,7 +46,7 @@ async def test_oidc_signed_acl_tenant_and_expiration():
             return Request({"type": "http", "headers": [(b"authorization", ("Bearer " + token).encode())]})
 
         principal = await auth.principal(request(claims))
-        assert principal.tenant_id == "tenant-a" and principal.knowledge_base_ids == ("kb_support",)
+        assert principal.tenant_id == "tenant-a" and principal.knowledge_base_ids == (KB_SUPPORT,)
         assert principal.roles == frozenset({"operator"})
         assert "tools:admin" not in principal.scopes
         customer = await auth.principal(request({**claims, "roles": ["customer"]}))

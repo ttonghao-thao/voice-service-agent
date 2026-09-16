@@ -48,6 +48,7 @@ class Store:
             type=kind,
             conversation_id=c.id,
             epoch=c.epoch,
+            request_revision=c.request_revision,
             turn_id=turn_id,
             server_seq=c.event_seq,
             payload=payload,
@@ -63,7 +64,16 @@ class Store:
         )
         return e
 
-    async def begin_turn(self, principal, cid, key, request, channel, expected_epoch=None):
+    async def begin_turn(
+        self,
+        principal,
+        cid,
+        key,
+        request,
+        channel,
+        expected_epoch=None,
+        native_call_id=None,
+    ):
         async with self.transaction() as db:
             c = await self.get(db, cid, principal, lock=True)
             existing = (
@@ -76,23 +86,32 @@ class Store:
                 return existing, c, False
             if expected_epoch is not None and c.epoch != expected_epoch:
                 raise DomainError("STALE_EPOCH", "该语音连接已失效", 409)
-            if c.current_turn:
-                previous = await db.get(Turn, c.current_turn)
+            parent_task_id = c.current_turn
+            if parent_task_id:
+                previous = await db.get(Turn, parent_task_id)
                 if previous and previous.status == "running":
-                    previous.status = "canceled"
+                    previous.status = "superseded"
+                    previous.cancellation_reason = "request_revised"
+                    previous.delivery_status = "discarded"
+                    previous.output_suppressed = True
             if channel == "text":
                 c.epoch += 1
                 c.voice_session_id = None
                 await self.event(db, c, "portal.playback.clear", {})
+            c.request_revision += 1
             t = Turn(
                 id=uid(),
                 conversation_id=cid,
                 epoch=c.epoch,
+                request_revision=c.request_revision,
+                parent_task_id=parent_task_id,
+                native_call_id=native_call_id,
                 idempotency_key=key,
                 request_hash=digest,
                 user_text=request,
                 channel=channel,
                 status="running",
+                delivery_status="pending_validation",
             )
             db.add(t)
             c.current_turn = t.id
@@ -103,13 +122,20 @@ class Store:
             )
             return t, c, True
 
-    async def commit(self, cid, epoch, turn_id, bundle, history, slots=None):
+    async def commit(self, cid, epoch, request_revision, turn_id, bundle, history, slots=None):
         async with self.transaction() as db:
             c = await self.get(db, cid, lock=True)
             t = await db.get(Turn, turn_id)
-            if c.epoch != epoch or c.current_turn != turn_id or t.status != "running":
+            if (
+                c.epoch != epoch
+                or c.request_revision != request_revision
+                or c.current_turn != turn_id
+                or t.status != "running"
+                or t.request_revision != request_revision
+            ):
                 return False
             t.status, t.answer = bundle.status, bundle.model_dump(mode="json")
+            t.delivery_status = "accepted"
             # Commit only validated user/assistant history, never partial SDK tool messages.
             if bundle.status in ("answered", "needs_clarification", "insufficient_evidence"):
                 c.history = history[-24:]
@@ -130,16 +156,82 @@ class Store:
                 t = await db.get(Turn, c.current_turn)
                 if t and t.status == "running":
                     t.status = "canceled"
+                    t.cancellation_reason = "hard_interrupt"
+                    t.delivery_status = "discarded"
+                    t.output_suppressed = True
+                    c.request_revision += 1
             c.epoch += 1
             c.current_turn, c.voice_session_id = None, None
             c.summary = ("上个回答被打断；不代表用户已听到完整内容。\n" + c.summary)[:1500]
             await self.event(db, c, "portal.playback.clear", {})
             return c.epoch, True
 
-    async def current(self, cid, epoch, tid=None):
+    async def current(self, cid, epoch, tid=None, request_revision=None):
         async with self.sessions() as db:
             c = await self.get(db, cid)
-            return c.epoch == epoch and (tid is None or c.current_turn == tid)
+            return (
+                c.epoch == epoch
+                and (request_revision is None or c.request_revision == request_revision)
+                and (tid is None or c.current_turn == tid)
+            )
+
+    async def rotate_voice(self, principal, cid):
+        """Fence an old audio connection without inventing a new business revision."""
+        async with self.transaction() as db:
+            c = await self.get(db, cid, principal, lock=True)
+            if c.current_turn:
+                t = await db.get(Turn, c.current_turn)
+                if t and t.status == "running":
+                    t.status = "canceled"
+                    t.cancellation_reason = "voice_restarted"
+                    t.delivery_status = "discarded"
+                    t.output_suppressed = True
+                    c.request_revision += 1
+                    c.current_turn = None
+            c.epoch += 1
+            c.voice_session_id = None
+            await self.event(db, c, "portal.playback.clear", {"message": "语音连接已更新"})
+            return c.epoch, c.request_revision
+
+    async def cancel_task(self, principal, cid, expected_epoch, expected_revision, reason="user_cancelled"):
+        async with self.transaction() as db:
+            c = await self.get(db, cid, principal, lock=True)
+            if c.epoch != expected_epoch:
+                raise DomainError("STALE_EPOCH", "语音连接版本不匹配", 409)
+            if c.request_revision != expected_revision:
+                return c.request_revision, False
+            if not c.current_turn:
+                return c.request_revision, False
+            t = await db.get(Turn, c.current_turn)
+            if not t or t.status != "running":
+                return c.request_revision, False
+            t.status = "canceled"
+            t.cancellation_reason = reason
+            t.delivery_status = "discarded"
+            t.output_suppressed = True
+            c.current_turn = None
+            c.request_revision += 1
+            await self.event(db, c, "portal.playback.clear", {"message": "当前查询已取消"})
+            return c.request_revision, True
+
+    async def stop_playback(self, principal, cid, expected_epoch, expected_revision, response_id=None):
+        async with self.transaction() as db:
+            c = await self.get(db, cid, principal, lock=True)
+            if c.epoch != expected_epoch:
+                raise DomainError("STALE_EPOCH", "语音连接版本不匹配", 409)
+            if c.request_revision != expected_revision:
+                raise DomainError("STALE_REVISION", "查询版本不匹配", 409)
+            if c.current_turn:
+                t = await db.get(Turn, c.current_turn)
+                if t:
+                    t.output_suppressed = True
+            await self.event(
+                db,
+                c,
+                "portal.playback.clear",
+                {"message": "已停止当前播报", "response_id": response_id},
+            )
+            return c.request_revision
 
     async def record(self, cid, epoch, kind, source_id, payload):
         async with self.transaction() as db:

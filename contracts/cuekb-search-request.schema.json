@@ -1,0 +1,93 @@
+{
+  "$defs": {
+    "CueKBSearchFilters": {
+      "additionalProperties": false,
+      "properties": {
+        "document_ids": {
+          "items": {
+            "format": "uuid",
+            "type": "string"
+          },
+          "title": "Document Ids",
+          "type": "array"
+        },
+        "product_model": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Product Model"
+        },
+        "software_version": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Software Version"
+        }
+      },
+      "title": "CueKBSearchFilters",
+      "type": "object"
+    }
+  },
+  "additionalProperties": false,
+  "properties": {
+    "query": {
+      "maxLength": 2000,
+      "minLength": 1,
+      "title": "Query",
+      "type": "string"
+    },
+    "kb_ids": {
+      "items": {
+        "format": "uuid",
+        "type": "string"
+      },
+      "minItems": 1,
+      "title": "Kb Ids",
+      "type": "array"
+    },
+    "mode": {
+      "default": "auto",
+      "enum": [
+        "auto",
+        "exact",
+        "hybrid",
+        "related"
+      ],
+      "title": "Mode",
+      "type": "string"
+    },
+    "top_k": {
+      "default": 5,
+      "maximum": 20,
+      "minimum": 1,
+      "title": "Top K",
+      "type": "integer"
+    },
+    "filters": {
+      "$ref": "#/$defs/CueKBSearchFilters"
+    },
+    "include_context": {
+      "default": true,
+      "title": "Include Context",
+      "type": "boolean"
+    }
+  },
+  "required": [
+    "query",
+    "kb_ids"
+  ],
+  "title": "CueKBSearchRequest",
+  "type": "object"
+}

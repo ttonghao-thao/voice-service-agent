@@ -11,6 +11,6 @@
   "required": [
     "query"
   ],
-  "title": "RagInput",
+  "title": "CueKBSearchInput",
   "type": "object"
 }

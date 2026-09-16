@@ -1,16 +1,16 @@
 import asyncio
 import json
 from datetime import date, datetime, timedelta
-from urllib.parse import urlparse
 from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
 import httpx
 from app.contracts import Citation, DomainError, now, uid
 from app.tools.schemas import (
+    CueKBSearchInput,
+    CueKBSearchRequest,
+    CueKBSearchResponse,
+    CueKBToolResult,
     PlacesResponse,
-    RagInput,
-    RagResponse,
-    RagToolResult,
     WeatherClarification,
     WeatherInput,
     WeatherResponse,
@@ -18,7 +18,7 @@ from app.tools.schemas import (
 from pydantic import TypeAdapter
 
 
-async def bounded_json(client, method, url, *, limit=32768, **kwargs):
+async def bounded_json(client, method, url, *, limit=32768, error_map=None, **kwargs):
     # Redirects are intentionally disabled: configured endpoints cannot redirect into arbitrary networks.
     for attempt in range(2):
         try:
@@ -28,6 +28,9 @@ async def bounded_json(client, method, url, *, limit=32768, **kwargs):
                     await asyncio.sleep(0.1)
                     continue
                 if response.status_code >= 400:
+                    if error_map and response.status_code in error_map:
+                        code, message, status, retryable = error_map[response.status_code]
+                        raise DomainError(code, message, status, retryable)
                     raise DomainError("TOOL_UNAVAILABLE", "查询服务暂不可用", 502, True)
                 body = bytearray()
                 async for chunk in response.aiter_bytes():
@@ -45,9 +48,9 @@ async def bounded_json(client, method, url, *, limit=32768, **kwargs):
     raise DomainError("TOOL_UNAVAILABLE", "查询服务不可用", 502)
 
 
-class RagAdapter:
-    input_model = RagInput
-    output_adapter = TypeAdapter(RagToolResult)
+class CueKBAdapter:
+    input_model = CueKBSearchInput
+    output_adapter = TypeAdapter(CueKBToolResult)
 
     def __init__(self, settings, client):
         self.settings, self.client = settings, client
@@ -55,81 +58,136 @@ class RagAdapter:
     async def invoke(self, args, ctx):
         if not ctx.principal.knowledge_base_ids:
             raise DomainError("FORBIDDEN", "没有获授权的知识库", 403)
-        request_id = uid()
-        if self.settings.rag_mode == "mock":
+        if self.settings.cuekb_mode == "mock":
             # No fabricated policy. Only this explicitly named synthetic fixture can produce a hit.
-            data = {"request_id": request_id, "retrieval_id": uid(), "status": "ok", "hits": []}
+            trace_id = uid()
+            data = {
+                "trace_id": trace_id,
+                "retrieval_status": "not_found",
+                "evidence_status": "unassessed",
+                "degraded_reasons": [],
+                "scope_limited": False,
+                "content_revisions": {kb: 1 for kb in ctx.principal.knowledge_base_ids},
+                "timings_ms": {"total": 0.1},
+                "retrieval_path": "synthetic",
+                "executed_stages": ["synthetic_fixture"],
+                "skipped_stages": [],
+                "hits": [],
+            }
             if "联调示例" in args.query:
+                data["retrieval_status"] = "ok"
                 data["hits"] = [
                     {
-                        "document_id": "synthetic",
-                        "chunk_id": "fixture-1",
-                        "title": "合成联调资料（非业务政策）",
-                        "content": "这是一条合成联调资料，用于验证中文、引用与门户展示，不代表真实业务规则。",
-                        "score": 1.0,
-                        "source_uri": None,
-                        "version": "synthetic-v1",
-                        "updated_at": "2026-09-05T00:00:00Z",
-                        "metadata": {},
+                        "document_id": "00000000-0000-4000-8000-000000000101",
+                        "chunk_id": "00000000-0000-4000-8000-000000000102",
+                        "version_id": "00000000-0000-4000-8000-000000000103",
+                        "rank": 1,
+                        "source_text": "这是一条合成联调资料，用于验证中文、引用与门户展示，不代表真实业务规则。",
+                        "context": None,
+                        "title_path": ["合成联调资料（非业务政策）"],
+                        "anchor": {"page": 1, "heading_path": ["合成联调资料"]},
+                        "metadata": {"business_version": "synthetic-v1"},
+                        "retrieval_sources": ["synthetic_fixture"],
                     }
                 ]
         else:
-            if not self.settings.rag_base_url or not self.settings.rag_api_key.get_secret_value():
+            if not self.settings.cuekb_base_url or not self.settings.cuekb_api_key.get_secret_value():
                 raise DomainError("TOOL_NOT_CONFIGURED", "知识库尚未配置", 503)
+            body = CueKBSearchRequest(
+                query=args.query,
+                kb_ids=list(ctx.principal.knowledge_base_ids),
+                mode=self.settings.cuekb_search_mode,
+                top_k=self.settings.cuekb_top_k,
+                filters={},
+                include_context=True,
+            )
             data = await bounded_json(
                 self.client,
                 "POST",
-                self.settings.rag_base_url.rstrip("/") + "/v1/retrieve",
+                self.settings.cuekb_base_url.rstrip("/") + "/v1/search",
                 headers={
-                    "Authorization": "Bearer " + self.settings.rag_api_key.get_secret_value(),
-                    "X-Tenant-ID": ctx.principal.tenant_id,
-                    "X-User-ID": ctx.principal.user_id,
+                    "Authorization": "Bearer " + self.settings.cuekb_api_key.get_secret_value(),
                 },
-                json={
-                    "request_id": request_id,
-                    "query": args.query,
-                    "knowledge_base_ids": list(ctx.principal.knowledge_base_ids),
-                    "top_k": 5,
-                    "locale": ctx.locale,
-                    "filters": {},
+                json=body.model_dump(mode="json"),
+                error_map={
+                    401: ("CUEKB_AUTH_FAILED", "知识服务认证失败", 502, False),
+                    403: ("CUEKB_FORBIDDEN", "知识服务无权访问授权范围", 502, False),
+                    422: ("CUEKB_CONTRACT_ERROR", "知识查询参数不符合服务契约", 502, False),
+                    429: ("CUEKB_RATE_LIMITED", "知识服务繁忙，请稍后重试", 503, True),
                 },
             )
-        result = RagResponse.model_validate(data)
-        if result.request_id != request_id:
-            raise DomainError("TOOL_BAD_RESPONSE", "知识库请求关联不匹配", 502)
-        versions = {}
-        for hit in result.hits:
-            versions.setdefault(hit.document_id, set()).add(hit.version)
-        if result.status == "conflict" or any(len(v) > 1 for v in versions.values()):
-            return {"status": "conflict", "hits": [], "retrieval_id": result.retrieval_id}
+        result = CueKBSearchResponse.model_validate(data)
+        trace_id = str(result.trace_id)
+        content_revisions = {str(key): value for key, value in result.content_revisions.items()}
         budget = 6000
         hits = []
         for hit in result.hits:
-            if len(hit.content) > budget:
+            content = hit.source_text
+            context = hit.context if hit.context and hit.context != content else None
+            if len(content) > budget:
                 break
-            budget -= len(hit.content)
-            source = urlparse(hit.source_uri or "")
-            allowed = {h.strip() for h in self.settings.rag_source_hosts.split(",") if h.strip()}
-            uri = (
-                hit.source_uri
-                if source.scheme == "https" and source.hostname in allowed and not source.username
-                else None
-            )
+            if len(content) + len(context or "") > budget:
+                context = None
+            budget -= len(content) + len(context or "")
             citation_id = f"C{len(ctx.evidence) + 1}"
+            title = " / ".join(part for part in hit.title_path if part.strip()) or "来源片段"
+            safe_metadata = {
+                key: value
+                for key, value in hit.metadata.items()
+                if key in {"business_version", "product_model", "software_version"}
+                and isinstance(value, (str, int, bool))
+            }
+            business_version = safe_metadata.get("business_version")
+            if not isinstance(business_version, str):
+                business_version = None
             citation = Citation(
                 citation_id=citation_id,
-                **hit.model_dump(exclude={"score", "metadata", "source_uri"}),
-                source_uri=uri,
-                retrieval_id=result.retrieval_id,
+                document_id=str(hit.document_id),
+                chunk_id=str(hit.chunk_id),
+                title=title,
+                version_id=str(hit.version_id),
+                business_version=business_version,
+                content=content,
+                context=context,
+                trace_id=trace_id,
+                retrieval_id=trace_id,
+                retrieval_status=result.retrieval_status,
+                evidence_status=result.evidence_status,
+                degraded_reasons=tuple(result.degraded_reasons),
+                scope_limited=result.scope_limited,
+                content_revisions=content_revisions,
+                rank=hit.rank,
+                title_path=tuple(hit.title_path),
+                anchor=hit.anchor.model_dump(mode="json"),
+                retrieval_sources=tuple(hit.retrieval_sources),
+                metadata=safe_metadata,
                 authorized_kb_ids=tuple(sorted(ctx.principal.knowledge_base_ids)),
-                is_mock=self.settings.rag_mode == "mock",
+                is_mock=self.settings.cuekb_mode == "mock",
             )
             ctx.evidence[citation_id] = citation
             hits.append(citation.model_dump())
+        ctx.retrievals.append(
+            {
+                "trace_id": trace_id,
+                "retrieval_status": result.retrieval_status,
+                "evidence_status": result.evidence_status,
+                "degraded_reasons": result.degraded_reasons,
+                "scope_limited": result.scope_limited,
+            }
+        )
         return {
-            "status": "ok" if hits else "insufficient_evidence",
+            "status": result.retrieval_status,
+            "evidence_status": result.evidence_status,
             "hits": hits,
-            "retrieval_id": result.retrieval_id,
+            "trace_id": trace_id,
+            "retrieval_id": trace_id,
+            "degraded_reasons": result.degraded_reasons,
+            "scope_limited": result.scope_limited,
+            "content_revisions": content_revisions,
+            "timings_ms": result.timings_ms,
+            "retrieval_path": result.retrieval_path,
+            "executed_stages": result.executed_stages,
+            "skipped_stages": result.skipped_stages,
         }
 
 

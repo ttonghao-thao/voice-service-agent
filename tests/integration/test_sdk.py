@@ -6,6 +6,8 @@ from app.agent_runtime.context import RunContext
 from app.contracts import Principal
 from openai import AsyncOpenAI
 
+KB_SUPPORT = "00000000-0000-4000-8000-000000000001"
+
 
 @pytest.mark.parametrize("streaming", [False, True])
 async def test_actual_sdk_runner_executes_registered_tool_and_validates_output(app, conversation, streaming):
@@ -13,10 +15,10 @@ async def test_actual_sdk_runner_executes_registered_tool_and_validates_output(a
         user_id="dev-operator",
         tenant_id="dev-tenant",
         scopes=frozenset({"knowledge:read"}),
-        knowledge_base_ids=("kb_support",),
+        knowledge_base_ids=(KB_SUPPORT,),
     )
     turn, _, _ = await app.state.store.begin_turn(p, conversation, "sdk", "张先生查询联调示例", "voice", 0)
-    ctx = RunContext(p, conversation, turn.id, turn.epoch)
+    ctx = RunContext(p, conversation, turn.id, turn.epoch, request_revision=turn.request_revision)
     requests = []
 
     def handler(request):

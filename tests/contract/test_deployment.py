@@ -34,7 +34,7 @@ def test_cloud_environment_template_cannot_enable_development_fallbacks():
     assert values["APP_ENV"] == "production"
     assert values["AUTH_MODE"] == "oidc"
     assert values["AGENT_PROVIDER"] != "mock"
-    assert values["RAG_MODE"] == "real"
+    assert values["CUEKB_MODE"] == "real"
     assert values["WEATHER_MODE"] == "real"
     assert values["VOICE_PROVIDER"] != "mock"
     assert values["VOICECHAT_API_VERSION"]

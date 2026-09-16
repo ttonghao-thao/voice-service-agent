@@ -12,6 +12,7 @@ from app.contracts import (
     PortalAudioAppend,
     PortalEvent,
     PortalPlaybackAck,
+    PortalPlaybackStop,
     PortalSessionClose,
     portal_client_event_adapter,
     portal_server_event_adapter,
@@ -26,6 +27,7 @@ class VoiceSession:
     principal: object
     conversation_id: str
     epoch: int
+    request_revision: int
     ticket: str
     origin: str
     expires: float
@@ -33,6 +35,8 @@ class VoiceSession:
     task: asyncio.Task | None = None
     used: bool = False
     stopped: bool = False
+    suppress_next_response: bool = False
+    suppressed_responses: set[str] | None = None
 
 
 class VoiceGateway:
@@ -67,10 +71,7 @@ class VoiceGateway:
                 raise DomainError("VOICE_UNAVAILABLE", "真实语音尚未完成接口验证，暂不可用", 503)
             if len(self.sessions) >= s.max_voice_sessions:
                 raise DomainError("VOICE_CAPACITY_EXCEEDED", "语音席位已满，请使用文字或稍后重试", 429, True)
-            async with self.store.sessions() as db:
-                c = await self.store.get(db, cid, principal)
-                expected = c.epoch
-            epoch, _ = await self.store.invalidate(principal, cid, expected)
+            epoch, request_revision = await self.store.rotate_voice(principal, cid)
             old_task = self.coordinator.tasks.pop(cid, None)
             if old_task:
                 old_task.cancel()
@@ -84,12 +85,22 @@ class VoiceGateway:
                     str(item.get("content", "")) for item in visible_history[-6:]
                 )[-1500:]
                 session = VoiceSession(
-                    sid, principal, cid, epoch, ticket, s.public_origin, time.monotonic() + 60, summary
+                    sid,
+                    principal,
+                    cid,
+                    epoch,
+                    request_revision,
+                    ticket,
+                    s.public_origin,
+                    time.monotonic() + 60,
+                    summary,
+                    suppressed_responses=set(),
                 )
             self.sessions[sid] = session
             return {
                 "voice_session_id": sid,
                 "epoch": epoch,
+                "request_revision": request_revision,
                 "ws_url": f"/api/v1/voice-sessions/{sid}/stream?ticket={ticket}",
             }
 
@@ -100,6 +111,15 @@ class VoiceGateway:
                 self.sessions.pop(sid, None)
                 if session.task and session.task is not asyncio.current_task():
                     session.task.cancel()
+
+    async def suppress_playback(self, cid, epoch, response_id=None):
+        for session in self.sessions.values():
+            if session.conversation_id != cid or session.epoch != epoch:
+                continue
+            if response_id:
+                session.suppressed_responses.add(response_id)
+            else:
+                session.suppress_next_response = True
 
     async def close(self):
         tasks = []
@@ -130,13 +150,13 @@ class VoiceGateway:
         wake = asyncio.Event()
         pending, workers, sent_samples = {}, set(), {}
         seq, client_seq, started = 0, -1, time.monotonic()
-        frames, last_input, last_ack = 0, started, 0.0
+        frames, last_input, last_ack, last_playback_stop = 0, started, 0.0, 0.0
         input_state = "quiet"
 
-        async def current(tid=None):
+        async def current(tid=None, revision=None):
             await self.coordinator.coordination.check(session.conversation_id)
             return not session.stopped and await self.store.current(
-                session.conversation_id, session.epoch, tid
+                session.conversation_id, session.epoch, tid, revision
             )
 
         def emit(kind, payload):
@@ -146,6 +166,7 @@ class VoiceGateway:
                 type="portal." + kind,
                 conversation_id=session.conversation_id,
                 epoch=session.epoch,
+                request_revision=session.request_revision,
                 server_seq=seq,
                 payload=payload,
             ).model_dump(mode="json")
@@ -170,10 +191,10 @@ class VoiceGateway:
                     if not await current():
                         return
                     if not controls.empty():
-                        call, tid, text = controls.get_nowait()
+                        call, tid, revision, text = controls.get_nowait()
                         # This is the final fence immediately at the single writer.
                         async with self.coordinator.lock(session.conversation_id):
-                            if await current(tid) and pending.get(call) == "ready":
+                            if await current(tid, revision) and pending.get(call) == "ready":
                                 await provider.submit_tool_result(call, text)
                                 pending[call] = "sent"
                     else:
@@ -183,6 +204,7 @@ class VoiceGateway:
         async def bridge(payload):
             call_id = payload["call_id"]
             tid = None
+            revision = session.request_revision
             try:
                 if (
                     payload["name"] != BRIDGE_NAME
@@ -198,10 +220,13 @@ class VoiceGateway:
                     args.user_request,
                     "voice",
                     session.epoch,
+                    call_id,
                 )
                 tid = turn.id
+                revision = turn.request_revision
+                session.request_revision = revision
                 bundle = await task if task else None
-                if not bundle or not await current(tid):
+                if not bundle or not await current(tid, revision):
                     return
                 text = json.dumps(
                     {
@@ -218,9 +243,9 @@ class VoiceGateway:
                 text = json.dumps(
                     {"status": "failed", "speech_text": "业务请求处理失败，请重新提问。"}, ensure_ascii=False
                 )
-            if await current(tid):
+            if await current(tid, revision):
                 pending[call_id] = "ready"
-                controls.put_nowait((call_id, tid, text))
+                controls.put_nowait((call_id, tid, revision, text))
                 wake.set()
 
         async def receiver():
@@ -245,7 +270,13 @@ class VoiceGateway:
                     return
                 if event.kind == "input.state":
                     input_state = event.payload["state"]
-                if event.kind.endswith(".done") and "text" in event.payload:
+                response_id = event.payload.get("response_id")
+                if response_id and session.suppress_next_response:
+                    session.suppressed_responses.add(response_id)
+                suppressed = bool(
+                    response_id and response_id in (session.suppressed_responses or set())
+                )
+                if event.kind.endswith(".done") and "text" in event.payload and not suppressed:
                     kind = "voicechat_transcript" if event.kind.startswith("speech") else "user_transcript"
                     source = event.payload.get("item_id") or event.payload["response_id"]
                     stored_payload = dict(event.payload)
@@ -263,10 +294,15 @@ class VoiceGateway:
                         raise DomainError("VOICE_PROTOCOL_ERROR", "语音音频块不符合 PCM16 格式", 502)
                     response_id = event.payload["response_id"]
                     sent_samples[response_id] = sent_samples.get(response_id, 0) + len(audio) // 2
+                if suppressed:
+                    if event.kind == "audio.done":
+                        session.suppressed_responses.discard(response_id)
+                        session.suppress_next_response = False
+                    continue
                 emit(event.kind, event.payload)
 
         async def browser():
-            nonlocal client_seq, frames, last_input, last_ack
+            nonlocal client_seq, frames, last_input, last_ack, last_playback_stop
             while True:
                 raw = await ws.receive_text()
                 if len(raw) > 10000:
@@ -308,6 +344,21 @@ class VoiceGateway:
                             {"response_id": response_id, "played_samples": samples, "estimated": True},
                         )
                         last_ack = time.monotonic()
+                elif isinstance(data, PortalPlaybackStop):
+                    if time.monotonic() - last_playback_stop < 1:
+                        continue
+                    last_playback_stop = time.monotonic()
+                    await self.coordinator.stop_playback(
+                        session.principal,
+                        session.conversation_id,
+                        session.epoch,
+                        session.request_revision,
+                        data.payload.response_id,
+                    )
+                    emit(
+                        "playback.clear",
+                        {"message": "已停止当前播报", "response_id": data.payload.response_id},
+                    )
                 elif data.type == "portal.interrupt":
                     await self.coordinator.interrupt(
                         session.principal, session.conversation_id, session.epoch
@@ -327,9 +378,19 @@ class VoiceGateway:
                     return
                 if time.monotonic() - last_input > 5:
                     raise DomainError("AUDIO_BACKPRESSURE", "音频采集已停顿，请重新开始语音", 409, True)
-                if time.monotonic() - started > self.settings.voice_session_max_seconds:
+                elapsed = time.monotonic() - started
+                if elapsed > self.settings.voice_session_max_seconds and input_state == "quiet" and not any(
+                    value in ("running", "ready") for value in pending.values()
+                ):
                     raise DomainError(
-                        "VOICE_SESSION_EXPIRED", "本次语音已到轮换时间，请继续语音后重新提问", 409, True
+                        "VOICE_SESSION_ROTATION_REQUIRED",
+                        "本次语音已到安全轮换时间，正在重新连接",
+                        409,
+                        True,
+                    )
+                if elapsed > self.settings.voice_session_max_seconds + 30:
+                    raise DomainError(
+                        "VOICE_SESSION_EXPIRED", "本次语音已超过轮换宽限期，请重新开始语音", 409, True
                     )
 
         tasks = []
@@ -370,6 +431,7 @@ class VoiceGateway:
                                     type="portal.error",
                                     conversation_id=session.conversation_id,
                                     epoch=session.epoch,
+                                    request_revision=session.request_revision,
                                     payload=error.payload(),
                                 ).model_dump(mode="json")
                             portal_server_event_adapter.validate_python(event)

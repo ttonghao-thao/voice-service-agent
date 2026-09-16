@@ -1,6 +1,6 @@
 # 部署与运行
 
-> 2026-09-16：本文描述当前代码的运行方式，不代表最终架构已实施。当前生产仍要求旧 RAG/天气代理配置；CueKB 专用适配和按启用工具校验分别见 [任务板](TASK_BOARD.md) D03/D06。不要为满足启动条件接入假天气；完成改造与真实验收后再按最终配置部署。最终系统边界见 [架构](architecture.md)。
+> 2026-09-16：本文描述当前代码的运行方式，不代表真实服务已经验收。当前生产使用 CueKB 专用配置，但仍强制天气代理配置；按启用工具校验见 [任务板](TASK_BOARD.md) D06。不要为满足启动条件接入假天气；完成 D06 与真实验收后再按最终配置部署。最终系统边界见 [架构](architecture.md)。
 
 ## 部署方式边界
 
@@ -38,9 +38,9 @@ chmod 600 .env.production
 
 部署脚本会在发现示例值、非 production 模式或非 HTTPS `PUBLIC_ORIGIN` 时停止，然后校验 Compose、构建锁定依赖的镜像、等待 PostgreSQL/Redis 健康、单独执行 Alembic，最后启动 API 与 Web 并等待健康检查。真实 `.env.production` 被 Git 和 Docker build context 排除。
 
-生产 Compose 默认将 Web 映射到云端宿主机 `127.0.0.1:8080`，供同机 HTTPS 反向代理使用。若使用云平台负载均衡访问主机端口，可按网络边界设置 `WEB_BIND_ADDRESS`；不得把此 HTTP 端口无 TLS 地直接暴露到公网。PostgreSQL 和 Redis 只在 Docker 内部网络可见，API 另接 egress 网络访问模型、VoiceChat、RAG、天气和 OIDC。
+生产 Compose 默认将 Web 映射到云端宿主机 `127.0.0.1:8080`，供同机 HTTPS 反向代理使用。若使用云平台负载均衡访问主机端口，可按网络边界设置 `WEB_BIND_ADDRESS`；不得把此 HTTP 端口无 TLS 地直接暴露到公网。PostgreSQL 和 Redis 只在 Docker 内部网络可见，API 另接 egress 网络访问模型、VoiceChat、CueKB、天气和 OIDC。
 
-- 设置 `APP_ENV=production`、`AUTH_MODE=oidc`、组织/SSO、真实文本模型、真实 RAG/天气。应用启动会拒绝 mock 和缺失的主要认证/工具配置。
+- 设置 `APP_ENV=production`、`AUTH_MODE=oidc`、组织/SSO、真实文本模型、真实 CueKB/天气。CueKB 的 KB 列表必须是 UUID；应用启动会拒绝 mock 和缺失的主要认证/工具配置。
 - 设置精确 HTTPS `PUBLIC_ORIGIN`。Nginx 配置是内网入口模板；在前置网关终止 TLS，将 HTTPS/WSS 和 Origin 原样转发。外层代理同样不得记录 ticket、OIDC code/state、Authorization 或 Cookie。
 - 内网 DB/Redis 使用部署凭据/网络控制；跨不可信网络时为 DB/Redis 配置 TLS 连接串。Redis 故障会关闭活跃输出，不能退回内存继续假装持有租约。
 - Nginx 关闭 SSE buffering、支持 WS upgrade、限制请求大小和请求速率，设置 CSP、同源麦克风权限与 frame 禁止策略。
@@ -69,6 +69,6 @@ Redis 持有每个 conversation 的独占租约，15 秒 TTL、4 秒续约。未
 2. 对将升级的副本调用管理员 `POST /api/v1/admin/drain`。readiness 返回不可用，拒绝新业务/语音；活跃业务在预算内结束，语音在应用会话上限内结束。
 3. 停止进程前给活跃会话留出窗口。SIGTERM 的 Uvicorn graceful timeout 为 20 秒，容器 stop grace 30 秒；到期关闭连接，客户端需重新开始，不自动重放录音。
 4. 单独执行 `alembic upgrade head`，再启动新副本。启动不替代迁移。
-5. 回滚优先恢复兼容旧应用镜像；本期迁移 0001–0003 都是新增结构。`downgrade` 会删除对应表/字段，不应作为无损回滚手段；需要破坏式数据库回滚时使用已验证备份恢复流程。
+5. 回滚优先恢复兼容旧应用镜像；迁移 0001–0004 都是新增结构或字段。`downgrade` 会删除对应表/字段，不应作为无损回滚手段；需要破坏式数据库回滚时使用已验证备份恢复流程。
 
 健康接口：`/health/live` 为应用存活；`/health/ready` 检查数据库、归属协调和 drain，分别返回文字配置、语音配置和本地容量。管理页健康端点探测只说明可达，不冒充真实推理/工具调用成功。

@@ -8,7 +8,7 @@ test.use({
   },
   permissions: ["microphone"],
 });
-test("合成麦克风连续传输、静音、硬打断重建与结束释放", async ({ page }) => {
+test("合成麦克风连续传输、停播、受控重建与结束释放", async ({ page }) => {
   const errors: string[] = [];
   page.on("pageerror", (e) => errors.push(e.message));
   const frames: { epoch: number; seq: number; payload: { audio: string } }[] =
@@ -40,7 +40,11 @@ test("合成麦克风连续传输、静音、硬打断重建与结束释放", as
       );
     })
     .toBe(true);
-  await page.getByRole("button", { name: /打断并重新提问/ }).click();
+  const beforeStop = frames.length;
+  await page.getByRole("button", { name: "停止播报", exact: true }).click();
+  await expect.poll(() => frames.length).toBeGreaterThan(beforeStop);
+  expect(frames.at(-1)?.epoch).toBe(firstEpoch);
+  await page.getByRole("button", { name: "重新开始语音", exact: true }).click();
   await expect(page.getByText("语音已就绪", { exact: true })).toBeVisible();
   await expect.poll(() => frames.some((f) => f.epoch > firstEpoch)).toBe(true);
   await page.getByRole("button", { name: "结束语音", exact: true }).click();

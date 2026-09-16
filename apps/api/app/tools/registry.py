@@ -7,7 +7,7 @@ import yaml
 from app.config import ROOT
 from app.contracts import DomainError, StrictModel
 from app.storage.models import ToolRun
-from app.tools.adapters import RagAdapter, WeatherAdapter
+from app.tools.adapters import CueKBAdapter, WeatherAdapter
 from pydantic import Field, ValidationError
 
 
@@ -36,7 +36,7 @@ class ToolRegistry:
     def __init__(self, settings, client, store):
         self.store = store
         self.adapters = {
-            "rag_http": RagAdapter(settings, client),
+            "cuekb_http": CueKBAdapter(settings, client),
             "weather_http": WeatherAdapter(settings, client),
         }
         config = yaml.safe_load((ROOT / "config/tools.yaml").read_text())
@@ -64,12 +64,22 @@ class ToolRegistry:
     async def invoke(self, name, arguments, ctx):
         started = time.monotonic()
         status, output = "ok", {}
-        saved_evidence, saved_cards, saved_slots = dict(ctx.evidence), list(ctx.cards), dict(ctx.slots)
+        saved_evidence, saved_cards, saved_slots, saved_retrievals = (
+            dict(ctx.evidence),
+            list(ctx.cards),
+            dict(ctx.slots),
+            list(ctx.retrievals),
+        )
         try:
             spec = self.specs.get(name)
             if not spec or name not in ctx.allowed_tools or name not in await self.allowed(ctx.principal):
                 raise DomainError("FORBIDDEN", "此工具未获授权或已停用", 403)
-            if not await self.store.current(ctx.conversation_id, ctx.epoch, ctx.turn_id):
+            if not await self.store.current(
+                ctx.conversation_id,
+                ctx.epoch,
+                ctx.turn_id,
+                ctx.request_revision,
+            ):
                 raise DomainError("STALE_EPOCH", "该轮查询已取消", 409)
             if await self.store.tool_revision(name) != ctx.tool_versions.get(name, 0):
                 raise DomainError("FORBIDDEN", "工具配置已变更，请重新提问", 403)
@@ -105,7 +115,12 @@ class ToolRegistry:
             return {"status": "failed", "code": status, "message": "查询服务发生错误，请稍后重试"}
         finally:
             if status != "ok":
-                ctx.evidence, ctx.cards, ctx.slots = saved_evidence, saved_cards, saved_slots
+                ctx.evidence, ctx.cards, ctx.slots, ctx.retrievals = (
+                    saved_evidence,
+                    saved_cards,
+                    saved_slots,
+                    saved_retrievals,
+                )
             async with self.store.transaction() as db:
                 db.add(
                     ToolRun(

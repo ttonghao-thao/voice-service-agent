@@ -10,14 +10,22 @@ from app.contracts import (
 )
 from app.main import create_app
 from app.tools.registry import ToolSpec
-from app.tools.schemas import PlacesResponse, RagInput, RagResponse, WeatherInput, WeatherResponse
+from app.tools.schemas import (
+    CueKBSearchInput,
+    CueKBSearchRequest,
+    CueKBSearchResponse,
+    PlacesResponse,
+    WeatherInput,
+    WeatherResponse,
+)
 
 root = Path(__file__).resolve().parents[1]
 models = {
     "answer-bundle": AnswerBundle,
     "tool-spec": ToolSpec,
-    "rag-query": RagInput,
-    "rag-response": RagResponse,
+    "cuekb-tool-query": CueKBSearchInput,
+    "cuekb-search-request": CueKBSearchRequest,
+    "cuekb-search-response": CueKBSearchResponse,
     "weather-query": WeatherInput,
     "weather-response": WeatherResponse,
     "places-response": PlacesResponse,

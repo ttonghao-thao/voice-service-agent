@@ -2,6 +2,7 @@ import re
 from pathlib import Path
 from typing import Literal
 from urllib.parse import urlparse
+from uuid import UUID
 
 from pydantic import SecretStr, field_validator, model_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
@@ -28,17 +29,18 @@ class Settings(BaseSettings):
     oidc_client_secret: SecretStr = SecretStr("")
     auth_cookie_secret: SecretStr = SecretStr("")
     tenant_id: str = ""
-    knowledge_base_ids: str = "kb_support"
-    rag_source_hosts: str = ""
+    knowledge_base_ids: str = "00000000-0000-4000-8000-000000000001"
     agent_provider: Literal["mock", "openai", "compatible"] = "mock"
     agent_model: str = ""
     agent_base_url: str | None = None
     openai_api_key: SecretStr = SecretStr("")
     agent_deadline_ms: int = 12000
     max_agent_runs: int = 16
-    rag_mode: Literal["mock", "real"] = "mock"
-    rag_base_url: str = ""
-    rag_api_key: SecretStr = SecretStr("")
+    cuekb_mode: Literal["mock", "real"] = "mock"
+    cuekb_base_url: str = ""
+    cuekb_api_key: SecretStr = SecretStr("")
+    cuekb_search_mode: Literal["auto", "exact", "hybrid", "related"] = "auto"
+    cuekb_top_k: int = 5
     weather_mode: Literal["mock", "real"] = "mock"
     weather_provider: Literal["http_contract"] = "http_contract"
     weather_base_url: str = ""
@@ -69,6 +71,14 @@ class Settings(BaseSettings):
     def check(self):
         if self.agent_deadline_ms < 100 or self.max_voice_sessions < 1 or self.max_agent_runs < 1:
             raise ValueError("Invalid deadline or capacity")
+        if not 1 <= self.cuekb_top_k <= 20:
+            raise ValueError("CueKB top_k must be between 1 and 20")
+        try:
+            knowledge_ids = [value.strip() for value in self.knowledge_base_ids.split(",") if value.strip()]
+            if not knowledge_ids or len(set(map(UUID, knowledge_ids))) != len(knowledge_ids):
+                raise ValueError
+        except ValueError as exc:
+            raise ValueError("KNOWLEDGE_BASE_IDS must contain unique UUID values") from exc
         if not 10 <= self.voice_session_max_seconds <= 600 or self.retention_days < 1:
             raise ValueError("Invalid session timeout or retention")
         if self.external_tracing_enabled:
@@ -82,7 +92,7 @@ class Settings(BaseSettings):
                 raise ValueError("Production schema changes must use migrations")
             if self.auth_mode != "oidc" or any(
                 x == "mock"
-                for x in (self.agent_provider, self.rag_mode, self.weather_mode, self.voice_provider)
+                for x in (self.agent_provider, self.cuekb_mode, self.weather_mode, self.voice_provider)
             ):
                 raise ValueError("Production forbids dev identity and mock providers")
             if not self.database_url.startswith("postgresql+asyncpg:") or not self.redis_url:
@@ -91,8 +101,9 @@ class Settings(BaseSettings):
                 raise ValueError("Production requires a configured text model")
             if not all(
                 (
-                    self.rag_base_url,
-                    self.rag_api_key.get_secret_value(),
+                    self.cuekb_base_url,
+                    self.cuekb_api_key.get_secret_value(),
+                    self.cuekb_api_revision,
                     self.weather_base_url,
                     self.weather_api_key.get_secret_value(),
                 )
@@ -108,7 +119,7 @@ class Settings(BaseSettings):
                 self.oidc_jwks_url,
                 self.oidc_authorization_url,
                 self.oidc_token_url,
-                self.rag_base_url,
+                self.cuekb_base_url,
                 self.weather_base_url,
                 self.agent_base_url,
                 self.voicechat_health_url,
@@ -134,4 +145,4 @@ class Settings(BaseSettings):
 
     @property
     def mock(self) -> bool:
-        return "mock" in (self.agent_provider, self.rag_mode, self.weather_mode, self.voice_provider)
+        return "mock" in (self.agent_provider, self.cuekb_mode, self.weather_mode, self.voice_provider)

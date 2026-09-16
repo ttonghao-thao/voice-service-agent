@@ -10,7 +10,7 @@ HTML 语音门户 ⇄ HTTPS / SSE / WSS ⇄ Voice Service Agent
                                    └─ PostgreSQL / Redis
 ```
 
-**当前状态：最终设计已整理，D01/D02 代码已完成本地验证。** 门户事件契约已冻结为严格联合类型，VoiceChat 能力声明绑定 API 版本/镜像 digest/真实探测模式；OIDC 已支持受限 `customer` 角色、会话隔离、KB 交集及历史撤权脱敏。CueKB 原生适配、简单门户及任务 revision 仍待实施；真实 VoiceChat、SSO、CueKB 和生产验收未完成。默认开发 mock 有明确标识，不能作为真实语音或知识查询结果。
+**当前状态：最终设计已整理，D01–D05 代码已完成本地验证。** 门户事件契约已冻结为严格联合类型，VoiceChat 能力声明绑定 API 版本/镜像 digest/真实探测模式；OIDC 已支持受限 `customer` 角色、会话隔离、KB 交集及历史撤权脱敏。CueKB 原生适配、简单客户门户及独立任务 revision/停播/取消语义已经实现；真实 VoiceChat、SSO、CueKB、PostgreSQL/Redis/Docker 和生产验收未完成。默认开发 mock 有明确标识，不能作为真实语音或知识查询结果。
 
 ## 按需阅读
 
@@ -38,7 +38,7 @@ npm ci --prefix apps/web
 npm run dev --prefix apps/web -- --port 5173
 ```
 
-访问 [本地门户](http://localhost:5173)。`PUBLIC_ORIGIN` 必须与浏览器地址一致；不要混用 localhost 与 127.0.0.1。当前启动的是已有 React 工作台，尚不是精简后的客户页面。
+访问 [本地门户](http://localhost:5173)。`PUBLIC_ORIGIN` 必须与浏览器地址一致；不要混用 localhost 与 127.0.0.1。当前页面是精简客户入口，工具管理只保留受权限保护的后端运维 API，不进入客户页面。
 
 “联调示例”仅验证合成文字、引用和历史；mock 语音只验证传输，不识别或合成业务语音。开发身份默认不是管理员，需要本地管理功能时才设置 `DEV_ADMIN=true`。不将开发身份用于生产。
 

@@ -1,0 +1,249 @@
+{
+  "$defs": {
+    "CueKBSearchHit": {
+      "additionalProperties": false,
+      "properties": {
+        "chunk_id": {
+          "format": "uuid",
+          "title": "Chunk Id",
+          "type": "string"
+        },
+        "document_id": {
+          "format": "uuid",
+          "title": "Document Id",
+          "type": "string"
+        },
+        "version_id": {
+          "format": "uuid",
+          "title": "Version Id",
+          "type": "string"
+        },
+        "rank": {
+          "minimum": 1,
+          "title": "Rank",
+          "type": "integer"
+        },
+        "source_text": {
+          "minLength": 1,
+          "title": "Source Text",
+          "type": "string"
+        },
+        "context": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Context"
+        },
+        "title_path": {
+          "items": {
+            "type": "string"
+          },
+          "title": "Title Path",
+          "type": "array"
+        },
+        "anchor": {
+          "$ref": "#/$defs/SourceAnchor"
+        },
+        "metadata": {
+          "additionalProperties": true,
+          "title": "Metadata",
+          "type": "object"
+        },
+        "retrieval_sources": {
+          "items": {
+            "type": "string"
+          },
+          "title": "Retrieval Sources",
+          "type": "array"
+        }
+      },
+      "required": [
+        "chunk_id",
+        "document_id",
+        "version_id",
+        "rank",
+        "source_text"
+      ],
+      "title": "CueKBSearchHit",
+      "type": "object"
+    },
+    "SourceAnchor": {
+      "additionalProperties": false,
+      "properties": {
+        "page": {
+          "anyOf": [
+            {
+              "minimum": 1,
+              "type": "integer"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Page"
+        },
+        "heading_path": {
+          "items": {
+            "type": "string"
+          },
+          "title": "Heading Path",
+          "type": "array"
+        },
+        "start_offset": {
+          "anyOf": [
+            {
+              "minimum": 0,
+              "type": "integer"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Start Offset"
+        },
+        "end_offset": {
+          "anyOf": [
+            {
+              "minimum": 0,
+              "type": "integer"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "End Offset"
+        },
+        "bbox": {
+          "anyOf": [
+            {
+              "additionalProperties": {
+                "anyOf": [
+                  {
+                    "type": "number"
+                  },
+                  {
+                    "type": "string"
+                  }
+                ]
+              },
+              "type": "object"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Bbox"
+        }
+      },
+      "title": "SourceAnchor",
+      "type": "object"
+    }
+  },
+  "additionalProperties": false,
+  "properties": {
+    "trace_id": {
+      "format": "uuid",
+      "title": "Trace Id",
+      "type": "string"
+    },
+    "retrieval_status": {
+      "enum": [
+        "ok",
+        "degraded",
+        "not_found",
+        "needs_clarification"
+      ],
+      "title": "Retrieval Status",
+      "type": "string"
+    },
+    "evidence_status": {
+      "default": "unassessed",
+      "enum": [
+        "unassessed",
+        "sufficient",
+        "insufficient",
+        "conflicting"
+      ],
+      "title": "Evidence Status",
+      "type": "string"
+    },
+    "degraded_reasons": {
+      "items": {
+        "type": "string"
+      },
+      "title": "Degraded Reasons",
+      "type": "array"
+    },
+    "scope_limited": {
+      "default": false,
+      "title": "Scope Limited",
+      "type": "boolean"
+    },
+    "content_revisions": {
+      "additionalProperties": {
+        "type": "integer"
+      },
+      "propertyNames": {
+        "format": "uuid"
+      },
+      "title": "Content Revisions",
+      "type": "object"
+    },
+    "timings_ms": {
+      "additionalProperties": {
+        "type": "number"
+      },
+      "title": "Timings Ms",
+      "type": "object"
+    },
+    "retrieval_path": {
+      "default": "keyword",
+      "title": "Retrieval Path",
+      "type": "string"
+    },
+    "executed_stages": {
+      "items": {
+        "type": "string"
+      },
+      "title": "Executed Stages",
+      "type": "array"
+    },
+    "skipped_stages": {
+      "items": {
+        "additionalProperties": {
+          "type": "string"
+        },
+        "type": "object"
+      },
+      "title": "Skipped Stages",
+      "type": "array"
+    },
+    "hits": {
+      "items": {
+        "$ref": "#/$defs/CueKBSearchHit"
+      },
+      "maxItems": 20,
+      "title": "Hits",
+      "type": "array"
+    }
+  },
+  "required": [
+    "trace_id",
+    "retrieval_status",
+    "content_revisions",
+    "timings_ms",
+    "hits"
+  ],
+  "title": "CueKBSearchResponse",
+  "type": "object"
+}

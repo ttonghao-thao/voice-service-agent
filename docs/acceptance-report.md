@@ -1,16 +1,16 @@
 # 验收状态与真实服务门槛
 
-更新：2026-09-16。目标架构已定稿，**D01/D02 已完成代码和本地自动化验证，真实服务与生产验收仍未完成**。缺口和实施顺序见 [任务板](TASK_BOARD.md)。
+更新：2026-09-16。目标架构已定稿，**D01–D05 已完成代码和本地自动化验证，真实服务与生产验收仍未完成**。缺口和实施顺序见 [任务板](TASK_BOARD.md)。
 
 编码阶段约束（2026-09-16 确认）：CueKB/VoiceChat 无真实接口可调用，满足已确认接口规范和处理逻辑并通过相应契约/本地测试，即满足该阶段验收要求。Docker 环境不提供，仅在必要时静态检查镜像制作和启动代码，不搭建环境或执行镜像构建。以下真实服务与容器验收项留待后续部署阶段，不作为编码完成的阻塞项。
 
-## 1. 本轮 D01/D02 验证
+## 1. 本轮 D01–D05 验证
 
-- Python `pytest`：47 passed；覆盖事件联合契约、VoiceChat 固定版本配置、customer 角色、管理拒绝、对象隔离、KB 交集、撤权后答案/SSE/口述记录脱敏，以及旧知识不进入后续 Agent/语音摘要。仍有一条 Starlette/AnyIO 上游弃用警告。
+- Python `pytest`：57 passed；除 D01/D02 边界外，覆盖 CueKB `/v1/search` 请求、UUID KB 注入、trace/status/version/anchor 映射、降级和 HTTP 错误区分、旧 Citation 读取兼容、任务 supersede/cancel、重启恢复、晚到结果拒绝、停止播报不取消查询，以及仅有输入活动/附和时不取消。仍有一条 Starlette/AnyIO 上游弃用警告。
 - Ruff：`apps/api`、`scripts`、`tests` 通过；生成 HTTP、上下行事件及答案 schema 后差异检查通过。
 - 前端：6 项 Node 音频测试通过；TypeScript/Vite 生产构建通过。
-- Playwright：启动隔离的开发 API/Vite 后 5 passed；覆盖中文文字/证据/刷新/窄屏、无依据、麦克风拒绝、管理员工具，以及合成麦克风连续帧/静音/硬打断/释放。合成设备不证明真实语音质量。
-- Alembic：临时空 SQLite 执行 0001→0003、downgrade base、再次 upgrade head 通过；D01/D02 未新增关系表或列。
+- Playwright：启动隔离的开发 API/Vite 后 4 passed；覆盖中文文字/证据/刷新/窄屏、无依据、麦克风拒绝，以及合成麦克风连续帧/静音/停止播报/新 epoch 重建/释放。客户页面不含管理工作台；合成设备不证明真实语音质量。
+- Alembic：临时空 SQLite 执行 0001→0004、downgrade base、再次 upgrade head 通过；0004 新增 request revision、parent/native call、取消原因、delivery status 和输出抑制字段。真实 PostgreSQL 迁移仍未执行。
 - 探测脚本 CLI 通过；当前未配置/调用真实 VoiceChat，没有生成事件报告或音频，不将脚本存在当作能力通过。
 - `git diff --check` 通过。真实 PostgreSQL、Redis、Docker、OIDC、CueKB 和 VoiceChat 均未在本轮运行。
 
@@ -31,10 +31,10 @@
 ## 3. 当前明确未验证
 
 - 真实 VoiceChat 中文语音、工具往返、工具等待时的新问题回答、pending call 结清和实际口述准确性。
-- CueKB 原生 `/v1/search` 接入、受限 Key/ACL 和真实知识正确性；本地撤权测试使用旧 RAG mock，不能覆盖 CueKB。
+- CueKB 原生 `/v1/search` 的真实服务连接、受限 Key/ACL 和真实知识正确性；本地仅使用符合当前 CueKB schema 的受控响应与显式 mock。
 - 客户 SSO/IdP 的实际 claim 与撤权传播、真实文本模型、任何实际天气/股票供应商。
 - 真实 PostgreSQL/Redis/Docker、负载均衡故障、容量及端到端性能。
-- 新简单客户门户和任务 revision/停播语义尚未实现，不能按旧工作台测试宣称完成。
+- 任务 revision、停止播报和安静边界轮换尚未在真实 VoiceChat 上验证；特别是工具阶段改问、pending call 安全结清和实际音频抑制仍受 D01 能力门槛约束。
 
 这些是已记录验证范围，不表示本轮检查了当前机器是否安装了相应运行环境。
 

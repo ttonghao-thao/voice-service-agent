@@ -1,30 +1,73 @@
+import math
 from typing import Any, Literal
+from uuid import UUID
 
 from app.contracts import Citation, StrictModel
-from pydantic import Field
+from pydantic import Field, model_validator
 
 
-class RagInput(StrictModel):
+class CueKBSearchInput(StrictModel):
     query: str = Field(min_length=1, max_length=2000)
 
 
-class RagHit(StrictModel):
-    document_id: str = Field(min_length=1, max_length=256)
-    chunk_id: str = Field(min_length=1, max_length=256)
-    title: str = Field(min_length=1, max_length=500)
-    content: str = Field(min_length=1, max_length=6000)
-    score: float
-    source_uri: str | None
-    version: str = Field(min_length=1, max_length=128)
-    updated_at: str
+class CueKBSearchFilters(StrictModel):
+    document_ids: list[UUID] = Field(default_factory=list)
+    product_model: str | None = None
+    software_version: str | None = None
+
+
+class CueKBSearchRequest(StrictModel):
+    query: str = Field(min_length=1, max_length=2000)
+    kb_ids: list[UUID] = Field(min_length=1)
+    mode: Literal["auto", "exact", "hybrid", "related"] = "auto"
+    top_k: int = Field(default=5, ge=1, le=20)
+    filters: CueKBSearchFilters = Field(default_factory=CueKBSearchFilters)
+    include_context: bool = True
+
+
+class SourceAnchor(StrictModel):
+    page: int | None = Field(default=None, ge=1)
+    heading_path: list[str] = Field(default_factory=list)
+    start_offset: int | None = Field(default=None, ge=0)
+    end_offset: int | None = Field(default=None, ge=0)
+    bbox: dict[str, float | str] | None = None
+
+
+class CueKBSearchHit(StrictModel):
+    chunk_id: UUID
+    document_id: UUID
+    version_id: UUID
+    rank: int = Field(ge=1)
+    source_text: str = Field(min_length=1)
+    context: str | None = None
+    title_path: list[str] = Field(default_factory=list)
+    anchor: SourceAnchor = Field(default_factory=SourceAnchor)
     metadata: dict[str, Any] = Field(default_factory=dict)
+    retrieval_sources: list[str] = Field(default_factory=list)
 
 
-class RagResponse(StrictModel):
-    request_id: str
-    retrieval_id: str
-    status: Literal["ok", "conflict"]
-    hits: list[RagHit] = Field(max_length=10)
+class CueKBSearchResponse(StrictModel):
+    trace_id: UUID
+    retrieval_status: Literal["ok", "degraded", "not_found", "needs_clarification"]
+    evidence_status: Literal["unassessed", "sufficient", "insufficient", "conflicting"] = (
+        "unassessed"
+    )
+    degraded_reasons: list[str] = Field(default_factory=list)
+    scope_limited: bool = False
+    content_revisions: dict[UUID, int]
+    timings_ms: dict[str, float]
+    retrieval_path: str = "keyword"
+    executed_stages: list[str] = Field(default_factory=list)
+    skipped_stages: list[dict[str, str]] = Field(default_factory=list)
+    hits: list[CueKBSearchHit] = Field(max_length=20)
+
+    @model_validator(mode="after")
+    def consistent_status(self):
+        if self.retrieval_status in ("not_found", "needs_clarification") and self.hits:
+            raise ValueError("non-result retrieval statuses cannot contain hits")
+        if any(not math.isfinite(value) or value < 0 for value in self.timings_ms.values()):
+            raise ValueError("timings_ms must contain finite non-negative values")
+        return self
 
 
 class WeatherInput(StrictModel):
@@ -73,7 +116,16 @@ class WeatherClarification(StrictModel):
     is_mock: bool = False
 
 
-class RagToolResult(StrictModel):
-    status: Literal["ok", "insufficient_evidence", "conflict"]
+class CueKBToolResult(StrictModel):
+    status: Literal["ok", "degraded", "not_found", "needs_clarification"]
+    evidence_status: Literal["unassessed", "sufficient", "insufficient", "conflicting"]
     hits: list[Citation] = Field(default_factory=list)
+    trace_id: str
     retrieval_id: str
+    degraded_reasons: list[str] = Field(default_factory=list)
+    scope_limited: bool = False
+    content_revisions: dict[str, int] = Field(default_factory=dict)
+    timings_ms: dict[str, float] = Field(default_factory=dict)
+    retrieval_path: str
+    executed_stages: list[str] = Field(default_factory=list)
+    skipped_stages: list[dict[str, str]] = Field(default_factory=list)

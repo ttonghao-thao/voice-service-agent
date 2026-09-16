@@ -50,7 +50,11 @@ class SessionCoordinator:
                 t = await db.get(Turn, c.current_turn) if c.current_turn else None
                 if c.voice_session_id or (t and t.status == "running"):
                     if t and t.status == "running":
-                        t.status = "canceled"
+                        t.status = "expired"
+                        t.cancellation_reason = "service_restarted"
+                        t.delivery_status = "discarded"
+                        t.output_suppressed = True
+                        c.request_revision += 1
                     c.epoch += 1
                     c.current_turn, c.voice_session_id = None, None
                     await self.store.event(
@@ -69,14 +73,27 @@ class SessionCoordinator:
                 if c.current_turn:
                     t = await db.get(Turn, c.current_turn)
                     if t and t.status == "running":
-                        t.status = "canceled"
+                        t.status = "expired"
+                        t.cancellation_reason = "gateway_lease_replaced"
+                        t.delivery_status = "discarded"
+                        t.output_suppressed = True
+                        c.request_revision += 1
                 c.epoch += 1
                 c.current_turn, c.voice_session_id = None, None
                 await self.store.event(
                     db, c, "portal.playback.clear", {"message": "新网关已接管，请重新开始语音"}
                 )
 
-    async def submit(self, principal, cid, key, request, channel="text", expected_epoch=None):
+    async def submit(
+        self,
+        principal,
+        cid,
+        key,
+        request,
+        channel="text",
+        expected_epoch=None,
+        native_call_id=None,
+    ):
         async with self.lock(cid):
             await self.ensure_owner(principal, cid)
             if self.draining:
@@ -84,7 +101,13 @@ class SessionCoordinator:
             if len(self.all_tasks) >= self.settings.max_agent_runs:
                 raise DomainError("AGENT_CAPACITY_EXCEEDED", "查询服务繁忙，请稍后重试", 429, True)
             turn, conversation, created = await self.store.begin_turn(
-                principal, cid, key, request, channel, expected_epoch
+                principal,
+                cid,
+                key,
+                request,
+                channel,
+                expected_epoch,
+                native_call_id,
             )
             if not created:
                 return turn, None
@@ -98,6 +121,7 @@ class SessionCoordinator:
                 cid,
                 turn.id,
                 turn.epoch,
+                request_revision=turn.request_revision,
                 locale=conversation.locale,
                 slots=dict(conversation.slots),
             )
@@ -116,7 +140,12 @@ class SessionCoordinator:
         async def progress(message):
             async with self.lock(ctx.conversation_id):
                 await self.coordination.check(ctx.conversation_id)
-                if await self.store.current(ctx.conversation_id, ctx.epoch, ctx.turn_id):
+                if await self.store.current(
+                    ctx.conversation_id,
+                    ctx.epoch,
+                    ctx.turn_id,
+                    ctx.request_revision,
+                ):
                     async with self.store.transaction() as db:
                         c = await self.store.get(db, ctx.conversation_id, lock=True)
                         await self.store.event(
@@ -150,7 +179,13 @@ class SessionCoordinator:
             async with self.lock(ctx.conversation_id):
                 await self.coordination.check(ctx.conversation_id)
                 committed = await self.store.commit(
-                    ctx.conversation_id, ctx.epoch, ctx.turn_id, bundle, new_history, ctx.slots
+                    ctx.conversation_id,
+                    ctx.epoch,
+                    ctx.request_revision,
+                    ctx.turn_id,
+                    bundle,
+                    new_history,
+                    ctx.slots,
                 )
             return bundle if committed else None
         except asyncio.CancelledError:
@@ -164,7 +199,14 @@ class SessionCoordinator:
             if self.coordination.valid:
                 async with self.lock(ctx.conversation_id):
                     await self.coordination.check(ctx.conversation_id)
-                    await self.store.commit(ctx.conversation_id, ctx.epoch, ctx.turn_id, bundle, history)
+                    await self.store.commit(
+                        ctx.conversation_id,
+                        ctx.epoch,
+                        ctx.request_revision,
+                        ctx.turn_id,
+                        bundle,
+                        history,
+                    )
             return bundle if self.coordination.valid else None
 
     async def interrupt(self, principal, cid, expected_epoch):
@@ -178,6 +220,34 @@ class SessionCoordinator:
                 if self.voice:
                     await self.voice.close_conversation(cid)
             return epoch
+
+    async def cancel_task(self, principal, cid, expected_epoch, expected_revision):
+        async with self.lock(cid):
+            await self.ensure_owner(principal, cid)
+            revision, changed = await self.store.cancel_task(
+                principal, cid, expected_epoch, expected_revision
+            )
+            if changed:
+                task = self.tasks.pop(cid, None)
+                if task:
+                    task.cancel()
+                # A native call cannot be left pending. Until an installed VoiceChat
+                # version proves a safe stale-call result, close that connection.
+                if self.voice:
+                    await self.voice.close_conversation(cid)
+            return revision, changed
+
+    async def stop_playback(
+        self, principal, cid, expected_epoch, expected_revision, response_id=None
+    ):
+        async with self.lock(cid):
+            await self.ensure_owner(principal, cid)
+            revision = await self.store.stop_playback(
+                principal, cid, expected_epoch, expected_revision, response_id
+            )
+            if self.voice:
+                await self.voice.suppress_playback(cid, expected_epoch, response_id)
+            return revision
 
     async def close(self):
         self.draining = True

@@ -42,6 +42,27 @@
       "title": "PlaybackAckPayload",
       "type": "object"
     },
+    "PlaybackStopPayload": {
+      "additionalProperties": false,
+      "properties": {
+        "response_id": {
+          "anyOf": [
+            {
+              "maxLength": 128,
+              "minLength": 1,
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Response Id"
+        }
+      },
+      "title": "PlaybackStopPayload",
+      "type": "object"
+    },
     "PortalAudioAppend": {
       "additionalProperties": false,
       "properties": {
@@ -164,6 +185,30 @@
       "title": "PortalPlaybackAck",
       "type": "object"
     },
+    "PortalPlaybackStop": {
+      "additionalProperties": false,
+      "properties": {
+        "epoch": {
+          "minimum": 0,
+          "title": "Epoch",
+          "type": "integer"
+        },
+        "type": {
+          "const": "portal.playback.stop",
+          "title": "Type",
+          "type": "string"
+        },
+        "payload": {
+          "$ref": "#/$defs/PlaybackStopPayload"
+        }
+      },
+      "required": [
+        "epoch",
+        "type"
+      ],
+      "title": "PortalPlaybackStop",
+      "type": "object"
+    },
     "PortalSessionClose": {
       "additionalProperties": false,
       "properties": {
@@ -194,6 +239,7 @@
       "portal.audio.append": "#/$defs/PortalAudioAppend",
       "portal.interrupt": "#/$defs/PortalInterrupt",
       "portal.playback.ack": "#/$defs/PortalPlaybackAck",
+      "portal.playback.stop": "#/$defs/PortalPlaybackStop",
       "portal.session.close": "#/$defs/PortalSessionClose"
     },
     "propertyName": "type"
@@ -204,6 +250,9 @@
     },
     {
       "$ref": "#/$defs/PortalPlaybackAck"
+    },
+    {
+      "$ref": "#/$defs/PortalPlaybackStop"
     },
     {
       "$ref": "#/$defs/PortalInterrupt"

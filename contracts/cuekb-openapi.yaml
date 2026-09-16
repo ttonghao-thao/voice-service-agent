@@ -1,0 +1,33 @@
+openapi: 3.1.0
+info:
+  title: CueKB Search Contract Used by Voice Service Agent
+  version: 22c74a335bf88ea50f0df3b171d0b2125c14c77a
+paths:
+  /v1/search:
+    post:
+      operationId: searchKnowledge
+      security:
+        - bearerAuth: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: ./cuekb-search-request.schema.json
+      responses:
+        "200":
+          description: CueKB retrieval result
+          content:
+            application/json:
+              schema:
+                $ref: ./cuekb-search-response.schema.json
+        "401": {description: Invalid service API key}
+        "403": {description: Service principal lacks KB access}
+        "422": {description: Request contract violation}
+        "429": {description: Rate limited}
+        "5XX": {description: CueKB service failure}
+components:
+  securitySchemes:
+    bearerAuth:
+      type: http
+      scheme: bearer

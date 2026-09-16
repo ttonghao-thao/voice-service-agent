@@ -7,12 +7,12 @@
 | 依赖 | 最终职责 | 当前实现状态 |
 | --- | --- | --- |
 | VoiceChat | 独立实时语音服务，原生工具调用 | 有 NVIDIA WebSocket adapter；真实部署未验收 |
-| CueKB | 知识检索与版本来源 | 专用 adapter 待实现；现有 RAG 代理 schema 不兼容 |
+| CueKB | 知识检索与版本来源 | 专用 adapter、契约和受控测试已实现；真实服务/ACL 待 D07 |
 | 文本模型 | BusinessRuntime 的推理与业务回答 | 已有 openai / compatible adapter；真实模型未验收 |
 | 第三方工具 | 按实际接入选择启用 | 现有天气代理示例；生产强制天气配置尚待解除 |
 | 身份服务 | 客户身份、组织及知识范围 | OIDC/JWT 已支持 customer/operator/admin；真实 IdP 与 CueKB ACL 待验收 |
 
-当前环境变量名和启动校验以 `apps/api/app/config.py`、`.env.example`、`.env.production.example` 为准。不要添加假想 `CUEKB_*` 变量后宣称现有程序会读取，也不要将 CueKB 地址直接填入旧 RAG 地址并宣称已兼容。
+当前环境变量名和启动校验以 `apps/api/app/config.py`、`.env.example`、`.env.production.example` 为准。实现读取 `CUEKB_MODE`、`CUEKB_BASE_URL`、`CUEKB_API_KEY`、`CUEKB_SEARCH_MODE`、`CUEKB_TOP_K` 与 `CUEKB_API_REVISION`；旧 `RAG_*` 配置和 `/v1/retrieve` 契约已退出活动实现。
 
 development 使用显式 mock；integration 用于真实联调；production 禁止开发身份、mock、自动建表和外部 SDK tracing。真实语音生产开放需要固定 `VOICECHAT_API_VERSION`、`VOICECHAT_IMAGE_DIGEST`、经人工复核的 `VOICECHAT_CAPABILITY_MODE=basic|enhanced` 和 `VOICECHAT_INTEGRATION_VERIFIED=true`。配置校验会拒绝缺少版本证据的“已验证”声明，但布尔值本身仍是部署者声明，必须附探测报告和授权音频证据。
 
@@ -56,7 +56,7 @@ Content-Type: application/json
 | rank、retrieval_sources | 检索排序/来源，不当作事实置信度 |
 | timings_ms、retrieval_path、executed_stages、skipped_stages | 内部诊断，不要求普通客户理解 |
 
-旧 Citation 必填 updated_at，而 CueKB 当前结果没有该字段；需随 D03 演进为可选，不能填当前时间冒充文档更新时间。缺 score 不造分数；version_id 与业务版本区分。引用 schema/历史 JSON/数据库如发生变化，分别处理兼容和 Alembic 迁移。
+Citation 的 updated_at 已改为可选，未填当前时间冒充文档更新时间；不再生成 score。`version_id` 与 metadata 中受控的 `business_version` 分开，旧历史 JSON 在读取时仍按原数据兼容，新增任务字段由 Alembic 0004 迁移。
 
 当前 CueKB 的 context 可能等于 source_text，include_context=true 不保证已有相邻段、表头和完整步骤。回答模块仍需检查证据充分性。原件查看需经本项目重新鉴权并固定检索版本；这是待实现入口，不向浏览器暴露服务 Key 或私有下载 URL。
 

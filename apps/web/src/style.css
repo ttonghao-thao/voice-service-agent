@@ -622,6 +622,11 @@ a:focus-visible {
   color: #a0ad8f;
   line-height: 1.8;
 }
+.citation-warning {
+  margin-top: 8px;
+  color: #9a5b13;
+  font-size: 12px;
+}
 .citation a {
   display: block;
   margin-top: 12px;

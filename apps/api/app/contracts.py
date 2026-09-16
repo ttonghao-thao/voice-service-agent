@@ -1,7 +1,7 @@
 import base64
 from datetime import UTC, datetime
 from typing import Annotated, Any, Literal
-from uuid import uuid4
+from uuid import UUID, uuid4
 
 from pydantic import BaseModel, ConfigDict, Field, TypeAdapter, field_validator
 
@@ -26,6 +26,17 @@ class Principal(StrictModel):
     knowledge_base_ids: tuple[str, ...] = ()
     expires_at: float | None = None
 
+    @field_validator("knowledge_base_ids")
+    @classmethod
+    def valid_knowledge_base_ids(cls, value: tuple[str, ...]):
+        try:
+            parsed = tuple(str(UUID(item)) for item in value)
+        except ValueError as exc:
+            raise ValueError("knowledge_base_ids must contain UUID values") from exc
+        if len(set(parsed)) != len(parsed):
+            raise ValueError("knowledge_base_ids must not contain duplicates")
+        return parsed
+
 
 class MessageInput(StrictModel):
     text: str = Field(min_length=1, max_length=2000)
@@ -44,16 +55,40 @@ class InterruptInput(StrictModel):
     expected_epoch: int = Field(ge=0)
 
 
+class TaskControlInput(StrictModel):
+    expected_epoch: int = Field(ge=0)
+    expected_revision: int = Field(ge=0)
+
+
+class StopPlaybackInput(TaskControlInput):
+    response_id: str | None = Field(default=None, min_length=1, max_length=128)
+
+
 class Citation(StrictModel):
     citation_id: str
     document_id: str
     chunk_id: str
     title: str
     source_uri: str | None = None
-    version: str
-    updated_at: str
+    version_id: str
+    business_version: str | None = None
+    updated_at: str | None = None
     content: str
+    context: str | None = None
+    trace_id: str
     retrieval_id: str
+    retrieval_status: Literal["ok", "degraded", "not_found", "needs_clarification"] = "ok"
+    evidence_status: Literal["unassessed", "sufficient", "insufficient", "conflicting"] = (
+        "unassessed"
+    )
+    degraded_reasons: tuple[str, ...] = ()
+    scope_limited: bool = False
+    content_revisions: dict[str, int] = Field(default_factory=dict)
+    rank: int = Field(ge=1)
+    title_path: tuple[str, ...] = ()
+    anchor: dict[str, Any] = Field(default_factory=dict)
+    retrieval_sources: tuple[str, ...] = ()
+    metadata: dict[str, Any] = Field(default_factory=dict)
     # The exact server-authorized KB scope used for this retrieval. It is not
     # supplied by the browser and is used to redact history after revocation.
     authorized_kb_ids: tuple[str, ...] = ()
@@ -84,6 +119,7 @@ class PortalEvent(StrictModel):
     event_id: str = Field(default_factory=uid)
     conversation_id: str
     epoch: int
+    request_revision: int = 0
     turn_id: str | None = None
     server_seq: int = 0
     timestamp: datetime = Field(default_factory=now)
@@ -92,6 +128,10 @@ class PortalEvent(StrictModel):
 
 class EmptyEventPayload(StrictModel):
     message: str | None = Field(default=None, max_length=500)
+
+
+class PlaybackClearPayload(EmptyEventPayload):
+    response_id: str | None = Field(default=None, min_length=1, max_length=128)
 
 
 class SessionReadyPayload(StrictModel):
@@ -155,6 +195,7 @@ class _ServerEventBase(StrictModel):
     event_id: str = Field(default_factory=uid)
     conversation_id: str = Field(min_length=1, max_length=128)
     epoch: int = Field(ge=0)
+    request_revision: int = Field(default=0, ge=0)
     turn_id: str | None = Field(default=None, max_length=128)
     server_seq: int = Field(ge=0)
     timestamp: datetime = Field(default_factory=now)
@@ -202,7 +243,7 @@ class AnswerFinalEvent(_ServerEventBase):
 
 class PlaybackClearEvent(_ServerEventBase):
     type: Literal["portal.playback.clear"]
-    payload: EmptyEventPayload
+    payload: PlaybackClearPayload
 
 
 class SessionEndedEvent(_ServerEventBase):
@@ -254,6 +295,10 @@ class PlaybackAckPayload(StrictModel):
     played_samples: int = Field(ge=0)
 
 
+class PlaybackStopPayload(StrictModel):
+    response_id: str | None = Field(default=None, min_length=1, max_length=128)
+
+
 class _ClientEventBase(StrictModel):
     epoch: int = Field(ge=0)
 
@@ -270,6 +315,11 @@ class PortalPlaybackAck(_ClientEventBase):
     payload: PlaybackAckPayload
 
 
+class PortalPlaybackStop(_ClientEventBase):
+    type: Literal["portal.playback.stop"]
+    payload: PlaybackStopPayload = Field(default_factory=PlaybackStopPayload)
+
+
 class PortalInterrupt(_ClientEventBase):
     type: Literal["portal.interrupt"]
     payload: EmptyEventPayload = Field(default_factory=EmptyEventPayload)
@@ -281,7 +331,11 @@ class PortalSessionClose(_ClientEventBase):
 
 
 PortalClientEvent = Annotated[
-    PortalAudioAppend | PortalPlaybackAck | PortalInterrupt | PortalSessionClose,
+    PortalAudioAppend
+    | PortalPlaybackAck
+    | PortalPlaybackStop
+    | PortalInterrupt
+    | PortalSessionClose,
     Field(discriminator="type"),
 ]
 portal_client_event_adapter = TypeAdapter(PortalClientEvent)

@@ -2,9 +2,12 @@ import asyncio
 
 import pytest
 from app.api.routes import _answer_for_principal, _event_for_principal
-from app.contracts import AnswerBundle, DomainError, Principal
+from app.contracts import AnswerBundle, DomainError, Principal, uid
 from app.storage.models import Turn
 from sqlalchemy import select
+
+KB_SUPPORT = "00000000-0000-4000-8000-000000000001"
+KB_PRIVATE = "00000000-0000-4000-8000-000000000002"
 
 
 def dev_user():
@@ -12,7 +15,7 @@ def dev_user():
         user_id="dev-operator",
         tenant_id="dev-tenant",
         scopes=frozenset({"knowledge:read", "weather:read"}),
-        knowledge_base_ids=("kb_support",),
+        knowledge_base_ids=(KB_SUPPORT,),
     )
 
 
@@ -132,8 +135,75 @@ async def test_new_text_cancels_old_and_preserves_only_committed_history(app, co
     async with app.state.store.sessions() as db:
         c = await app.state.store.get(db, conversation)
         assert len(c.history) == 2 and c.history[0]["content"] == "联调示例"
-        assert (await db.get(Turn, old.id)).status == "canceled"
+        saved_old = await db.get(Turn, old.id)
+        assert saved_old.status == "superseded"
+        assert saved_old.delivery_status == "discarded"
+        assert new.request_revision == old.request_revision + 1
         assert new.epoch > old.epoch
+
+
+async def test_stop_playback_keeps_query_running_and_revision_current(app, conversation):
+    entered, release = asyncio.Event(), asyncio.Event()
+
+    async def controlled(*args, **kwargs):
+        entered.set()
+        await release.wait()
+        return AnswerBundle(
+            status="insufficient_evidence",
+            display_text="依据不足",
+            speech_text="依据不足",
+        )
+
+    app.state.coordinator.runtime.run = controlled
+    turn, task = await app.state.coordinator.submit(
+        dev_user(), conversation, "voice:stop", "查询中", "voice", 0, "call-stop"
+    )
+    await entered.wait()
+    revision = await app.state.coordinator.stop_playback(
+        dev_user(), conversation, turn.epoch, turn.request_revision
+    )
+    assert revision == turn.request_revision and not task.done()
+    async with app.state.store.sessions() as db:
+        current = await app.state.store.get(db, conversation)
+        saved = await db.get(Turn, turn.id)
+        assert current.current_turn == turn.id and saved.status == "running"
+        assert saved.output_suppressed is True
+    release.set()
+    assert (await task).status == "insufficient_evidence"
+
+
+async def test_cancel_query_invalidates_revision_without_reusing_native_call(app, conversation):
+    entered, release = asyncio.Event(), asyncio.Event()
+
+    async def stubborn(*args, **kwargs):
+        entered.set()
+        try:
+            await release.wait()
+        except asyncio.CancelledError:
+            await release.wait()
+        return AnswerBundle(status="answered", display_text="晚到旧答案", speech_text="晚到旧答案")
+
+    app.state.coordinator.runtime.run = stubborn
+    turn, task = await app.state.coordinator.submit(
+        dev_user(), conversation, "voice:cancel", "旧问题", "voice", 0, "call-old"
+    )
+    await entered.wait()
+    revision, changed = await app.state.coordinator.cancel_task(
+        dev_user(), conversation, turn.epoch, turn.request_revision
+    )
+    assert changed and revision == turn.request_revision + 1
+    release.set()
+    assert await task is None
+    async with app.state.store.sessions() as db:
+        current = await app.state.store.get(db, conversation)
+        saved = await db.get(Turn, turn.id)
+        assert current.epoch == turn.epoch
+        assert current.current_turn is None
+        assert saved.status == "canceled"
+        assert saved.cancellation_reason == "user_cancelled"
+        assert saved.delivery_status == "discarded"
+        assert saved.output_suppressed is True
+        assert saved.answer is None and saved.native_call_id == "call-old"
 
 
 async def test_tool_revocation_and_admin_permissions(client, app, conversation):
@@ -148,14 +218,14 @@ async def test_tool_revocation_and_admin_permissions(client, app, conversation):
 
 
 async def test_customer_isolation_admin_denial_and_kb_revocation(client, app):
-    app.state.settings.knowledge_base_ids = "kb_support,kb_private"
+    app.state.settings.knowledge_base_ids = f"{KB_SUPPORT},{KB_PRIVATE}"
     identity = {
         "principal": Principal(
             user_id="customer-a",
             tenant_id="dev-tenant",
             roles=frozenset({"customer"}),
             scopes=frozenset({"knowledge:read"}),
-            knowledge_base_ids=("kb_private", "kb_support"),
+            knowledge_base_ids=(KB_PRIVATE, KB_SUPPORT),
         )
     }
 
@@ -195,12 +265,12 @@ async def test_customer_isolation_admin_denial_and_kb_revocation(client, app):
         {
             "response_id": "spoken-private",
             "text": "旧授权范围的口述内容",
-            "_authorized_kb_ids": ["kb_private", "kb_support"],
+            "_authorized_kb_ids": [KB_PRIVATE, KB_SUPPORT],
         },
     )
 
     identity["principal"] = identity["principal"].model_copy(
-        update={"knowledge_base_ids": ("kb_support",)}
+        update={"knowledge_base_ids": (KB_SUPPORT,)}
     )
     after = (await client.get(f"/api/v1/conversations/{cid}/messages")).json()
     assert after["items"][0]["answer"]["reason_code"] == "KB_ACCESS_REVOKED"
@@ -230,6 +300,31 @@ async def test_customer_isolation_admin_denial_and_kb_revocation(client, app):
 
     identity["principal"] = identity["principal"].model_copy(update={"user_id": "customer-b"})
     assert (await client.get(f"/api/v1/conversations/{cid}/messages")).status_code == 404
+
+
+async def test_pre_d03_citation_json_is_normalized_at_read_boundary(app):
+    answer = {
+        "status": "answered",
+        "citations": [
+            {
+                "citation_id": "C1",
+                "document_id": "legacy-document",
+                "chunk_id": "legacy-chunk",
+                "title": "旧引用",
+                "content": "旧内容",
+                "version": "legacy-v1",
+                "updated_at": "2026-09-05T00:00:00Z",
+                "retrieval_id": "legacy-retrieval",
+                "authorized_kb_ids": [KB_SUPPORT],
+                "is_mock": False,
+            }
+        ],
+    }
+    visible = _answer_for_principal(answer, dev_user(), app.state.settings)
+    citation = visible["citations"][0]
+    assert citation["version_id"] == "legacy-v1"
+    assert citation["trace_id"] == "legacy-retrieval"
+    assert citation["anchor"] == {} and citation["updated_at"].startswith("2026")
 
 
 async def test_origin_and_limits(client, app):
@@ -265,6 +360,38 @@ async def test_startup_recovery_invalidates_active_state(app, conversation):
     async with app.state.store.sessions() as db:
         c = await app.state.store.get(db, conversation)
         assert c.epoch == 1 and c.voice_session_id is None
+
+
+async def test_startup_recovery_expires_persisted_native_call(app, conversation):
+    async with app.state.store.transaction() as db:
+        c = await app.state.store.get(db, conversation, lock=True)
+        c.request_revision = 1
+        c.voice_session_id = "old-session"
+        task = Turn(
+            id=uid(),
+            conversation_id=conversation,
+            epoch=c.epoch,
+            request_revision=1,
+            idempotency_key="voice:old-session:old-call",
+            request_hash="x" * 64,
+            user_text="重启前的查询",
+            channel="voice",
+            status="running",
+            delivery_status="pending_validation",
+            native_call_id="old-call",
+        )
+        db.add(task)
+        c.current_turn = task.id
+    await app.state.coordinator.recover()
+    async with app.state.store.sessions() as db:
+        c = await app.state.store.get(db, conversation)
+        saved = await db.get(Turn, task.id)
+        assert c.epoch == 1 and c.request_revision == 2
+        assert c.current_turn is None and c.voice_session_id is None
+        assert saved.status == "expired"
+        assert saved.cancellation_reason == "service_restarted"
+        assert saved.delivery_status == "discarded" and saved.native_call_id == "old-call"
+        assert saved.output_suppressed is True
 
 
 async def test_transcript_done_deduplication_and_playback_progress(app, conversation):

@@ -1,6 +1,6 @@
 # HTML 门户与消息/语音接口
 
-更新：2026-09-16。本文确定客户入口和接口边界；保留当前 v1 线格式，并标明尚待实施的语义。总架构见 [architecture.md](architecture.md)。
+更新：2026-09-16。本文确定客户入口和接口边界；D01–D05 的当前实现使用本文 v1 格式，真实服务能力仍按验收记录放行。总架构见 [architecture.md](architecture.md)。
 
 ## 1. 简单门户
 
@@ -8,9 +8,9 @@
 
 - 用户主动点击后申请麦克风，ready 后连续发送音频，包括静音；生产依赖 HTTPS 安全上下文。
 - 客户页面不展示工具配置、模型参数、内部运行日志或后台管理菜单。
-- 目标交互区分“停止播报”和“取消查询”；前者需 D05 的服务端输出抑制能力，当前硬打断不得改文案冒充仅停播。
+- 当前交互区分“停止播报”和“取消查询”：前者清除客户端缓冲并由服务端抑制当前 response，保留仍有效业务任务；后者使当前 revision 失效，存在无法安全结清的原生 call 时关闭旧语音连接。
 - 显示业务答案与实际语音字幕的区别；来源与版本可查看，工具秘钥和内部地址不可出现在页面。
-- 使用现有 TypeScript/AudioWorklet 采集、重采样和播放模块，可沿用现有构建链输出静态 HTML；本轮没有新增/改写页面。
+- 客户入口复用现有 TypeScript/AudioWorklet 采集、重采样和播放模块，并由现有构建链输出静态 HTML；工具管理不进入客户页面。
 
 ## 2. “标准消息接口”的含义
 
@@ -27,13 +27,15 @@
 | 方法和路径 | 用途/关键返回 |
 | --- | --- |
 | GET `/capabilities` | 配置和适配器声明的能力；部署声明不等于自动实测 |
-| POST `/conversations` | 请求 title、locale；返回 id、title、epoch、locale；当前 locale 为 zh-CN |
+| POST `/conversations` | 请求 title、locale；返回 id、title、epoch、request_revision、locale；当前 locale 为 zh-CN |
 | GET `/conversations` | 当前用户会话分页 |
 | GET `/conversations/{cid}/messages` | 当前用户的会话历史 |
-| POST `/conversations/{cid}/voice-sessions` | 返回 voice_session_id、epoch、ws_url（含一次性 ticket） |
+| POST `/conversations/{cid}/voice-sessions` | 返回 voice_session_id、epoch、request_revision、ws_url（含一次性 ticket） |
 | DELETE `/conversations/{cid}/voice-sessions/{sid}` | 关闭语音，保留会话历史；当前同时触发硬中断 |
-| POST `/conversations/{cid}/messages` | `{text}`，要求 Idempotency-Key；202 返回 turn_id、epoch、status |
+| POST `/conversations/{cid}/messages` | `{text}`，要求 Idempotency-Key；202 返回 task_id/turn_id、epoch、request_revision、status；新问题 supersede 旧运行任务 |
 | GET `/conversations/{cid}/events` | SSE 业务流；`Last-Event-ID` 或 `after` 恢复游标 |
+| POST `/conversations/{cid}/playback/stop` | expected_epoch、expected_revision、可选 response_id；停止当前播报，不取消查询 |
+| POST `/conversations/{cid}/tasks/current/cancel` | expected_epoch、expected_revision；取消当前查询并拒绝晚到结果 |
 | POST `/conversations/{cid}/interrupt` | `{expected_epoch}`；当前是取消业务、失效 epoch、关闭语音的硬中断 |
 
 同一文字幂等键相同正文不重复执行，不同正文返回 409。管理 API 不属于客户协议权限集合。SSO/鉴权策略见 [接入文档](integration.md)。
@@ -66,10 +68,11 @@ SSE 的 `id` 是持久化 `server_seq`，不是 JSON `event_id`。仅重放业�
 | --- | --- |
 | `portal.audio.append` | 上述音频字段；附 epoch、seq |
 | `portal.playback.ack` | response_id、played_samples，附 epoch；仅估计实际播放进度，不证明客户听到 |
+| `portal.playback.stop` | 可选 response_id，附 epoch；立即清播放器并抑制当前或下一段 response，不取消业务任务 |
 | `portal.interrupt` | 附 epoch；同 HTTP 硬中断语义 |
 | `portal.session.close` | 附 epoch；释放本次语音资源 |
 
-不要向当前 v1 发送尚未实现的停止播报/取消查询事件。D05 应先定义兼容扩展和能力开关，再修改客户端与服务端。
+取消查询使用上述 HTTP revision 条件接口；WS 仅新增停止播报事件。未知控制事件仍按协议错误关闭，不能猜测语义。
 
 ### 4.2 服务端事件外壳
 
@@ -79,6 +82,7 @@ SSE 的 `id` 是持久化 `server_seq`，不是 JSON `event_id`。仅重放业�
   "event_id": "<event-id>",
   "conversation_id": "<conversation-id>",
   "epoch": 1,
+  "request_revision": 0,
   "turn_id": null,
   "server_seq": 1,
   "timestamp": "2026-09-16T00:00:00Z",
@@ -108,16 +112,16 @@ SSE 的 `id` 是持久化 `server_seq`，不是 JSON `event_id`。仅重放业�
 1. 创建会话 → 签发票据 → WS 握手 → VoiceChat 握手 → portal.session.ready。
 2. 并行持续收发音频；原生工具进入后台 worker，音频任务不等待业务 Runtime。
 3. 已接受业务答案走 SSE；工具结果经合法 native call 回传后，语音/字幕走 WS。
-4. 结束/硬打断先清本地播放器，再调用控制接口；服务端撤销旧输出权并关闭资源。
+4. 停止播报只抑制当前输出；取消查询推进 revision，并在无法安全结清 pending call 时关闭连接；结束/硬打断释放语音资源。
 5. 网络恢复重新取票，不重放旧录音；恢复业务历史不等于恢复模型隐藏状态。
 
-保持有界队列、单写入器、发送速率校验和采集 watchdog；过载显式拒绝/恢复，不能无限积压后追赶播放。当前 105 秒轮换会结束连接并要求重新开始；安静边界轮换是 D05 待实现目标。
+保持有界队列、单写入器、发送速率校验和采集 watchdog；过载显式拒绝/恢复，不能无限积压后追赶播放。当前默认 105 秒在输入 quiet 且无 pending call 时触发安全轮换，浏览器清除旧音频并取得新 ticket；宽限期内仍未安全时显式结束，不恢复模型隐藏状态。
 
 ## 5. 版本和错误处理
 
 - v1 固定当前音频格式与已定义必需字段；未来二进制音频/不同格式需要明确协商或新版本，不能暗改现有字段含义。
 - 兼容性新增先由 capability 声明并提供降级；未知服务端非关键展示事件可忽略，未知客户端控制事件拒绝；格式/鉴权错误不得继续播放。
-- 当前已有典型错误：AUTH_REQUIRED、FORBIDDEN、VOICE_UNAVAILABLE、VOICE_CAPACITY_EXCEEDED、VOICE_PROTOCOL_ERROR、VOICE_SESSION_EXPIRED、AUDIO_BACKPRESSURE。
+- 当前已有典型错误：AUTH_REQUIRED、FORBIDDEN、VOICE_UNAVAILABLE、VOICE_CAPACITY_EXCEEDED、VOICE_PROTOCOL_ERROR、VOICE_SESSION_ROTATION_REQUIRED、VOICE_SESSION_EXPIRED、AUDIO_BACKPRESSURE。
 - 工具错误在业务层映射为稳定的失败/无依据/澄清状态；不能把 401/403/429/5xx 都显示为“没有知识”。
 - 不把服务商 error 原文、密钥或内部堆栈直接转发客户。完整错误集合随实现和契约同步维护。
 

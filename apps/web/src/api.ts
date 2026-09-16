@@ -2,8 +2,18 @@ export interface Citation {
   citation_id: string;
   title: string;
   content: string;
-  version: string;
-  updated_at: string;
+  context: string | null;
+  version_id: string;
+  business_version: string | null;
+  updated_at: string | null;
+  trace_id: string;
+  retrieval_status: string;
+  evidence_status: string;
+  degraded_reasons: string[];
+  scope_limited: boolean;
+  rank: number;
+  title_path: string[];
+  anchor: Record<string, unknown>;
   source_uri: string | null;
   is_mock: boolean;
 }
@@ -24,6 +34,11 @@ export interface Turn {
   status: string;
   answer: Answer | null;
   epoch: number;
+  request_revision: number;
+  parent_task_id: string | null;
+  cancellation_reason: string | null;
+  delivery_status: string;
+  output_suppressed: boolean;
 }
 export interface RecordItem {
   kind: string;
@@ -35,12 +50,14 @@ export interface Conversation {
   id: string;
   title: string;
   epoch: number;
+  request_revision: number;
 }
 export interface PortalEvent {
   type: string;
   event_id: string;
   conversation_id: string;
   epoch: number;
+  request_revision: number;
   server_seq: number;
   turn_id: string | null;
   payload: Record<string, unknown>;
@@ -50,7 +67,7 @@ export interface Capabilities {
   voice_available: boolean;
   text_configured: boolean;
   agent_provider: string;
-  rag_mode: string;
+  cuekb_mode: string;
   weather_mode: string;
   provider: string;
   voice_session_max_seconds: number;

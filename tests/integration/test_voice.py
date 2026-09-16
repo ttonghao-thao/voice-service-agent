@@ -57,3 +57,28 @@ def test_native_bridge_dedup_tool_before_transcript_and_ticket(tmp_path):
         data = client.get(f"/api/v1/conversations/{cid}/messages").json()
         assert len(data["items"]) == 1
         assert len([r for r in data["records"] if r["kind"] == "user_transcript"]) == 1
+
+
+def test_input_activity_never_cancels_without_explicit_control(tmp_path):
+    app = create_app(
+        Settings(
+            _env_file=None,
+            auto_create_schema=True,
+            database_url=f"sqlite+aiosqlite:///{tmp_path}/input-state.db",
+        )
+    )
+
+    class Scripted(MockVoiceAdapter):
+        async def connect(self, summary):
+            await self.queue.put(VoiceEvent("input.state", {"state": "speaking"}))
+            await self.queue.put(VoiceEvent("input.state", {"state": "quiet"}))
+
+    with TestClient(app) as client:
+        app.state.voice.provider_factory = Scripted
+        cid = client.post("/api/v1/conversations", json={}).json()["id"]
+        issued = client.post(f"/api/v1/conversations/{cid}/voice-sessions", json={}).json()
+        with client.websocket_connect(issued["ws_url"], headers={"Origin": "http://localhost:5173"}) as ws:
+            assert ws.receive_json()["type"] == "portal.session.ready"
+            assert ws.receive_json()["payload"]["state"] == "speaking"
+            assert ws.receive_json()["payload"]["state"] == "quiet"
+            assert client.get(f"/api/v1/conversations/{cid}/messages").json()["items"] == []

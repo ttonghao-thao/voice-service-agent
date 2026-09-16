@@ -9,7 +9,9 @@ from app.contracts import (
     InterruptInput,
     MessageInput,
     Principal,
+    StopPlaybackInput,
     StrictModel,
+    TaskControlInput,
     now,
 )
 from app.storage.models import AdminAudit, Conversation, Event, Record, ToolConfig, ToolRun, Turn
@@ -30,6 +32,7 @@ def _answer_for_principal(answer, user, settings):
         return answer
     current = set(user.knowledge_base_ids)
     configured = _configured_kbs(settings)
+    citations = []
     for citation in answer.get("citations", []):
         scope = citation.get("authorized_kb_ids")
         # Old rows predate authorization scope tagging. Customers never receive
@@ -46,7 +49,30 @@ def _answer_for_principal(answer, user, settings):
                 "cards": [],
                 "reason_code": "KB_ACCESS_REVOKED",
             }
-    return answer
+        # JSON answers saved before D03 used version/updated_at and did not
+        # contain CueKB location fields. Normalize them only at the read edge;
+        # never invent a new document timestamp or rewrite persisted history.
+        citations.append(
+            {
+                **citation,
+                "version_id": citation.get("version_id") or citation.get("version"),
+                "business_version": citation.get("business_version"),
+                "updated_at": citation.get("updated_at"),
+                "context": citation.get("context"),
+                "trace_id": citation.get("trace_id") or citation.get("retrieval_id", "legacy"),
+                "retrieval_status": citation.get("retrieval_status", "ok"),
+                "evidence_status": citation.get("evidence_status", "unassessed"),
+                "degraded_reasons": citation.get("degraded_reasons", []),
+                "scope_limited": citation.get("scope_limited", False),
+                "content_revisions": citation.get("content_revisions", {}),
+                "rank": citation.get("rank", 1),
+                "title_path": citation.get("title_path", []),
+                "anchor": citation.get("anchor", {}),
+                "retrieval_sources": citation.get("retrieval_sources", []),
+                "metadata": citation.get("metadata", {}),
+            }
+        )
+    return {**answer, "citations": citations}
 
 
 def _event_for_principal(payload, user, settings):
@@ -87,7 +113,7 @@ def capabilities(s):
         "provider": s.voice_provider,
         "is_mock": s.mock,
         "agent_provider": s.agent_provider,
-        "rag_mode": s.rag_mode,
+        "cuekb_mode": s.cuekb_mode,
         "weather_mode": s.weather_mode,
         "voice_available": s.voice_provider == "mock"
         or bool(
@@ -137,7 +163,13 @@ async def create_conversation(body: ConversationInput, request: Request, user: U
         c = Conversation(tenant_id=user.tenant_id, user_id=user.user_id, title=body.title, locale=body.locale)
         db.add(c)
         await db.flush()
-        return {"id": c.id, "title": c.title, "epoch": c.epoch, "locale": c.locale}
+        return {
+            "id": c.id,
+            "title": c.title,
+            "epoch": c.epoch,
+            "request_revision": c.request_revision,
+            "locale": c.locale,
+        }
 
 
 @router.get("/conversations")
@@ -160,6 +192,7 @@ async def conversations(
                     "id": c.id,
                     "title": c.title,
                     "epoch": c.epoch,
+                    "request_revision": c.request_revision,
                     "locale": c.locale,
                     "updated_at": c.updated_at.isoformat(),
                 }
@@ -194,14 +227,21 @@ async def messages(
         )
         return {
             "epoch": c.epoch,
+            "request_revision": c.request_revision,
             "voice_session_id": c.voice_session_id,
             "items": [
                 {
                     "id": t.id,
                     "epoch": t.epoch,
+                    "request_revision": t.request_revision,
+                    "parent_task_id": t.parent_task_id,
+                    "native_call_id": t.native_call_id,
                     "user_text": t.user_text,
                     "channel": t.channel,
                     "status": t.status,
+                    "cancellation_reason": t.cancellation_reason,
+                    "delivery_status": t.delivery_status,
+                    "output_suppressed": t.output_suppressed,
                     "answer": _answer_for_principal(t.answer, user, request.app.state.settings),
                     "created_at": t.created_at.isoformat(),
                 }
@@ -227,7 +267,13 @@ async def send_message(
 ):
     await limited(request, user)
     turn, _ = await request.app.state.coordinator.submit(user, cid, "text:" + idempotency_key, body.text)
-    return {"turn_id": turn.id, "epoch": turn.epoch, "status": turn.status}
+    return {
+        "turn_id": turn.id,
+        "task_id": turn.id,
+        "epoch": turn.epoch,
+        "request_revision": turn.request_revision,
+        "status": turn.status,
+    }
 
 
 @router.get("/conversations/{cid}/events")
@@ -293,6 +339,31 @@ async def interrupt(cid: str, body: InterruptInput, request: Request, user: User
         await request.app.state.store.get(db, cid, user)
     epoch = await request.app.state.coordinator.interrupt(user, cid, body.expected_epoch)
     return {"epoch": epoch, "status": "stopped"}
+
+
+@router.post("/conversations/{cid}/tasks/current/cancel")
+async def cancel_current_task(cid: str, body: TaskControlInput, request: Request, user: User):
+    await limited(request, user)
+    revision, changed = await request.app.state.coordinator.cancel_task(
+        user, cid, body.expected_epoch, body.expected_revision
+    )
+    return {
+        "request_revision": revision,
+        "status": "canceled" if changed else "already_finished",
+    }
+
+
+@router.post("/conversations/{cid}/playback/stop")
+async def stop_playback(cid: str, body: StopPlaybackInput, request: Request, user: User):
+    await limited(request, user)
+    revision = await request.app.state.coordinator.stop_playback(
+        user,
+        cid,
+        body.expected_epoch,
+        body.expected_revision,
+        body.response_id,
+    )
+    return {"request_revision": revision, "status": "playback_stopped"}
 
 
 @router.post("/conversations/{cid}/voice-sessions", status_code=201)
