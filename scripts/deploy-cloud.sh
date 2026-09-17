@@ -5,7 +5,6 @@ script_dir=$(CDPATH= cd -- "$(dirname -- "$0")" && pwd)
 project_dir=$(CDPATH= cd -- "$script_dir/.." && pwd)
 environment_file=${1:-"$project_dir/.env.production"}
 compose_file="$project_dir/deploy/compose.production.yaml"
-export PRODUCTION_ENV_FILE=$environment_file
 
 environment_value() {
   sed -n "s/^$1=//p" "$environment_file" | tail -n 1
@@ -32,13 +31,16 @@ if [ ! -f "$environment_file" ]; then
   echo "Copy .env.production.example and replace every placeholder first." >&2
   exit 1
 fi
+environment_file=$(CDPATH= cd -- "$(dirname -- "$environment_file")" && pwd)/$(basename -- "$environment_file")
+export PRODUCTION_ENV_FILE=$environment_file
 if ! grep -qx 'APP_ENV=production' "$environment_file"; then
   echo "APP_ENV=production is required for cloud deployment." >&2
   exit 1
 fi
 require_values \
-  POSTGRES_PASSWORD REDIS_PASSWORD AUTH_COOKIE_SECRET TENANT_ID KNOWLEDGE_BASE_IDS \
-  OIDC_ISSUER OIDC_AUDIENCE OIDC_JWKS_URL AGENT_PROVIDER AGENT_MODEL OPENAI_API_KEY ENABLED_TOOLS
+  API_IMAGE WEB_IMAGE POSTGRES_PASSWORD REDIS_PASSWORD AUTH_COOKIE_SECRET TENANT_ID KNOWLEDGE_BASE_IDS \
+  OIDC_ISSUER OIDC_AUDIENCE OIDC_JWKS_URL OIDC_AUTHORIZATION_URL OIDC_TOKEN_URL \
+  AGENT_PROVIDER AGENT_MODEL OPENAI_API_KEY ENABLED_TOOLS
 
 enabled_tools=$(environment_value ENABLED_TOOLS)
 case ",$enabled_tools," in
@@ -61,8 +63,8 @@ case "$(environment_value VOICE_PROVIDER)" in
     exit 1
     ;;
 esac
-if ! grep -Eq '^PUBLIC_ORIGIN=https://[^[:space:]]+$' "$environment_file"; then
-  echo "PUBLIC_ORIGIN must be an HTTPS origin." >&2
+if ! grep -Eq '^PUBLIC_ORIGIN=https://[^/?#@[:space:]]+$' "$environment_file"; then
+  echo "PUBLIC_ORIGIN must be an HTTPS origin without a path." >&2
   exit 1
 fi
 
@@ -70,11 +72,25 @@ compose() {
   docker compose --env-file "$environment_file" -f "$compose_file" "$@"
 }
 
+api_image=$(environment_value API_IMAGE)
+web_image=$(environment_value WEB_IMAGE)
+export API_IMAGE="$api_image" WEB_IMAGE="$web_image"
+export PUBLIC_ORIGIN="$(environment_value PUBLIC_ORIGIN)"
+export POSTGRES_PASSWORD="$(environment_value POSTGRES_PASSWORD)"
+export REDIS_PASSWORD="$(environment_value REDIS_PASSWORD)"
+export WEB_BIND_ADDRESS="$(environment_value WEB_BIND_ADDRESS)"
+export WEB_PORT="$(environment_value WEB_PORT)"
 compose config --quiet
-compose build
-compose up -d --wait --wait-timeout 180 postgres redis
+for image in "$api_image" "$web_image"; do
+  if ! docker image inspect "$image" >/dev/null 2>&1; then
+    echo "Required application image is not available locally: $image" >&2
+    echo "Build with docker build or load/pull the exact image before deploying." >&2
+    exit 1
+  fi
+done
+compose up -d --no-build --wait --wait-timeout 180 postgres redis
 compose run --rm --no-deps migrate
-compose up -d --wait --wait-timeout 180 --no-deps api
+compose up -d --no-build --wait --wait-timeout 180 --no-deps api
 compose exec -T api python /app/scripts/verify_deployment.py --base-url http://127.0.0.1:8000
-compose up -d --wait --wait-timeout 60 --no-deps web
+compose up -d --no-build --wait --wait-timeout 60 --no-deps web
 compose ps

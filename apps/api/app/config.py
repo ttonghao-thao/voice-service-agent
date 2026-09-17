@@ -119,11 +119,21 @@ class Settings(BaseSettings):
                 or not all((self.weather_base_url, self.weather_api_key.get_secret_value()))
             ):
                 raise ValueError("Production requires a configured real weather provider when weather is enabled")
+            public_url = urlparse(self.public_origin)
             if (
-                not self.public_origin.startswith("https://")
-                or len(self.auth_cookie_secret.get_secret_value()) < 32
+                public_url.scheme != "https"
+                or not public_url.hostname
+                or public_url.username
+                or public_url.password
+                or public_url.path
+                or public_url.query
+                or public_url.fragment
             ):
-                raise ValueError("Production requires HTTPS and a strong cookie signing secret")
+                raise ValueError("PUBLIC_ORIGIN must be an HTTPS origin without a path")
+            if len(self.auth_cookie_secret.get_secret_value()) < 32:
+                raise ValueError("Production requires a strong cookie signing secret")
+            if not self.oidc_authorization_url or not self.oidc_token_url:
+                raise ValueError("Production browser SSO requires OIDC authorization and token URLs")
             urls = [
                 self.oidc_issuer,
                 self.oidc_jwks_url,

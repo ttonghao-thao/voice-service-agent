@@ -1,6 +1,6 @@
 # 当前任务板
 
-更新：2026-09-16。目标设计见 [architecture.md](architecture.md)，状态证据见 [acceptance-report.md](acceptance-report.md)。
+更新：2026-09-17。目标设计见 [architecture.md](architecture.md)，状态证据见 [acceptance-report.md](acceptance-report.md)。
 
 ## 文档定稿任务
 
@@ -30,6 +30,7 @@ D01–D06 已完成代码和本地自动化验证。编码阶段没有 CueKB/Voi
 | D05 | 任务 revision、停止播报/取消/改问分离、pending call 恢复、长会话。`sessions/`、`voice/`、`storage/` | 晚到旧结果不提交、不播报；旧 call 结清或关闭；新会话无旧音频；附和不误取消；迁移与恢复测试通过 | 编码阶段完成；连续交谈仍受 D01 真实能力门槛限制 |
 | D06 | 按部署及用户选择启用工具。`config.py`、registry、capabilities/health、部署模板 | CueKB-only 模式不要求天气；仅暴露部署启用、管理员启用且授权工具；新增第三方不改语音主流程 | 编码及本地测试完成 |
 | D07 | 真实端到端、故障、性能、Docker 与上线。部署及测试模块 | 客户语音→CueKB→实际口述正确；PostgreSQL/Redis/SSO/容器与长会话通过；记录版本、样本和阈值 | 部署前检查、Compose 与探针代码完成；真实生产验收待执行 |
+| D08 | 将生产镜像构建与 Compose 部署分离，明确门户/OIDC URL 配置。`deploy/`、部署脚本、模板及文档 | 独立 `docker build`；部署仅消费预置镜像；SSO 地址来源和回调明确；静态契约通过 | 编码与本地静态/自动化验证完成；Docker 及真实 SSO 验收归 D07 |
 
 ## 实施约束与暂缓项
 

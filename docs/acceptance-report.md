@@ -1,10 +1,20 @@
 # 验收状态与真实服务门槛
 
-更新：2026-09-16。目标架构已定稿，**D01–D06 已完成代码和本地自动化验证，D07 的部署前检查代码已具备；真实服务与生产验收仍未完成**。缺口和实施顺序见 [任务板](TASK_BOARD.md)。
+更新：2026-09-17。目标架构已定稿，**D01–D06 与 D08 已完成代码和本地自动化验证，D07 的部署前检查代码已具备；真实服务与生产验收仍未完成**。缺口和实施顺序见 [任务板](TASK_BOARD.md)。
 
 编码阶段约束（2026-09-16 确认）：CueKB/VoiceChat 无真实接口可调用，满足已确认接口规范和处理逻辑并通过相应契约/本地测试，即满足该阶段验收要求。Docker 环境不提供，仅在必要时静态检查镜像制作和启动代码，不搭建环境或执行镜像构建。以下真实服务与容器验收项留待后续部署阶段，不作为编码完成的阻塞项。
 
 ## 1. 本轮 D01–D06 与 D07 部署前检查验证
+
+### 2026-09-17 D08 镜像/URL 配置检查
+
+- 生产 Compose 的 migrate/api/web 只引用明确的应用镜像标签，`pull_policy: never`；部署脚本检查本地镜像并用 `--no-build` 启动，镜像构建命令独立写入部署文档。URL 对照表按门户、宿主端口及 IdP metadata 分别说明。
+- 生产配置校验要求浏览器 OIDC 授权与换 token 地址，`PUBLIC_ORIGIN` 限定为无路径的 HTTPS origin；相应配置/Compose 契约纳入本地测试。
+- 使用受控假 `docker` 命令验证部署前检查：缺少指定 API 镜像时脚本在启动任何服务前失败；未调用真实 Docker。
+- 本次 `uv run --locked pytest -q`：65 passed、1 条 Starlette/AnyIO 上游弃用警告；`uv run --locked ruff check apps/api tests scripts`、`sh -n scripts/deploy-cloud.sh`、`git diff --check` 通过。未运行 Docker、真实 OIDC 或外部服务。
+- 2026-09-17 配置跟进：生产模板 `PUBLIC_ORIGIN=https://th.ppy123.xyz`、`WEB_PORT=8082`，Compose 默认端口同步；未知的 OIDC/CueKB 地址改为明确占位符。相关契约/配置测试 26 passed，Ruff、脚本语法与差异检查通过。DNS、TLS、代理位置和真实外部端点尚未验收。
+
+### 2026-09-16 既有验证记录
 
 - Python `pytest`：60 passed；除 D01/D02 边界外，覆盖 CueKB `/v1/search` 请求、UUID KB 注入、trace/status/version/anchor 映射、降级和 HTTP 错误区分、旧 Citation 读取兼容、任务 supersede/cancel、重启恢复、晚到结果拒绝、停止播报不取消查询，以及仅有输入活动/附和时不取消。D06 另覆盖 CueKB-only 生产配置、部署白名单与管理员/身份权限的交集；D07 覆盖 readiness 报告拒绝 mock 或不匹配的工具集合。仍有一条 Starlette/AnyIO 上游弃用警告。
 - Ruff：`apps/api`、`scripts`、`tests` 通过；生成 HTTP、上下行事件及答案 schema 后差异检查通过。

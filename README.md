@@ -72,7 +72,7 @@ PYTHONPATH=apps/api uv run python scripts/probe_voicechat.py \
 
 ## 云端部署
 
-云端只使用 Docker Compose 构建、迁移和运行，不直接启动宿主 Python/Node。配置完成后使用：
+生产镜像通过独立 `docker build` 制作；云端使用 Docker Compose 迁移和运行，不直接启动宿主 Python/Node。构建、镜像标签和 URL 填写方式见 [部署文档](docs/deployment.md)。配置完成并准备好镜像后使用：
 
 ```sh
 ./scripts/deploy-cloud.sh .env.production

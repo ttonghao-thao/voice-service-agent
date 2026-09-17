@@ -6,7 +6,7 @@
 
 编码阶段没有 Docker 环境。必要时只静态检查 Dockerfile、Compose、镜像制作和启动脚本；不安装 Docker、不搭建替代容器环境、不拉取或构建镜像、不启动容器。本文中的容器构建和运行命令用于后续具备环境的部署阶段，不属于当前编码验证步骤。CueKB/VoiceChat 真实联调同样在后续部署阶段执行。
 
-云端服务器只使用 Docker Compose 构建、迁移和运行，不直接在宿主机启动 Python、Node.js、PostgreSQL 或 Redis。生产入口为 `deploy/compose.production.yaml`，配置模板为 `.env.production.example`，统一命令为 `scripts/deploy-cloud.sh`。
+生产 API/Web 镜像先用 `docker build` 单独构建；云端服务器使用 Docker Compose 执行迁移和运行，不直接在宿主机启动 Python、Node.js、PostgreSQL 或 Redis。生产入口为 `deploy/compose.production.yaml`，配置模板为 `.env.production.example`，部署命令为 `scripts/deploy-cloud.sh`。
 
 本地开发仍使用 README 中的 Python/Node.js 启动和验证命令；需要检查容器拓扑时也可继续使用 `deploy/compose.yaml`。两种路径互不替代，本地测试通过不代表云端容器验收通过。
 
@@ -27,18 +27,45 @@ API 无 GPU/CUDA 依赖，VoiceChat 为外部服务。Python/Node/Nginx/PostgreS
 
 ## 生产
 
-在云端服务器安装 Docker Engine 与 Docker Compose v2，将代码放到固定发布目录。复制配置并仅授予部署账号读取真实配置的权限：
+在构建机的仓库根目录，给同一次发布的 API 和 Web 镜像打唯一版本标签。构建不读取 `.env.production`：
+
+```sh
+release_tag=$(git rev-parse --short=12 HEAD)
+docker build -f deploy/Dockerfile.api -t "voice-service-agent-api:$release_tag" .
+docker build -f deploy/Dockerfile.web -t "voice-service-agent-web:$release_tag" .
+```
+
+若在另一台服务器部署，先经镜像仓库或 `docker save`/`docker load` 将**同一版本**的两个镜像送到部署机，确认部署机本地有这两个标签。基础镜像 PostgreSQL/Redis 仍按 Compose 的固定 digest 获取。部署机安装 Docker Engine 与 Docker Compose v2，将代码和镜像放到固定发布目录。复制配置并仅授予部署账号读取真实配置的权限：
 
 ```sh
 cp .env.production.example .env.production
-# 编辑 .env.production，替换所有 REPLACE_* 和 example.com 值
+# 编辑 .env.production：设置 API_IMAGE/WEB_IMAGE 为上述标签，替换其余示例值
 chmod 600 .env.production
 ./scripts/deploy-cloud.sh .env.production
 ```
 
-部署脚本会在发现示例值、非 production 模式或非 HTTPS `PUBLIC_ORIGIN` 时停止，然后校验 Compose、构建锁定依赖的镜像、等待 PostgreSQL/Redis 健康、单独执行 Alembic，最后启动 API，并在容器内执行 `/health/ready` 的部署配置核验，再启动 Web。该核验会拒绝 mock 或与 `ENABLED_TOOLS` 不一致的 API；它仅证明容器就绪，不能替代 CueKB、VoiceChat、SSO 或口述答案验收。真实 `.env.production` 被 Git 和 Docker build context 排除。
+部署脚本会在发现示例值、非 production 模式、缺少浏览器 SSO 地址或非 HTTPS `PUBLIC_ORIGIN` 时停止；校验 Compose，并在启动服务前检查本地 `API_IMAGE`/`WEB_IMAGE`。生产 Compose 没有 `build`，也不会自动拉取这两个应用镜像。随后等待 PostgreSQL/Redis 健康、用与 API 相同的镜像单独执行 Alembic、启动 API，在容器内执行 `/health/ready` 的部署配置核验，最后启动 Web。该核验会拒绝 mock 或与 `ENABLED_TOOLS` 不一致的 API；它仅证明容器就绪，不能替代 CueKB、VoiceChat、SSO 或口述答案验收。真实 `.env.production` 被 Git 和 Docker build context 排除。
 
-生产 Compose 默认将 Web 映射到云端宿主机 `127.0.0.1:8080`，供同机 HTTPS 反向代理使用。若使用云平台负载均衡访问主机端口，可按网络边界设置 `WEB_BIND_ADDRESS`；不得把此 HTTP 端口无 TLS 地直接暴露到公网。PostgreSQL 和 Redis 只在 Docker 内部网络可见，API 另接 egress 网络访问模型、VoiceChat、CueKB、天气和 OIDC。
+### URL 配置对照
+
+| 配置 | 从哪里取得、填写什么 | 使用位置 |
+| --- | --- | --- |
+| `PUBLIC_ORIGIN` | 客户在浏览器中访问门户的**唯一 HTTPS origin**，本部署为 `https://th.ppy123.xyz`；不含路径和结尾 `/` | 同源校验、Cookie、登录回调 `PUBLIC_ORIGIN/api/v1/auth/callback`；与容器地址无关 |
+| `WEB_BIND_ADDRESS` / `WEB_PORT` | Web 在部署机上的 HTTP 监听地址/端口；同机 TLS 反向代理时为 `127.0.0.1:8082` | 只影响宿主端口映射，不填 `https://...`；外部客户仍访问 `PUBLIC_ORIGIN` |
+| `OIDC_ISSUER` | 身份提供方 OIDC metadata 的 `issuer` **原值**，包括路径及可能的结尾 `/` | 验证 ID token 的 `iss`，不由门户域名推算 |
+| `OIDC_JWKS_URL` | 同一 metadata 的 `jwks_uri` | 服务端取公钥验证 JWT；必须能从 API 容器访问 |
+| `OIDC_AUTHORIZATION_URL` | 同一 metadata 的 `authorization_endpoint` | 浏览器登录重定向目标 |
+| `OIDC_TOKEN_URL` | 同一 metadata 的 `token_endpoint` | API 容器用 authorization code 换 ID token |
+| `OIDC_AUDIENCE` | 此门户在身份提供方注册的 OAuth `client_id`；当前代码也要求 ID token `aud` 与它一致 | 登录请求与 token 验证；若 IdP 给 API 使用另一 audience，需先调整身份集成契约 |
+| `OIDC_CLIENT_SECRET` | IdP 为该 client 签发的 secret；只有明确允许 public PKCE client 时才留空 | 服务端换 token，属于凭据而非 URL |
+| `CUEKB_BASE_URL` | 独立 CueKB 服务实际提供的 HTTPS 基地址；不能用门户地址代替 | API 在其后请求 `/v1/search`；启用 `search_knowledge` 时必填 |
+| `AGENT_BASE_URL` | 留空表示使用所选 SDK 的默认文本模型地址；仅在模型供应商提供兼容 API 基地址时填写 | 文本推理模型请求 |
+| `WEATHER_BASE_URL` | 当前模板未启用天气，留空；启用 `weather` 后填真实天气适配服务的 HTTPS 基地址 | 天气工具请求 |
+| `VOICECHAT_WS_URL` / `VOICECHAT_HEALTH_URL` | 当前 `VOICE_PROVIDER=disabled`，留空；通过真实语音验收后填独立 VoiceChat 提供的 WSS/HTTPS 地址 | 语音连接/健康探测 |
+
+从身份提供方提供的 OIDC discovery 文档逐项复制 `issuer`、`jwks_uri`、`authorization_endpoint`、`token_endpoint`，不要依照门户域名猜路径；不同 IdP 的实际路由可能不同。身份提供方还须登记回调 `https://th.ppy123.xyz/api/v1/auth/callback`。当前服务不会从 `OIDC_ISSUER` 自动发现其余三个端点。应将 `th.ppy123.xyz` 的 DNS 与 HTTPS 入口指向公网 IP `122.51.233.77`；公网 IP 不填入 OIDC/CueKB URL。`TENANT_ID` 和 `KNOWLEDGE_BASE_IDS` 是服务端身份/知识范围，不是 URL；`POSTGRES_PASSWORD`/`REDIS_PASSWORD` 用 URL 安全字符，容器内部连接串由 Compose 生成。
+
+生产 Compose 默认将 Web 映射到云端宿主机 `127.0.0.1:8082`，供同机 HTTPS 反向代理使用。若反向代理在另一台机器上，取得部署机的内网 IP 后设置 `WEB_BIND_ADDRESS`，并仅允许代理访问 8082；不得把此 HTTP 端口无 TLS 地直接暴露到公网。PostgreSQL 和 Redis 只在 Docker 内部网络可见，API 另接 egress 网络访问模型、VoiceChat、CueKB、天气和 OIDC。
 
 - 设置 `APP_ENV=production`、`AUTH_MODE=oidc`、组织/SSO、真实文本模型和 `ENABLED_TOOLS`。CueKB-only 使用 `ENABLED_TOOLS=search_knowledge`；启用天气才加入 `weather` 并提供真实天气配置。CueKB 的 KB 列表必须是 UUID；应用启动会拒绝 mock 和缺失的启用认证/工具配置。
 - 设置精确 HTTPS `PUBLIC_ORIGIN`。Nginx 配置是内网入口模板；在前置网关终止 TLS，将 HTTPS/WSS 和 Origin 原样转发。外层代理同样不得记录 ticket、OIDC code/state、Authorization 或 Cookie。

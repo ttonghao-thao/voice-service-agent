@@ -13,10 +13,16 @@ def test_cloud_compose_is_a_production_only_container_topology():
     assert services["api"]["environment"]["APP_ENV"] == "production"
     assert services["api"]["environment"]["AUTO_CREATE_SCHEMA"] == "false"
     assert services["api"]["env_file"] == "${PRODUCTION_ENV_FILE:-../.env.production}"
+    assert services["api"]["image"] == services["migrate"]["image"]
+    assert services["api"]["image"].startswith("${API_IMAGE:?")
+    assert services["web"]["image"].startswith("${WEB_IMAGE:?")
+    for name in ("migrate", "api", "web"):
+        assert "build" not in services[name]
+        assert services[name]["pull_policy"] == "never"
     assert services["migrate"]["command"][-2:] == ["upgrade", "head"]
     assert services["api"]["depends_on"]["migrate"]["condition"] == "service_completed_successfully"
     assert "ports" not in services["postgres"] and "ports" not in services["redis"]
-    assert services["web"]["ports"] == ["${WEB_BIND_ADDRESS:-127.0.0.1}:${WEB_PORT:-8080}:80"]
+    assert services["web"]["ports"] == ["${WEB_BIND_ADDRESS:-127.0.0.1}:${WEB_PORT:-8082}:80"]
     assert set(services["web"]["networks"]) == {"app", "edge"}
     assert services["postgres"]["networks"] == ["data"]
     assert set(services["api"]["networks"]) == {"data", "app", "egress"}
@@ -42,7 +48,20 @@ def test_cloud_environment_template_cannot_enable_development_fallbacks():
     assert not values["VOICECHAT_API_VERSION"] and not values["VOICECHAT_IMAGE_DIGEST"]
     assert values["VOICECHAT_CAPABILITY_MODE"] == "unverified"
     assert values["VOICECHAT_INTEGRATION_VERIFIED"] == "false"
-    assert values["PUBLIC_ORIGIN"].startswith("https://")
+    assert values["PUBLIC_ORIGIN"] == "https://th.ppy123.xyz"
+    assert values["WEB_PORT"] == "8082"
+    assert values["OIDC_ISSUER"].startswith("REPLACE_")
+    assert values["CUEKB_BASE_URL"].startswith("REPLACE_")
+    assert values["API_IMAGE"].startswith("REPLACE_")
+    assert values["WEB_IMAGE"].startswith("REPLACE_")
+
+
+def test_cloud_deployment_uses_prebuilt_images():
+    script = (ROOT / "scripts/deploy-cloud.sh").read_text()
+    assert "compose build" not in script
+    assert 'docker image inspect "$image"' in script
+    assert script.count("compose up -d --no-build") == 3
+    assert "OIDC_AUTHORIZATION_URL OIDC_TOKEN_URL" in script
 
 
 def test_deployment_readiness_verifier_requires_real_matching_configuration():

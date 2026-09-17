@@ -116,6 +116,8 @@ def test_production_cuekb_only_does_not_require_weather_configuration():
         oidc_issuer="https://id.example.invalid/",
         oidc_audience="portal",
         oidc_jwks_url="https://id.example.invalid/jwks.json",
+        oidc_authorization_url="https://id.example.invalid/authorize",
+        oidc_token_url="https://id.example.invalid/token",
         tenant_id="tenant",
         agent_provider="openai",
         agent_model="configured-model",
@@ -130,6 +132,44 @@ def test_production_cuekb_only_does_not_require_weather_configuration():
         auth_cookie_secret="x" * 32,
     )
     assert settings.enabled_tool_names == {"search_knowledge"} and settings.mock is False
+
+
+@pytest.mark.parametrize(
+    ("field", "value", "message"),
+    [
+        ("public_origin", "https://portal.example.invalid/", "PUBLIC_ORIGIN"),
+        ("public_origin", "https://portal.example.invalid/app", "PUBLIC_ORIGIN"),
+        ("oidc_authorization_url", "", "browser SSO"),
+        ("oidc_token_url", "", "browser SSO"),
+    ],
+)
+def test_production_requires_a_browser_origin_and_complete_sso_urls(field, value, message):
+    baseline = Settings(
+        _env_file=None,
+        app_env="production",
+        auth_mode="oidc",
+        public_origin="https://portal.example.invalid",
+        database_url="postgresql+asyncpg://service:secret@postgres/service",
+        redis_url="redis://:secret@redis:6379/0",
+        oidc_issuer="https://id.example.invalid/",
+        oidc_audience="portal",
+        oidc_jwks_url="https://id.example.invalid/jwks.json",
+        oidc_authorization_url="https://id.example.invalid/authorize",
+        oidc_token_url="https://id.example.invalid/token",
+        tenant_id="tenant",
+        agent_provider="openai",
+        agent_model="configured-model",
+        openai_api_key="configured-key",
+        enabled_tools="search_knowledge",
+        cuekb_mode="real",
+        cuekb_base_url="https://cuekb.example.invalid",
+        cuekb_api_key="configured-key",
+        cuekb_api_revision="fixture-revision",
+        voice_provider="disabled",
+        auth_cookie_secret="x" * 32,
+    )
+    with pytest.raises(ValidationError, match=message):
+        Settings(_env_file=None, **{**baseline.model_dump(), field: value})
 
 
 @pytest.mark.parametrize(
@@ -164,6 +204,8 @@ def test_production_rejects_non_tls_service_endpoints(field, value):
         "oidc_issuer": "https://id.example.invalid/",
         "oidc_audience": "portal",
         "oidc_jwks_url": "https://id.example.invalid/jwks.json",
+        "oidc_authorization_url": "https://id.example.invalid/authorize",
+        "oidc_token_url": "https://id.example.invalid/token",
         "tenant_id": "tenant",
         "agent_provider": "openai",
         "agent_model": "configured-model",
