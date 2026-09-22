@@ -41,7 +41,7 @@ class Settings(BaseSettings):
     cuekb_api_key: SecretStr = SecretStr("")
     cuekb_search_mode: Literal["auto", "exact", "hybrid", "related"] = "auto"
     cuekb_top_k: int = 5
-    enabled_tools: str = "search_knowledge,weather"
+    enabled_tools: str = "search_knowledge"
     weather_mode: Literal["mock", "real"] = "mock"
     weather_provider: Literal["http_contract"] = "http_contract"
     weather_base_url: str = ""

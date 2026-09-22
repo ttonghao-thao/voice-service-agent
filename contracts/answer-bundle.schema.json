@@ -75,6 +75,38 @@
           "default": null,
           "title": "Context"
         },
+        "context_parts": {
+          "items": {
+            "additionalProperties": true,
+            "type": "object"
+          },
+          "title": "Context Parts",
+          "type": "array"
+        },
+        "context_truncated": {
+          "default": false,
+          "title": "Context Truncated",
+          "type": "boolean"
+        },
+        "context_omitted": {
+          "default": false,
+          "title": "Context Omitted",
+          "type": "boolean"
+        },
+        "hits_omitted": {
+          "default": 0,
+          "minimum": 0,
+          "title": "Hits Omitted",
+          "type": "integer"
+        },
+        "relations": {
+          "items": {
+            "additionalProperties": true,
+            "type": "object"
+          },
+          "title": "Relations",
+          "type": "array"
+        },
         "trace_id": {
           "title": "Trace Id",
           "type": "string"

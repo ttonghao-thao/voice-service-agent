@@ -51,6 +51,9 @@ async def bounded_json(client, method, url, *, limit=32768, error_map=None, **kw
 class CueKBAdapter:
     input_model = CueKBSearchInput
     output_adapter = TypeAdapter(CueKBToolResult)
+    # Keep the model-facing result below ToolSpec.result_limit (32 KiB). CueKB's
+    # source response can be larger because context is also kept per chunk.
+    result_budget_bytes = 30000
 
     def __init__(self, settings, client):
         self.settings, self.client = settings, client
@@ -98,7 +101,10 @@ class CueKBAdapter:
                 kb_ids=list(ctx.principal.knowledge_base_ids),
                 mode=self.settings.cuekb_search_mode,
                 top_k=self.settings.cuekb_top_k,
-                filters={},
+                filters={
+                    "product_model": args.product_model,
+                    "software_version": args.software_version,
+                },
                 include_context=True,
             )
             data = await bounded_json(
@@ -109,6 +115,7 @@ class CueKBAdapter:
                     "Authorization": "Bearer " + self.settings.cuekb_api_key.get_secret_value(),
                 },
                 json=body.model_dump(mode="json"),
+                limit=262144,
                 error_map={
                     401: ("CUEKB_AUTH_FAILED", "知识服务认证失败", 502, False),
                     403: ("CUEKB_FORBIDDEN", "知识服务无权访问授权范围", 502, False),
@@ -121,14 +128,43 @@ class CueKBAdapter:
         content_revisions = {str(key): value for key, value in result.content_revisions.items()}
         budget = 6000
         hits = []
+        accepted_ids = []
+        omitted = 0
+        context_omitted_any = False
+        base = {
+            "status": result.retrieval_status,
+            "evidence_status": result.evidence_status,
+            "trace_id": trace_id,
+            "retrieval_id": trace_id,
+            "degraded_reasons": result.degraded_reasons,
+            "scope_limited": result.scope_limited,
+            "content_revisions": content_revisions,
+            "timings_ms": result.timings_ms,
+            "retrieval_path": result.retrieval_path,
+            "executed_stages": result.executed_stages,
+            "skipped_stages": result.skipped_stages,
+        }
+
+        def fits(candidate):
+            return (
+                len(
+                    json.dumps(
+                        {**base, "hits": [*hits, candidate], "hits_omitted": len(result.hits)}
+                    ).encode()
+                )
+                <= self.result_budget_bytes
+            )
+
         for hit in result.hits:
             content = hit.source_text
             context = hit.context if hit.context and hit.context != content else None
             if len(content) > budget:
-                break
+                omitted += 1
+                continue
+            context_omitted = bool(hit.context and context is None and hit.context_parts)
             if len(content) + len(context or "") > budget:
                 context = None
-            budget -= len(content) + len(context or "")
+                context_omitted = True
             citation_id = f"C{len(ctx.evidence) + 1}"
             title = " / ".join(part for part in hit.title_path if part.strip()) or "来源片段"
             safe_metadata = {
@@ -149,6 +185,10 @@ class CueKBAdapter:
                 business_version=business_version,
                 content=content,
                 context=context,
+                context_parts=[part.model_dump(mode="json") for part in hit.context_parts] if context else [],
+                context_truncated=hit.context_truncated,
+                context_omitted=context_omitted,
+                relations=[relation.model_dump(mode="json") for relation in hit.relations],
                 trace_id=trace_id,
                 retrieval_id=trace_id,
                 retrieval_status=result.retrieval_status,
@@ -164,8 +204,24 @@ class CueKBAdapter:
                 authorized_kb_ids=tuple(sorted(ctx.principal.knowledge_base_ids)),
                 is_mock=self.settings.cuekb_mode == "mock",
             )
+            candidate = citation.model_dump(mode="json")
+            if not fits(candidate) and context:
+                citation.context = None
+                citation.context_parts = []
+                citation.context_omitted = True
+                candidate = citation.model_dump(mode="json")
+            if not fits(candidate):
+                omitted += 1
+                continue
+            budget -= len(content) + len(citation.context or "")
+            context_omitted_any = context_omitted_any or citation.context_omitted
             ctx.evidence[citation_id] = citation
-            hits.append(citation.model_dump())
+            hits.append(candidate)
+            accepted_ids.append(citation_id)
+        if omitted:
+            for citation_id, candidate in zip(accepted_ids, hits, strict=True):
+                ctx.evidence[citation_id].hits_omitted = omitted
+                candidate["hits_omitted"] = omitted
         ctx.retrievals.append(
             {
                 "trace_id": trace_id,
@@ -173,22 +229,10 @@ class CueKBAdapter:
                 "evidence_status": result.evidence_status,
                 "degraded_reasons": result.degraded_reasons,
                 "scope_limited": result.scope_limited,
+                "application_limited": bool(omitted or context_omitted_any),
             }
         )
-        return {
-            "status": result.retrieval_status,
-            "evidence_status": result.evidence_status,
-            "hits": hits,
-            "trace_id": trace_id,
-            "retrieval_id": trace_id,
-            "degraded_reasons": result.degraded_reasons,
-            "scope_limited": result.scope_limited,
-            "content_revisions": content_revisions,
-            "timings_ms": result.timings_ms,
-            "retrieval_path": result.retrieval_path,
-            "executed_stages": result.executed_stages,
-            "skipped_stages": result.skipped_stages,
-        }
+        return {**base, "hits": hits, "hits_omitted": omitted}
 
 
 class WeatherAdapter:

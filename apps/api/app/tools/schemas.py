@@ -8,6 +8,8 @@ from pydantic import Field, model_validator
 
 class CueKBSearchInput(StrictModel):
     query: str = Field(min_length=1, max_length=2000)
+    product_model: str | None = Field(default=None, min_length=1, max_length=120)
+    software_version: str | None = Field(default=None, min_length=1, max_length=120)
 
 
 class CueKBSearchFilters(StrictModel):
@@ -33,6 +35,32 @@ class SourceAnchor(StrictModel):
     bbox: dict[str, float | str] | None = None
 
 
+class CueKBContextPart(StrictModel):
+    chunk_id: UUID
+    source_text: str
+    anchor: SourceAnchor
+    title_path: list[str]
+
+
+class CueKBRelation(StrictModel):
+    relation_id: UUID
+    subject_id: UUID
+    object_id: UUID
+    relation_type: Literal[
+        "belongs_to",
+        "adjacent_to",
+        "alias_of",
+        "revises",
+        "replaces",
+        "references",
+        "depends_on",
+        "applies_to",
+    ]
+    conditions: dict[Literal["product_model", "software_version"], str]
+    stance: Literal["supports", "refutes"]
+    chunk_id: UUID
+
+
 class CueKBSearchHit(StrictModel):
     chunk_id: UUID
     document_id: UUID
@@ -44,14 +72,15 @@ class CueKBSearchHit(StrictModel):
     anchor: SourceAnchor = Field(default_factory=SourceAnchor)
     metadata: dict[str, Any] = Field(default_factory=dict)
     retrieval_sources: list[str] = Field(default_factory=list)
+    context_parts: list[CueKBContextPart] = Field(default_factory=list)
+    context_truncated: bool = False
+    relations: list[CueKBRelation] = Field(default_factory=list)
 
 
 class CueKBSearchResponse(StrictModel):
     trace_id: UUID
     retrieval_status: Literal["ok", "degraded", "not_found", "needs_clarification"]
-    evidence_status: Literal["unassessed", "sufficient", "insufficient", "conflicting"] = (
-        "unassessed"
-    )
+    evidence_status: Literal["unassessed", "sufficient", "insufficient", "conflicting"] = "unassessed"
     degraded_reasons: list[str] = Field(default_factory=list)
     scope_limited: bool = False
     content_revisions: dict[UUID, int]
@@ -129,3 +158,4 @@ class CueKBToolResult(StrictModel):
     retrieval_path: str
     executed_stages: list[str] = Field(default_factory=list)
     skipped_stages: list[dict[str, str]] = Field(default_factory=list)
+    hits_omitted: int = 0

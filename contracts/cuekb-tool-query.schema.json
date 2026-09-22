@@ -6,6 +6,34 @@
       "minLength": 1,
       "title": "Query",
       "type": "string"
+    },
+    "product_model": {
+      "anyOf": [
+        {
+          "maxLength": 120,
+          "minLength": 1,
+          "type": "string"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null,
+      "title": "Product Model"
+    },
+    "software_version": {
+      "anyOf": [
+        {
+          "maxLength": 120,
+          "minLength": 1,
+          "type": "string"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null,
+      "title": "Software Version"
     }
   },
   "required": [

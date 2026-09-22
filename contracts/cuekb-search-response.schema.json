@@ -1,5 +1,108 @@
 {
   "$defs": {
+    "CueKBContextPart": {
+      "additionalProperties": false,
+      "properties": {
+        "chunk_id": {
+          "format": "uuid",
+          "title": "Chunk Id",
+          "type": "string"
+        },
+        "source_text": {
+          "title": "Source Text",
+          "type": "string"
+        },
+        "anchor": {
+          "$ref": "#/$defs/SourceAnchor"
+        },
+        "title_path": {
+          "items": {
+            "type": "string"
+          },
+          "title": "Title Path",
+          "type": "array"
+        }
+      },
+      "required": [
+        "chunk_id",
+        "source_text",
+        "anchor",
+        "title_path"
+      ],
+      "title": "CueKBContextPart",
+      "type": "object"
+    },
+    "CueKBRelation": {
+      "additionalProperties": false,
+      "properties": {
+        "relation_id": {
+          "format": "uuid",
+          "title": "Relation Id",
+          "type": "string"
+        },
+        "subject_id": {
+          "format": "uuid",
+          "title": "Subject Id",
+          "type": "string"
+        },
+        "object_id": {
+          "format": "uuid",
+          "title": "Object Id",
+          "type": "string"
+        },
+        "relation_type": {
+          "enum": [
+            "belongs_to",
+            "adjacent_to",
+            "alias_of",
+            "revises",
+            "replaces",
+            "references",
+            "depends_on",
+            "applies_to"
+          ],
+          "title": "Relation Type",
+          "type": "string"
+        },
+        "conditions": {
+          "additionalProperties": {
+            "type": "string"
+          },
+          "propertyNames": {
+            "enum": [
+              "product_model",
+              "software_version"
+            ]
+          },
+          "title": "Conditions",
+          "type": "object"
+        },
+        "stance": {
+          "enum": [
+            "supports",
+            "refutes"
+          ],
+          "title": "Stance",
+          "type": "string"
+        },
+        "chunk_id": {
+          "format": "uuid",
+          "title": "Chunk Id",
+          "type": "string"
+        }
+      },
+      "required": [
+        "relation_id",
+        "subject_id",
+        "object_id",
+        "relation_type",
+        "conditions",
+        "stance",
+        "chunk_id"
+      ],
+      "title": "CueKBRelation",
+      "type": "object"
+    },
     "CueKBSearchHit": {
       "additionalProperties": false,
       "properties": {
@@ -60,6 +163,25 @@
             "type": "string"
           },
           "title": "Retrieval Sources",
+          "type": "array"
+        },
+        "context_parts": {
+          "items": {
+            "$ref": "#/$defs/CueKBContextPart"
+          },
+          "title": "Context Parts",
+          "type": "array"
+        },
+        "context_truncated": {
+          "default": false,
+          "title": "Context Truncated",
+          "type": "boolean"
+        },
+        "relations": {
+          "items": {
+            "$ref": "#/$defs/CueKBRelation"
+          },
+          "title": "Relations",
           "type": "array"
         }
       },

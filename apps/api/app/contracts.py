@@ -75,6 +75,11 @@ class Citation(StrictModel):
     updated_at: str | None = None
     content: str
     context: str | None = None
+    context_parts: list[dict[str, Any]] = Field(default_factory=list)
+    context_truncated: bool = False
+    context_omitted: bool = False
+    hits_omitted: int = Field(default=0, ge=0)
+    relations: list[dict[str, Any]] = Field(default_factory=list)
     trace_id: str
     retrieval_id: str
     retrieval_status: Literal["ok", "degraded", "not_found", "needs_clarification"] = "ok"

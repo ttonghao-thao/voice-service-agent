@@ -627,6 +627,22 @@ a:focus-visible {
   color: #9a5b13;
   font-size: 12px;
 }
+.citation-context {
+  margin-top: 8px;
+  font-size: 11px;
+  color: #667658;
+}
+.citation-context > div {
+  padding: 8px 0;
+  border-top: 1px solid #e5ebdc;
+}
+.citation-relations {
+  display: grid;
+  gap: 5px;
+  margin-top: 8px;
+  font-size: 11px;
+  color: #667658;
+}
 .citation a {
   display: block;
   margin-top: 12px;

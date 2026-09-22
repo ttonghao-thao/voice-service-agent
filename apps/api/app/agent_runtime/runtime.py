@@ -169,7 +169,9 @@ class BusinessRuntime:
             if answer.citation_ids and "search_knowledge" not in ctx.invoked:
                 return self.failure("RAG_INVALID_CITATION", "本轮缺少知识检索记录。")
         degraded = any(
-            item.get("retrieval_status") == "degraded" or item.get("scope_limited")
+            item.get("retrieval_status") == "degraded"
+            or item.get("scope_limited")
+            or item.get("application_limited")
             for item in ctx.retrievals
         )
         display_text = answer.display_text

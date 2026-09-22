@@ -1,6 +1,6 @@
 # 后端服务与工具接入
 
-更新：2026-09-16。按主题读取。架构决策见 [architecture.md](architecture.md)，当前差距见 [任务板](TASK_BOARD.md)。
+更新：2026-09-22。按主题读取。架构决策见 [architecture.md](architecture.md)，当前差距见 [任务板](TASK_BOARD.md)。
 
 ## 1. 运行依赖与配置状态
 
@@ -9,7 +9,7 @@
 | VoiceChat | 独立实时语音服务，原生工具调用 | 有 NVIDIA WebSocket adapter；真实部署未验收 |
 | CueKB | 知识检索与版本来源 | 专用 adapter、契约和受控测试已实现；真实服务/ACL 待 D07 |
 | 文本模型 | BusinessRuntime 的推理与业务回答 | 已有 openai / compatible adapter；真实模型未验收 |
-| 第三方工具 | 按实际接入选择启用 | 现有天气代理示例；生产强制天气配置尚待解除 |
+| 第三方工具 | 本期不启用 | 天气代理代码仍保留，生产默认无需天气配置 |
 | 身份服务 | 客户身份、组织及知识范围 | OIDC/JWT 已支持 customer/operator/admin；真实 IdP 与 CueKB ACL 待验收 |
 
 当前环境变量名和启动校验以 `apps/api/app/config.py`、`.env.example`、`.env.production.example` 为准。实现读取 `CUEKB_MODE`、`CUEKB_BASE_URL`、`CUEKB_API_KEY`、`CUEKB_SEARCH_MODE`、`CUEKB_TOP_K` 与 `CUEKB_API_REVISION`；旧 `RAG_*` 配置和 `/v1/retrieve` 契约已退出活动实现。
@@ -18,7 +18,7 @@ development 使用显式 mock；integration 用于真实联调；production 禁�
 
 ## 2. CueKB 目标契约（D03）
 
-核对本地 CueKB revision：`22c74a335bf88ea50f0df3b171d0b2125c14c77a`；来源为其 `src/cuekb/schemas.py`、API routes/dependencies 与检索实现。部署前核对目标服务 OpenAPI，不把该 revision 当作所有部署版本。
+核对本地 CueKB revision：`1b9379de53c55dd41193a1529e46d48c0f219c14`（M3）；来源为其 `src/cuekb/schemas.py`、API routes/dependencies 与检索实现。部署前核对目标服务 OpenAPI，不把该 revision 当作所有部署版本。
 
 ```http
 POST {server-configured-cuekb-base-url}/v1/search
@@ -37,7 +37,7 @@ Content-Type: application/json
 }
 ```
 
-示例 UUID 仅说明类型。实际 KB UUID 来自服务端授权映射；旧 `kb_support` 不能直接传入。当前 CueKB query 上限 2000 字符，top_k 支持 1–20；默认选 5 是本应用建议。filters 仅映射其支持的 document_ids、product_model、software_version；条件必须来自明确输入或已确认上下文。
+示例 UUID 仅说明类型。实际 KB UUID 来自服务端授权映射；旧 `kb_support` 不能直接传入。当前 CueKB query 上限 2000 字符，top_k 支持 1–20；默认选 5 是本应用建议。工具输入目前只开放 `product_model`、`software_version`，由 BusinessRuntime 从明确输入或已确认上下文传入；Adapter 不从自然语言猜测。CueKB 支持的 `document_ids` 暂不开放给模型。`relations` 是 CueKB M3 的可选请求字段；本项目可接收其返回的关系证据，但暂不让模型生成实体 UUID、关系类型或时间条件。
 
 不向上游发送自造 request_id/locale/deadline 并假定生效。HTTP 超时与应用 deadline 自行执行，取消本地等待不证明 CueKB 后台已停止。
 
@@ -52,13 +52,15 @@ Content-Type: application/json
 | content_revisions | 保留知识内容版本线索，不宣称跨系统事务一致性 |
 | hits.document_id / chunk_id / version_id | 引用真实身份与版本；本项目另生成 citation_id |
 | source_text、context | 保留证据原文与上下文，内容相同不重复占预算 |
+| context_parts、context_truncated | 保存逐块原文及锚点、CueKB 的上下文截断标记；门户可展开逐块来源 |
+| relations | 保存关系类型、条件和 supports/refutes 立场；该立场不是事实真假结论 |
 | title_path、anchor、metadata | 来源定位及适用条件；缺失标题用“来源片段”，不伪造 |
 | rank、retrieval_sources | 检索排序/来源，不当作事实置信度 |
 | timings_ms、retrieval_path、executed_stages、skipped_stages | 内部诊断，不要求普通客户理解 |
 
 Citation 的 updated_at 已改为可选，未填当前时间冒充文档更新时间；不再生成 score。`version_id` 与 metadata 中受控的 `business_version` 分开，旧历史 JSON 在读取时仍按原数据兼容，新增任务字段由 Alembic 0004 迁移。
 
-当前 CueKB 的 context 可能等于 source_text，include_context=true 不保证已有相邻段、表头和完整步骤。回答模块仍需检查证据充分性。原件查看需经本项目重新鉴权并固定检索版本；这是待实现入口，不向浏览器暴露服务 Key 或私有下载 URL。
+CueKB M3 已提供有界章节、相邻块及表头上下文，但预算耗尽时仍可能截断或返回空 context；本项目另以 6000 字符证据预算和小于 32 KiB 的工具结果预算裁剪，使用 `context_omitted` 和 `hits_omitted` 明示应用侧裁剪，不将其冒充 CueKB 状态。回答模块仍需检查证据充分性。原件查看需经本项目重新鉴权并固定检索版本；这是待实现入口，不向浏览器暴露服务 Key 或私有下载 URL。
 
 ### 2.2 身份和错误
 
@@ -66,7 +68,7 @@ Citation 的 updated_at 已改为可选，未填当前时间冒充文档更新�
 
 not_found 表示本次未命中，不能推导事实不存在；degraded 有 hits 时保留原因并判断可用性；401/403 为授权或配置问题，422 为契约问题，429 为负载限制，5xx/超时为服务故障。禁止统一降为“查无资料”。返回答案、读历史证据和原件时都需覆盖撤权策略。
 
-当前传输 JSON 32 KiB 与模型证据 6000 字符是不同预算，需对中文及 context/anchor 实测。原 5 秒知识工具、12 秒业务预算作为初始值，不能证明真实端到端时延已达标。
+CueKB 上游 HTTP 响应上限为 256 KiB，内部工具输出上限为 32 KiB，模型证据正文加上下文预算为 6000 字符；三者是不同边界，超过内部预算时显式舍弃上下文或命中。原 5 秒知识工具、12 秒业务预算作为初始值，不能证明真实端到端时延已达标。
 
 ## 3. VoiceChat 接入与能力门槛
 
@@ -78,7 +80,7 @@ not_found 表示本次未命中，不能推导事实不存在；degraded 有 hit
 
 目标部署必须记录容器 digest、服务/API revision、语言、事件样例和验收时间。`scripts/probe_voicechat.py` 固定目标版本，支持工具结果延迟 5 秒、等待期间发送不同的第二段录音、记录无正文的事件时间线，并可选择保存授权输出 WAV 供人工复核。等待提示语、持续收音、工具等待时自由回答、停止播报、取消推理仍是分别验证的能力；脚本不自动提升模式。已核对模型卡与限制页，但尚无目标容器的真实验证。
 
-- 基础：同 call 工具往返、中文音频、硬打断/关闭重连及旧连接隔离。
+- 基础：同 call 工具往返、英文音频、硬打断/关闭重连及旧连接隔离。
 - 增强：延迟工具 5 秒，期间新问题在旧结果返回前得到实际回答；改问后旧答案不交付，原 call 安全结清并可继续新调用。ACK 不计为新问题回答。
 - 不发送未证实的 response.cancel、动态 instructions、任意文本 TTS 或后台结果推送事件。失败不意味着服务支持的全部功能都不存在，只表示本部署未建立契约和证据。
 
@@ -96,7 +98,7 @@ Runtime 复用授权工具和证据校验，输出 display_text、短 speech_tex
 
 目标可用工具集合为部署启用 `ENABLED_TOOLS` ∩ 管理员当前启用 ∩ 用户授权；必需依赖只检查部署启用项。未配置天气/股票时不得暴露或调用，也不影响 CueKB-only 启动。部署白名单不能由管理员 API 重新开启；管理员只能在白名单内临时启停，运行中的旧任务会因版本或可用性变化被拒绝。`/capabilities` 返回部署集合和当前身份的 `available_tools`，`/health/ready` 返回非敏感部署集合。
 
-已有天气示例契约仍见 [weather-openapi.yaml](../contracts/weather-openapi.yaml)，路径为 `/v1/places/resolve` 和 `/v1/weather`。这是应用供应商代理契约，没有证明已接通任何厂商；保留当前代码/schema 避免文档清理改变行为。新增股票等工具时按实际 API 另建 adapter，不能复用天气字段冒充通用事实。
+本期默认 `ENABLED_TOOLS=search_knowledge`。已有天气示例契约仍见 [weather-openapi.yaml](../contracts/weather-openapi.yaml)，但天气不属于本期产品范围，现存代码/schema 仅保留供后续需求评估，不对客户开放。
 
 只读 HTTP 按剩余预算做有限重试；当前对网络/5xx 最多一次，429/4xx/错误 JSON/超大正文不自动重试。缓存必须包含权限范围、查询条件、供应商和有效期，不能把历史数字作为新实时事实。
 

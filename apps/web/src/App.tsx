@@ -392,6 +392,39 @@ export default function App() {
                 <strong>{c.title}</strong>
               </div>
               <p>{c.content}</p>
+              {c.context_parts?.length > 0 && (
+                <details className="citation-context">
+                  <summary>Context and source locations ({c.context_parts.length})</summary>
+                  {c.context_parts.map((part) => (
+                    <div key={part.chunk_id}>
+                      <strong>{part.title_path.join(" / ") || "Source excerpt"}</strong>
+                      {part.anchor.page ? ` · page ${part.anchor.page}` : ""}
+                      <p>{part.source_text}</p>
+                    </div>
+                  ))}
+                </details>
+              )}
+              {c.relations?.length > 0 && (
+                <div className="citation-relations">
+                  {c.relations.map((relation) => (
+                    <span key={relation.relation_id}>
+                      Relationship evidence: {relation.relation_type} ({relation.stance})
+                      {Object.entries(relation.conditions).map(([key, value]) => ` · ${key}: ${value}`).join("")}
+                    </span>
+                  ))}
+                  <small>These relations are source claims; their truth has not been established.</small>
+                </div>
+              )}
+              {(c.context_truncated || c.context_omitted) && (
+                <div className="citation-warning">
+                  {c.context_omitted ? "Some context was omitted by this service." : "CueKB limited the returned context."}
+                </div>
+              )}
+              {c.hits_omitted > 0 && (
+                <div className="citation-warning">
+                  {c.hits_omitted} matching source(s) were omitted by this service's evidence budget.
+                </div>
+              )}
               <div className="citation-meta">
                 内容版本 {c.business_version || c.version_id}
                 {c.anchor.page ? ` · 第 ${c.anchor.page} 页` : ""}

@@ -325,6 +325,10 @@ async def test_pre_d03_citation_json_is_normalized_at_read_boundary(app):
     assert citation["version_id"] == "legacy-v1"
     assert citation["trace_id"] == "legacy-retrieval"
     assert citation["anchor"] == {} and citation["updated_at"].startswith("2026")
+    assert citation["context_parts"] == [] and citation["relations"] == []
+    assert citation["context_truncated"] is False
+    assert citation["context_omitted"] is False
+    assert citation["hits_omitted"] == 0
 
 
 async def test_origin_and_limits(client, app):

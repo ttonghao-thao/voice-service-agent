@@ -3,6 +3,21 @@ export interface Citation {
   title: string;
   content: string;
   context: string | null;
+  context_parts: {
+    chunk_id: string;
+    source_text: string;
+    anchor: { page?: number | null; heading_path?: string[] };
+    title_path: string[];
+  }[];
+  context_truncated: boolean;
+  context_omitted: boolean;
+  hits_omitted: number;
+  relations: {
+    relation_id: string;
+    relation_type: string;
+    stance: "supports" | "refutes";
+    conditions: Record<string, string>;
+  }[];
   version_id: string;
   business_version: string | null;
   updated_at: string | null;
