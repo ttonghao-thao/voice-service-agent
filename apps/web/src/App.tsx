@@ -37,21 +37,21 @@ import {
 import { VoiceClient, VoiceState } from "./audio/VoiceClient";
 
 const stateLabels: Record<VoiceState, string> = {
-  closed: "语音未连接",
-  connecting: "正在连接",
-  ready: "语音已就绪",
-  reconnecting: "正在重新连接",
-  error: "语音不可用",
+  closed: "Voice disconnected",
+  connecting: "Connecting",
+  ready: "Voice ready",
+  reconnecting: "Reconnecting",
+  error: "Voice unavailable",
 };
 const statuses: Record<string, string> = {
-  answered: "查询完成",
-  needs_clarification: "需要补充信息",
-  insufficient_evidence: "依据不足",
-  failed: "查询失败",
-  canceled: "已取消",
-  superseded: "已改问",
-  expired: "已过期",
-  running: "正在查询",
+  answered: "Answered",
+  needs_clarification: "Clarification needed",
+  insufficient_evidence: "Insufficient evidence",
+  failed: "Search failed",
+  canceled: "Canceled",
+  superseded: "Superseded",
+  expired: "Expired",
+  running: "Searching",
 };
 
 export default function App() {
@@ -129,7 +129,7 @@ export default function App() {
         event.request_revision || 0,
       );
       if (event.type === "portal.tool.started") {
-        setProgress(String(event.payload.message || "正在查询"));
+        setProgress(String(event.payload.message || "Searching"));
         void refresh(event.conversation_id).catch((e) => setError(e.message));
       }
       if (event.type === "portal.answer.final") {
@@ -152,7 +152,7 @@ export default function App() {
         setTranscripts((old) => ({
           ...old,
           [key]: {
-            kind: event.type.includes("speech_text") ? "语音字幕" : "用户转写",
+            kind: event.type.includes("speech_text") ? "Spoken reply" : "Your transcript",
             text: event.type.endsWith(".done")
               ? String(event.payload.text)
               : (old[key]?.text || "") + String(event.payload.text),
@@ -213,7 +213,7 @@ export default function App() {
       try {
         handleEvent(JSON.parse(data));
       } catch {
-        setError("收到无法识别的会话事件");
+        setError("Unrecognized conversation event");
       }
     };
     return () => events.close();
@@ -226,7 +226,7 @@ export default function App() {
       await voice.current?.stop();
       const c = await api<Conversation>("/conversations", {
         method: "POST",
-        body: JSON.stringify({ title: "新会话", locale: "zh-CN" }),
+        body: JSON.stringify({ title: "New conversation", locale: "en-US" }),
       });
       setCid(c.id);
       await loadList();
@@ -266,7 +266,7 @@ export default function App() {
           result.request_revision,
         );
         setDraft("");
-        setProgress("正在处理");
+        setProgress("Processing");
         await refresh(id);
       }
       await loadList();
@@ -310,7 +310,7 @@ export default function App() {
           <CustomerServiceOutlined />
         </span>
         <div>
-          声桥<small>SERVICE DESK</small>
+          VoiceBridge<small>SERVICE DESK</small>
         </div>
       </div>
       <Button
@@ -320,10 +320,10 @@ export default function App() {
         block
         onClick={() => void newConversation()}
       >
-        新建会话
+        New conversation
       </Button>
       <div className="section-label">
-        我的会话 <span>{conversations.length}</span>
+        My conversations <span>{conversations.length}</span>
       </div>
       <nav className="conversations">
         {conversations.map((c) => (
@@ -343,18 +343,18 @@ export default function App() {
       </nav>
       <div className="sidebar-foot">
         <span className="avatar">
-          {me?.user_id.slice(0, 1).toUpperCase() || "客"}
+          {me?.user_id.slice(0, 1).toUpperCase() || "C"}
         </span>
         <div>
-          <strong>{me?.user_id || "客户服务"}</strong>
+          <strong>{me?.user_id || "Customer support"}</strong>
           <small>
-            {me?.auth_mode === "dev" ? "开发身份" : "已通过组织认证"}
+            {me?.auth_mode === "dev" ? "Development identity" : "Organization verified"}
           </small>
         </div>
         {me?.auth_mode === "oidc" && (
           <Button
             type="text"
-            aria-label="退出登录"
+            aria-label="Sign out"
             icon={<LogoutOutlined />}
             onClick={() =>
               void fetch("/api/v1/auth/logout", { method: "POST" }).then(() =>
@@ -370,21 +370,21 @@ export default function App() {
     <div className="evidence">
       <div className="evidence-heading">
         <FileTextOutlined />
-        <h3>答案依据</h3>
-        {selected && <span>{selected.citations.length} 条来源</span>}
+        <h3>Answer sources</h3>
+        {selected && <span>{selected.citations.length} sources</span>}
       </div>
       {!selected ? (
         <div className="evidence-placeholder">
           <FileTextOutlined />
-          <p>每个答案，都有据可查</p>
-          <small>查询完成后，在这里查看知识来源、版本和适用位置。</small>
+          <p>Answers backed by sources</p>
+          <small>After a search, view knowledge sources, versions, and locations here.</small>
         </div>
       ) : (
         <>
           <Tag color={selected.status === "answered" ? "green" : "orange"}>
             {statuses[selected.status] || selected.status}
           </Tag>
-          {selected.is_mock && <Tag color="orange">合成联调资料</Tag>}
+          {selected.is_mock && <Tag color="orange">Synthetic integration data</Tag>}
           {selected.citations.map((c) => (
             <article className="citation" key={c.citation_id}>
               <div className="citation-title">
@@ -426,17 +426,17 @@ export default function App() {
                 </div>
               )}
               <div className="citation-meta">
-                内容版本 {c.business_version || c.version_id}
-                {c.anchor.page ? ` · 第 ${c.anchor.page} 页` : ""}
+                Content version {c.business_version || c.version_id}
+                {c.anchor.page ? ` · page ${c.anchor.page}` : ""}
                 {c.updated_at && (
                   <>
                     <br />
-                    {new Date(c.updated_at).toLocaleString("zh-CN")}
+                    {new Date(c.updated_at).toLocaleString("en-US")}
                   </>
                 )}
               </div>
               {(c.scope_limited || c.retrieval_status === "degraded") && (
-                <div className="citation-warning">本条来源来自受限或降级检索</div>
+                <div className="citation-warning">This source came from a limited or degraded search.</div>
               )}
               {c.source_uri && (
                 <a
@@ -444,7 +444,7 @@ export default function App() {
                   target="_blank"
                   rel="noopener noreferrer"
                 >
-                  <LinkOutlined /> 查看授权来源
+                  <LinkOutlined /> View authorized source
                 </a>
               )}
             </article>
@@ -454,12 +454,12 @@ export default function App() {
           ))}
           {!selected.citations.length && !selected.cards.length && (
             <p className="muted">
-              本次没有可展示的证据。请补充问题，或交由人工进一步确认。
+              No evidence is available to show. Please clarify your question or contact a representative.
             </p>
           )}
           <div className="evidence-note">
             <CheckCircleOutlined />{" "}
-            来源由服务端校验；引用是否充分支持结论仍需业务核实。
+            The server validates source access; the conclusion still needs business review.
           </div>
         </>
       )}
@@ -468,7 +468,7 @@ export default function App() {
   if (loading)
     return (
       <div className="login-screen">
-        <Spin size="large" tip="正在进入客户服务" />
+        <Spin size="large" tip="Opening customer support" />
       </div>
     );
   if (login)
@@ -476,10 +476,10 @@ export default function App() {
       <div className="login-screen">
         <div className="login-card">
           <CustomerServiceOutlined />
-          <h1>声桥客户服务</h1>
-          <p>使用组织账号登录，安全访问您的会话与知识库。</p>
+          <h1>VoiceBridge Customer Support</h1>
+          <p>Sign in with your organization account to access your conversations and knowledge.</p>
           <Button type="primary" size="large" href="/api/v1/auth/login">
-            使用组织账号登录
+            Sign in with organization account
           </Button>
         </div>
       </div>
@@ -494,39 +494,39 @@ export default function App() {
               className="mobile-menu"
               type="text"
               icon={<MenuOutlined />}
-              aria-label="会话列表"
+              aria-label="Conversation list"
               onClick={() => setSidebar(true)}
             />
             <span className="breadcrumb">
-              客户服务 <span>/</span> 在线咨询
+              Customer support <span>/</span> Online help
             </span>
           </div>
           <div className="top-actions">
             <Tag color={caps?.is_mock ? "orange" : "green"}>
-              {caps?.is_mock ? "演示环境" : "服务集成环境"}
+              {caps?.is_mock ? "Demo environment" : "Integration environment"}
             </Tag>
           </div>
         </header>
         <div className="workspace-heading">
           <div>
             <div className="eyebrow">CUSTOMER SUPPORT</div>
-            <h1>让每一次对话，都有回应</h1>
-            <p>语音沟通，文字留痕，业务答案有据可查。</p>
+            <h1>Support that responds</h1>
+            <p>Speak naturally, keep a written record, and review the sources behind each answer.</p>
           </div>
           <Button
             className="sources-toggle"
             icon={<FileTextOutlined />}
             onClick={() => setSourcesOpen(true)}
           >
-            答案依据
+            Answer sources
           </Button>
         </div>
         {caps?.is_mock && (
           <div className="mode-notice">
-            <span>联调模式</span>{" "}
-            当前包含演示服务，未配置的真实模型和工具不会生成真实业务结果。
+            <span>Integration mode</span>{" "}
+            This environment includes demo services. Unconfigured real models and tools cannot produce real business answers.
             {caps.provider === "mock"
-              ? "语音仅验证采集与传输，不进行识别或合成。"
+              ? "Voice only verifies capture and transport; it does not recognize or synthesize speech."
               : ""}
           </div>
         )}
@@ -545,8 +545,8 @@ export default function App() {
             <div className="chat-header">
               <div>
                 <span className="status-dot" />
-                <strong>服务对话</strong>
-                <span className="locale">简体中文</span>
+                <strong>Support conversation</strong>
+                <span className="locale">English</span>
               </div>
               <span className="small muted">{stateLabels[voiceState]}</span>
             </div>
@@ -558,7 +558,7 @@ export default function App() {
                     void refresh(cid, before).catch((e) => setError(e.message))
                   }
                 >
-                  查看更早的对话
+                  View older messages
                 </Button>
               )}
               {!turns.length && !Object.keys(transcripts).length ? (
@@ -566,31 +566,31 @@ export default function App() {
                   <div className="welcome-icon">
                     <CustomerServiceOutlined />
                   </div>
-                  <h2>您好，今天有什么可以帮您？</h2>
+                  <h2>Hello. How can I help today?</h2>
                   <p>
-                    您可以直接说出或输入问题，我会查询您有权访问的公司知识。
-                    <br />我会在依据不足时请您补充信息。
+                    Speak or type your question. I will search company knowledge you are allowed to access.
+                    <br />I will ask for clarification when the evidence is insufficient.
                   </p>
                   <div className="suggestions">
                     <button
-                      onClick={() => setDraft("请查询产品的故障排查流程")}
+                      onClick={() => setDraft("Find the product troubleshooting procedure")}
                     >
                       <FileTextOutlined />
-                      <strong>查询知识</strong>
-                      <span>产品、服务与处理流程</span>
+                      <strong>Search knowledge</strong>
+                      <span>Products, services, and procedures</span>
                     </button>
-                    <button onClick={() => setDraft("请说明产品升级前的准备事项")}>
+                    <button onClick={() => setDraft("What should I prepare before a product upgrade?")}>
                       <AudioOutlined />
-                      <strong>自然提问</strong>
-                      <span>流程、版本与注意事项</span>
+                      <strong>Ask naturally</strong>
+                      <span>Procedures, versions, and precautions</span>
                     </button>
                   </div>
                   {caps?.is_mock && (
                     <button
                       className="fixture-link"
-                      onClick={() => setDraft("请查询联调示例")}
+                      onClick={() => setDraft("Find the integration sample")}
                     >
-                      查看合成联调示例 →
+                      View synthetic integration sample →
                     </button>
                   )}
                 </div>
@@ -599,7 +599,7 @@ export default function App() {
                 <article className="turn" key={t.id}>
                   <div className="user-message">
                     <span className="message-label">
-                      您 · {t.channel === "voice" ? "语音请求" : "文字"}
+                      You · {t.channel === "voice" ? "Voice request" : "Text"}
                     </span>
                     <p>{t.user_text}</p>
                   </div>
@@ -608,7 +608,7 @@ export default function App() {
                       <span className="mini-brand">
                         <CustomerServiceOutlined />
                       </span>
-                      <strong>查询答案</strong>
+                      <strong>Answer</strong>
                       <Tag
                         color={
                           t.status === "answered"
@@ -633,23 +633,23 @@ export default function App() {
                               setSourcesOpen(true);
                             }}
                           >
-                            <FileTextOutlined /> 查看本次依据 <span>↗</span>
+                            <FileTextOutlined /> View sources <span>↗</span>
                           </button>
                         )}
                       </>
                     ) : t.status === "running" ? (
                       <div className="processing">
-                        <LoadingOutlined /> {progress || "正在处理您的问题"}
+                        <LoadingOutlined /> {progress || "Processing your question"}
                       </div>
                     ) : (
-                      <p className="muted">本轮已停止，不会继续提交结果。</p>
+                      <p className="muted">This request has stopped. No further result will be submitted.</p>
                     )}
                     {t.status === "failed" && (
                       <Button
                         size="small"
                         onClick={() => setDraft(t.user_text)}
                       >
-                        重新提问
+                        Ask again
                       </Button>
                     )}
                   </div>
@@ -659,7 +659,7 @@ export default function App() {
                 <div className="transcript" key={key}>
                   <span>
                     {t.kind}
-                    {!t.done ? " · 转写中" : ""}
+                    {!t.done ? " · Transcribing" : ""}
                   </span>
                   <p>{t.text}</p>
                 </div>
@@ -667,14 +667,14 @@ export default function App() {
               {records.filter((r) => r.kind === "voicechat_transcript").length >
                 0 && (
                 <details className="voice-records">
-                  <summary>已保存的实际语音字幕 · 与查询答案分别记录</summary>
+                  <summary>Saved voice transcript · recorded separately from the answer</summary>
                   {records
                     .filter((r) => r.kind === "voicechat_transcript")
                     .map((r) => (
                       <p key={r.epoch + r.source_id}>{r.payload.text}</p>
                     ))}
                   <small>
-                    播放记录是浏览器估计进度，不表示用户已经听到完整答案。
+                    Playback progress is a browser estimate and does not prove the full answer was heard.
                   </small>
                 </details>
               )}
@@ -684,7 +684,7 @@ export default function App() {
               <div className="voice-controls">
                 <Button
                   aria-label={
-                    voiceState === "ready" ? "重新开始语音" : "开始语音"
+                    voiceState === "ready" ? "Restart voice" : "Start voice"
                   }
                   type={voiceState === "ready" ? "default" : "primary"}
                   icon={<AudioOutlined />}
@@ -693,10 +693,10 @@ export default function App() {
                   }
                   onClick={() => void startVoice()}
                 >
-                  {voiceState === "ready" ? "重新开始语音" : "开始语音"}
+                  {voiceState === "ready" ? "Restart voice" : "Start voice"}
                 </Button>
                 <Button
-                  aria-label={muted ? "取消麦克风静音" : "麦克风静音"}
+                  aria-label={muted ? "Unmute microphone" : "Mute microphone"}
                   disabled={voiceState !== "ready"}
                   icon={muted ? <AudioMutedOutlined /> : <AudioOutlined />}
                   onClick={() => {
@@ -704,29 +704,29 @@ export default function App() {
                     voice.current?.setMuted(!muted);
                   }}
                 >
-                  {muted ? "取消静音" : "静音"}
+                  {muted ? "Unmute" : "Mute"}
                 </Button>
                 <Button
-                  aria-label="停止播报"
+                  aria-label="Stop playback"
                   icon={<StopOutlined />}
                   disabled={voiceState !== "ready"}
                   onClick={() => voice.current?.stopPlayback()}
                 >
-                  停止播报
+                  Stop playback
                 </Button>
                 <Button
                   danger
                   disabled={!turns.some((turn) => turn.status === "running")}
                   onClick={() => void cancelCurrent()}
                 >
-                  取消查询
+                  Cancel search
                 </Button>
                 <Button
                   type="text"
                   disabled={voiceState === "closed"}
                   onClick={() => void voice.current?.stop()}
                 >
-                  结束语音
+                  End voice
                 </Button>
               </div>
               {voiceState === "ready" && (
@@ -739,14 +739,14 @@ export default function App() {
                   </span>
                   <span>
                     {muted
-                      ? "麦克风已静音"
+                      ? "Microphone muted"
                       : inputState === "speaking"
-                        ? "正在听您说话"
-                        : "语音就绪，可以开始提问"}
+                        ? "Listening"
+                        : "Voice is ready. You can ask a question."}
                     {progress ? " · " + progress : ""}
                   </span>
                   <label>
-                    音量
+                    Volume
                     <Slider
                       value={volume}
                       min={0}
@@ -766,8 +766,8 @@ export default function App() {
                   onChange={(e) => setDraft(e.target.value)}
                   maxLength={2000}
                   autoSize={{ minRows: 2, maxRows: 5 }}
-                  placeholder="输入您的问题，Shift + Enter 换行"
-                  aria-label="输入您的问题"
+                  placeholder="Type your question; Shift + Enter for a new line"
+                  aria-label="Your question"
                   onKeyDown={(e) => {
                     if (
                       e.key === "Enter" &&
@@ -782,14 +782,14 @@ export default function App() {
                 <Button
                   type="primary"
                   icon={<SendOutlined />}
-                  aria-label="发送问题"
+                  aria-label="Send question"
                   loading={sending}
                   disabled={!draft.trim()}
                   onClick={() => void send()}
                 />
               </div>
               <div className="composer-foot">
-                <span>文字提问将结束当前语音连接</span>
+                <span>Sending a text question ends the current voice connection.</span>
                 <span>{draft.length} / 2000</span>
               </div>
             </div>
@@ -797,12 +797,12 @@ export default function App() {
           <aside className="evidence-panel">{sources}</aside>
         </div>
         <footer className="page-footer">
-          <span>声桥 · 客服智能体门户</span>
-          <span>工具仅供查询 · 原始录音默认不保存</span>
+          <span>VoiceBridge · Customer support portal</span>
+          <span>Read-only tools · raw recordings are not stored by default</span>
         </footer>
       </main>
       <Drawer
-        title="我的会话"
+        title="My conversations"
         placement="left"
         open={sidebar}
         onClose={() => setSidebar(false)}
@@ -810,7 +810,7 @@ export default function App() {
         {nav}
       </Drawer>
       <Drawer
-        title="答案依据"
+        title="Answer sources"
         open={sourcesOpen}
         onClose={() => setSourcesOpen(false)}
         width={400}
@@ -835,8 +835,8 @@ function WeatherCard({ card }: { card: Record<string, unknown> }) {
   return (
     <article className="weather-card">
       <span>
-        {c.kind === "current" ? "天气实况" : "天气预报"}
-        {c.stale ? " · 过期数据" : ""}
+        {c.kind === "current" ? "Current weather" : "Weather forecast"}
+        {c.stale ? " · Stale data" : ""}
       </span>
       <h3>{c.place.name}</h3>
       <div className="temperature">
@@ -845,15 +845,15 @@ function WeatherCard({ card }: { card: Record<string, unknown> }) {
       </div>
       <p>{c.condition}</p>
       <small>
-        有效时间{" "}
-        {new Date(c.valid_at).toLocaleString("zh-CN", {
+        Valid at{" "}
+        {new Date(c.valid_at).toLocaleString("en-US", {
           timeZone: c.place.timezone,
         })}
         <br />
-        时区 {c.place.timezone}
+        Time zone {c.place.timezone}
         <br />
-        来源 {c.source.provider}
-        {c.source.is_mock ? "（合成）" : ""}
+        Source {c.source.provider}
+        {c.source.is_mock ? " (synthetic)" : ""}
       </small>
     </article>
   );

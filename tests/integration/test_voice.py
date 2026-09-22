@@ -23,13 +23,13 @@ def test_native_bridge_dedup_tool_before_transcript_and_ticket(tmp_path):
                 {
                     "call_id": "same",
                     "name": "consult_service_agent",
-                    "arguments": json.dumps({"user_request": "张先生的联调示例"}, ensure_ascii=False),
+                    "arguments": json.dumps({"user_request": "Find the integration sample"}),
                 },
             )
             await self.queue.put(call)
             await self.queue.put(call)
             await self.queue.put(
-                VoiceEvent("transcript.done", {"item_id": "late", "text": "张先生的联调示例"})
+                VoiceEvent("transcript.done", {"item_id": "late", "text": "Find the integration sample"})
             )
 
         async def submit_tool_result(self, call_id, text):
@@ -37,7 +37,7 @@ def test_native_bridge_dedup_tool_before_transcript_and_ticket(tmp_path):
             await self.queue.put(
                 VoiceEvent(
                     "speech_text.done",
-                    {"response_id": "r1", "item_id": "spoken", "text": "合成联调结果已返回。"},
+                    {"response_id": "r1", "item_id": "spoken", "text": "Synthetic integration result returned."},
                 )
             )
 
@@ -50,7 +50,7 @@ def test_native_bridge_dedup_tool_before_transcript_and_ticket(tmp_path):
             assert ws.receive_json()["type"] == "portal.transcript.done"
             assert ws.receive_json()["type"] == "portal.speech_text.done"
             assert len(returns) == 1 and returns[0][0] == "same"
-            assert "合成" in returns[0][1]["speech_text"]
+            assert "synthetic" in returns[0][1]["speech_text"].lower()
             with pytest.raises(WebSocketDisconnect):
                 with client.websocket_connect(issued["ws_url"], headers={"Origin": "http://localhost:5173"}):
                     pass

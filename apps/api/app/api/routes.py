@@ -43,7 +43,7 @@ def _answer_for_principal(answer, user, settings):
             return {
                 **answer,
                 "status": "failed",
-                "display_text": "知识权限已变更，请重新提问。",
+                "display_text": "Knowledge access changed. Please ask again.",
                 "speech_text": "",
                 "citations": [],
                 "cards": [],
@@ -135,10 +135,10 @@ def capabilities(s):
         "native_tool_phase_barge_in": voice_verified and s.voicechat_capability_mode == "enhanced",
         "dynamic_instructions": False,
         "arbitrary_text_to_speech": False,
-        "required_voice_languages": ["zh-CN"],
-        "declared_voice_languages": ["zh-CN"],
-        "integration_verified_voice_languages": ["zh-CN"]
-        if s.voicechat_integration_verified and s.voicechat_api_version
+        "required_voice_languages": ["en-US"],
+        "declared_voice_languages": ["en-US"],
+        "integration_verified_voice_languages": ["en-US"]
+        if voice_verified
         else [],
         "api_version": s.voicechat_api_version or None,
         "voice_image_digest": s.voicechat_image_digest or None,
@@ -221,7 +221,7 @@ async def messages(
         if before:
             previous = await db.get(Turn, before)
             if not previous or previous.conversation_id != cid:
-                raise DomainError("FORBIDDEN", "历史游标无效", 404)
+                raise DomainError("FORBIDDEN", "Invalid history cursor", 404)
             q = q.where(Turn.created_at < previous.created_at)
         turns = list((await db.execute(q.order_by(Turn.created_at.desc()).limit(limit))).scalars())
         records = list(
@@ -299,7 +299,7 @@ async def events(
     try:
         cursor = max(after, int(last_event_id or 0))
     except ValueError as exc:
-        raise DomainError("INVALID_CURSOR", "事件游标格式错误", 422) from exc
+        raise DomainError("INVALID_CURSOR", "Invalid event cursor", 422) from exc
 
     async def generate():
         nonlocal cursor
@@ -398,7 +398,7 @@ async def voice_stream(ws: WebSocket, sid: str, ticket: str = ""):
 
 def admin(user):
     if "tools:admin" not in user.scopes:
-        raise DomainError("FORBIDDEN", "需要工具管理权限", 403)
+        raise DomainError("FORBIDDEN", "Tool administration permission is required", 403)
 
 
 @router.get("/admin/tools")
@@ -443,9 +443,9 @@ async def toggle_tool(name: str, body: ToolPatch, request: Request, user: User):
     admin(user)
     registry = request.app.state.registry
     if name not in registry.specs:
-        raise DomainError("TOOL_NOT_FOUND", "工具不存在", 404)
+        raise DomainError("TOOL_NOT_FOUND", "Tool not found", 404)
     if body.enabled and not registry.deployment_enabled(name):
-        raise DomainError("TOOL_NOT_DEPLOYED", "该工具未在当前部署中启用", 409)
+        raise DomainError("TOOL_NOT_DEPLOYED", "This tool is not enabled in this deployment", 409)
     async with request.app.state.store.transaction() as db:
         config = await db.get(ToolConfig, name)
         if config:
@@ -470,17 +470,17 @@ async def test_tool(name: str, request: Request, user: User):
     registry, s = request.app.state.registry, request.app.state.settings
     spec = registry.specs.get(name)
     if not spec:
-        raise DomainError("TOOL_NOT_FOUND", "工具不存在", 404)
+        raise DomainError("TOOL_NOT_FOUND", "Tool not found", 404)
     if not registry.deployment_enabled(name):
-        raise DomainError("TOOL_NOT_DEPLOYED", "该工具未在当前部署中启用", 409)
+        raise DomainError("TOOL_NOT_DEPLOYED", "This tool is not enabled in this deployment", 409)
     if not await registry.store.enabled(name):
-        raise DomainError("TOOL_DISABLED", "该工具已被管理员停用", 409)
+        raise DomainError("TOOL_DISABLED", "This tool was disabled by an administrator", 409)
     mode = getattr(s, spec.mode_ref)
     if mode == "mock":
-        return {"status": "mock", "message": "演示适配器，不代表真实服务连接成功"}
+        return {"status": "mock", "message": "Demo adapter; this does not verify a real service connection"}
     base = getattr(s, spec.endpoint_ref)
     if not base:
-        raise DomainError("TOOL_NOT_CONFIGURED", "工具地址尚未配置", 503)
+        raise DomainError("TOOL_NOT_CONFIGURED", "Tool endpoint is not configured", 503)
     try:
         response = await request.app.state.client.get(
             base.rstrip("/") + "/health",
@@ -488,9 +488,9 @@ async def test_tool(name: str, request: Request, user: User):
             headers={"Authorization": "Bearer " + getattr(s, spec.secret_ref).get_secret_value()},
         )
         response.raise_for_status()
-        return {"status": "reachable", "message": "健康端点可达；不代表业务检索验收通过"}
+        return {"status": "reachable", "message": "Health endpoint is reachable; business search has not been accepted"}
     except Exception as exc:
-        raise DomainError("TOOL_UNAVAILABLE", "健康端点不可达，请检查服务配置", 503, True) from exc
+        raise DomainError("TOOL_UNAVAILABLE", "Health endpoint is unreachable; check service configuration", 503, True) from exc
 
 
 @router.get("/admin/services")
@@ -517,7 +517,7 @@ async def services(request: Request, user: User):
         "text_model": "mock"
         if s.agent_provider == "mock"
         else ("configured" if s.agent_model and s.openai_api_key.get_secret_value() else "unconfigured"),
-        "text_note": "配置状态不代表真实推理验收",
+        "text_note": "Configuration status does not verify real inference",
         "active_voice_sessions": len(request.app.state.voice.sessions),
         "voice_capacity_per_gateway": s.max_voice_sessions,
         "active_business_runs": len(request.app.state.coordinator.tasks),
@@ -534,5 +534,5 @@ async def drain(request: Request, user: User):
         db.add(AdminAudit(tenant_id=user.tenant_id, user_id=user.user_id, action="gateway.drain", details={}))
     return {
         "status": "draining",
-        "message": "本副本已停止接收新会话；活跃会话在现有时限内结束，随后可停止进程。",
+        "message": "This replica no longer accepts new sessions. Active sessions will finish within their limits before shutdown.",
     }

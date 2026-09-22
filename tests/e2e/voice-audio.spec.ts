@@ -8,7 +8,7 @@ test.use({
   },
   permissions: ["microphone"],
 });
-test("合成麦克风连续传输、停播、受控重建与结束释放", async ({ page }) => {
+test("Synthetic microphone transport, playback stop, rotation and cleanup", async ({ page }) => {
   const errors: string[] = [];
   page.on("pageerror", (e) => errors.push(e.message));
   const frames: { epoch: number; seq: number; payload: { audio: string } }[] =
@@ -22,13 +22,13 @@ test("合成麦克风连续传输、停播、受控重建与结束释放", async
     }),
   );
   await page.goto("/");
-  await page.getByRole("button", { name: "新建会话" }).click();
-  await page.getByRole("button", { name: "开始语音", exact: true }).click();
-  await expect(page.getByText("语音已就绪", { exact: true })).toBeVisible();
+  await page.getByRole("button", { name: "New conversation" }).click();
+  await page.getByRole("button", { name: "Start voice", exact: true }).click();
+  await expect(page.getByText("Voice ready", { exact: true })).toBeVisible();
   await expect.poll(() => frames.length).toBeGreaterThan(10);
   const firstEpoch = frames[0].epoch;
   expect(Buffer.from(frames[0].payload.audio, "base64").length).toBe(3840);
-  await page.getByRole("button", { name: "麦克风静音", exact: true }).click();
+  await page.getByRole("button", { name: "Mute microphone", exact: true }).click();
   await expect
     .poll(() => {
       const tail = frames.slice(-2);
@@ -41,13 +41,13 @@ test("合成麦克风连续传输、停播、受控重建与结束释放", async
     })
     .toBe(true);
   const beforeStop = frames.length;
-  await page.getByRole("button", { name: "停止播报", exact: true }).click();
+  await page.getByRole("button", { name: "Stop playback", exact: true }).click();
   await expect.poll(() => frames.length).toBeGreaterThan(beforeStop);
   expect(frames.at(-1)?.epoch).toBe(firstEpoch);
-  await page.getByRole("button", { name: "重新开始语音", exact: true }).click();
-  await expect(page.getByText("语音已就绪", { exact: true })).toBeVisible();
+  await page.getByRole("button", { name: "Restart voice", exact: true }).click();
+  await expect(page.getByText("Voice ready", { exact: true })).toBeVisible();
   await expect.poll(() => frames.some((f) => f.epoch > firstEpoch)).toBe(true);
-  await page.getByRole("button", { name: "结束语音", exact: true }).click();
-  await expect(page.getByText("语音未连接", { exact: true })).toBeVisible();
+  await page.getByRole("button", { name: "End voice", exact: true }).click();
+  await expect(page.getByText("Voice disconnected", { exact: true })).toBeVisible();
   expect(errors).toEqual([]);
 });

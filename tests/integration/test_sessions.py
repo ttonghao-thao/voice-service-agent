@@ -19,12 +19,12 @@ def dev_user():
     )
 
 
-async def test_chinese_text_and_idempotency(client, app, conversation):
+async def test_english_text_and_idempotency(client, app, conversation):
     headers = {"Idempotency-Key": "same"}
     first = await client.post(
         f"/api/v1/conversations/{conversation}/messages",
         headers=headers,
-        json={"text": "张先生，请查询联调示例：产品型号 AX-中文。"},
+        json={"text": "Find the integration sample for product model AX."},
     )
     assert first.status_code == 202
     task = app.state.coordinator.tasks.get(conversation)
@@ -33,14 +33,14 @@ async def test_chinese_text_and_idempotency(client, app, conversation):
     duplicate = await client.post(
         f"/api/v1/conversations/{conversation}/messages",
         headers=headers,
-        json={"text": "张先生，请查询联调示例：产品型号 AX-中文。"},
+        json={"text": "Find the integration sample for product model AX."},
     )
     assert duplicate.json()["turn_id"] == first.json()["turn_id"]
     data = (await client.get(f"/api/v1/conversations/{conversation}/messages")).json()
     assert len(data["items"]) == 1
     answer = data["items"][0]["answer"]
     assert answer["is_mock"] and answer["citations"][0]["citation_id"] == "C1"
-    assert "合成" in answer["display_text"]
+    assert "synthetic" in answer["display_text"].lower()
     changed = await client.post(
         f"/api/v1/conversations/{conversation}/messages", headers=headers, json={"text": "另一问题"}
     )

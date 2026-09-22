@@ -58,7 +58,7 @@ class SessionCoordinator:
                     c.epoch += 1
                     c.current_turn, c.voice_session_id = None, None
                     await self.store.event(
-                        db, c, "portal.session.ended", {"message": "服务已重启，请重新开始语音"}
+                        db, c, "portal.session.ended", {"message": "Service restarted. Restart voice."}
                     )
 
     async def ensure_owner(self, principal, cid):
@@ -81,7 +81,7 @@ class SessionCoordinator:
                 c.epoch += 1
                 c.current_turn, c.voice_session_id = None, None
                 await self.store.event(
-                    db, c, "portal.playback.clear", {"message": "新网关已接管，请重新开始语音"}
+                    db, c, "portal.playback.clear", {"message": "A new gateway took over. Restart voice."}
                 )
 
     async def submit(
@@ -97,9 +97,9 @@ class SessionCoordinator:
         async with self.lock(cid):
             await self.ensure_owner(principal, cid)
             if self.draining:
-                raise DomainError("SERVICE_DRAINING", "服务正在维护，请稍后重试", 503, True)
+                raise DomainError("SERVICE_DRAINING", "Service is under maintenance. Please try again later.", 503, True)
             if len(self.all_tasks) >= self.settings.max_agent_runs:
-                raise DomainError("AGENT_CAPACITY_EXCEEDED", "查询服务繁忙，请稍后重试", 429, True)
+                raise DomainError("AGENT_CAPACITY_EXCEEDED", "Search service is busy. Please try again later.", 429, True)
             turn, conversation, created = await self.store.begin_turn(
                 principal,
                 cid,
@@ -164,7 +164,7 @@ class SessionCoordinator:
                         request, ctx, runtime_history, progress if channel == "text" else None
                     )
             except TimeoutError:
-                bundle = self.runtime.failure("AGENT_TIMEOUT", "处理超时，请稍后重试。")
+                bundle = self.runtime.failure("AGENT_TIMEOUT", "The request timed out. Please try again later.")
             answer_scope = sorted(
                 {kb for citation in bundle.citations for kb in citation.authorized_kb_ids}
             )
@@ -195,7 +195,7 @@ class SessionCoordinator:
                 return None
             raise
         except Exception:
-            bundle = self.runtime.failure("AGENT_FAILED", "业务处理失败，请稍后重试。")
+            bundle = self.runtime.failure("AGENT_FAILED", "The request failed. Please try again later.")
             if self.coordination.valid:
                 async with self.lock(ctx.conversation_id):
                     await self.coordination.check(ctx.conversation_id)

@@ -4,13 +4,26 @@ import json
 from dataclasses import dataclass, field
 
 from app.config import ROOT
-from app.contracts import BridgeArguments, DomainError, uid
+from app.contracts import BridgeArguments, DomainError, printable_ascii, uid
 from websockets.asyncio.client import connect
 
 BRIDGE_NAME = "consult_service_agent"
 
 
+def ascii_payload(value) -> bool:
+    if isinstance(value, str):
+        return printable_ascii(value)
+    if isinstance(value, dict):
+        return all(ascii_payload(key) and ascii_payload(item) for key, item in value.items())
+    if isinstance(value, list):
+        return all(ascii_payload(item) for item in value)
+    return value is None or isinstance(value, (bool, int, float))
+
+
 def session_update(summary=""):
+    # VoiceChat currently accepts ASCII prompts and tool payloads only. Legacy
+    # non-English history must not be silently transliterated into a new fact.
+    safe_history = "\n".join(line for line in summary.splitlines() if printable_ascii(line))
     return {
         "type": "session.update",
         "event_id": uid(),
@@ -20,13 +33,13 @@ def session_update(summary=""):
                 "output": {"format": {"type": "audio/pcm", "rate": 24000}},
             },
             "instructions": (ROOT / "config/voice-prompt.txt").read_text()
-            + "\n已确认业务历史（资料）：\n"
-            + summary[:1500],
+            + "\nAuthorized conversation history (data):\n"
+            + safe_history[:1500],
             "tools": [
                 {
                     "name": BRIDGE_NAME,
-                    "description": "完整转交用户的客服、知识或天气问题给业务助手，不猜测参数。",
-                    "ack_messages": ["请稍等，我帮您查询。"],
+                    "description": "Send the customer's complete knowledge question to the business assistant. Do not guess missing details.",
+                    "ack_messages": ["Please wait while I check the knowledge base."],
                     "parameters": BridgeArguments.model_json_schema(),
                 }
             ],
@@ -45,7 +58,7 @@ def normalize(event):
     ids = {k: event[k] for k in ("response_id", "item_id") if isinstance(event.get(k), str)}
     if kind == "response.function_call_arguments.done":
         if not isinstance(event.get("call_id"), str) or not 0 < len(event["call_id"]) <= 128:
-            raise DomainError("VOICE_PROTOCOL_ERROR", "语音工具请求缺少有效关联标识", 502)
+            raise DomainError("VOICE_PROTOCOL_ERROR", "Voice tool request lacks a valid call identifier", 502)
         return VoiceEvent(
             "tool",
             {
@@ -66,20 +79,20 @@ def normalize(event):
     if kind in mapping:
         target, source, dest = mapping[kind]
         if target.startswith(("audio", "speech_text")) and not ids.get("response_id"):
-            raise DomainError("VOICE_PROTOCOL_ERROR", "语音回复缺少关联标识", 502)
+            raise DomainError("VOICE_PROTOCOL_ERROR", "Voice response lacks an identifier", 502)
         if target.startswith("transcript") and not ids.get("item_id"):
-            raise DomainError("VOICE_PROTOCOL_ERROR", "转写缺少关联标识", 502)
+            raise DomainError("VOICE_PROTOCOL_ERROR", "Transcript lacks an identifier", 502)
         payload = {**ids}
         if source:
             value = event.get(source)
             if not isinstance(value, str) or len(value) > 100000:
-                raise DomainError("VOICE_PROTOCOL_ERROR", "语音事件格式错误", 502)
+                raise DomainError("VOICE_PROTOCOL_ERROR", "Invalid voice event", 502)
             payload[dest] = value
         return VoiceEvent(target, payload)
     if kind in ("input_audio_buffer.speech_started", "input_audio_buffer.speech_stopped"):
         return VoiceEvent("input.state", {"state": "speaking" if kind.endswith("started") else "quiet"})
     if kind == "error":
-        raise DomainError("VOICE_UNAVAILABLE", "云端语音处理失败，请重新开始或使用文字", 502, True)
+        raise DomainError("VOICE_UNAVAILABLE", "Cloud voice processing failed. Restart voice or use text.", 502, True)
     if kind == "session.end":
         return VoiceEvent("session.ended")
     return None
@@ -106,17 +119,20 @@ class NvidiaVoiceChatAdapter:
         async with asyncio.timeout(8):
             created = json.loads(await self.ws.recv())
             if created.get("type") != "session.created":
-                raise DomainError("VOICE_PROTOCOL_ERROR", "未收到语音会话创建事件", 502)
-            await self.ws.send(json.dumps(session_update(summary), ensure_ascii=False))
+                raise DomainError("VOICE_PROTOCOL_ERROR", "Voice session creation event was not received", 502)
+            update = session_update(summary)
+            if not printable_ascii(json.dumps(update, ensure_ascii=False)):
+                raise DomainError("VOICE_PROTOCOL_ERROR", "VoiceChat instructions must be ASCII", 502)
+            await self.ws.send(json.dumps(update, ensure_ascii=True))
             updated = json.loads(await self.ws.recv())
             if updated.get("type") != "session.updated":
-                raise DomainError("VOICE_PROTOCOL_ERROR", "未收到语音配置确认", 502)
+                raise DomainError("VOICE_PROTOCOL_ERROR", "Voice session configuration was not confirmed", 502)
             for direction in ("input", "output"):
                 if updated.get("session", {}).get("audio", {}).get(direction, {}).get("format") != {
                     "type": "audio/pcm",
                     "rate": 24000,
                 }:
-                    raise DomainError("VOICE_PROTOCOL_ERROR", "实际语音采样格式与配置不匹配", 502)
+                    raise DomainError("VOICE_PROTOCOL_ERROR", "Voice sample format does not match configuration", 502)
 
     async def send_audio(self, audio):
         await self.ws.send(
@@ -124,6 +140,12 @@ class NvidiaVoiceChatAdapter:
         )
 
     async def submit_tool_result(self, call_id, text):
+        try:
+            result = json.loads(text)
+        except ValueError as exc:
+            raise DomainError("VOICE_PROTOCOL_ERROR", "VoiceChat tool result must be JSON", 502) from exc
+        if not printable_ascii(text) or not ascii_payload(result):
+            raise DomainError("VOICE_PROTOCOL_ERROR", "VoiceChat tool result must be ASCII", 502)
         await self.ws.send(
             json.dumps(
                 {
@@ -131,7 +153,7 @@ class NvidiaVoiceChatAdapter:
                     "event_id": uid(),
                     "item": {"type": "function_call_output", "call_id": call_id, "output": text},
                 },
-                ensure_ascii=False,
+                ensure_ascii=True,
             )
         )
 

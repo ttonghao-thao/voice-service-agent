@@ -12,7 +12,7 @@ from agents import (
     Runner,
 )
 from app.config import ROOT
-from app.contracts import AgentAnswer, AnswerBundle, now
+from app.contracts import AgentAnswer, AnswerBundle, now, printable_ascii
 from openai import AsyncOpenAI
 
 
@@ -36,26 +36,26 @@ class BusinessRuntime:
         }
         if self.settings.agent_provider == "mock":
             if "search_knowledge" not in ctx.allowed_tools:
-                return self.failure("AGENT_NO_AUTHORIZED_TOOL", "当前身份没有可用于演示查询的已启用知识工具。")
+                return self.failure("AGENT_NO_AUTHORIZED_TOOL", "No authorized knowledge tool is enabled for this demonstration.")
             result = await self.registry.invoke("search_knowledge", {"query": request}, ctx)
             citations = list(ctx.evidence.values())
             return AnswerBundle(
                 status="answered" if citations else "insufficient_evidence",
                 display_text=(
-                    "【演示模式，未调用文本模型】"
+                    "[Demo mode: text model was not called] "
                     + (
                         citations[0].content + " [C1]"
                         if citations
-                        else "未查询到足够依据。可输入“联调示例”检查合成引用展示。"
+                        else 'Insufficient evidence. Enter "integration sample" to inspect a synthetic citation.'
                     )
                 ),
-                speech_text="这是合成联调结果，不代表真实业务答案。",
+                speech_text="This is a synthetic integration result, not a real business answer.",
                 citations=citations,
                 is_mock=True,
                 reason_code=None if result.get("hits") else "CUEKB_NO_EVIDENCE",
             )
         if not self.client or not self.settings.agent_model:
-            return self.failure("AGENT_NOT_CONFIGURED", "文本模型尚未配置，无法进行业务推理。")
+            return self.failure("AGENT_NOT_CONFIGURED", "The text model is not configured for business answers.")
         tools = []
         for name in sorted(ctx.allowed_tools):
             spec = self.registry.specs[name]
@@ -63,7 +63,7 @@ class BusinessRuntime:
 
             async def invoke(wrapper, args, tool_name=name):
                 if progress:
-                    await progress("正在查询" + self.registry.specs[tool_name].display_name)
+                    await progress("Searching " + self.registry.specs[tool_name].display_name)
                 return json.dumps(
                     await self.registry.invoke(tool_name, json.loads(args), wrapper.context),
                     ensure_ascii=False,
@@ -87,11 +87,11 @@ class BusinessRuntime:
             else OpenAIResponsesModel
         )
         agent = Agent(
-            name="客服业务助手",
+            name="Customer support business assistant",
             instructions=self.prompt
-            + "\n服务端当前 UTC 时间："
+            + "\nCurrent server UTC time: "
             + now().isoformat()
-            + "\n已确认地点与查询条件（不包含可复用天气数值）："
+            + "\nConfirmed query filters: "
             + json.dumps(ctx.slots, ensure_ascii=False),
             model=model_class(model=self.settings.agent_model, openai_client=self.client),
             tools=tools,
@@ -117,12 +117,12 @@ class BusinessRuntime:
             answer = AgentAnswer.model_validate(raw)
             return await self.validate(answer, ctx)
         except TimeoutError:
-            return self.failure("AGENT_TIMEOUT", "处理超时，请稍后重试。")
+            return self.failure("AGENT_TIMEOUT", "The request timed out. Please try again later.")
         except asyncio.CancelledError:
             raise
         except Exception:
             # Do not propagate provider exceptions: their payloads can contain private prompts and credentials.
-            return self.failure("AGENT_FAILED", "业务处理失败，请稍后重试。")
+            return self.failure("AGENT_FAILED", "The request failed. Please try again later.")
         finally:
             if stream is not None and not stream.is_complete:
                 stream.cancel(mode="immediate")
@@ -130,11 +130,11 @@ class BusinessRuntime:
     async def validate(self, answer, ctx):
         references = set(re.findall(r"\[(C\d+)\]", answer.display_text))
         if ctx.tool_errors and answer.status == "answered":
-            return self.failure(ctx.tool_errors[-1], "查询未成功，暂时无法提供可靠答案。")
+            return self.failure(ctx.tool_errors[-1], "The search failed, so I cannot provide a reliable answer right now.")
         if references - set(answer.citation_ids) or any(
             cid not in ctx.evidence for cid in answer.citation_ids
         ):
-            return self.failure("RAG_INVALID_CITATION", "来源校验未通过，暂时无法提供可靠答案。")
+            return self.failure("RAG_INVALID_CITATION", "Source validation failed, so I cannot provide a reliable answer right now.")
         if not all(
             [
                 await self.registry.store.enabled(name)
@@ -143,7 +143,7 @@ class BusinessRuntime:
                 for name in ctx.invoked
             ]
         ):
-            return self.failure("FORBIDDEN", "查询权限已变更，请重新提问。")
+            return self.failure("FORBIDDEN", "Knowledge access changed. Please ask again.")
         if answer.status == "answered":
             conflicting = any(
                 item.get("evidence_status") in ("insufficient", "conflicting")
@@ -153,21 +153,21 @@ class BusinessRuntime:
             if conflicting:
                 return AnswerBundle(
                     status="insufficient_evidence",
-                    display_text="当前知识证据不足或存在冲突，请补充信息或转交人工。",
-                    speech_text="当前知识证据不足或存在冲突，请补充信息。",
+                    display_text="The available knowledge is insufficient or conflicting. Please clarify or contact a representative.",
+                    speech_text="The available knowledge is insufficient or conflicting. Please clarify.",
                     citations=[ctx.evidence[c] for c in dict.fromkeys(answer.citation_ids)],
                     reason_code="CUEKB_EVIDENCE_UNSAFE",
                 )
-            # Conservative policy: all affirmative business answers need current evidence or structured weather.
+            # Conservative policy: affirmative business answers need current evidence.
             if not answer.citation_ids and not ctx.cards:
                 return AnswerBundle(
                     status="insufficient_evidence",
-                    display_text="未查询到足够依据，请补充信息或转交人工。",
-                    speech_text="未查询到足够依据，请补充信息。",
+                    display_text="I could not find enough evidence. Please clarify or contact a representative.",
+                    speech_text="I could not find enough evidence. Please clarify.",
                     reason_code="CUEKB_NO_EVIDENCE",
                 )
             if answer.citation_ids and "search_knowledge" not in ctx.invoked:
-                return self.failure("RAG_INVALID_CITATION", "本轮缺少知识检索记录。")
+                return self.failure("RAG_INVALID_CITATION", "No knowledge search was recorded for this request.")
         degraded = any(
             item.get("retrieval_status") == "degraded"
             or item.get("scope_limited")
@@ -178,9 +178,12 @@ class BusinessRuntime:
         speech_text = answer.speech_text
         reason_code = None
         if answer.status == "answered" and degraded:
-            display_text = "提示：本次检索范围受限，以下内容仅基于当前可用资料。\n" + display_text
-            speech_text = ("本次检索范围受限。" + speech_text)[:160]
+            display_text = "Note: Search scope was limited. The answer uses only currently available material.\n" + display_text
+            speech_text = ("Search scope was limited. " + speech_text)[:160]
             reason_code = "CUEKB_DEGRADED"
+        if not printable_ascii(speech_text):
+            speech_text = "Please read the written response in the portal."
+            reason_code = "VOICE_NON_ASCII_SPEECH"
         return AnswerBundle(
             status=answer.status,
             display_text=display_text,

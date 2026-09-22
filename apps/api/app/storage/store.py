@@ -38,7 +38,7 @@ class Store:
         if c is None or (
             principal and (c.tenant_id != principal.tenant_id or c.user_id != principal.user_id)
         ):
-            raise DomainError("FORBIDDEN", "会话不存在或无权访问", 404)
+            raise DomainError("FORBIDDEN", "Conversation not found or access denied", 404)
         return c
 
     async def event(self, db, c, kind, payload, turn_id=None):
@@ -82,10 +82,10 @@ class Store:
             digest = hashlib.sha256(request.encode()).hexdigest()
             if existing:
                 if existing.request_hash != digest:
-                    raise DomainError("IDEMPOTENCY_CONFLICT", "同一个请求标识不能用于不同内容", 409)
+                    raise DomainError("IDEMPOTENCY_CONFLICT", "The same request ID cannot be used for different content", 409)
                 return existing, c, False
             if expected_epoch is not None and c.epoch != expected_epoch:
-                raise DomainError("STALE_EPOCH", "该语音连接已失效", 409)
+                raise DomainError("STALE_EPOCH", "This voice connection has expired", 409)
             parent_task_id = c.current_turn
             if parent_task_id:
                 previous = await db.get(Turn, parent_task_id)
@@ -115,10 +115,10 @@ class Store:
             )
             db.add(t)
             c.current_turn = t.id
-            if c.title == "新会话":
+            if c.title in ("New conversation", "新会话"):
                 c.title = request[:36]
             await self.event(
-                db, c, "portal.tool.started", {"message": "正在处理", "user_text": request}, t.id
+                db, c, "portal.tool.started", {"message": "Processing", "user_text": request}, t.id
             )
             return t, c, True
 
@@ -149,7 +149,7 @@ class Store:
         async with self.transaction() as db:
             c = await self.get(db, cid, principal, lock=True)
             if c.epoch < expected_epoch:
-                raise DomainError("STALE_EPOCH", "会话版本不匹配", 409)
+                raise DomainError("STALE_EPOCH", "Conversation version mismatch", 409)
             if c.epoch != expected_epoch:
                 return c.epoch, False
             if c.current_turn:
@@ -162,7 +162,7 @@ class Store:
                     c.request_revision += 1
             c.epoch += 1
             c.current_turn, c.voice_session_id = None, None
-            c.summary = ("上个回答被打断；不代表用户已听到完整内容。\n" + c.summary)[:1500]
+            c.summary = ("The previous answer was interrupted; the user may not have heard it all.\n" + c.summary)[:1500]
             await self.event(db, c, "portal.playback.clear", {})
             return c.epoch, True
 
@@ -190,14 +190,14 @@ class Store:
                     c.current_turn = None
             c.epoch += 1
             c.voice_session_id = None
-            await self.event(db, c, "portal.playback.clear", {"message": "语音连接已更新"})
+            await self.event(db, c, "portal.playback.clear", {"message": "Voice connection updated"})
             return c.epoch, c.request_revision
 
     async def cancel_task(self, principal, cid, expected_epoch, expected_revision, reason="user_cancelled"):
         async with self.transaction() as db:
             c = await self.get(db, cid, principal, lock=True)
             if c.epoch != expected_epoch:
-                raise DomainError("STALE_EPOCH", "语音连接版本不匹配", 409)
+                raise DomainError("STALE_EPOCH", "Voice connection version mismatch", 409)
             if c.request_revision != expected_revision:
                 return c.request_revision, False
             if not c.current_turn:
@@ -211,16 +211,16 @@ class Store:
             t.output_suppressed = True
             c.current_turn = None
             c.request_revision += 1
-            await self.event(db, c, "portal.playback.clear", {"message": "当前查询已取消"})
+            await self.event(db, c, "portal.playback.clear", {"message": "Current search canceled"})
             return c.request_revision, True
 
     async def stop_playback(self, principal, cid, expected_epoch, expected_revision, response_id=None):
         async with self.transaction() as db:
             c = await self.get(db, cid, principal, lock=True)
             if c.epoch != expected_epoch:
-                raise DomainError("STALE_EPOCH", "语音连接版本不匹配", 409)
+                raise DomainError("STALE_EPOCH", "Voice connection version mismatch", 409)
             if c.request_revision != expected_revision:
-                raise DomainError("STALE_REVISION", "查询版本不匹配", 409)
+                raise DomainError("STALE_REVISION", "Search revision mismatch", 409)
             if c.current_turn:
                 t = await db.get(Turn, c.current_turn)
                 if t:
@@ -229,7 +229,7 @@ class Store:
                 db,
                 c,
                 "portal.playback.clear",
-                {"message": "已停止当前播报", "response_id": response_id},
+                {"message": "Playback stopped", "response_id": response_id},
             )
             return c.request_revision
 

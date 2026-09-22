@@ -3,10 +3,30 @@ import json
 import httpx
 import pytest
 from app.agent_runtime.context import RunContext
-from app.contracts import Principal
+from app.contracts import AgentAnswer, Principal
 from openai import AsyncOpenAI
 
 KB_SUPPORT = "00000000-0000-4000-8000-000000000001"
+
+
+async def test_non_ascii_speech_keeps_written_answer_but_uses_ascii_voice_fallback(app, conversation):
+    principal = Principal(
+        user_id="dev-operator",
+        tenant_id="dev-tenant",
+        scopes=frozenset({"knowledge:read"}),
+        knowledge_base_ids=(KB_SUPPORT,),
+    )
+    context = RunContext(principal, conversation, "turn-1", 0)
+    answer = AgentAnswer(
+        status="needs_clarification",
+        display_text="Please confirm the café product model.",
+        speech_text="Please confirm the café product model.",
+        citation_ids=[],
+    )
+    result = await app.state.coordinator.runtime.validate(answer, context)
+    assert "café" in result.display_text
+    assert result.speech_text.isascii()
+    assert result.reason_code == "VOICE_NON_ASCII_SPEECH"
 
 
 @pytest.mark.parametrize("streaming", [False, True])
@@ -17,7 +37,7 @@ async def test_actual_sdk_runner_executes_registered_tool_and_validates_output(a
         scopes=frozenset({"knowledge:read"}),
         knowledge_base_ids=(KB_SUPPORT,),
     )
-    turn, _, _ = await app.state.store.begin_turn(p, conversation, "sdk", "张先生查询联调示例", "voice", 0)
+    turn, _, _ = await app.state.store.begin_turn(p, conversation, "sdk", "Find the integration sample", "voice", 0)
     ctx = RunContext(p, conversation, turn.id, turn.epoch, request_revision=turn.request_revision)
     requests = []
 
@@ -31,14 +51,14 @@ async def test_actual_sdk_runner_executes_registered_tool_and_validates_output(a
                     "id": "fc_1",
                     "call_id": "call_1",
                     "name": "search_knowledge",
-                    "arguments": '{"query":"张先生查询联调示例"}',
+                    "arguments": '{"query":"Find the integration sample"}',
                     "status": "completed",
                 }
             ]
         else:
             tool = next(x for x in body["input"] if x.get("type") == "function_call_output")
             assert tool["call_id"] == "call_1"
-            assert "合成联调资料" in tool["output"]
+            assert "Synthetic integration excerpt" in tool["output"]
             output = [
                 {
                     "type": "message",
@@ -51,8 +71,8 @@ async def test_actual_sdk_runner_executes_registered_tool_and_validates_output(a
                             "text": json.dumps(
                                 {
                                     "status": "answered",
-                                    "display_text": "这是合成联调资料，不是业务政策 [C1]",
-                                    "speech_text": "这是合成联调资料。",
+                                    "display_text": "This is a synthetic integration excerpt, not policy [C1]",
+                                    "speech_text": "This is a synthetic integration excerpt.",
                                     "citation_ids": ["C1"],
                                 },
                                 ensure_ascii=False,
@@ -90,9 +110,9 @@ async def test_actual_sdk_runner_executes_registered_tool_and_validates_output(a
         async def report(message):
             progress.append(message)
 
-        result = await runtime.run("张先生查询联调示例", ctx, [], report if streaming else None)
+        result = await runtime.run("Find the integration sample", ctx, [], report if streaming else None)
         if streaming:
-            assert progress == ["正在查询知识库"]
+            assert progress == ["Searching Knowledge base"]
     assert result.status == "answered", result
     assert result.citations[0].citation_id == "C1"
     assert len(requests) == 2

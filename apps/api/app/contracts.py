@@ -14,6 +14,10 @@ def now() -> datetime:
     return datetime.now(UTC)
 
 
+def printable_ascii(value: str) -> bool:
+    return all(char in "\n\r" or " " <= char <= "~" for char in value)
+
+
 class StrictModel(BaseModel):
     model_config = ConfigDict(extra="forbid", str_strip_whitespace=True)
 
@@ -47,8 +51,8 @@ class BridgeArguments(StrictModel):
 
 
 class ConversationInput(StrictModel):
-    title: str = Field(default="新会话", min_length=1, max_length=100)
-    locale: Literal["zh-CN"] = "zh-CN"
+    title: str = Field(default="New conversation", min_length=1, max_length=100)
+    locale: Literal["en-US"] = "en-US"
 
 
 class InterruptInput(StrictModel):
@@ -112,7 +116,7 @@ class AnswerBundle(StrictModel):
     status: Literal["answered", "needs_clarification", "insufficient_evidence", "failed", "canceled"]
     display_text: str
     speech_text: str
-    speech_language: str = "zh-CN"
+    speech_language: str = "en-US"
     citations: list[Citation] = Field(default_factory=list)
     cards: list[dict[str, Any]] = Field(default_factory=list)
     reason_code: str | None = None

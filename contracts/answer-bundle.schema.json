@@ -243,7 +243,7 @@
       "type": "string"
     },
     "speech_language": {
-      "default": "zh-CN",
+      "default": "en-US",
       "title": "Speech Language",
       "type": "string"
     },

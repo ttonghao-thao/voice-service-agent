@@ -11,7 +11,7 @@ class RunContext:
     turn_id: str
     epoch: int
     request_revision: int = 0
-    locale: str = "zh-CN"
+    locale: str = "en-US"
     timezone: str = "Asia/Shanghai"
     run_id: str = field(default_factory=uid)
     evidence: dict[str, Citation] = field(default_factory=dict)

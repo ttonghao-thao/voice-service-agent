@@ -61,7 +61,7 @@ async def probe(args):
         "limitations": [
             "No capability flag is changed automatically.",
             "Enhanced mode requires a distinct second question and human review of event timing and output audio.",
-            "This probe does not establish Chinese acoustic quality, concurrency, cancellation of provider inference, or spoken fact consistency.",
+            "This probe does not establish English acoustic quality, concurrency, cancellation of provider inference, or spoken fact consistency.",
         ],
     }
     if not settings.voicechat_ws_url:
@@ -76,7 +76,7 @@ async def probe(args):
         tool_result_sent_at = None
         started = time.monotonic()
         try:
-            await provider.connect("本次为接口联调，固定工具结果是合成测试数据，不是业务事实。")
+            await provider.connect("This is an interface probe. The fixed tool result is synthetic test data, not a business fact.")
             report["checks"]["handshake_and_24khz_format"] = "passed"
             report["real_service_connected"] = True
             primary, primary_hash = read_wav(args.wav)
@@ -95,10 +95,10 @@ async def probe(args):
                     json.dumps(
                         {
                             "status": "answered",
-                            "speech_text": "这是延迟五秒后的合成联调结果，请勿当作真实业务信息。",
+                            "speech_text": "This synthetic result arrived after a delay. It is not real business information.",
                             "is_mock": True,
                         },
-                        ensure_ascii=False,
+                        ensure_ascii=True,
                     ),
                 )
                 tool_result_sent_at = time.monotonic()

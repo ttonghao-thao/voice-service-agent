@@ -31,21 +31,21 @@ async def bounded_json(client, method, url, *, limit=32768, error_map=None, **kw
                     if error_map and response.status_code in error_map:
                         code, message, status, retryable = error_map[response.status_code]
                         raise DomainError(code, message, status, retryable)
-                    raise DomainError("TOOL_UNAVAILABLE", "查询服务暂不可用", 502, True)
+                    raise DomainError("TOOL_UNAVAILABLE", "Search service is temporarily unavailable", 502, True)
                 body = bytearray()
                 async for chunk in response.aiter_bytes():
                     body.extend(chunk)
                     if len(body) > limit:
-                        raise DomainError("TOOL_BAD_RESPONSE", "查询结果超过允许大小", 502)
+                        raise DomainError("TOOL_BAD_RESPONSE", "Search result exceeds the size limit", 502)
                 try:
                     return json.loads(body)
                 except (ValueError, UnicodeError) as exc:
-                    raise DomainError("TOOL_BAD_RESPONSE", "查询服务返回格式错误", 502) from exc
+                    raise DomainError("TOOL_BAD_RESPONSE", "Search service returned an invalid response", 502) from exc
         except (httpx.TimeoutException, httpx.NetworkError) as exc:
             if attempt == 1:
-                raise DomainError("TOOL_UNAVAILABLE", "查询服务连接失败", 502, True) from exc
+                raise DomainError("TOOL_UNAVAILABLE", "Search service connection failed", 502, True) from exc
             await asyncio.sleep(0.1)
-    raise DomainError("TOOL_UNAVAILABLE", "查询服务不可用", 502)
+    raise DomainError("TOOL_UNAVAILABLE", "Search service unavailable", 502)
 
 
 class CueKBAdapter:
@@ -60,7 +60,7 @@ class CueKBAdapter:
 
     async def invoke(self, args, ctx):
         if not ctx.principal.knowledge_base_ids:
-            raise DomainError("FORBIDDEN", "没有获授权的知识库", 403)
+            raise DomainError("FORBIDDEN", "No authorized knowledge base is available", 403)
         if self.settings.cuekb_mode == "mock":
             # No fabricated policy. Only this explicitly named synthetic fixture can produce a hit.
             trace_id = uid()
@@ -77,7 +77,7 @@ class CueKBAdapter:
                 "skipped_stages": [],
                 "hits": [],
             }
-            if "联调示例" in args.query:
+            if "integration sample" in args.query.lower() or "联调示例" in args.query:
                 data["retrieval_status"] = "ok"
                 data["hits"] = [
                     {
@@ -85,17 +85,17 @@ class CueKBAdapter:
                         "chunk_id": "00000000-0000-4000-8000-000000000102",
                         "version_id": "00000000-0000-4000-8000-000000000103",
                         "rank": 1,
-                        "source_text": "这是一条合成联调资料，用于验证中文、引用与门户展示，不代表真实业务规则。",
+                        "source_text": "This synthetic integration excerpt verifies citations and portal display. It is not a real business rule.",
                         "context": None,
-                        "title_path": ["合成联调资料（非业务政策）"],
-                        "anchor": {"page": 1, "heading_path": ["合成联调资料"]},
+                        "title_path": ["Synthetic integration excerpt (not policy)"],
+                        "anchor": {"page": 1, "heading_path": ["Synthetic integration excerpt"]},
                         "metadata": {"business_version": "synthetic-v1"},
                         "retrieval_sources": ["synthetic_fixture"],
                     }
                 ]
         else:
             if not self.settings.cuekb_base_url or not self.settings.cuekb_api_key.get_secret_value():
-                raise DomainError("TOOL_NOT_CONFIGURED", "知识库尚未配置", 503)
+                raise DomainError("TOOL_NOT_CONFIGURED", "Knowledge base is not configured", 503)
             body = CueKBSearchRequest(
                 query=args.query,
                 kb_ids=list(ctx.principal.knowledge_base_ids),
@@ -117,10 +117,10 @@ class CueKBAdapter:
                 json=body.model_dump(mode="json"),
                 limit=262144,
                 error_map={
-                    401: ("CUEKB_AUTH_FAILED", "知识服务认证失败", 502, False),
-                    403: ("CUEKB_FORBIDDEN", "知识服务无权访问授权范围", 502, False),
-                    422: ("CUEKB_CONTRACT_ERROR", "知识查询参数不符合服务契约", 502, False),
-                    429: ("CUEKB_RATE_LIMITED", "知识服务繁忙，请稍后重试", 503, True),
+                    401: ("CUEKB_AUTH_FAILED", "Knowledge service authentication failed", 502, False),
+                    403: ("CUEKB_FORBIDDEN", "Knowledge service cannot access the authorized scope", 502, False),
+                    422: ("CUEKB_CONTRACT_ERROR", "Knowledge query does not match the service contract", 502, False),
+                    429: ("CUEKB_RATE_LIMITED", "Knowledge service is busy. Please try again later.", 503, True),
                 },
             )
         result = CueKBSearchResponse.model_validate(data)
@@ -166,7 +166,7 @@ class CueKBAdapter:
                 context = None
                 context_omitted = True
             citation_id = f"C{len(ctx.evidence) + 1}"
-            title = " / ".join(part for part in hit.title_path if part.strip()) or "来源片段"
+            title = " / ".join(part for part in hit.title_path if part.strip()) or "Source excerpt"
             safe_metadata = {
                 key: value
                 for key, value in hit.metadata.items()

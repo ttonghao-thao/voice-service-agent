@@ -46,7 +46,7 @@ class Coordination:
         token = uid()
         if self.redis and not await self.redis.set(self.key(cid), token, nx=True, ex=15):
             raise DomainError(
-                "SESSION_OWNED_BY_OTHER", "此会话正在另一连接上处理，请保持原连接或稍后重试", 409, True
+                "SESSION_OWNED_BY_OTHER", "This conversation is active on another connection. Keep that connection or try later.", 409, True
             )
         self.leases[cid] = Lease(token, time.monotonic())
         return True
@@ -77,14 +77,14 @@ class Coordination:
 
     async def check(self, cid=None):
         if not self.valid:
-            raise DomainError("GATEWAY_LEASE_LOST", "会话服务归属已失效，请重新连接", 503, True)
+            raise DomainError("GATEWAY_LEASE_LOST", "Session ownership expired. Reconnect.", 503, True)
         if cid is not None:
             lease = self.leases.get(cid)
             if lease is None:
-                raise DomainError("GATEWAY_LEASE_LOST", "会话归属已失效，请重新连接", 503, True)
+                raise DomainError("GATEWAY_LEASE_LOST", "Session ownership expired. Reconnect.", 503, True)
             if self.redis and await self.redis.get(self.key(cid)) != lease.token.encode():
                 self.leases.pop(cid, None)
-                raise DomainError("GATEWAY_LEASE_LOST", "会话归属已失效，请重新连接", 503, True)
+                raise DomainError("GATEWAY_LEASE_LOST", "Session ownership expired. Reconnect.", 503, True)
             lease.touched = time.monotonic()
 
     async def release(self, cid):
@@ -113,7 +113,7 @@ class Coordination:
             if len(self.buckets) > 10000:
                 self.buckets.popitem(last=False)
         if count > limit:
-            raise DomainError("RATE_LIMITED", "请求过于频繁，请稍后重试", 429, True)
+            raise DomainError("RATE_LIMITED", "Too many requests. Please try again later.", 429, True)
 
     async def close(self):
         if self.task:

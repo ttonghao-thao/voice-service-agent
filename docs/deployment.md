@@ -8,6 +8,8 @@
 
 生产 API/Web 镜像先用 `docker build` 单独构建；云端服务器使用 Docker Compose 执行迁移和运行，不直接在宿主机启动 Python、Node.js、PostgreSQL 或 Redis。生产入口为 `deploy/compose.production.yaml`，配置模板为 `.env.production.example`，部署命令为 `scripts/deploy-cloud.sh`。
 
+本期真实验证只在云端 Docker 部署中执行：先以同一发布版本分别构建 API/Web 镜像并启动 Compose，再记录 `/health/ready`、英文门户/OIDC、CueKB `/v1/search`、VoiceChat 工具往返与授权音频证据。`tests/fixtures/english-knowledge-cases.jsonl` 是文本契约样本，尚无真实录音；云端 D07 不得把它或静态 readiness 当作英文口述通过。
+
 本地开发仍使用 README 中的 Python/Node.js 启动和验证命令；需要检查容器拓扑时也可继续使用 `deploy/compose.yaml`。两种路径互不替代，本地测试通过不代表云端容器验收通过。
 
 ## 本地容器拓扑

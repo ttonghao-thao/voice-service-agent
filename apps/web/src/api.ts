@@ -112,7 +112,7 @@ export async function api<T>(path: string, init: RequestInit = {}): Promise<T> {
   if (!response.ok)
     throw new ApiError(
       data.code || "REQUEST_FAILED",
-      data.message || "请求失败",
+      data.message || "Request failed",
       response.status,
     );
   return data;

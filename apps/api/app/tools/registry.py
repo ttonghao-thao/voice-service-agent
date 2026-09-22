@@ -82,16 +82,16 @@ class ToolRegistry:
         try:
             spec = self.specs.get(name)
             if not spec or name not in ctx.allowed_tools or name not in await self.allowed(ctx.principal):
-                raise DomainError("FORBIDDEN", "此工具未获授权或已停用", 403)
+                raise DomainError("FORBIDDEN", "This tool is unauthorized or disabled", 403)
             if not await self.store.current(
                 ctx.conversation_id,
                 ctx.epoch,
                 ctx.turn_id,
                 ctx.request_revision,
             ):
-                raise DomainError("STALE_EPOCH", "该轮查询已取消", 409)
+                raise DomainError("STALE_EPOCH", "This search was canceled", 409)
             if await self.store.tool_revision(name) != ctx.tool_versions.get(name, 0):
-                raise DomainError("FORBIDDEN", "工具配置已变更，请重新提问", 403)
+                raise DomainError("FORBIDDEN", "Tool configuration changed. Please ask again.", 403)
             adapter = self.adapters[spec.adapter_id]
             args = adapter.input_model.model_validate(arguments)
             ctx.invoked.add(name)
@@ -99,18 +99,18 @@ class ToolRegistry:
                 output = await adapter.invoke(args, ctx)
                 output = adapter.output_adapter.validate_python(output).model_dump(mode="json")
             if len(json.dumps(output, ensure_ascii=False).encode()) > spec.result_limit:
-                raise DomainError("TOOL_BAD_RESPONSE", "查询结果过大", 502)
+                raise DomainError("TOOL_BAD_RESPONSE", "Search result is too large", 502)
             if not await self.available(name):
-                raise DomainError("FORBIDDEN", "查询期间工具已被停用", 403)
+                raise DomainError("FORBIDDEN", "Tool was disabled during the search", 403)
             return output
         except TimeoutError:
             status = "TOOL_TIMEOUT"
             ctx.tool_errors.append(status)
-            return {"status": "failed", "code": status, "message": "查询超时，请稍后重试"}
+            return {"status": "failed", "code": status, "message": "Search timed out. Please try again later."}
         except (ValidationError, ValueError):
             status = "TOOL_BAD_RESPONSE"
             ctx.tool_errors.append(status)
-            return {"status": "failed", "code": status, "message": "工具参数或返回格式不符合契约"}
+            return {"status": "failed", "code": status, "message": "Tool arguments or response violate the contract"}
         except DomainError as exc:
             status = exc.code
             ctx.tool_errors.append(status)
@@ -121,7 +121,7 @@ class ToolRegistry:
         except Exception:
             status = "TOOL_FAILED"
             ctx.tool_errors.append(status)
-            return {"status": "failed", "code": status, "message": "查询服务发生错误，请稍后重试"}
+            return {"status": "failed", "code": status, "message": "Search service failed. Please try again later."}
         finally:
             if status != "ok":
                 ctx.evidence, ctx.cards, ctx.slots, ctx.retrievals = (

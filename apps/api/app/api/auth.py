@@ -41,7 +41,7 @@ class Auth:
                 options={"require": ["exp", "iat", "sub", "iss", "aud"]},
             )
         except Exception as exc:
-            raise DomainError("AUTH_REQUIRED", "登录已过期或凭据无效", 401) from exc
+            raise DomainError("AUTH_REQUIRED", "Your session expired or credentials are invalid", 401) from exc
 
     async def principal(self, request):
         s = self.settings
@@ -61,11 +61,11 @@ class Auth:
         header = request.headers.get("authorization", "")
         token = header[7:] if header.startswith("Bearer ") else request.cookies.get("service_session")
         if not token:
-            raise DomainError("AUTH_REQUIRED", "请先登录", 401)
+            raise DomainError("AUTH_REQUIRED", "Please sign in", 401)
         claims = await self.claims(token)
         # Signed roles/ACL and the deployment tenant are the only identity inputs.
         if claims.get("tenant_id") != s.tenant_id:
-            raise DomainError("FORBIDDEN", "无权访问此组织", 403)
+            raise DomainError("FORBIDDEN", "You cannot access this organization", 403)
         roles = claims.get("roles", [])
         kbs = claims.get("knowledge_base_ids", [])
         if (
@@ -74,7 +74,7 @@ class Auth:
             or not isinstance(kbs, list)
             or not all(isinstance(kb, str) for kb in kbs)
         ):
-            raise DomainError("FORBIDDEN", "身份权限格式错误", 403)
+            raise DomainError("FORBIDDEN", "Invalid identity permissions", 403)
         recognized_roles = set(roles) & {"customer", "operator", "admin"}
         scopes = {"knowledge:read"} if recognized_roles else set()
         if recognized_roles & {"operator", "admin"}:
@@ -82,7 +82,7 @@ class Auth:
         if "admin" in roles:
             scopes.add("tools:admin")
         if not scopes:
-            raise DomainError("FORBIDDEN", "没有客户服务权限", 403)
+            raise DomainError("FORBIDDEN", "Customer support permission is required", 403)
         configured_kbs = {x.strip() for x in s.knowledge_base_ids.split(",") if x.strip()}
         allowed_kbs = configured_kbs & set(kbs)
         return Principal(
@@ -116,7 +116,7 @@ async def login(request: Request):
         or len(s.auth_cookie_secret.get_secret_value()) < 32
     ):
         raise DomainError(
-            "AUTH_NOT_CONFIGURED", "浏览器 SSO 尚未配置，可由集成方使用已验证的 Bearer token", 503
+            "AUTH_NOT_CONFIGURED", "Browser SSO is not configured; integrators may use a verified Bearer token", 503
         )
     state, nonce, verifier = secrets.token_urlsafe(32), secrets.token_urlsafe(32), secrets.token_urlsafe(48)
     challenge = base64.urlsafe_b64encode(hashlib.sha256(verifier.encode()).digest()).rstrip(b"=").decode()
@@ -181,7 +181,7 @@ async def callback(request: Request, code: str = "", state: str = ""):
         if claims.get("nonce") != flow["nonce"]:
             raise ValueError("Nonce mismatch")
     except Exception as exc:
-        raise DomainError("AUTH_REQUIRED", "SSO 登录失败，请重试", 401) from exc
+        raise DomainError("AUTH_REQUIRED", "SSO sign-in failed. Please try again.", 401) from exc
     redirect = RedirectResponse(s.public_origin)
     redirect.delete_cookie("oidc_flow", path="/api/v1/auth")
     redirect.set_cookie(

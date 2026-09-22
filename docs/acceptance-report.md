@@ -1,16 +1,23 @@
 # 验收状态与真实服务门槛
 
-更新：2026-09-22。目标架构已定稿，**D01–D06、D08、E01–E02 已完成代码和本地自动化验证，D07 的部署前检查代码已具备；真实服务与生产验收仍未完成**。本期英文知识库范围已确认，完整英文门户/语音适配归 E03。缺口和实施顺序见 [任务板](TASK_BOARD.md)。
+更新：2026-09-22。目标架构已定稿，**D01–D06、D08、E01–E03 已完成代码和本地自动化验证，D07 的部署前检查代码已具备；真实服务与生产验收仍未完成**。本期仅验收英文知识库客服；真实验证在云端 Docker 环境执行。缺口和实施顺序见 [任务板](TASK_BOARD.md)。
 
 编码阶段约束（2026-09-16 确认）：CueKB/VoiceChat 无真实接口可调用，满足已确认接口规范和处理逻辑并通过相应契约/本地测试，即满足该阶段验收要求。Docker 环境不提供，仅在必要时静态检查镜像制作和启动代码，不搭建环境或执行镜像构建。以下真实服务与容器验收项留待后续部署阶段，不作为编码完成的阻塞项。
 
 ## 1. 本轮 D01–D06 与 D07 部署前检查验证
 
+### 2026-09-22 E03 英文知识客服适配
+
+- 新会话和配置默认 `en-US`，新会话拒绝其它 locale；旧会话保留原值，非英文旧会话不能开启 VoiceChat。`/capabilities` 的英文语言声明只在既有真实集成验证标志成立时才列为已验证。
+- VoiceChat 提示词、工具说明、ACK、业务口述及云端探针固定结果改为英文；适配器检查 session 配置和解码后的工具结果为 ASCII，非 ASCII 口述改为引导查看门户文字答案，避免只用 JSON 转义掩盖语义字符。门户、浏览器语音错误和服务端客户可见消息改为英文，默认仅启用知识工具；天气实现留存但本期不启用。
+- 新增 6 条英文知识/澄清/寒暄文本样本，均为作者编写的合成文本，`audio_path`/`result` 为空；只验证桥接参数、配置和 ASCII 契约，不代表真实音频、工具质量或口述质量。
+- 本地 `pytest` 71 passed、Ruff、6 项音频单测、TypeScript/Vite 构建、协议/schema 导出和差异检查通过。未运行云端 Docker、真实 PostgreSQL/Redis/OIDC/CueKB/VoiceChat 或实际浏览器/声学验收。
+
 ### 2026-09-22 E01–E02 CueKB M3 接入
 
 - 核对本地 CueKB `1b9379d` 的 `SearchRequest`、`SearchHit`、关系与上下文实现；严格模型新增 `context_parts`、`context_truncated`、`relations`，保留逐块位置、关系条件及 supports/refutes 立场。原有模型会拒绝这些新增字段，已用受控夹具复现并修复。
 - `search_knowledge` 支持明确给出的 `product_model`、`software_version`；KB UUID 仍由服务端身份注入。CueKB HTTP 响应限制 256 KiB，工具输出低于 32 KiB，证据正文及上下文限制 6000 字符；应用裁剪以 `context_omitted`、`hits_omitted` 显示。门户能展开逐块来源和截断提示；旧历史引用读取提供默认值。
-- 本期默认仅启用 `search_knowledge`；英文范围已入任务板，语音提示词、门户文案、默认语言和实际口述尚未完成英文适配，归 E03。现有中文夹具通过不表示英文真实服务通过。
+- 本期默认仅启用 `search_knowledge`；此节记录的是 E01–E02 当时状态。英文语音提示词、门户文案、默认语言随后由 E03 完成代码适配，实际口述仍待 D07 云端 Docker 验收。
 - 本次 `uv run --locked pytest -q`：67 passed；`uv run --locked ruff check apps/api tests scripts`、`npm test --prefix apps/web`（6 passed）、`npm run build --prefix apps/web`、契约导出及 `git diff --check` 通过。仅受控夹具和本地静态验证；未调用真实 CueKB、VoiceChat、文本模型、OIDC 或运行 Docker。
 
 ### 2026-09-17 D08 镜像/URL 配置检查
@@ -48,7 +55,7 @@
 
 ## 3. 当前明确未验证
 
-- 真实 VoiceChat 英文语音、工具往返、工具等待时的新问题回答、pending call 结清和实际口述准确性；本项目英文门户/提示词适配 E03 尚待完成。中文不属于本期验收范围。
+- 真实 VoiceChat 英文语音、工具往返、工具等待时的新问题回答、pending call 结清和实际口述准确性；E03 仅完成本地代码与契约验证。中文不属于本期验收范围。
 - CueKB 原生 `/v1/search` 的真实服务连接、受限 Key/ACL 和真实知识正确性；本地仅使用符合当前 CueKB schema 的受控响应与显式 mock。
 - 客户 SSO/IdP 的实际 claim 与撤权传播、真实文本模型、任何实际天气/股票供应商。
 - 真实 PostgreSQL/Redis/Docker、负载均衡故障、容量及端到端性能。
@@ -79,6 +86,6 @@
 
 记录服务/API revision、镜像 digest、硬件和并发、样本来源/语言/数量、成功失败分母、事件时间线及授权音频证据。区分上行延迟、工具耗时、等待提示首音频、有效答案首音频和停止播放延迟；项目 SLA 阈值需在真实服务基线测量后确定。
 
-当前 `tests/fixtures/voice-evaluation-cases.jsonl` 有 100 条合成文本（40 天气/30 知识/20 混合/10 澄清打断），尚未录音或真实执行。后续按知识客服和实际启用工具重新分配样本，不能因天气占比大就将天气设为必需能力。评分脚本只统计实际观测且标记 real_service 的项目。
+历史 `tests/fixtures/voice-evaluation-cases.jsonl` 有 100 条合成文本（40 天气/30 知识/20 混合/10 澄清打断），不再作为本期英文知识客服样本。E03 新增 `tests/fixtures/english-knowledge-cases.jsonl`，目前仅有 6 条合成英文文本且没有录音或真实执行。D07 须在云端 Docker 环境扩充授权英文录音、真实知识和故障样本；评分脚本只统计实际观测且标记 real_service 的项目。
 
 基础语音客服放行要求核心知识、权限、恢复及部署验收通过。V05 的连续交谈门槛未通过时，保留明确的硬打断恢复模式，不能宣称完整工具阶段全双工。生产能力开关只根据真实报告设置。

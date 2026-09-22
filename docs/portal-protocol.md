@@ -27,7 +27,7 @@
 | 方法和路径 | 用途/关键返回 |
 | --- | --- |
 | GET `/capabilities` | 配置和适配器声明的能力；部署声明不等于自动实测 |
-| POST `/conversations` | 请求 title、locale；返回 id、title、epoch、request_revision、locale；当前 locale 为 zh-CN |
+| POST `/conversations` | 请求 title、locale；返回 id、title、epoch、request_revision、locale；新会话仅接受 `en-US`，旧会话保留原 locale |
 | GET `/conversations` | 当前用户会话分页 |
 | GET `/conversations/{cid}/messages` | 当前用户的会话历史 |
 | POST `/conversations/{cid}/voice-sessions` | 返回 voice_session_id、epoch、request_revision、ws_url（含一次性 ticket） |

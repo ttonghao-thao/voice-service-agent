@@ -8,18 +8,48 @@ from app.contracts import (
     portal_client_event_adapter,
     portal_server_event_adapter,
 )
-from app.voice.provider import normalize, session_update
+from app.voice.provider import NvidiaVoiceChatAdapter, normalize, session_update
 from pydantic import ValidationError
 
 
-def test_native_configuration_is_exact_and_unicode():
-    config = session_update("张先生咨询过产品型号 A-中文")
-    assert "中文" in json.dumps(config, ensure_ascii=False)
+def test_native_configuration_is_exact_and_ascii():
+    config = session_update("Confirmed model AX\n张先生咨询过产品型号 A-中文")
+    assert "中文" not in json.dumps(config, ensure_ascii=False)
+    assert "Confirmed model AX" in config["session"]["instructions"]
+    assert json.dumps(config, ensure_ascii=False).isascii()
     assert set(config["session"]) == {"audio", "instructions", "tools"}
     assert config["session"]["audio"]["input"]["format"]["rate"] == 24000
     assert len(config["session"]["tools"]) == 1
     assert config["session"]["tools"][0]["name"] == "consult_service_agent"
     assert "response.cancel" not in json.dumps(config)
+
+
+async def test_native_tool_result_rejects_non_ascii_before_send():
+    sent = []
+
+    class Socket:
+        async def send(self, payload):
+            sent.append(payload)
+
+    adapter = NvidiaVoiceChatAdapter(Settings(_env_file=None))
+    adapter.ws = Socket()
+    with pytest.raises(DomainError) as error:
+        await adapter.submit_tool_result("call-1", '{"speech_text":"caf\\u00e9"}')
+    assert error.value.code == "VOICE_PROTOCOL_ERROR"
+    assert sent == []
+    await adapter.submit_tool_result("call-1", '{"speech_text":"Verified answer"}')
+    assert json.loads(sent[0])["item"]["call_id"] == "call-1"
+
+
+def test_new_conversations_are_english_only():
+    from app.contracts import AnswerBundle, ConversationInput
+
+    assert ConversationInput().locale == "en-US"
+    assert AnswerBundle(status="answered", display_text="ok", speech_text="ok").speech_language == "en-US"
+    with pytest.raises(ValidationError):
+        ConversationInput(locale="zh-CN")
+    with pytest.raises(ValidationError):
+        Settings(_env_file=None, required_voice_languages="zh-CN")
 
 
 @pytest.mark.parametrize(

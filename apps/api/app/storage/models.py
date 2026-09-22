@@ -16,7 +16,7 @@ class Conversation(Base):
     tenant_id: Mapped[str] = mapped_column(String(128), index=True)
     user_id: Mapped[str] = mapped_column(String(128), index=True)
     title: Mapped[str] = mapped_column(String(100))
-    locale: Mapped[str] = mapped_column(String(20), default="zh-CN")
+    locale: Mapped[str] = mapped_column(String(20), default="en-US")
     epoch: Mapped[int] = mapped_column(Integer, default=0)
     request_revision: Mapped[int] = mapped_column(Integer, default=0)
     current_turn: Mapped[str | None] = mapped_column(String(36))

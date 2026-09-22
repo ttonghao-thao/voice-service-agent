@@ -57,8 +57,8 @@ class Settings(BaseSettings):
     cuekb_api_revision: str = ""
     voice_session_max_seconds: int = 105
     max_voice_sessions: int = 8
-    default_locale: str = "zh-CN"
-    required_voice_languages: str = "zh-CN"
+    default_locale: Literal["en-US"] = "en-US"
+    required_voice_languages: Literal["en-US"] = "en-US"
     retention_days: int = 30
     request_limit_per_minute: int = 60
     external_tracing_enabled: bool = False

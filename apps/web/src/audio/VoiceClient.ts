@@ -26,12 +26,12 @@ export class VoiceClient {
   private visibility = () => {
     if (document.hidden) {
       void this.stop();
-      this.onError("页面进入后台，语音已停止。返回后请继续语音。");
+      this.onError("Voice stopped when the page went into the background. Resume when you return.");
     }
   };
   private offline = () => {
     void this.stop();
-    this.onError("网络已断开，语音播放已停止。");
+    this.onError("The network disconnected and voice playback stopped.");
   };
   async start(cid: string) {
     await this.stop();
@@ -41,7 +41,7 @@ export class VoiceClient {
     try {
       if (!navigator.mediaDevices?.getUserMedia)
         throw new Error(
-          "浏览器无法访问麦克风，请使用 HTTPS 或本机 localhost。",
+          "The browser cannot access the microphone. Use HTTPS or localhost.",
         );
       this.context = new AudioContext();
       await this.context.resume();
@@ -96,7 +96,7 @@ export class VoiceClient {
         if (d.type === "error") {
           this.clear();
           void this.stop();
-          this.onError("音频播放积压，已停止，请重新开始语音。");
+          this.onError("Audio playback fell behind. Restart voice.");
           return;
         }
         if (
@@ -109,13 +109,13 @@ export class VoiceClient {
           const clock = performance.now();
           if (this.lastCapture && clock - this.lastCapture > 500) {
             void this.stop();
-            this.onError("音频采集发生停顿，请重新开始语音。");
+            this.onError("Audio capture stalled. Restart voice.");
             return;
           }
           this.lastCapture = clock;
           if (this.ws.bufferedAmount > 32000) {
             void this.stop();
-            this.onError("网络音频积压，请重新开始语音。");
+            this.onError("Network audio fell behind. Restart voice.");
             return;
           }
           const bytes = new Uint8Array(d.pcm);
@@ -151,7 +151,7 @@ export class VoiceClient {
           event = JSON.parse(data);
         } catch {
           void this.stop();
-          this.onError("语音事件格式错误");
+          this.onError("Invalid voice event");
           return;
         }
         if (event.epoch !== this.epoch) return;
@@ -215,7 +215,7 @@ export class VoiceClient {
       };
       this.ws.onerror = () => {
         this.clear();
-        this.onError("语音连接失败，仍可使用文字问答。");
+        this.onError("Voice connection failed. Text questions remain available.");
         void this.stop();
       };
       document.addEventListener("visibilitychange", this.visibility);
@@ -223,7 +223,7 @@ export class VoiceClient {
     } catch (error) {
       await this.stop();
       this.onState("error");
-      this.onError(error instanceof Error ? error.message : "语音启动失败");
+      this.onError(error instanceof Error ? error.message : "Voice startup failed");
     }
   }
   clearForEpoch(epoch: number) {

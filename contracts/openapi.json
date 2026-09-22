@@ -1,7 +1,7 @@
 {
   "openapi": "3.1.0",
   "info": {
-    "title": "客服智能体门户",
+    "title": "Customer support portal",
     "version": "0.1.0"
   },
   "paths": {
@@ -921,13 +921,13 @@
             "maxLength": 100,
             "minLength": 1,
             "title": "Title",
-            "default": "新会话"
+            "default": "New conversation"
           },
           "locale": {
             "type": "string",
-            "const": "zh-CN",
+            "const": "en-US",
             "title": "Locale",
-            "default": "zh-CN"
+            "default": "en-US"
           }
         },
         "additionalProperties": false,

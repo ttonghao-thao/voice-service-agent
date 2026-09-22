@@ -74,7 +74,7 @@ def create_app(settings=None):
                 await asyncio.gather(maintenance_task, return_exceptions=True)
 
     app = FastAPI(
-        title="客服智能体门户",
+        title="Customer support portal",
         version="0.1.0",
         lifespan=lifespan,
         docs_url="/api/docs" if settings.app_env != "production" else None,
@@ -89,20 +89,20 @@ def create_app(settings=None):
             if (origin and origin != settings.public_origin) or (
                 request.cookies.get("service_session") and origin != settings.public_origin
             ):
-                return JSONResponse({"code": "FORBIDDEN", "message": "请求来源不受信任"}, status_code=403)
+                return JSONResponse({"code": "FORBIDDEN", "message": "Request origin is not trusted"}, status_code=403)
         try:
             length = int(request.headers.get("content-length", "0") or 0)
         except ValueError:
             length = 16385
         if length > 16384:
-            return JSONResponse({"code": "REQUEST_TOO_LARGE", "message": "请求正文过大"}, status_code=413)
+            return JSONResponse({"code": "REQUEST_TOO_LARGE", "message": "Request body is too large"}, status_code=413)
         if request.method in ("POST", "PATCH", "DELETE", "PUT"):
             chunks, size = [], 0
             async for chunk in request.stream():
                 size += len(chunk)
                 if size > 16384:
                     return JSONResponse(
-                        {"code": "REQUEST_TOO_LARGE", "message": "请求正文过大"}, status_code=413
+                        {"code": "REQUEST_TOO_LARGE", "message": "Request body is too large"}, status_code=413
                     )
                 chunks.append(chunk)
             request._body = b"".join(chunks)
@@ -118,7 +118,7 @@ def create_app(settings=None):
 
     @app.exception_handler(RequestValidationError)
     async def validation_error(request, exc):
-        return JSONResponse({"code": "INVALID_REQUEST", "message": "请求格式不符合接口要求"}, status_code=422)
+        return JSONResponse({"code": "INVALID_REQUEST", "message": "Request does not match the API contract"}, status_code=422)
 
     @app.get("/health/live")
     async def live():
@@ -146,7 +146,7 @@ def create_app(settings=None):
     @app.exception_handler(Exception)
     async def unexpected_error(request, exc):
         return JSONResponse(
-            DomainError("INTERNAL_ERROR", "服务暂时出现异常，请稍后重试", 500, True).payload(),
+            DomainError("INTERNAL_ERROR", "The service is temporarily unavailable. Please try again later.", 500, True).payload(),
             status_code=500,
         )
 
