@@ -135,33 +135,45 @@ def test_verified_voicechat_requires_pinned_contract_and_capability_mode():
     assert settings.voicechat_capability_mode == "basic"
 
 
-def test_production_cuekb_only_does_not_require_weather_configuration():
-    settings = Settings(
-        _env_file=None,
-        app_env="production",
-        auth_mode="oidc",
-        public_origin="https://portal.example.invalid",
-        database_url="postgresql+asyncpg://service:secret@postgres/service",
-        redis_url="redis://:secret@redis:6379/0",
-        oidc_issuer="https://id.example.invalid/",
-        oidc_audience="portal",
-        oidc_jwks_url="https://id.example.invalid/jwks.json",
-        oidc_authorization_url="https://id.example.invalid/authorize",
-        oidc_token_url="https://id.example.invalid/token",
-        tenant_id="tenant",
-        agent_provider="openai",
-        agent_model="configured-model",
-        openai_api_key="configured-key",
-        enabled_tools="search_knowledge",
-        cuekb_mode="real",
-        cuekb_base_url="https://cuekb.example.invalid",
-        cuekb_api_key="configured-key",
-        cuekb_api_revision="fixture-revision",
-        weather_mode="mock",
-        voice_provider="disabled",
-        auth_cookie_secret="x" * 32,
-    )
+def deployment_settings(**overrides):
+    from app.api.auth import hash_password
+
+    values = {
+        "auth_mode": "local",
+        "public_origin": "https://portal.example.invalid",
+        "database_url": "postgresql+asyncpg://service:secret@postgres/service",
+        "redis_url": "redis://:secret@redis:6379/0",
+        "tenant_id": "tenant",
+        "local_users_json": json.dumps([{
+            "id": "alice",
+            "password_hash": hash_password("example-password-for-fixture"),
+            "role": "customer",
+            "knowledge_base_ids": ["00000000-0000-4000-8000-000000000001"],
+        }]),
+        "agent_provider": "openai",
+        "agent_model": "configured-model",
+        "openai_api_key": "configured-key",
+        "enabled_tools": "search_knowledge",
+        "cuekb_mode": "real",
+        "cuekb_base_url": "https://cuekb.example.invalid",
+        "cuekb_api_key": "configured-key",
+        "cuekb_api_revision": "fixture-revision",
+        "voice_provider": "disabled",
+        "auth_cookie_secret": "x" * 32,
+    }
+    return Settings(_env_file=None, **{**values, **overrides})
+
+
+def test_deployment_cuekb_only_does_not_require_weather_configuration():
+    settings = deployment_settings(weather_mode="mock")
+    settings.validate_deployment()
     assert settings.enabled_tool_names == {"search_knowledge"} and settings.mock is False
+
+
+def test_compatible_model_requires_explicit_base_url():
+    settings = deployment_settings(agent_provider="compatible")
+    with pytest.raises(ValueError, match="AGENT_BASE_URL"):
+        settings.validate_deployment()
 
 
 @pytest.mark.parametrize(
@@ -169,90 +181,34 @@ def test_production_cuekb_only_does_not_require_weather_configuration():
     [
         ("public_origin", "https://portal.example.invalid/", "PUBLIC_ORIGIN"),
         ("public_origin", "https://portal.example.invalid/app", "PUBLIC_ORIGIN"),
-        ("oidc_authorization_url", "", "browser SSO"),
-        ("oidc_token_url", "", "browser SSO"),
+        ("auth_mode", "fixture", "fixture identity"),
+        ("agent_provider", "mock", "mock providers"),
+        ("auto_create_schema", True, "automatic schema"),
     ],
 )
-def test_production_requires_a_browser_origin_and_complete_sso_urls(field, value, message):
-    baseline = Settings(
-        _env_file=None,
-        app_env="production",
-        auth_mode="oidc",
-        public_origin="https://portal.example.invalid",
-        database_url="postgresql+asyncpg://service:secret@postgres/service",
-        redis_url="redis://:secret@redis:6379/0",
-        oidc_issuer="https://id.example.invalid/",
-        oidc_audience="portal",
-        oidc_jwks_url="https://id.example.invalid/jwks.json",
-        oidc_authorization_url="https://id.example.invalid/authorize",
-        oidc_token_url="https://id.example.invalid/token",
-        tenant_id="tenant",
-        agent_provider="openai",
-        agent_model="configured-model",
-        openai_api_key="configured-key",
-        enabled_tools="search_knowledge",
-        cuekb_mode="real",
-        cuekb_base_url="https://cuekb.example.invalid",
-        cuekb_api_key="configured-key",
-        cuekb_api_revision="fixture-revision",
-        voice_provider="disabled",
-        auth_cookie_secret="x" * 32,
-    )
-    with pytest.raises(ValidationError, match=message):
-        Settings(_env_file=None, **{**baseline.model_dump(), field: value})
+def test_deployment_rejects_unsafe_configuration(field, value, message):
+    settings = deployment_settings(**{field: value})
+    with pytest.raises(ValueError, match=message):
+        settings.validate_deployment()
 
 
-@pytest.mark.parametrize(
-    "override",
-    [
-        {"app_env": "production"},
-        {"external_tracing_enabled": True},
-        {"auth_mode": "oidc"},
-        {"voice_session_max_seconds": 0},
-    ],
-)
-def test_unsafe_configuration_fails_closed(override):
+def test_external_tracing_stays_disabled():
     with pytest.raises(ValidationError):
-        Settings(_env_file=None, **override)
+        Settings(_env_file=None, external_tracing_enabled=True)
 
 
 @pytest.mark.parametrize(
     ("field", "value"),
     [
-        ("oidc_authorization_url", "http://id.example.invalid/authorize"),
-        ("oidc_token_url", "http://id.example.invalid/token"),
+        ("cuekb_base_url", "http://cuekb.example.invalid"),
+        ("agent_base_url", "http://model.example.invalid"),
         ("voicechat_health_url", "http://voice.example.invalid/health"),
     ],
 )
-def test_production_rejects_non_tls_service_endpoints(field, value):
-    production = {
-        "app_env": "production",
-        "auth_mode": "oidc",
-        "public_origin": "https://portal.example.invalid",
-        "database_url": "postgresql+asyncpg://service:secret@postgres/service",
-        "redis_url": "redis://:secret@redis:6379/0",
-        "oidc_issuer": "https://id.example.invalid/",
-        "oidc_audience": "portal",
-        "oidc_jwks_url": "https://id.example.invalid/jwks.json",
-        "oidc_authorization_url": "https://id.example.invalid/authorize",
-        "oidc_token_url": "https://id.example.invalid/token",
-        "tenant_id": "tenant",
-        "agent_provider": "openai",
-        "agent_model": "configured-model",
-        "openai_api_key": "configured-key",
-        "cuekb_mode": "real",
-        "cuekb_base_url": "https://cuekb.example.invalid",
-        "cuekb_api_key": "configured-key",
-        "cuekb_api_revision": "fixture-revision",
-        "weather_mode": "real",
-        "weather_base_url": "https://weather.example.invalid",
-        "weather_api_key": "configured-key",
-        "voice_provider": "nvidia",
-        "auth_cookie_secret": "x" * 32,
-        field: value,
-    }
-    with pytest.raises(ValidationError, match="TLS"):
-        Settings(_env_file=None, **production)
+def test_deployment_rejects_non_tls_service_endpoints(field, value):
+    settings = deployment_settings(**{field: value})
+    with pytest.raises(ValueError, match="TLS"):
+        settings.validate_deployment()
 
 
 def test_websocket_handshake_and_oidc_logs_redact_query_credentials():

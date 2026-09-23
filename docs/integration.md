@@ -1,6 +1,6 @@
 # 后端服务与工具接入
 
-更新：2026-09-22。按主题读取。架构决策见 [architecture.md](architecture.md)，当前差距见 [任务板](TASK_BOARD.md)。
+更新：2026-09-23。按主题读取。架构决策见 [architecture.md](architecture.md)，当前差距见 [任务板](TASK_BOARD.md)。
 
 ## 1. 运行依赖与配置状态
 
@@ -10,13 +10,13 @@
 | CueKB | 知识检索与版本来源 | 专用 adapter、契约和受控测试已实现；真实服务/ACL 待 D07 |
 | 文本模型 | BusinessRuntime 的推理与业务回答 | 已有 openai / compatible adapter；真实模型未验收 |
 | 第三方工具 | 本期不启用 | 天气代理代码仍保留，生产默认无需天气配置 |
-| 身份服务 | 客户身份、组织及知识范围 | OIDC/JWT 已支持 customer/operator/admin；真实 IdP 与 CueKB ACL 待验收 |
+| 受限测试身份 | 后台 API 与测试门户的身份、角色、KB 范围 | 本地测试账号和短期签名会话已实现；真实客户身份服务暂缓 |
 
-当前环境变量名和启动校验以 `apps/api/app/config.py`、`.env.example`、`.env.production.example` 为准。实现读取 `CUEKB_MODE`、`CUEKB_BASE_URL`、`CUEKB_API_KEY`、`CUEKB_SEARCH_MODE`、`CUEKB_TOP_K` 与 `CUEKB_API_REVISION`；旧 `RAG_*` 配置和 `/v1/retrieve` 契约已退出活动实现。
+当前环境变量名和启动校验以 `apps/api/app/config.py`、`.env.example` 为准。实现读取 `CUEKB_MODE`、`CUEKB_BASE_URL`、`CUEKB_API_KEY`、`CUEKB_SEARCH_MODE`、`CUEKB_TOP_K` 与 `CUEKB_API_REVISION`；旧 `RAG_*` 配置和 `/v1/retrieve` 契约已退出活动实现。
 
-development 使用显式 mock；integration 用于真实联调；production 禁止开发身份、mock、自动建表和外部 SDK tracing。真实语音生产开放需要固定 `VOICECHAT_API_VERSION`、`VOICECHAT_IMAGE_DIGEST`、经人工复核的 `VOICECHAT_CAPABILITY_MODE=basic|enhanced` 和 `VOICECHAT_INTEGRATION_VERIFIED=true`。配置校验会拒绝缺少版本证据的“已验证”声明，但布尔值本身仍是部署者声明，必须附探测报告和授权音频证据。
+部署只使用一套真实服务配置；正常 API 启动拒绝 fixture 身份、mock 和自动建表。自动化测试显式注入 fixture 设置，不代表另一个部署环境。真实语音开放仍需固定 `VOICECHAT_API_VERSION`、`VOICECHAT_IMAGE_DIGEST`、经人工复核的 `VOICECHAT_CAPABILITY_MODE=basic|enhanced` 和 `VOICECHAT_INTEGRATION_VERIFIED=true`。该布尔值仍是部署者声明，必须附探测报告和授权音频证据。
 
-## 2. CueKB 目标契约（D03）
+## 2. CueKB 当前接入契约（D03、E01–E02）
 
 核对本地 CueKB revision：`1b9379de53c55dd41193a1529e46d48c0f219c14`（M3）；来源为其 `src/cuekb/schemas.py`、API routes/dependencies 与检索实现。部署前核对目标服务 OpenAPI，不把该 revision 当作所有部署版本。
 
@@ -98,18 +98,28 @@ Runtime 复用授权工具和证据校验，输出 display_text、短 speech_tex
 
 沿用 ToolSpec + trusted adapter + ToolRegistry：受信任代码定义参数/返回类型、调用实现、固定 endpoint/凭据引用、权限、预算、版本及错误映射。工具启停/修订后旧 run 不得继续使用失效工具。
 
-目标可用工具集合为部署启用 `ENABLED_TOOLS` ∩ 管理员当前启用 ∩ 用户授权；必需依赖只检查部署启用项。未配置天气/股票时不得暴露或调用，也不影响 CueKB-only 启动。部署白名单不能由管理员 API 重新开启；管理员只能在白名单内临时启停，运行中的旧任务会因版本或可用性变化被拒绝。`/capabilities` 返回部署集合和当前身份的 `available_tools`，`/health/ready` 返回非敏感部署集合。
+当前可用工具集合为部署启用 `ENABLED_TOOLS` ∩ 管理员当前启用 ∩ 用户授权；必需依赖只检查部署启用项。未配置天气/股票时不得暴露或调用，也不影响 CueKB-only 启动。部署白名单不能由管理员 API 重新开启；管理员只能在白名单内临时启停，运行中的旧任务会因版本或可用性变化被拒绝。`/capabilities` 返回部署集合和当前身份的 `available_tools`，`/health/ready` 返回非敏感部署集合。
 
 本期默认 `ENABLED_TOOLS=search_knowledge`。已有天气示例契约仍见 [weather-openapi.yaml](../contracts/weather-openapi.yaml)，但天气不属于本期产品范围，现存代码/schema 仅保留供后续需求评估，不对客户开放。
 
 只读 HTTP 按剩余预算做有限重试；当前对网络/5xx 最多一次，429/4xx/错误 JSON/超大正文不自动重试。缓存必须包含权限范围、查询条件、供应商和有效期，不能把历史数字作为新实时事实。
 
-## 6. 客户身份接入（D02）
+## 6. 受限测试身份与授权（D02、D09）
 
-复用现有 OIDC/JWT 校验：issuer、JWKS、audience、签名、有效期、组织和主体；浏览器 Authorization Code + PKCE，票据和 Cookie 遵守同源/TLS 约束。具体配置见 `.env.example` 和当前 auth 实现。
+本阶段没有外部 IdP 或真实客户登录。`LOCAL_USERS_JSON` 在服务端配置测试账号、PBKDF2 密码哈希、角色和 KB UUID；`TENANT_ID` 仍由服务端固定。门户通过用户名/密码登录后获得短期签名 Cookie，后台 API 可使用登录返回的短期 Bearer token；过期、签名错误、账号删除或密码哈希变更均拒绝。门户直接经公网 HTTPS `8087` 访问 Web 容器内的 Nginx，无独立 Nginx 服务；同源 `/api/` 转到容器网络的 `api:8000`。独立客户端可从私网访问宿主端口 `8088`，复用测试账号及其角色/KB 权限；没有专用系统间凭据或公网 API 入口，真实第三方集成鉴权尚未设计。
 
-已实现 `customer`、`operator`、`admin` 的保守映射：customer 只有 `knowledge:read`；operator 另有现有天气读取；只有 admin 拥有 `tools:admin`。用户、tenant、角色和 KB 范围只来自已验证 JWT，KB 取签名 claim 与部署允许列表的交集，严格请求模型拒绝正文覆盖。
+已实现 `customer`、`operator`、`admin` 的保守映射：customer 只有 `knowledge:read`；operator 另有现有天气读取；只有 admin 拥有 `tools:admin`。用户、tenant、角色和 KB 范围每次均从服务端账号及部署允许列表确定；签名 token 只承载账号标识、凭据版本和有效期。严格请求模型拒绝正文覆盖身份或 KB 范围。
 
 每条新知识引用记录本轮服务端授权 KB 范围。历史消息和 SSE 重放在读取时复核当前范围；范围被缩小后，涉及已撤销范围的整个旧答案会替换为 `KB_ACCESS_REVOKED`，不只隐藏链接。送入后续 Agent 的历史也执行相同裁剪，避免旧证据通过上下文再次泄露。升级前没有范围标签的旧引用不向 customer 展示；operator/admin 仅在仍拥有部署完整 KB 范围时兼容读取。
 
-默认不启用访客模式；若客服系统要求免登录，另定义可撤销、有资源限额的受限访客身份，不开放匿名管理能力。本地测试已覆盖客户不能访问管理 API、不同用户会话隔离、KB 交集和撤权后历史/SSE 脱敏；真实 IdP 即时撤权传播、CueKB Key/ACL 和并发会话仍需验收。
+默认不启用访客模式。本地测试覆盖客户不能访问管理 API、不同测试用户会话隔离、KB 交集和撤权后历史/SSE 脱敏；真实 CueKB Key/ACL、并发会话和未来真实客户身份接入仍需另行验收。
+
+## 7. Q04：原件查看的后续设计
+
+状态：建议，未实现；不影响当前逐块证据展示。本仓库尚无原件下载代理，CueKB 原件读取的具体 API、版本固定与权限语义需先核对目标服务契约，不在此发明 URL。
+
+若业务确需查看原件，由门户提交本项目 conversation 与 citation 标识，服务端检查会话归属、当前客户 KB 范围、部署范围及受限 Key；从已存引用取 document/version/anchor，不能接受浏览器提供任意上游 URL。通过受信任 Adapter 获取对应版本，旧版本不可用时明确说明，不能静默跳到最新文档。
+
+下载响应限制大小、超时、内容类型和缓存权限；撤权后拒绝原件访问。优先受控附件下载，不把未知 HTML 内联为同源页面，不泄漏供应商 Key/私网 URL。若采用临时链接，须先确认其有效期和撤权语义；不能因已有链接而绕过当前授权。
+
+实施顺序：确认业务需要与上游契约 → 设计本项目只读接口与错误映射 → Adapter/鉴权/门户入口 → 导出契约和受控测试 → 云端权限/版本验证。测试覆盖越权、撤权、旧版本缺失、上游失败及恶意 URL；未知契约前保持现有证据片段展示。

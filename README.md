@@ -1,16 +1,16 @@
 # Voice Service Agent · 语音客服 Agent
 
-客户通过简单 HTML 门户发起语音服务。本项目管理会话、业务推理、工具和回答，后台连接独立的 **NVIDIA VoiceChat** 与 **CueKB**；第三方查询按实际接入启用。
+测试人员可通过公网 HTTPS 门户验证语音服务；后台 API 是本阶段重点。本项目管理会话、业务推理、工具和回答，后台连接独立的 **NVIDIA VoiceChat** 与 **CueKB**；第三方查询按实际接入启用。
 
 ```text
-HTML 语音门户 ⇄ HTTPS / SSE / WSS ⇄ Voice Service Agent
-                                   ├─ VoiceChatAdapter ⇄ 独立 VoiceChat
-                                   ├─ 后台客服 Agent ⇄ 文本推理模型
-                                   │                 └─ ToolRegistry → CueKB / 可选第三方系统
-                                   └─ PostgreSQL / Redis
+公网浏览器 → HTTPS :8087 → Web 容器（Nginx 直接提供门户）
+                            └─ 同源 /api/ → API 容器 :8000
+私网客户端 → HTTP <主机私网 IP>:8088 ──────┘
+API → VoiceChatAdapter / 后台客服 Agent / ToolRegistry → 独立 VoiceChat、文本模型、CueKB
+    └─ PostgreSQL / Redis
 ```
 
-**当前状态：最终设计已整理，D01–D06 代码已完成本地验证，D07 部署前检查代码已具备。** 门户事件契约已冻结为严格联合类型，VoiceChat 能力声明绑定 API 版本/镜像 digest/真实探测模式；OIDC 已支持受限 `customer` 角色、会话隔离、KB 交集及历史撤权脱敏。工具仅在 `ENABLED_TOOLS` 部署白名单、管理员启用和用户授权同时满足时可用，生产默认 CueKB-only；真实 VoiceChat、SSO、CueKB、PostgreSQL/Redis/Docker 和生产验收仍未执行。默认开发 mock 有明确标识，不能作为真实语音或知识查询结果。
+**本期：英文知识库客服，默认仅启用 `search_knowledge`。** 代码完成范围与待办只维护在 [任务板](docs/TASK_BOARD.md)，真实环境尚未验收；本地受控测试不代表实际语音和知识效果。已执行检查见 [验收记录](docs/acceptance-report.md)。
 
 ## 按需阅读
 
@@ -20,27 +20,9 @@ HTML 语音门户 ⇄ HTTPS / SSE / WSS ⇄ Voice Service Agent
 - 下一步和现状差距：[任务板](docs/TASK_BOARD.md)。
 - 其余主题：[文档索引](docs/README.md)。Codex 从 [AGENTS.md](AGENTS.md) 按任务读取，无需全量加载。
 
-## 本机启动（当前实现）
+## 本机验证
 
-Python 3.12、uv、Node.js 22；仓库根目录执行：
-
-```sh
-cp .env.example .env
-uv sync --locked
-uv run alembic -c apps/api/alembic.ini upgrade head
-PYTHONPATH=apps/api uv run uvicorn app.main:app --host 127.0.0.1 --port 8000 --no-access-log
-```
-
-另开终端：
-
-```sh
-npm ci --prefix apps/web
-npm run dev --prefix apps/web -- --port 5173
-```
-
-访问 [本地门户](http://localhost:5173)。`PUBLIC_ORIGIN` 必须与浏览器地址一致；不要混用 localhost 与 127.0.0.1。当前页面是精简客户入口，工具管理只保留受权限保护的后端运维 API，不进入客户页面。
-
-“联调示例”仅验证合成文字、引用和历史；mock 语音只验证传输，不识别或合成业务语音。开发身份默认不是管理员，需要本地管理功能时才设置 `DEV_ADMIN=true`。不将开发身份用于生产。
+项目只维护一套生产部署配置。编码机使用测试夹具、契约和静态检查验证实现，不用第二套测试/开发 env 或 Compose。实际 API 启动要求 `.env` 中填写真实模型、CueKB、数据库及本地测试账号。Web 镜像内置 Nginx，浏览器直接访问公网 HTTPS `8087`；私网客户端可通过主机私网 IP 的 `8088` 调用同一 API。当前 API 复用测试账号签发的短期 Bearer token，尚未提供专门的系统间凭据或公网 API 入口。部署和账号配置见 [部署文档](docs/deployment.md)。
 
 ## 验证命令
 
@@ -75,7 +57,7 @@ PYTHONPATH=apps/api uv run python scripts/probe_voicechat.py \
 生产镜像通过独立 `docker build` 制作；云端使用 Docker Compose 迁移和运行，不直接启动宿主 Python/Node。构建、镜像标签和 URL 填写方式见 [部署文档](docs/deployment.md)。配置完成并准备好镜像后使用：
 
 ```sh
-./scripts/deploy-cloud.sh .env.production
+./scripts/deploy-cloud.sh .env
 ```
 
 配置准备、`ENABLED_TOOLS`、TLS、迁移、粘性路由和回滚见 [部署文档](docs/deployment.md)。CueKB-only 可只启用知识工具，但仍必须完成真实服务验收后才能放行。

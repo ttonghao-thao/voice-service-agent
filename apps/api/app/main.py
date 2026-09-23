@@ -22,11 +22,15 @@ from app.voice.gateway import VoiceGateway
 
 
 def create_app(settings=None):
+    injected_settings = settings is not None
     settings = settings or Settings()
     configure_logging()
 
     @asynccontextmanager
     async def lifespan(app):
+        if not injected_settings:
+            settings.validate_deployment()
+        auth = Auth(settings)
         async with AsyncExitStack() as cleanup:
             store = Store(settings.database_url)
             cleanup.push_async_callback(store.engine.dispose)
@@ -48,7 +52,7 @@ def create_app(settings=None):
             voice = VoiceGateway(settings, coordinator, store)
             coordinator.voice = voice
             app.state.settings, app.state.store, app.state.client = settings, store, client
-            app.state.auth, app.state.registry = Auth(settings, client), registry
+            app.state.auth, app.state.registry = auth, registry
             app.state.coordinator, app.state.coordination, app.state.voice = coordinator, coordination, voice
             await coordinator.recover()
 
@@ -77,9 +81,9 @@ def create_app(settings=None):
         title="Customer support portal",
         version="0.1.0",
         lifespan=lifespan,
-        docs_url="/api/docs" if settings.app_env != "production" else None,
+        docs_url=None,
         redoc_url=None,
-        openapi_url="/api/openapi.json" if settings.app_env != "production" else None,
+        openapi_url=None,
     )
 
     @app.middleware("http")
@@ -163,7 +167,6 @@ def create_app(settings=None):
             for path, methods in schema["paths"].items():
                 if path.startswith("/api/v1/") and path not in (
                     "/api/v1/auth/login",
-                    "/api/v1/auth/callback",
                     "/api/v1/auth/logout",
                 ):
                     for operation in methods.values():

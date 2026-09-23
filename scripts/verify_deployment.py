@@ -1,7 +1,7 @@
 """Check the deployed API's non-sensitive readiness contract.
 
 This is a release gate for container startup only. It deliberately does not
-claim that VoiceChat, CueKB, SSO, or spoken answers have passed end-to-end
+claim that VoiceChat, CueKB, test login, or spoken answers have passed end-to-end
 acceptance; those require the authorized D07 production samples and review.
 """
 
@@ -49,7 +49,7 @@ def main():
                 "checked_at": datetime.now(UTC).isoformat(),
                 "readiness": check,
                 "limitations": [
-                    "Container readiness only; it is not a VoiceChat, CueKB, SSO, or spoken-answer acceptance result."
+                    "Container readiness only; it is not a VoiceChat, CueKB, login, or spoken-answer acceptance result."
                 ],
             },
             ensure_ascii=False,

@@ -1,6 +1,6 @@
 # HTML 门户与消息/语音接口
 
-更新：2026-09-16。本文确定客户入口和接口边界；D01–D05 的当前实现使用本文 v1 格式，真实服务能力仍按验收记录放行。总架构见 [architecture.md](architecture.md)。
+更新：2026-09-23。本文确定测试门户和接口边界；D01–D05、E01–E03 的当前实现使用本文 v1 格式，真实服务能力仍按验收记录放行。总架构见 [architecture.md](architecture.md)。
 
 ## 1. 简单门户
 
@@ -9,8 +9,10 @@
 - 用户主动点击后申请麦克风，ready 后连续发送音频，包括静音；生产依赖 HTTPS 安全上下文。
 - 客户页面不展示工具配置、模型参数、内部运行日志或后台管理菜单。
 - 当前交互区分“停止播报”和“取消查询”：前者清除客户端缓冲并由服务端抑制当前 response，保留仍有效业务任务；后者使当前 revision 失效，存在无法安全结清的原生 call 时关闭旧语音连接。
-- 显示业务答案与实际语音字幕的区别；来源与版本可查看，工具秘钥和内部地址不可出现在页面。
+- 显示业务答案与实际语音字幕的区别；来源与版本可查看，工具密钥和内部地址不可出现在页面。
 - 客户入口复用现有 TypeScript/AudioWorklet 采集、重采样和播放模块，并由现有构建链输出静态 HTML；工具管理不进入客户页面。
+
+当前门户为英文，引用可展开 `context_parts`、截断提示和关系证据；原件下载不在已实现入口中。字段映射见 [接入 §2](integration.md#2-cuekb-当前接入契约d03e01e02)，本页不重复供应商结构。
 
 ## 2. “标准消息接口”的含义
 
@@ -38,13 +40,15 @@
 | POST `/conversations/{cid}/tasks/current/cancel` | expected_epoch、expected_revision；取消当前查询并拒绝晚到结果 |
 | POST `/conversations/{cid}/interrupt` | `{expected_epoch}`；当前是取消业务、失效 epoch、关闭语音的硬中断 |
 
-同一文字幂等键相同正文不重复执行，不同正文返回 409。管理 API 不属于客户协议权限集合。SSO/鉴权策略见 [接入文档](integration.md)。
+同一文字幂等键相同正文不重复执行，不同正文返回 409。管理 API 不属于客户协议权限集合。受限测试身份和鉴权策略见 [接入文档](integration.md)。
 
 SSE 的 `id` 是持久化 `server_seq`，不是 JSON `event_id`。仅重放业务事件，不重放实时音频。前端按 `event_id` 去重；不得把 SSE 和 WebSocket 的序号混为一个全局连续序列。
 
 ## 4. WebSocket 和音频（当前 v1）
 
 连接签发的 `ws_url`，路径 `/api/v1/voice-sessions/{sid}/stream?ticket=...`，生产必须 WSS。票据有效 60 秒、一次性，绑定认证身份、会话、epoch、Origin；握手失败不能静默切换匿名连接。URL query 与凭据不得写访问日志。
+
+本阶段门户只供测试账号使用，可直接访问 Web 容器的公网 HTTPS `8087`；Nginx 是该 Web 镜像内的静态文件服务，无需另行部署。测试账号通过 `POST /api/v1/auth/login` 获取短期签名会话 Cookie；同一响应的 Bearer token 可供私网客户端访问 API `8088`。角色和 KB 范围以服务端账号配置为准。浏览器只请求 Web 同源 `/api/`，镜像内的 Nginx 将其转到容器网络中的 `api:8000`，不要求公网浏览器直接访问私网 API。
 
 ### 4.1 上行消息
 

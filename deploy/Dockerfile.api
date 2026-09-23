@@ -1,6 +1,6 @@
 FROM python:3.12-slim-bookworm@sha256:782412e85d0f0984994c290652577d4018aff08145c85b262bb63dc0c7522254
 WORKDIR /app
-RUN pip install --no-cache-dir uv==0.11.28
+RUN pip install --no-cache-dir --timeout 120 --retries 5 uv==0.11.28
 COPY pyproject.toml uv.lock ./
 RUN uv sync --locked --no-dev --no-install-project
 COPY apps/api apps/api

@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useRef, useState } from "react";
+import { type FormEvent, useCallback, useEffect, useRef, useState } from "react";
 import {
   Alert,
   Button,
@@ -58,6 +58,9 @@ export default function App() {
   const [me, setMe] = useState<Me | null>(null),
     [login, setLogin] = useState(false),
     [caps, setCaps] = useState<Capabilities | null>(null);
+  const [username, setUsername] = useState(""),
+    [password, setPassword] = useState(""),
+    [signingIn, setSigningIn] = useState(false);
   const [conversations, setConversations] = useState<Conversation[]>([]),
     [cid, setCid] = useState(""),
     [turns, setTurns] = useState<Turn[]>([]),
@@ -348,10 +351,10 @@ export default function App() {
         <div>
           <strong>{me?.user_id || "Customer support"}</strong>
           <small>
-            {me?.auth_mode === "dev" ? "Development identity" : "Organization verified"}
+            {me?.auth_mode === "fixture" ? "Test fixture" : "Restricted test account"}
           </small>
         </div>
-        {me?.auth_mode === "oidc" && (
+        {me?.auth_mode === "local" && (
           <Button
             type="text"
             aria-label="Sign out"
@@ -477,10 +480,26 @@ export default function App() {
         <div className="login-card">
           <CustomerServiceOutlined />
           <h1>VoiceBridge Customer Support</h1>
-          <p>Sign in with your organization account to access your conversations and knowledge.</p>
-          <Button type="primary" size="large" href="/api/v1/auth/login">
-            Sign in with organization account
-          </Button>
+          <p>Restricted validation portal. Sign in with a test account.</p>
+          {error && <Alert type="error" showIcon message={error} />}
+          <form onSubmit={(event: FormEvent) => {
+            event.preventDefault();
+            setSigningIn(true);
+            setError("");
+            void api("/auth/login", {
+              method: "POST",
+              body: JSON.stringify({ username, password }),
+            }).then(() => location.reload()).catch((e: Error) => {
+              setError(e.message);
+              setSigningIn(false);
+            });
+          }}>
+            <Input aria-label="Username" autoComplete="username" placeholder="Username" value={username}
+              onChange={(event) => setUsername(event.target.value)} required />
+            <Input.Password aria-label="Password" autoComplete="current-password" placeholder="Password"
+              value={password} onChange={(event) => setPassword(event.target.value)} required />
+            <Button type="primary" size="large" htmlType="submit" loading={signingIn}>Sign in</Button>
+          </form>
         </div>
       </div>
     );

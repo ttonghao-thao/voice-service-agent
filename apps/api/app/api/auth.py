@@ -1,51 +1,125 @@
-import base64
+"""Server-owned identities for the restricted validation portal and API."""
+
 import hashlib
+import json
+import re
 import secrets
 import time
-from urllib.parse import urlencode
+from uuid import UUID
 
 import jwt
 from app.contracts import DomainError, Principal
 from fastapi import APIRouter, Request
-from fastapi.responses import RedirectResponse
+from fastapi.responses import JSONResponse
+from pydantic import BaseModel, Field
 
 router = APIRouter(prefix="/api/v1/auth")
+ISSUER = "voice-service-agent-local"
+AUDIENCE = "voice-service-agent"
+SESSION_SECONDS = 60 * 60
+HASH_ITERATIONS = 310_000
+HASH_FORMAT = re.compile(r"^pbkdf2_sha256:(\d+):([0-9a-f]{32}):([0-9a-f]{64})$")
+
+
+class LoginInput(BaseModel):
+    username: str = Field(min_length=1, max_length=80)
+    password: str = Field(min_length=1, max_length=1024)
+
+
+def hash_password(password: str) -> str:
+    salt = secrets.token_bytes(16)
+    digest = hashlib.pbkdf2_hmac("sha256", password.encode(), salt, HASH_ITERATIONS)
+    return f"pbkdf2_sha256:{HASH_ITERATIONS}:{salt.hex()}:{digest.hex()}"
+
+
+def verify_password(password: str, encoded: str) -> bool:
+    match = HASH_FORMAT.fullmatch(encoded)
+    if not match:
+        return False
+    iterations, salt, expected = match.groups()
+    if not 200_000 <= int(iterations) <= 2_000_000:
+        return False
+    actual = hashlib.pbkdf2_hmac("sha256", password.encode(), bytes.fromhex(salt), int(iterations))
+    return secrets.compare_digest(actual, bytes.fromhex(expected))
+
+
+DUMMY_PASSWORD_HASH = hash_password("unused-account")
 
 
 class Auth:
-    def __init__(self, settings, client):
-        self.settings, self.client = settings, client
-        self.keys, self.expires = [], 0
-
-    async def claims(self, token):
-        s = self.settings
+    def __init__(self, settings):
+        self.settings = settings
+        self.accounts = {}
+        if settings.auth_mode != "local":
+            return
         try:
-            if time.monotonic() > self.expires:
-                response = await self.client.get(s.oidc_jwks_url, timeout=5)
-                response.raise_for_status()
-                self.keys = response.json()["keys"]
-                self.expires = time.monotonic() + 300
-            header = jwt.get_unverified_header(token)
-            if header.get("alg") != "RS256":
-                raise ValueError("Unsupported signing algorithm")
-            key = next((k for k in self.keys if k.get("kid") == header.get("kid")), None)
-            if not key:
-                self.expires = 0
-                raise ValueError("Unknown key")
-            return jwt.decode(
-                token,
-                jwt.PyJWK.from_dict(key).key,
-                algorithms=["RS256"],
-                issuer=s.oidc_issuer,
-                audience=s.oidc_audience,
-                options={"require": ["exp", "iat", "sub", "iss", "aud"]},
-            )
-        except Exception as exc:
-            raise DomainError("AUTH_REQUIRED", "Your session expired or credentials are invalid", 401) from exc
+            raw_accounts = json.loads(settings.local_users_json.get_secret_value())
+            if not isinstance(raw_accounts, list) or not raw_accounts:
+                raise ValueError("Expected a nonempty list")
+            deployment_kbs = {str(UUID(value.strip())) for value in settings.knowledge_base_ids.split(",")}
+            for item in raw_accounts:
+                name = item["id"]
+                password_hash = item["password_hash"]
+                role = item["role"]
+                kbs = item["knowledge_base_ids"]
+                if (
+                    not isinstance(name, str) or not re.fullmatch(r"[A-Za-z0-9._-]{1,80}", name)
+                    or name in self.accounts or not isinstance(password_hash, str)
+                    or not HASH_FORMAT.fullmatch(password_hash)
+                    or not 200_000 <= int(HASH_FORMAT.fullmatch(password_hash).group(1)) <= 2_000_000
+                    or role not in {"customer", "operator", "admin"}
+                    or not isinstance(kbs, list) or not kbs
+                    or not all(isinstance(kb, str) and str(UUID(kb)) in deployment_kbs for kb in kbs)
+                ):
+                    raise ValueError("Invalid local account")
+                self.accounts[name] = {
+                    "password_hash": password_hash,
+                    "role": role,
+                    "kbs": tuple(sorted({str(UUID(kb)) for kb in kbs})),
+                }
+        except (KeyError, TypeError, ValueError, json.JSONDecodeError) as exc:
+            raise ValueError("LOCAL_USERS_JSON contains an invalid local account") from exc
+
+    def _principal(self, user_id: str, expires_at: int | None = None) -> Principal:
+        account = self.accounts[user_id]
+        role = account["role"]
+        scopes = {"knowledge:read"}
+        if role in {"operator", "admin"}:
+            scopes.add("weather:read")
+        if role == "admin":
+            scopes.add("tools:admin")
+        return Principal(
+            user_id=user_id,
+            tenant_id=self.settings.tenant_id,
+            roles=frozenset({role}),
+            scopes=frozenset(scopes),
+            knowledge_base_ids=account["kbs"],
+            expires_at=expires_at,
+        )
+
+    def login(self, username: str, password: str) -> str:
+        account = self.accounts.get(username)
+        verified = verify_password(password, account["password_hash"] if account else DUMMY_PASSWORD_HASH)
+        if not account or not verified:
+            raise DomainError("AUTH_REQUIRED", "Invalid username or password", 401)
+        now = int(time.time())
+        return jwt.encode(
+            {
+                "sub": username,
+                "tenant_id": self.settings.tenant_id,
+                "ver": hashlib.sha256(account["password_hash"].encode()).hexdigest(),
+                "iss": ISSUER,
+                "aud": AUDIENCE,
+                "iat": now,
+                "exp": now + SESSION_SECONDS,
+            },
+            self.settings.auth_cookie_secret.get_secret_value(),
+            algorithm="HS256",
+        )
 
     async def principal(self, request):
         s = self.settings
-        if s.auth_mode == "dev":
+        if s.auth_mode == "fixture":
             scopes = {"knowledge:read", "weather:read"}
             roles = {"operator"}
             if s.dev_admin:
@@ -62,37 +136,24 @@ class Auth:
         token = header[7:] if header.startswith("Bearer ") else request.cookies.get("service_session")
         if not token:
             raise DomainError("AUTH_REQUIRED", "Please sign in", 401)
-        claims = await self.claims(token)
-        # Signed roles/ACL and the deployment tenant are the only identity inputs.
-        if claims.get("tenant_id") != s.tenant_id:
-            raise DomainError("FORBIDDEN", "You cannot access this organization", 403)
-        roles = claims.get("roles", [])
-        kbs = claims.get("knowledge_base_ids", [])
-        if (
-            not isinstance(roles, list)
-            or not all(isinstance(role, str) for role in roles)
-            or not isinstance(kbs, list)
-            or not all(isinstance(kb, str) for kb in kbs)
-        ):
-            raise DomainError("FORBIDDEN", "Invalid identity permissions", 403)
-        recognized_roles = set(roles) & {"customer", "operator", "admin"}
-        scopes = {"knowledge:read"} if recognized_roles else set()
-        if recognized_roles & {"operator", "admin"}:
-            scopes.add("weather:read")
-        if "admin" in roles:
-            scopes.add("tools:admin")
-        if not scopes:
-            raise DomainError("FORBIDDEN", "Customer support permission is required", 403)
-        configured_kbs = {x.strip() for x in s.knowledge_base_ids.split(",") if x.strip()}
-        allowed_kbs = configured_kbs & set(kbs)
-        return Principal(
-            user_id=claims["sub"],
-            tenant_id=s.tenant_id,
-            roles=frozenset(recognized_roles),
-            scopes=frozenset(scopes),
-            knowledge_base_ids=tuple(sorted(allowed_kbs)),
-            expires_at=claims["exp"],
-        )
+        try:
+            claims = jwt.decode(
+                token,
+                s.auth_cookie_secret.get_secret_value(),
+                algorithms=["HS256"],
+                issuer=ISSUER,
+                audience=AUDIENCE,
+                options={"require": ["sub", "tenant_id", "ver", "iss", "aud", "iat", "exp"]},
+            )
+            if claims["tenant_id"] != s.tenant_id:
+                raise ValueError("Wrong tenant")
+            account = self.accounts[claims["sub"]]
+            version = hashlib.sha256(account["password_hash"].encode()).hexdigest()
+            if not secrets.compare_digest(claims["ver"], version):
+                raise ValueError("Credential changed")
+            return self._principal(claims["sub"], claims["exp"])
+        except (jwt.PyJWTError, KeyError, TypeError, ValueError) as exc:
+            raise DomainError("AUTH_REQUIRED", "Your session expired or credentials are invalid", 401) from exc
 
 
 async def principal(request: Request):
@@ -105,98 +166,21 @@ async def me(request: Request):
     return {**p.model_dump(mode="json"), "auth_mode": request.app.state.settings.auth_mode}
 
 
-@router.get("/login")
-async def login(request: Request):
-    s = request.app.state.settings
-    if s.auth_mode == "dev":
-        return RedirectResponse(s.public_origin)
-    if (
-        not s.oidc_authorization_url
-        or not s.oidc_token_url
-        or len(s.auth_cookie_secret.get_secret_value()) < 32
-    ):
-        raise DomainError(
-            "AUTH_NOT_CONFIGURED", "Browser SSO is not configured; integrators may use a verified Bearer token", 503
-        )
-    state, nonce, verifier = secrets.token_urlsafe(32), secrets.token_urlsafe(32), secrets.token_urlsafe(48)
-    challenge = base64.urlsafe_b64encode(hashlib.sha256(verifier.encode()).digest()).rstrip(b"=").decode()
-    response = RedirectResponse(
-        s.oidc_authorization_url
-        + "?"
-        + urlencode(
-            {
-                "client_id": s.oidc_audience,
-                "redirect_uri": s.public_origin + "/api/v1/auth/callback",
-                "response_type": "code",
-                "scope": "openid profile",
-                "state": state,
-                "nonce": nonce,
-                "code_challenge": challenge,
-                "code_challenge_method": "S256",
-            }
-        )
-    )
-    signed = jwt.encode(
-        {"state": state, "nonce": nonce, "verifier": verifier, "exp": int(time.time()) + 300},
-        s.auth_cookie_secret.get_secret_value(),
-        algorithm="HS256",
-    )
+@router.post("/login")
+async def login(request: Request, body: LoginInput):
+    auth = request.app.state.auth
+    if auth.settings.auth_mode != "local":
+        raise DomainError("AUTH_NOT_CONFIGURED", "Local sign-in is unavailable", 503)
+    token = auth.login(body.username, body.password)
+    response = JSONResponse({"access_token": token, "token_type": "bearer", "expires_in": SESSION_SECONDS})
     response.set_cookie(
-        "oidc_flow",
-        signed,
-        httponly=True,
-        secure=s.public_origin.startswith("https"),
-        samesite="lax",
-        max_age=300,
-        path="/api/v1/auth",
+        "service_session", token, httponly=True, secure=True, samesite="strict", max_age=SESSION_SECONDS
     )
     return response
 
 
-@router.get("/callback")
-async def callback(request: Request, code: str = "", state: str = ""):
-    s = request.app.state.settings
-    try:
-        flow = jwt.decode(
-            request.cookies.get("oidc_flow", ""),
-            s.auth_cookie_secret.get_secret_value(),
-            algorithms=["HS256"],
-        )
-        if not secrets.compare_digest(flow["state"], state) or not code:
-            raise ValueError("State mismatch")
-        response = await request.app.state.client.post(
-            s.oidc_token_url,
-            data={
-                "grant_type": "authorization_code",
-                "client_id": s.oidc_audience,
-                "client_secret": s.oidc_client_secret.get_secret_value(),
-                "code": code,
-                "redirect_uri": s.public_origin + "/api/v1/auth/callback",
-                "code_verifier": flow["verifier"],
-            },
-        )
-        response.raise_for_status()
-        token = response.json()["id_token"]
-        claims = await request.app.state.auth.claims(token)
-        if claims.get("nonce") != flow["nonce"]:
-            raise ValueError("Nonce mismatch")
-    except Exception as exc:
-        raise DomainError("AUTH_REQUIRED", "SSO sign-in failed. Please try again.", 401) from exc
-    redirect = RedirectResponse(s.public_origin)
-    redirect.delete_cookie("oidc_flow", path="/api/v1/auth")
-    redirect.set_cookie(
-        "service_session",
-        token,
-        httponly=True,
-        secure=s.public_origin.startswith("https"),
-        samesite="strict",
-        max_age=max(0, int(claims["exp"] - time.time())),
-    )
-    return redirect
-
-
 @router.post("/logout")
-async def logout(request: Request):
-    response = RedirectResponse(request.app.state.settings.public_origin, status_code=303)
+async def logout():
+    response = JSONResponse({"signed_out": True})
     response.delete_cookie("service_session")
     return response

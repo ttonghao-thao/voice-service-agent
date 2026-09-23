@@ -8,11 +8,11 @@ x-logging: &default-logging
 
 services:
   postgres:
-    image: postgres:17-alpine@sha256:18cfe3ef5e6815560c98237d6216d1e5119702fb0f3894c8785dd58b8bbe5d73
+    image: postgres:17.6-alpine@sha256:ef257d85f76e48da1c64832459b59fcaba1a4dac97bf5d7450c77753542eee94
     environment:
       POSTGRES_DB: voice_service
       POSTGRES_USER: voice_service
-      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?Set POSTGRES_PASSWORD in .env.production}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?Set POSTGRES_PASSWORD in .env}
     volumes:
       - postgres-data:/var/lib/postgresql/data
     healthcheck:
@@ -26,9 +26,9 @@ services:
     logging: *default-logging
 
   redis:
-    image: redis:7.4-alpine@sha256:ff02b58f971e7d7d156a1267e283fcbbeee91773b6aa36c49dac28ecfe28eadf
+    image: redis:7-alpine@sha256:858f009f9709ce576febc734aa78b8f6d624b82571f9ddb6bda4377c833b3499
     environment:
-      REDIS_PASSWORD: ${REDIS_PASSWORD:?Set REDIS_PASSWORD in .env.production}
+      REDIS_PASSWORD: ${REDIS_PASSWORD:?Set REDIS_PASSWORD in .env}
     command:
       - /bin/sh
       - -ec
@@ -46,11 +46,10 @@ services:
     logging: *default-logging
 
   migrate:
-    image: ${API_IMAGE:?Set the prebuilt API_IMAGE in .env.production}
+    image: ${API_IMAGE:?Set the prebuilt API_IMAGE in .env}
     pull_policy: never
-    env_file: ${PRODUCTION_ENV_FILE:-../.env.production}
+    env_file: ${DEPLOY_ENV_FILE:-../.env}
     environment: &application-environment
-      APP_ENV: production
       AUTO_CREATE_SCHEMA: "false"
       DATABASE_URL: postgresql+asyncpg://voice_service:${POSTGRES_PASSWORD}@postgres/voice_service
       REDIS_URL: redis://:${REDIS_PASSWORD}@redis:6379/0
@@ -63,12 +62,14 @@ services:
     logging: *default-logging
 
   api:
-    image: ${API_IMAGE:?Set the prebuilt API_IMAGE in .env.production}
+    image: ${API_IMAGE:?Set the prebuilt API_IMAGE in .env}
     pull_policy: never
-    env_file: ${PRODUCTION_ENV_FILE:-../.env.production}
+    env_file: ${DEPLOY_ENV_FILE:-../.env}
     environment:
       <<: *application-environment
-      PUBLIC_ORIGIN: ${PUBLIC_ORIGIN:?Set the public HTTPS origin in .env.production}
+      PUBLIC_ORIGIN: ${PUBLIC_ORIGIN:?Set the test HTTPS origin in .env}
+    ports:
+      - "${API_BIND_ADDRESS:?Set the host private IPv4 address in .env}:8088:8000"
     depends_on:
       migrate: {condition: service_completed_successfully}
       redis: {condition: service_healthy}
@@ -92,14 +93,17 @@ services:
     logging: *default-logging
 
   web:
-    image: ${WEB_IMAGE:?Set the prebuilt WEB_IMAGE in .env.production}
+    image: ${WEB_IMAGE:?Set the prebuilt WEB_IMAGE in .env}
     pull_policy: never
     ports:
-      - "${WEB_BIND_ADDRESS:-127.0.0.1}:${WEB_PORT:-8082}:80"
+      - "0.0.0.0:8087:8087"
+    volumes:
+      - "${WEB_TLS_CERT_FILE:?Set the TLS certificate path in .env}:/etc/nginx/tls/tls.crt:ro"
+      - "${WEB_TLS_KEY_FILE:?Set the TLS private key path in .env}:/etc/nginx/tls/tls.key:ro"
     depends_on:
       api: {condition: service_healthy}
     healthcheck:
-      test: ["CMD-SHELL", "wget -q -O /dev/null http://127.0.0.1/health/live"]
+      test: ["CMD-SHELL", "wget --no-check-certificate -q -O /dev/null https://127.0.0.1:8087/health/live"]
       interval: 10s
       timeout: 3s
       retries: 6

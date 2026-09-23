@@ -68,10 +68,8 @@ class VoiceGateway:
                     raise DomainError("UNSUPPORTED_LOCALE", "Voice is available for English conversations only", 409)
             if s.voice_provider == "nvidia" and (
                 not s.voicechat_ws_url
-                or (
-                    s.app_env != "integration"
-                    and (not s.voicechat_integration_verified or not s.voicechat_api_version)
-                )
+                or not s.voicechat_integration_verified
+                or not s.voicechat_api_version
             ):
                 raise DomainError("VOICE_UNAVAILABLE", "Real voice integration has not been verified and is unavailable", 503)
             if len(self.sessions) >= s.max_voice_sessions:

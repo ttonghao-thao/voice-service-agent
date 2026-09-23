@@ -1,35 +1,38 @@
 # 部署与运行
 
-> 2026-09-16：本文描述当前代码的运行方式，不代表真实服务已经验收。生产依 `ENABLED_TOOLS` 仅校验启用工具；默认生产模板为 CueKB-only，不需要天气代理配置。不要为满足启动条件接入假天气；真实验收仍须按 [任务板](TASK_BOARD.md) D07 执行。最终系统边界见 [架构](architecture.md)。
+> 2026-09-23：本文描述当前代码的运行方式，不代表真实服务已经验收。生产依 `ENABLED_TOOLS` 仅校验启用工具；默认模板为 CueKB-only，不需要天气代理配置。真实验收仍须按 [任务板](TASK_BOARD.md) D07 执行。最终系统边界见 [架构](architecture.md)。
 
 ## 部署方式边界
 
-编码阶段没有 Docker 环境。必要时只静态检查 Dockerfile、Compose、镜像制作和启动脚本；不安装 Docker、不搭建替代容器环境、不拉取或构建镜像、不启动容器。本文中的容器构建和运行命令用于后续具备环境的部署阶段，不属于当前编码验证步骤。CueKB/VoiceChat 真实联调同样在后续部署阶段执行。
+本阶段只有一套生产部署配置：`.env.example` 是唯一模板，实际 `.env` 不提交；`deploy/compose.production.yaml` 是唯一 Compose 拓扑。测试是对这套部署的受限访问和授权样本，不另设 integration/test 运行模式。应用代码保留显式注入的 fixture 设置供自动化测试使用；正常 API 启动会执行严格部署校验，拒绝 fixture 身份、mock、自动建表、缺少真实文本模型/CueKB 与未验证的 VoiceChat 声明。
 
-生产 API/Web 镜像先用 `docker build` 单独构建；云端服务器使用 Docker Compose 执行迁移和运行，不直接在宿主机启动 Python、Node.js、PostgreSQL 或 Redis。生产入口为 `deploy/compose.production.yaml`，配置模板为 `.env.production.example`，部署命令为 `scripts/deploy-cloud.sh`。
+门户只用于测试，可从公网直接访问 `https://<证书覆盖的域名或公网 IP>:8087`。Nginx 已打包在 Web 镜像中，负责提供静态门户和终止 HTTPS，无需独立部署 Nginx 或外层反向代理。它在容器内监听 `0.0.0.0:8087`，Compose 同端口公开映射；填写证书和私钥在宿主机上的绝对路径，容器只读挂载。`PUBLIC_ORIGIN` 必须与浏览器实际使用的 HTTPS origin 完全一致，证书须受测试设备信任；若使用公网 IP，证书须包含该 IP 的 SAN。浏览器麦克风和 Secure 登录 Cookie 依赖可信 HTTPS，不能用 HTTP 地址验收语音。
 
-本期真实验证只在云端 Docker 部署中执行：先以同一发布版本分别构建 API/Web 镜像并启动 Compose，再记录 `/health/ready`、英文门户/OIDC、CueKB `/v1/search`、VoiceChat 工具往返与授权音频证据。`tests/fixtures/english-knowledge-cases.jsonl` 是文本契约样本，尚无真实录音；云端 D07 不得把它或静态 readiness 当作英文口述通过。
+API 容器内部继续监听 `0.0.0.0:8000`，宿主机仅在 `API_BIND_ADDRESS:8088` 映射；`API_BIND_ADDRESS` 必须填写部署机实际拥有的 RFC 1918 私网 IPv4。私网客户端可通过 `http://<主机私网 IP>:8088/api/v1/...` 调用会话、文字问答和授权管理接口，使用本地测试账号登录返回的短期 Bearer token，并受该账号角色/KB 范围约束。当前没有专门的系统间凭据，也没有公网 API 入口；这不等于正式第三方集成鉴权已经完成。浏览器从 Web 同源 `/api/` 调用，Web 容器内的 Nginx 仅将这一路径转到 Compose `app` 网络的 `api:8000`，不需要浏览器连接私网地址。PostgreSQL、Redis 只在容器网络中。防火墙只允许授权来源访问私网 `8088`；公网只开放 Web 的 `8087`。宿主机私网映射不等于容器内部监听端口。
 
-本地开发仍使用 README 中的 Python/Node.js 启动和验证命令；需要检查容器拓扑时也可继续使用 `deploy/compose.yaml`。两种路径互不替代，本地测试通过不代表云端容器验收通过。
+编码机没有 Docker 或真实 CueKB/VoiceChat 接口；本地只运行契约、静态与夹具测试。镜像/容器、PostgreSQL/Redis、真实供应商和浏览器验收归 D07，不能以本地测试或 `/health/ready` 冒充通过。
 
-## 本地容器拓扑
+## 配置与受限测试身份
 
-Docker/Compose 需要由运行环境提供，本次机器未安装 Docker，没有声称容器或 PostgreSQL/Redis 已实测。
+复制 `.env.example` 为 `.env`，填写镜像标签、数据库/Redis 凭据、文本模型、CueKB、租户、KB UUID、HTTPS 测试 origin、宿主私网 IP、TLS 证书/私钥路径和测试账号。`AUTH_MODE=local`；不需要 OIDC、`APP_ENV` 或第二份 env 文件。`LOCAL_USERS_JSON` 是单行 JSON 数组，每项包含 `id`、`password_hash`、`role`（`customer|operator|admin`）、`knowledge_base_ids`（UUID 数组）。至少配置两个 customer 测试身份以验收会话隔离；若验收 KB 范围隔离，再配置两个授权范围和对应 KB。仅在测试管理 API 时配置单独 admin。所有角色和 KB 范围均由服务端账号配置确定，不接受浏览器或模型覆盖。
 
-1. 复制 `.env.example` 为 `.env`，设置环境及服务配置。
-2. 设置 `POSTGRES_PASSWORD`（建议随机字母数字，URL 特殊字符需编码），运行：
+在已安装项目依赖的构建机生成账号密码哈希，命令交互读取密码，不回显原文：
 
 ```sh
-POSTGRES_PASSWORD=YOUR_LOCAL_DB_PASSWORD docker compose --env-file .env -f deploy/compose.yaml up --build
+PYTHONPATH=apps/api uv run python scripts/hash_test_password.py
 ```
 
-Compose 先等 PostgreSQL/Redis 健康，再由单独 migrate job 执行 Alembic，最后启应用与 Nginx。默认门户为 `http://localhost:8080`，只绑定宿主 `127.0.0.1`。数据库和 Redis 不向宿主公开端口。不要用此开发 HTTP 入口直接对外服务。
+例如账号结构（哈希和 UUID 均须替换为真实值）：
 
-API 无 GPU/CUDA 依赖，VoiceChat 为外部服务。Python/Node/Nginx/PostgreSQL/Redis 基础镜像的实际 registry manifest digest 已锁在 `deploy/images.lock.json` 和 Dockerfile/Compose；Python/Node 全量依赖各有 lockfile。尚未在 Docker 中拉取和构建这些镜像，锁定 digest 不等于镜像运行验收。
+```json
+[{"id":"alice","password_hash":"pbkdf2_sha256:...","role":"customer","knowledge_base_ids":["00000000-0000-4000-8000-000000000001"]}]
+```
 
-## 生产
+将压缩后的 JSON 写入 `.env` 的 `LOCAL_USERS_JSON='[...]'`（单引号包住整段 JSON）；密码哈希使用冒号分隔，避免 Compose 将 `$` 当作变量插值。门户调用 `POST /api/v1/auth/login` 后使用 Secure、HttpOnly、SameSite=Strict 的 1 小时 Cookie；后台 API 可取同一登录响应的 `access_token` 作为 Bearer token。每次请求按当前服务端账号配置重新确定角色和 KB；修改账号密码哈希并重启 API 后，旧 token 失效。退出门户删除浏览器 Cookie，已签发的 Bearer token 到期或凭据轮换后失效。测试入口必须限制来源和登录尝试速率，不对真实客户开放。
 
-在构建机的仓库根目录，给同一次发布的 API 和 Web 镜像打唯一版本标签。构建不读取 `.env.production`：
+## 镜像构建与部署
+
+API/Web 镜像在构建机独立构建，同一发布使用唯一标签；云端 Compose 只消费预构建镜像，迁移复用 API 镜像：
 
 ```sh
 release_tag=$(git rev-parse --short=12 HEAD)
@@ -37,50 +40,25 @@ docker build -f deploy/Dockerfile.api -t "voice-service-agent-api:$release_tag" 
 docker build -f deploy/Dockerfile.web -t "voice-service-agent-web:$release_tag" .
 ```
 
-若在另一台服务器部署，先经镜像仓库或 `docker save`/`docker load` 将**同一版本**的两个镜像送到部署机，确认部署机本地有这两个标签。基础镜像 PostgreSQL/Redis 仍按 Compose 的固定 digest 获取。部署机安装 Docker Engine 与 Docker Compose v2，将代码和镜像放到固定发布目录。复制配置并仅授予部署账号读取真实配置的权限：
+把相同标签的镜像和仓库发布目录送到部署机，填写 `.env` 的 `API_IMAGE`/`WEB_IMAGE`，设置仅部署账号可读，然后运行：
 
 ```sh
-cp .env.production.example .env.production
-# 编辑 .env.production：设置 API_IMAGE/WEB_IMAGE 为上述标签，替换其余示例值
-chmod 600 .env.production
-./scripts/deploy-cloud.sh .env.production
+cp .env.example .env
+# 填写 .env 中所有 REPLACE_ 值及 LOCAL_USERS_JSON
+chmod 600 .env
+./scripts/deploy-cloud.sh .env
 ```
 
-部署脚本会在发现示例值、非 production 模式、缺少浏览器 SSO 地址或非 HTTPS `PUBLIC_ORIGIN` 时停止；校验 Compose，并在启动服务前检查本地 `API_IMAGE`/`WEB_IMAGE`。生产 Compose 没有 `build`，也不会自动拉取这两个应用镜像。随后等待 PostgreSQL/Redis 健康、用与 API 相同的镜像单独执行 Alembic、启动 API，在容器内执行 `/health/ready` 的部署配置核验，最后启动 Web。该核验会拒绝 mock 或与 `ENABLED_TOOLS` 不一致的 API；它仅证明容器就绪，不能替代 CueKB、VoiceChat、SSO 或口述答案验收。真实 `.env.production` 被 Git 和 Docker build context 排除。
-
-### URL 配置对照
-
-| 配置 | 从哪里取得、填写什么 | 使用位置 |
-| --- | --- | --- |
-| `PUBLIC_ORIGIN` | 客户在浏览器中访问门户的**唯一 HTTPS origin**，本部署为 `https://th.ppy123.xyz`；不含路径和结尾 `/` | 同源校验、Cookie、登录回调 `PUBLIC_ORIGIN/api/v1/auth/callback`；与容器地址无关 |
-| `WEB_BIND_ADDRESS` / `WEB_PORT` | Web 在部署机上的 HTTP 监听地址/端口；同机 TLS 反向代理时为 `127.0.0.1:8082` | 只影响宿主端口映射，不填 `https://...`；外部客户仍访问 `PUBLIC_ORIGIN` |
-| `OIDC_ISSUER` | 身份提供方 OIDC metadata 的 `issuer` **原值**，包括路径及可能的结尾 `/` | 验证 ID token 的 `iss`，不由门户域名推算 |
-| `OIDC_JWKS_URL` | 同一 metadata 的 `jwks_uri` | 服务端取公钥验证 JWT；必须能从 API 容器访问 |
-| `OIDC_AUTHORIZATION_URL` | 同一 metadata 的 `authorization_endpoint` | 浏览器登录重定向目标 |
-| `OIDC_TOKEN_URL` | 同一 metadata 的 `token_endpoint` | API 容器用 authorization code 换 ID token |
-| `OIDC_AUDIENCE` | 此门户在身份提供方注册的 OAuth `client_id`；当前代码也要求 ID token `aud` 与它一致 | 登录请求与 token 验证；若 IdP 给 API 使用另一 audience，需先调整身份集成契约 |
-| `OIDC_CLIENT_SECRET` | IdP 为该 client 签发的 secret；只有明确允许 public PKCE client 时才留空 | 服务端换 token，属于凭据而非 URL |
-| `CUEKB_BASE_URL` | 独立 CueKB 服务实际提供的 HTTPS 基地址；不能用门户地址代替 | API 在其后请求 `/v1/search`；启用 `search_knowledge` 时必填 |
-| `AGENT_BASE_URL` | 留空表示使用所选 SDK 的默认文本模型地址；仅在模型供应商提供兼容 API 基地址时填写 | 文本推理模型请求 |
-| `WEATHER_BASE_URL` | 当前模板未启用天气，留空；启用 `weather` 后填真实天气适配服务的 HTTPS 基地址 | 天气工具请求 |
-| `VOICECHAT_WS_URL` / `VOICECHAT_HEALTH_URL` | 当前 `VOICE_PROVIDER=disabled`，留空；通过真实语音验收后填独立 VoiceChat 提供的 WSS/HTTPS 地址 | 语音连接/健康探测 |
-
-从身份提供方提供的 OIDC discovery 文档逐项复制 `issuer`、`jwks_uri`、`authorization_endpoint`、`token_endpoint`，不要依照门户域名猜路径；不同 IdP 的实际路由可能不同。身份提供方还须登记回调 `https://th.ppy123.xyz/api/v1/auth/callback`。当前服务不会从 `OIDC_ISSUER` 自动发现其余三个端点。应将 `th.ppy123.xyz` 的 DNS 与 HTTPS 入口指向公网 IP `122.51.233.77`；公网 IP 不填入 OIDC/CueKB URL。`TENANT_ID` 和 `KNOWLEDGE_BASE_IDS` 是服务端身份/知识范围，不是 URL；`POSTGRES_PASSWORD`/`REDIS_PASSWORD` 用 URL 安全字符，容器内部连接串由 Compose 生成。
-
-生产 Compose 默认将 Web 映射到云端宿主机 `127.0.0.1:8082`，供同机 HTTPS 反向代理使用。若反向代理在另一台机器上，取得部署机的内网 IP 后设置 `WEB_BIND_ADDRESS`，并仅允许代理访问 8082；不得把此 HTTP 端口无 TLS 地直接暴露到公网。PostgreSQL 和 Redis 只在 Docker 内部网络可见，API 另接 egress 网络访问模型、VoiceChat、CueKB、天气和 OIDC。
-
-- 设置 `APP_ENV=production`、`AUTH_MODE=oidc`、组织/SSO、真实文本模型和 `ENABLED_TOOLS`。CueKB-only 使用 `ENABLED_TOOLS=search_knowledge`；启用天气才加入 `weather` 并提供真实天气配置。CueKB 的 KB 列表必须是 UUID；应用启动会拒绝 mock 和缺失的启用认证/工具配置。
-- 设置精确 HTTPS `PUBLIC_ORIGIN`。Nginx 配置是内网入口模板；在前置网关终止 TLS，将 HTTPS/WSS 和 Origin 原样转发。外层代理同样不得记录 ticket、OIDC code/state、Authorization 或 Cookie。
-- 内网 DB/Redis 使用部署凭据/网络控制；跨不可信网络时为 DB/Redis 配置 TLS 连接串。Redis 故障会关闭活跃输出，不能退回内存继续假装持有租约。
-- Nginx 关闭 SSE buffering、支持 WS upgrade、限制请求大小和请求速率，设置 CSP、同源麦克风权限与 frame 禁止策略。
-- 真实语音可先用 `VOICE_PROVIDER=disabled` 关闭并保留真实文字；按验收报告通过基础语音门槛，并配置精确 API 版本、镜像 `sha256` digest、`basic|enhanced` 模式及验证声明后，才切换为 `nvidia`。程序会拒绝缺少这些固定证据的 production NVIDIA 配置，但不会替代人工音频验收。
-
-常用只读运维命令均显式指定生产配置，避免误用本地 Compose：
+脚本检查必需值、私网地址、TLS 文件、本地镜像和 Compose 配置，等待 PostgreSQL/Redis 健康，用 API 镜像执行 Alembic，再启动 API、核验容器内 `/health/ready`，最后启动 Web。配置和账号错误会在 API 启动时失败；镜像不会由部署脚本构建或自动拉取。readiness 只证明容器和启用工具的配置就绪，不能证明 CueKB、VoiceChat、文字答案或英语口述质量。当前依赖镜像固定为 `postgres:17.6-alpine` 和 `redis:7-alpine` 对应 digest；已有 PostgreSQL 数据卷在更换镜像前须备份并验证目标版本兼容，不把切换标签视为无风险降级。
 
 ```sh
-docker compose --env-file .env.production -f deploy/compose.production.yaml ps
-docker compose --env-file .env.production -f deploy/compose.production.yaml logs --tail=200 api web
+docker compose --env-file .env -f deploy/compose.production.yaml ps
+docker compose --env-file .env -f deploy/compose.production.yaml logs --tail=200 api web
 ```
+
+`CUEKB_BASE_URL` 是独立 CueKB HTTPS 基地址，应用附加 `/v1/search`；`AGENT_BASE_URL` 仅用于兼容文本模型端点；`VOICECHAT_WS_URL`/`VOICECHAT_HEALTH_URL` 是独立语音服务地址，不由门户域名或服务器 IP 推断。CueKB-only 使用 `ENABLED_TOOLS=search_knowledge`，无需天气配置。数据库/Redis 凭据使用 URL 安全字符，容器内连接串由 Compose 构造。
+
+真实语音可先保持 `VOICE_PROVIDER=disabled`，先验真实文字。独立完成固定版本的协议探针和人工听音后，再填 `VOICECHAT_API_VERSION`、镜像 digest、`basic|enhanced` 能力及验证声明，切换为 `nvidia`；真实失败不回退 mock。Web Nginx 直接终止 HTTPS，并处理 SSE buffering、WS upgrade、请求大小和安全头；不得记录 token、Cookie 或语音票据。
 
 ## 副本、容量与故障恢复
 
@@ -101,3 +79,22 @@ Redis 持有每个 conversation 的独占租约，15 秒 TTL、4 秒续约。未
 5. 回滚优先恢复兼容旧应用镜像；迁移 0001–0004 都是新增结构或字段。`downgrade` 会删除对应表/字段，不应作为无损回滚手段；需要破坏式数据库回滚时使用已验证备份恢复流程。
 
 健康接口：`/health/live` 为应用存活；`/health/ready` 检查数据库、归属协调和 drain，分别返回文字配置、语音配置和本地容量。管理页健康端点探测只说明可达，不冒充真实推理/工具调用成功。
+
+## D07 分阶段执行设计
+
+状态：待执行。以下工作在后续具备真实服务的云端 Docker 验收环境执行，不是本次文档整理或编码阶段的运行指令。沿用上述构建、Compose 与回滚流程，不新增部署系统。各场景的唯一验收定义见 [V01–V12](acceptance-report.md#4-最终方案验收清单)。
+
+| 阶段 | 执行方案 | 退出条件与证据 |
+| --- | --- | --- |
+| D07-A 基线与环境 | 固定应用 commit、API/Web 镜像、VoiceChat API/digest、CueKB revision、文本模型与脱敏配置摘要；准备受限测试账号、KB、授权英文样本。按唯一生产流程独立构建镜像，执行迁移、健康、备份恢复预检，验证公网 HTTPS `8087` 的证书/登录/麦克风和私网 `8088` 的网络隔离 | 记录版本、配置与迁移结果；`verify_deployment.py` 确认非 mock 与启用工具一致；readiness 只作为入口条件 |
+| D07-B 真实文字与授权 | 先启用真实文字链路，语音保持 disabled；验证简单认证登录/过期、两个测试身份隔离、KB 交集/撤权，再跑真实文本模型 → CueKB M3 的支持/澄清/冲突/故障场景 | V02–V04、V10 的文字部分具备 trace、引用版本、状态和权限证据；失败不得归类为空命中 |
+| D07-C 英文基础语音 | 在隔离的云端验收部署固定供应商版本，用授权录音执行协议探针并人工听音，再验证门户 → VoiceChat → 本项目 → 真实 CueKB → 实际口述 | V01/V03/V07/V09 有录音授权、事件、实际回答和人工判定；探针的合成工具结果不充当知识闭环证据 |
+| D07-D 竞态与恢复 | 工具等待 5 秒时分别附和、新问、改问、取消、停止播报；在结果写回及播报边界断网；测试超过两分钟及多次轮换 | V05/V06/V08 留下旧 revision 拒绝、pending call 结清或关闭、新连接无旧音频的证据；增强能力不通过则只评估 basic |
+| D07-E 故障与容量 | 从单副本开始，测真实 PG 事务/迁移、Redis 租约丢失、进程退出、drain 和备份恢复；逐档增加会话与任务并发。多副本仅在验证粘性路由后测试 | V11/V12 与延迟分解、错误率、资源峰值；先测基线再冻结阈值，以独立样本复测，不能把副本预算当全局预算 |
+| D07-F 放行 | 汇总版本与所有适用 V 项，核对缺测/失败/不适用；按已验证版本设置能力声明，保留回滚版本与操作记录 | 基础语音必需项均有证据，增强声明另有 V05 门槛；失败修复后复测，剩余边界明确记录 |
+
+**避免验证开关循环。** 使用同一生产部署和受限访问控制，先以 `VOICE_PROVIDER=disabled` 验证真实文字链路，同时独立运行 VoiceChat 协议探针并人工复核授权音频。只有记录版本、能力和音频证据后，才将该部署切换为 `nvidia` 并执行完整语音闭环；不要预先设置已验证声明来绕过启动检查。无需 integration Compose override。
+
+每阶段保存：执行时间、操作者、应用/供应商版本、case/V ID、输入来源、预期/实际结果、失败原因、脱敏 trace 和受控证据位置。录音/票据/真实配置不提交仓库；仓库验收记录只写结论与受控证据引用。未执行标未执行；不适用须按本期范围解释，不能用来跳过基础语音的安全与恢复项。
+
+若仅 enhanced 交互门槛失败，保留 basic 明确打断/重连能力；若权限、旧结果泄漏或实际口述事实错误等核心项失败，不放行语音。可继续提供已验收的文字服务，但不能把文字放行写成 D07 语音完成。

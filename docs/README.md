@@ -1,25 +1,36 @@
-# 文档索引
+# 文档导航与维护规则
 
-更新：2026-09-16。默认按任务选择一份文档及相关章节，不要求全量加载。
+更新：2026-09-23。默认只加载一份主题文档的相关段落；不用顺序读完整套文档。
 
-## 有效文档与职责
+## 按问题定位
 
-| 文档 | 唯一负责的内容 | 何时阅读 |
+| 问题 | 读取位置 | 实现或证据入口 |
 | --- | --- | --- |
-| [最终架构](architecture.md) | 产品边界、系统职责、调用链、任务与结果控制 | 架构或跨模块变更 |
-| [门户消息契约](portal-protocol.md) | HTML 客户端、HTTP/SSE/WS、音频、版本兼容 | 门户及接口开发 |
-| [服务接入](integration.md) | CueKB、VoiceChat、文本模型、身份、第三方适配 | 外部系统联调 |
-| [部署运维](deployment.md) | 当前代码启动、Compose、迁移、容量、恢复 | 部署和故障处理 |
-| [任务板](TASK_BOARD.md) | 现状差距、实施顺序、完成条件 | 接单、实施、状态查询 |
-| [验收记录](acceptance-report.md) | 已执行证据、未验证项和真实验收门槛 | 测试与发布 |
-| [项目 README](../README.md) | 简介、本地命令、入口 | 首次使用 |
-| [AGENTS.md](../AGENTS.md) | Codex 按需阅读与工程边界 | 每次任务默认入口 |
+| 已完成什么、还缺什么 | [任务板](TASK_BOARD.md) §1–3 | 验收 §0 的基线；不要先读历史验证记录 |
+| 系统职责与调用流程 | [架构](architecture.md) §2、4 | `apps/api/app/{api,voice,sessions,agent_runtime,tools}` |
+| 改问、取消、过期结果 | [架构](architecture.md) §5–6 | `sessions/coordinator.py`、`storage/store.py`、`voice/gateway.py` |
+| 建议优化如何实施 | [架构](architecture.md) §10 | Q01–Q03；原件查看 Q04 见接入 §7 |
+| 门户、音频、消息格式 | [门户契约](portal-protocol.md) §3–5 | `contracts.py`、`api/routes.py`、`apps/web/src/audio/VoiceClient.ts` |
+| CueKB / VoiceChat / 文本模型 / 身份 | [接入](integration.md) §2 / §3 / §4 / §6 | `tools/adapters.py`、`voice/provider.py`、`agent_runtime/runtime.py`、`api/auth.py` |
+| 镜像、URL、迁移与恢复 | [部署](deployment.md) 对应标题 | `deploy/`、`scripts/deploy-cloud.sh`、`apps/api/migrations/` |
+| 公网 Web 是否需要独立 Nginx、私网客户端怎样调用 API | [部署](deployment.md)「部署方式边界」；[接入](integration.md) §6 | `deploy/nginx.conf`、`deploy/compose.production.yaml`、`api/auth.py` |
+| 云端剩余工作怎么做 | [部署](deployment.md)「D07 分阶段执行设计」 | D07-A–F；验收 V01–V12 |
+| 哪些检查真实跑过、如何放行 | [验收](acceptance-report.md) §0、3–5 | §1–2 仅在追溯某次结果时读 |
+| 本地验证命令 | [项目 README](../README.md) | 根目录运行；默认工作规则见 [AGENTS](../AGENTS.md) |
 
-## 定位规则
+代码路径未标完整前缀时，以 `apps/api/app/` 为基准。
 
-- 先用标题或任务 ID 定位，例如 `rg -n '^## ' docs/architecture.md`、`rg -n 'D03' docs/TASK_BOARD.md`。
-- 需要精确接口时阅读实现和 `contracts/` 对应文件；不要为一个接口全量加载 `contracts/openapi.json`。
-- **目标设计**：本轮定稿的工程方案；**当前实现**：已经存在的代码；**待验证**：尚无真实环境证据。三者不可互换。
-- 同一决策只在负责该主题的文档更新，其他文档链接引用。代码与设计不一致时保留差距，不能默默改变 API 语义。
-- 历史总设计、增量讨论稿和旧阶段计划已从活动目录移除；清理前快照与 SHA-256 清单位于 `archive/2026-09-16/`，仅用于显式追溯，不能指导新实现。
-- D01–D05 已同步修改应用代码、生成契约、迁移和验证记录。知识工具已使用 CueKB `/v1/search` 契约；天气仍是独立可选工具的现有示例契约，按启用工具校验配置归 D06。
+## 文档职责与读取预算
+
+- **任务板**只维护状态、优先级、依赖和完成条件；**架构/接入/门户/部署**各自维护该主题设计；**验收**只维护证据和放行标准。README 不复制里程碑明细。
+- 仓库没有 `task_road.md`；[TASK_BOARD.md](TASK_BOARD.md) 是唯一任务路线图。先按 ID 查任务板，再按表内链接查主题，不创建平行状态文件。
+- 状态区分：已编码并本地验证、待真实验收、建议待排期、暂缓。代码和受控测试不能证明真实供应商能力；目标设计不能替代已实现行为。
+- 先查标题（`rg -n '^##' docs/architecture.md`）或 ID（`rg -n 'Q01|D07' docs/TASK_BOARD.md`），再截取命中章节。通常一节设计加相关函数/测试足够；发现跨边界依赖才追加邻接章节。
+- 避免整读 OpenAPI/事件 JSON；先查 `contracts.py` 和目标 route，必要时只提取对应 schema。测试按场景定位，不默认运行或加载全套。
+- 文档优化以减少每次读取范围为目标，不以删除验收证据换取短文档；本文不承诺固定 token 节省比例。
+
+## 更新与历史
+
+修改行为时同步主题设计、任务状态及实际验证记录；没有执行的项保持待验证。任务板 ID 保持稳定，链接尽量指向章节。检查相对链接、标题和 `git diff --check`；文档整理阶段仅编辑 Markdown，发布前另核对已有代码改动。
+
+`archive/2026-09-16/` 保存早期总设计、过程提案和 SHA-256 清单，仅供明确追溯；不作为当前规范，不递归加载、不重写快照。已有历史验证按日期保留在验收记录，只有规模影响按需读取时再归档，不新增并行总设计。

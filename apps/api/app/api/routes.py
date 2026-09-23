@@ -124,7 +124,7 @@ def capabilities(s):
         "voice_available": s.voice_provider == "mock"
         or bool(
             s.voicechat_ws_url
-            and (s.app_env == "integration" or (s.voicechat_integration_verified and s.voicechat_api_version))
+            and s.voicechat_integration_verified and s.voicechat_api_version
         ),
         "text_configured": s.agent_provider == "mock"
         or bool(s.agent_model and s.openai_api_key.get_secret_value()),

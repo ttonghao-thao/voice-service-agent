@@ -62,47 +62,19 @@
       }
     },
     "/api/v1/auth/login": {
-      "get": {
+      "post": {
         "summary": "Login",
-        "operationId": "login_api_v1_auth_login_get",
-        "responses": {
-          "200": {
-            "description": "Successful Response",
-            "content": {
-              "application/json": {
-                "schema": {}
+        "operationId": "login_api_v1_auth_login_post",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/LoginInput"
               }
             }
-          }
-        }
-      }
-    },
-    "/api/v1/auth/callback": {
-      "get": {
-        "summary": "Callback",
-        "operationId": "callback_api_v1_auth_callback_get",
-        "parameters": [
-          {
-            "name": "code",
-            "in": "query",
-            "required": false,
-            "schema": {
-              "type": "string",
-              "default": "",
-              "title": "Code"
-            }
           },
-          {
-            "name": "state",
-            "in": "query",
-            "required": false,
-            "schema": {
-              "type": "string",
-              "default": "",
-              "title": "State"
-            }
-          }
-        ],
+          "required": true
+        },
         "responses": {
           "200": {
             "description": "Successful Response",
@@ -961,6 +933,28 @@
           "expected_epoch"
         ],
         "title": "InterruptInput"
+      },
+      "LoginInput": {
+        "properties": {
+          "username": {
+            "type": "string",
+            "maxLength": 80,
+            "minLength": 1,
+            "title": "Username"
+          },
+          "password": {
+            "type": "string",
+            "maxLength": 1024,
+            "minLength": 1,
+            "title": "Password"
+          }
+        },
+        "type": "object",
+        "required": [
+          "username",
+          "password"
+        ],
+        "title": "LoginInput"
       },
       "MessageInput": {
         "properties": {
