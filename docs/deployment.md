@@ -14,7 +14,7 @@ API 容器内部继续监听 `0.0.0.0:8000`，宿主机仅在 `API_BIND_ADDRESS:
 
 ## 配置与受限测试身份
 
-复制 `.env.example` 为 `.env`，填写镜像标签、数据库/Redis 凭据、文本模型、CueKB、租户、KB UUID、HTTPS 测试 origin、宿主私网 IP、TLS 证书/私钥路径和测试账号。`AUTH_MODE=local`；不需要 OIDC、`APP_ENV` 或第二份 env 文件。`LOCAL_USERS_JSON` 是单行 JSON 数组，每项包含 `id`、`password_hash`、`role`（`customer|operator|admin`）、`knowledge_base_ids`（UUID 数组）。至少配置两个 customer 测试身份以验收会话隔离；若验收 KB 范围隔离，再配置两个授权范围和对应 KB。仅在测试管理 API 时配置单独 admin。所有角色和 KB 范围均由服务端账号配置确定，不接受浏览器或模型覆盖。
+复制 `.env.example` 为 `.env`；模板中的 `voice.example.com`、`cuekb.example.com`、`192.168.10.20`、证书路径、镜像标签、租户和 KB UUID 仅演示填写格式，不代表当前部署值。替换这些示例值和所有 `REPLACE_` 值，核对文本模型与实际 CueKB revision。`AUTH_MODE=local`；不需要 OIDC、`APP_ENV` 或第二份 env 文件。`LOCAL_USERS_JSON` 是单行 JSON 数组，每项包含 `id`、`password_hash`、`role`（`customer|operator|admin`）、`knowledge_base_ids`（UUID 数组）。至少配置两个 customer 测试身份以验收会话隔离；若验收 KB 范围隔离，再配置两个授权范围和对应 KB。仅在测试管理 API 时配置单独 admin。所有角色和 KB 范围均由服务端账号配置确定，不接受浏览器或模型覆盖。
 
 在已安装项目依赖的构建机生成账号密码哈希，命令交互读取密码，不回显原文：
 
@@ -44,7 +44,7 @@ docker build -f deploy/Dockerfile.web -t "voice-service-agent-web:$release_tag" 
 
 ```sh
 cp .env.example .env
-# 填写 .env 中所有 REPLACE_ 值及 LOCAL_USERS_JSON
+# 填写 .env 中所有 REPLACE_ 值，并替换示例地址、私网 IP、镜像标签和 KB UUID
 chmod 600 .env
 ./scripts/deploy-cloud.sh .env
 ```
