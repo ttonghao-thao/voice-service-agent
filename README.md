@@ -5,7 +5,6 @@
 ```text
 公网浏览器 → HTTPS :8087 → Web 容器（Nginx 直接提供门户）
                             └─ 同源 /api/ → API 容器 :8000
-私网客户端 → HTTP <主机私网 IP>:8088 ──────┘
 API → VoiceChatAdapter / 后台客服 Agent / ToolRegistry → 独立 VoiceChat、文本模型、CueKB
     └─ PostgreSQL / Redis
 ```
@@ -22,7 +21,7 @@ API → VoiceChatAdapter / 后台客服 Agent / ToolRegistry → 独立 VoiceCha
 
 ## 本机验证
 
-项目只维护一套生产部署配置。编码机使用测试夹具、契约和静态检查验证实现，不用第二套测试/开发 env 或 Compose。实际 API 启动要求 `.env` 中填写真实模型、CueKB、数据库及本地测试账号。Web 镜像内置 Nginx，浏览器直接访问公网 HTTPS `8087`；私网客户端可通过主机私网 IP 的 `8088` 调用同一 API。当前 API 复用测试账号签发的短期 Bearer token，尚未提供专门的系统间凭据或公网 API 入口。部署和账号配置见 [部署文档](docs/deployment.md)。
+项目只维护一套功能验证部署配置。编码机使用显式注入的夹具、契约和静态检查验证实现，不用第二套 env 或 Compose。实际启动只需在 `.env` 填写镜像、HTTPS、数据库、文本模型、CueKB、VoiceChat、租户和 KB 范围；固定模式、容量与超时使用 Compose/代码默认值。Web 镜像内置 Nginx，浏览器直接访问公网 HTTPS `8087`；API 只在容器网络中供同源 `/api/` 使用。验证门户采用服务端固定 customer 身份，不包含登录流程或正式客户鉴权。部署步骤见 [部署文档](docs/deployment.md)。
 
 ## 验证命令
 
@@ -45,12 +44,14 @@ npm run test:e2e
 
 ```sh
 PYTHONPATH=apps/api uv run python scripts/probe_voicechat.py \
+  --api-version <target-api-revision> \
+  --image-digest sha256:<target-image-digest> \
   --wav /path/to/authorized-first-question.wav \
   --barge-in-wav /path/to/authorized-distinct-second-question.wav \
   --output-wav artifacts/authorized-review-output.wav
 ```
 
-探测前必须配置目标 `VOICECHAT_API_VERSION` 和 `VOICECHAT_IMAGE_DIGEST`。脚本默认延迟工具结果 5 秒，第二段录音用于观察等待阶段插话；报告只给出事件时序和候选证据，实际音频必须人工复核。脚本不会自动设置 `VOICECHAT_CAPABILITY_MODE` 或生产开关。未配置地址时输出 blocked；合成工具返回不能证明真实 CueKB/第三方业务通过。已执行范围见 [验收记录](docs/acceptance-report.md)。
+目标 API revision 和镜像 digest 作为探针参数写入报告，不进入 `.env`。脚本默认延迟工具结果 5 秒，第二段录音用于观察等待阶段插话；报告只给出事件时序和候选证据，实际音频必须人工复核。未配置 VoiceChat 地址时输出 blocked；合成工具返回不能证明真实 CueKB 业务通过。已执行范围见 [验收记录](docs/acceptance-report.md)。
 
 ## 云端部署
 

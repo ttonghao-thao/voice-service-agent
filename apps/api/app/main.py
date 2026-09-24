@@ -4,7 +4,6 @@ from contextlib import AsyncExitStack, asynccontextmanager
 import httpx
 from fastapi import FastAPI, Request
 from fastapi.exceptions import RequestValidationError
-from fastapi.openapi.utils import get_openapi
 from fastapi.responses import JSONResponse
 
 from app.agent_runtime.runtime import BusinessRuntime
@@ -90,9 +89,7 @@ def create_app(settings=None):
     async def boundaries(request: Request, call_next):
         if request.method in ("POST", "PATCH", "DELETE", "PUT"):
             origin = request.headers.get("origin")
-            if (origin and origin != settings.public_origin) or (
-                request.cookies.get("service_session") and origin != settings.public_origin
-            ):
+            if origin and origin != settings.public_origin:
                 return JSONResponse({"code": "FORBIDDEN", "message": "Request origin is not trusted"}, status_code=403)
         try:
             length = int(request.headers.get("content-length", "0") or 0)
@@ -156,25 +153,6 @@ def create_app(settings=None):
 
     app.include_router(auth_router)
     app.include_router(router)
-
-    def openapi():
-        if app.openapi_schema is None:
-            schema = get_openapi(title=app.title, version=app.version, routes=app.routes)
-            schema.setdefault("components", {})["securitySchemes"] = {
-                "bearerAuth": {"type": "http", "scheme": "bearer", "bearerFormat": "JWT"},
-                "cookieAuth": {"type": "apiKey", "in": "cookie", "name": "service_session"},
-            }
-            for path, methods in schema["paths"].items():
-                if path.startswith("/api/v1/") and path not in (
-                    "/api/v1/auth/login",
-                    "/api/v1/auth/logout",
-                ):
-                    for operation in methods.values():
-                        operation["security"] = [{"bearerAuth": []}, {"cookieAuth": []}]
-            app.openapi_schema = schema
-        return app.openapi_schema
-
-    app.openapi = openapi
     return app
 
 

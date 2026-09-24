@@ -121,35 +121,13 @@ def test_portal_event_contracts_are_discriminated_and_strict():
         )
 
 
-def test_verified_voicechat_requires_pinned_contract_and_capability_mode():
-    with pytest.raises(ValidationError, match="Verified VoiceChat"):
-        Settings(_env_file=None, voicechat_integration_verified=True)
-    settings = Settings(
-        _env_file=None,
-        voice_provider="nvidia",
-        voicechat_api_version="v1",
-        voicechat_image_digest="sha256:" + "a" * 64,
-        voicechat_capability_mode="basic",
-        voicechat_integration_verified=True,
-    )
-    assert settings.voicechat_capability_mode == "basic"
-
-
 def deployment_settings(**overrides):
-    from app.api.auth import hash_password
-
     values = {
-        "auth_mode": "local",
+        "auth_mode": "validation",
         "public_origin": "https://portal.example.invalid",
         "database_url": "postgresql+asyncpg://service:secret@postgres/service",
         "redis_url": "redis://:secret@redis:6379/0",
         "tenant_id": "tenant",
-        "local_users_json": json.dumps([{
-            "id": "alice",
-            "password_hash": hash_password("example-password-for-fixture"),
-            "role": "customer",
-            "knowledge_base_ids": ["00000000-0000-4000-8000-000000000001"],
-        }]),
         "agent_provider": "openai",
         "agent_model": "configured-model",
         "openai_api_key": "configured-key",
@@ -157,9 +135,9 @@ def deployment_settings(**overrides):
         "cuekb_mode": "real",
         "cuekb_base_url": "https://cuekb.example.invalid",
         "cuekb_api_key": "configured-key",
-        "cuekb_api_revision": "fixture-revision",
-        "voice_provider": "disabled",
-        "auth_cookie_secret": "x" * 32,
+        "voice_provider": "nvidia",
+        "voicechat_ws_url": "wss://voice.example.invalid/ws",
+        "voicechat_api_key": "configured-key",
     }
     return Settings(_env_file=None, **{**values, **overrides})
 
@@ -182,6 +160,7 @@ def test_compatible_model_requires_explicit_base_url():
         ("public_origin", "https://portal.example.invalid/", "PUBLIC_ORIGIN"),
         ("public_origin", "https://portal.example.invalid/app", "PUBLIC_ORIGIN"),
         ("auth_mode", "fixture", "fixture identity"),
+        ("voice_provider", "disabled", "NVIDIA VoiceChat"),
         ("agent_provider", "mock", "mock providers"),
         ("auto_create_schema", True, "automatic schema"),
     ],
@@ -202,7 +181,6 @@ def test_external_tracing_stays_disabled():
     [
         ("cuekb_base_url", "http://cuekb.example.invalid"),
         ("agent_base_url", "http://model.example.invalid"),
-        ("voicechat_health_url", "http://voice.example.invalid/health"),
     ],
 )
 def test_deployment_rejects_non_tls_service_endpoints(field, value):

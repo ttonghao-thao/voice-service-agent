@@ -50,66 +50,6 @@
               }
             }
           }
-        },
-        "security": [
-          {
-            "bearerAuth": []
-          },
-          {
-            "cookieAuth": []
-          }
-        ]
-      }
-    },
-    "/api/v1/auth/login": {
-      "post": {
-        "summary": "Login",
-        "operationId": "login_api_v1_auth_login_post",
-        "requestBody": {
-          "content": {
-            "application/json": {
-              "schema": {
-                "$ref": "#/components/schemas/LoginInput"
-              }
-            }
-          },
-          "required": true
-        },
-        "responses": {
-          "200": {
-            "description": "Successful Response",
-            "content": {
-              "application/json": {
-                "schema": {}
-              }
-            }
-          },
-          "422": {
-            "description": "Validation Error",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/HTTPValidationError"
-                }
-              }
-            }
-          }
-        }
-      }
-    },
-    "/api/v1/auth/logout": {
-      "post": {
-        "summary": "Logout",
-        "operationId": "logout_api_v1_auth_logout_post",
-        "responses": {
-          "200": {
-            "description": "Successful Response",
-            "content": {
-              "application/json": {
-                "schema": {}
-              }
-            }
-          }
         }
       }
     },
@@ -126,15 +66,7 @@
               }
             }
           }
-        },
-        "security": [
-          {
-            "bearerAuth": []
-          },
-          {
-            "cookieAuth": []
-          }
-        ]
+        }
       }
     },
     "/api/v1/conversations": {
@@ -170,15 +102,7 @@
               }
             }
           }
-        },
-        "security": [
-          {
-            "bearerAuth": []
-          },
-          {
-            "cookieAuth": []
-          }
-        ]
+        }
       },
       "get": {
         "summary": "Conversations",
@@ -227,15 +151,7 @@
               }
             }
           }
-        },
-        "security": [
-          {
-            "bearerAuth": []
-          },
-          {
-            "cookieAuth": []
-          }
-        ]
+        }
       }
     },
     "/api/v1/conversations/{cid}/messages": {
@@ -300,15 +216,7 @@
               }
             }
           }
-        },
-        "security": [
-          {
-            "bearerAuth": []
-          },
-          {
-            "cookieAuth": []
-          }
-        ]
+        }
       },
       "post": {
         "summary": "Send Message",
@@ -364,15 +272,7 @@
               }
             }
           }
-        },
-        "security": [
-          {
-            "bearerAuth": []
-          },
-          {
-            "cookieAuth": []
-          }
-        ]
+        }
       }
     },
     "/api/v1/conversations/{cid}/events": {
@@ -436,15 +336,7 @@
               }
             }
           }
-        },
-        "security": [
-          {
-            "bearerAuth": []
-          },
-          {
-            "cookieAuth": []
-          }
-        ]
+        }
       }
     },
     "/api/v1/conversations/{cid}/interrupt": {
@@ -491,15 +383,7 @@
               }
             }
           }
-        },
-        "security": [
-          {
-            "bearerAuth": []
-          },
-          {
-            "cookieAuth": []
-          }
-        ]
+        }
       }
     },
     "/api/v1/conversations/{cid}/tasks/current/cancel": {
@@ -546,15 +430,7 @@
               }
             }
           }
-        },
-        "security": [
-          {
-            "bearerAuth": []
-          },
-          {
-            "cookieAuth": []
-          }
-        ]
+        }
       }
     },
     "/api/v1/conversations/{cid}/playback/stop": {
@@ -601,15 +477,7 @@
               }
             }
           }
-        },
-        "security": [
-          {
-            "bearerAuth": []
-          },
-          {
-            "cookieAuth": []
-          }
-        ]
+        }
       }
     },
     "/api/v1/conversations/{cid}/voice-sessions": {
@@ -646,15 +514,7 @@
               }
             }
           }
-        },
-        "security": [
-          {
-            "bearerAuth": []
-          },
-          {
-            "cookieAuth": []
-          }
-        ]
+        }
       }
     },
     "/api/v1/conversations/{cid}/voice-sessions/{sid}": {
@@ -700,15 +560,7 @@
               }
             }
           }
-        },
-        "security": [
-          {
-            "bearerAuth": []
-          },
-          {
-            "cookieAuth": []
-          }
-        ]
+        }
       }
     },
     "/api/v1/admin/tools": {
@@ -724,15 +576,7 @@
               }
             }
           }
-        },
-        "security": [
-          {
-            "bearerAuth": []
-          },
-          {
-            "cookieAuth": []
-          }
-        ]
+        }
       }
     },
     "/api/v1/admin/tools/{name}": {
@@ -779,15 +623,7 @@
               }
             }
           }
-        },
-        "security": [
-          {
-            "bearerAuth": []
-          },
-          {
-            "cookieAuth": []
-          }
-        ]
+        }
       }
     },
     "/api/v1/admin/tools/{name}/test": {
@@ -824,15 +660,7 @@
               }
             }
           }
-        },
-        "security": [
-          {
-            "bearerAuth": []
-          },
-          {
-            "cookieAuth": []
-          }
-        ]
+        }
       }
     },
     "/api/v1/admin/services": {
@@ -848,15 +676,7 @@
               }
             }
           }
-        },
-        "security": [
-          {
-            "bearerAuth": []
-          },
-          {
-            "cookieAuth": []
-          }
-        ]
+        }
       }
     },
     "/api/v1/admin/drain": {
@@ -872,15 +692,7 @@
               }
             }
           }
-        },
-        "security": [
-          {
-            "bearerAuth": []
-          },
-          {
-            "cookieAuth": []
-          }
-        ]
+        }
       }
     }
   },
@@ -933,28 +745,6 @@
           "expected_epoch"
         ],
         "title": "InterruptInput"
-      },
-      "LoginInput": {
-        "properties": {
-          "username": {
-            "type": "string",
-            "maxLength": 80,
-            "minLength": 1,
-            "title": "Username"
-          },
-          "password": {
-            "type": "string",
-            "maxLength": 1024,
-            "minLength": 1,
-            "title": "Password"
-          }
-        },
-        "type": "object",
-        "required": [
-          "username",
-          "password"
-        ],
-        "title": "LoginInput"
       },
       "MessageInput": {
         "properties": {
@@ -1080,18 +870,6 @@
           "type"
         ],
         "title": "ValidationError"
-      }
-    },
-    "securitySchemes": {
-      "bearerAuth": {
-        "type": "http",
-        "scheme": "bearer",
-        "bearerFormat": "JWT"
-      },
-      "cookieAuth": {
-        "type": "apiKey",
-        "in": "cookie",
-        "name": "service_session"
       }
     }
   }

@@ -108,11 +108,9 @@ def _record_for_principal(record, user, settings):
 
 
 def capabilities(s):
-    voice_verified = bool(
-        s.voice_provider == "nvidia"
-        and s.voicechat_integration_verified
-        and s.voicechat_api_version
-        and s.voicechat_capability_mode in ("basic", "enhanced")
+    voice_configured = bool(
+        s.voice_provider == "mock"
+        or (s.voice_provider == "nvidia" and s.voicechat_ws_url and s.voicechat_api_key.get_secret_value())
     )
     return {
         "provider": s.voice_provider,
@@ -121,30 +119,19 @@ def capabilities(s):
         "cuekb_mode": s.cuekb_mode,
         "weather_mode": s.weather_mode,
         "enabled_tools": sorted(s.enabled_tool_names),
-        "voice_available": s.voice_provider == "mock"
-        or bool(
-            s.voicechat_ws_url
-            and s.voicechat_integration_verified and s.voicechat_api_version
-        ),
+        "voice_available": voice_configured,
         "text_configured": s.agent_provider == "mock"
         or bool(s.agent_model and s.openai_api_key.get_secret_value()),
         "streaming_audio": s.voice_provider in ("mock", "nvidia"),
-        "native_full_duplex": voice_verified and s.voicechat_capability_mode == "enhanced",
-        "function_result_return": voice_verified,
+        "native_full_duplex": voice_configured,
+        "function_result_return": voice_configured,
         "native_cancel_response": False,
-        "native_tool_phase_barge_in": voice_verified and s.voicechat_capability_mode == "enhanced",
+        "native_tool_phase_barge_in": voice_configured,
         "dynamic_instructions": False,
         "arbitrary_text_to_speech": False,
         "required_voice_languages": ["en-US"],
         "declared_voice_languages": ["en-US"],
-        "integration_verified_voice_languages": ["en-US"]
-        if voice_verified
-        else [],
-        "api_version": s.voicechat_api_version or None,
-        "voice_image_digest": s.voicechat_image_digest or None,
-        "voice_capability_mode": s.voicechat_capability_mode,
-        "voice_integration_verified": voice_verified,
-        "cuekb_api_revision": s.cuekb_api_revision or None,
+        "integration_verified_voice_languages": [],
         "tool_phase_recovery": "close_and_reconnect",
         "voice_session_max_seconds": s.voice_session_max_seconds,
     }
@@ -497,21 +484,7 @@ async def test_tool(name: str, request: Request, user: User):
 async def services(request: Request, user: User):
     admin(user)
     s = request.app.state.settings
-    voice = "mock" if s.voice_provider == "mock" else "unconfigured"
-    if s.voice_provider == "nvidia" and s.voicechat_health_url:
-        try:
-            response = await request.app.state.client.get(
-                s.voicechat_health_url,
-                timeout=3,
-                headers={"Authorization": "Bearer " + s.voicechat_api_key.get_secret_value()},
-            )
-            voice = (
-                "healthy"
-                if response.status_code == 200 and response.json().get("status") == "ok"
-                else "unavailable"
-            )
-        except Exception:
-            voice = "unavailable"
+    voice = "configured" if s.voice_provider == "nvidia" and s.voicechat_ws_url else s.voice_provider
     return {
         "voice_health": voice,
         "text_model": "mock"

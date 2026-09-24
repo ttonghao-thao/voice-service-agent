@@ -44,8 +44,8 @@ async def probe(args):
     settings = Settings()
     report = {
         "tested_at": now().isoformat(),
-        "api_version": settings.voicechat_api_version or None,
-        "image_digest": settings.voicechat_image_digest or None,
+        "api_version": args.api_version,
+        "image_digest": args.image_digest,
         "requested_mode": "real",
         "real_service_connected": False,
         "synthetic_tool_result": True,
@@ -66,8 +66,6 @@ async def probe(args):
     }
     if not settings.voicechat_ws_url:
         report["reason"] = "VOICECHAT_WS_URL not configured"
-    elif not settings.voicechat_api_version or not settings.voicechat_image_digest:
-        report["reason"] = "VOICECHAT_API_VERSION and VOICECHAT_IMAGE_DIGEST must pin the target deployment"
     else:
         provider = NvidiaVoiceChatAdapter(settings)
         result_tasks = set()
@@ -76,7 +74,9 @@ async def probe(args):
         tool_result_sent_at = None
         started = time.monotonic()
         try:
-            await provider.connect("This is an interface probe. The fixed tool result is synthetic test data, not a business fact.")
+            await provider.connect(
+                "This is an interface probe. The fixed tool result is synthetic test data, not a business fact."
+            )
             report["checks"]["handshake_and_24khz_format"] = "passed"
             report["real_service_connected"] = True
             primary, primary_hash = read_wav(args.wav)
@@ -165,13 +165,9 @@ async def probe(args):
                 )
                 await asyncio.sleep(1)
                 report["status"] = "partial"
-                report["checks"]["audio_output_observed"] = (
-                    "passed" if output_audio else "unverified"
-                )
+                report["checks"]["audio_output_observed"] = "passed" if output_audio else "unverified"
                 result_ms = (
-                    int((tool_result_sent_at - started) * 1000)
-                    if tool_result_sent_at is not None
-                    else -1
+                    int((tool_result_sent_at - started) * 1000) if tool_result_sent_at is not None else -1
                 )
                 pre_result_responses = {
                     item["response_id"]
@@ -215,6 +211,8 @@ async def probe(args):
 if __name__ == "__main__":
     parser = argparse.ArgumentParser()
     parser.add_argument("--wav", required=True, help="Authorized first-question 24kHz mono PCM16 WAV")
+    parser.add_argument("--api-version", required=True, help="VoiceChat API or service revision under test")
+    parser.add_argument("--image-digest", required=True, help="VoiceChat image digest under test")
     parser.add_argument(
         "--barge-in-wav",
         help="Authorized distinct second-question WAV sent while the tool result is delayed",

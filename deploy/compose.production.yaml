@@ -46,11 +46,15 @@ services:
     logging: *default-logging
 
   migrate:
-    image: ${API_IMAGE:?Set the prebuilt API_IMAGE in .env}
+    image: voice-service-agent-api:${IMAGE_TAG:?Set the prebuilt IMAGE_TAG in .env}
     pull_policy: never
     env_file: ${DEPLOY_ENV_FILE:-../.env}
     environment: &application-environment
       AUTO_CREATE_SCHEMA: "false"
+      AUTH_MODE: validation
+      CUEKB_MODE: real
+      ENABLED_TOOLS: search_knowledge
+      VOICE_PROVIDER: nvidia
       DATABASE_URL: postgresql+asyncpg://voice_service:${POSTGRES_PASSWORD}@postgres/voice_service
       REDIS_URL: redis://:${REDIS_PASSWORD}@redis:6379/0
     command: ["alembic", "-c", "apps/api/alembic.ini", "upgrade", "head"]
@@ -62,14 +66,12 @@ services:
     logging: *default-logging
 
   api:
-    image: ${API_IMAGE:?Set the prebuilt API_IMAGE in .env}
+    image: voice-service-agent-api:${IMAGE_TAG:?Set the prebuilt IMAGE_TAG in .env}
     pull_policy: never
     env_file: ${DEPLOY_ENV_FILE:-../.env}
     environment:
       <<: *application-environment
       PUBLIC_ORIGIN: ${PUBLIC_ORIGIN:?Set the test HTTPS origin in .env}
-    ports:
-      - "${API_BIND_ADDRESS:?Set the host private IPv4 address in .env}:8088:8000"
     depends_on:
       migrate: {condition: service_completed_successfully}
       redis: {condition: service_healthy}
@@ -93,7 +95,7 @@ services:
     logging: *default-logging
 
   web:
-    image: ${WEB_IMAGE:?Set the prebuilt WEB_IMAGE in .env}
+    image: voice-service-agent-web:${IMAGE_TAG:?Set the prebuilt IMAGE_TAG in .env}
     pull_policy: never
     ports:
       - "0.0.0.0:8087:8087"

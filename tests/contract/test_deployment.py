@@ -1,10 +1,8 @@
 import json
 import os
 import subprocess
-from ipaddress import ip_address
 from pathlib import Path
 from urllib.parse import urlparse
-from uuid import UUID
 
 import yaml
 
@@ -18,10 +16,18 @@ def test_cloud_compose_is_a_production_only_container_topology():
     assert set(services) == {"postgres", "redis", "migrate", "api", "web"}
     assert "APP_ENV" not in services["api"]["environment"]
     assert services["api"]["environment"]["AUTO_CREATE_SCHEMA"] == "false"
+    assert services["api"]["environment"]["AUTH_MODE"] == "validation"
+    assert services["api"]["environment"]["CUEKB_MODE"] == "real"
+    assert services["api"]["environment"]["ENABLED_TOOLS"] == "search_knowledge"
+    assert services["api"]["environment"]["VOICE_PROVIDER"] == "nvidia"
     assert services["api"]["env_file"] == "${DEPLOY_ENV_FILE:-../.env}"
     assert services["api"]["image"] == services["migrate"]["image"]
-    assert services["api"]["image"].startswith("${API_IMAGE:?")
-    assert services["web"]["image"].startswith("${WEB_IMAGE:?")
+    assert (
+        services["api"]["image"] == "voice-service-agent-api:${IMAGE_TAG:?Set the prebuilt IMAGE_TAG in .env}"
+    )
+    assert (
+        services["web"]["image"] == "voice-service-agent-web:${IMAGE_TAG:?Set the prebuilt IMAGE_TAG in .env}"
+    )
     for name in ("migrate", "api", "web"):
         assert "build" not in services[name]
         assert services[name]["pull_policy"] == "never"
@@ -29,9 +35,7 @@ def test_cloud_compose_is_a_production_only_container_topology():
     assert services["api"]["depends_on"]["migrate"]["condition"] == "service_completed_successfully"
     assert "ports" not in services["postgres"] and "ports" not in services["redis"]
     assert services["web"]["ports"] == ["0.0.0.0:8087:8087"]
-    assert services["api"]["ports"] == [
-        "${API_BIND_ADDRESS:?Set the host private IPv4 address in .env}:8088:8000"
-    ]
+    assert "ports" not in services["api"]
     assert services["web"]["volumes"] == [
         "${WEB_TLS_CERT_FILE:?Set the TLS certificate path in .env}:/etc/nginx/tls/tls.crt:ro",
         "${WEB_TLS_KEY_FILE:?Set the TLS private key path in .env}:/etc/nginx/tls/tls.key:ro",
@@ -57,39 +61,47 @@ def test_cloud_environment_template_cannot_enable_development_fallbacks():
             key, value = line.split("=", 1)
             values[key] = value
 
+    assert set(values) == {
+        "IMAGE_TAG",
+        "PUBLIC_ORIGIN",
+        "WEB_TLS_CERT_FILE",
+        "WEB_TLS_KEY_FILE",
+        "POSTGRES_PASSWORD",
+        "REDIS_PASSWORD",
+        "TENANT_ID",
+        "KNOWLEDGE_BASE_IDS",
+        "AGENT_PROVIDER",
+        "AGENT_MODEL",
+        "OPENAI_API_KEY",
+        "CUEKB_BASE_URL",
+        "CUEKB_API_KEY",
+        "VOICECHAT_WS_URL",
+        "VOICECHAT_API_KEY",
+    }
     assert "APP_ENV" not in values
-    assert values["AUTH_MODE"] == "local"
-    assert values["AGENT_PROVIDER"] != "mock"
-    assert values["CUEKB_MODE"] == "real"
-    assert values["ENABLED_TOOLS"] == "search_knowledge"
+    assert "AUTH_MODE" not in values
+    assert values["AGENT_PROVIDER"] == "openai"
+    assert "CUEKB_MODE" not in values
+    assert "ENABLED_TOOLS" not in values
     assert not any(key.startswith("WEATHER_") for key in values)
-    assert values["VOICE_PROVIDER"] != "mock"
-    assert not values["VOICECHAT_API_VERSION"] and not values["VOICECHAT_IMAGE_DIGEST"]
-    assert values["VOICECHAT_CAPABILITY_MODE"] == "unverified"
-    assert values["VOICECHAT_INTEGRATION_VERIFIED"] == "false"
+    assert "VOICE_PROVIDER" not in values
+    assert values["VOICECHAT_WS_URL"].startswith("REPLACE_")
     origin = urlparse(values["PUBLIC_ORIGIN"])
     assert origin.scheme == "https" and origin.port == 8087 and origin.path == ""
-    assert ip_address(values["API_BIND_ADDRESS"]).is_private
     assert values["WEB_TLS_CERT_FILE"].startswith("/")
     assert values["WEB_TLS_KEY_FILE"].startswith("/")
-    assert values["API_IMAGE"].startswith("voice-service-agent-api:")
-    assert values["WEB_IMAGE"].startswith("voice-service-agent-web:")
+    assert values["IMAGE_TAG"]
     assert urlparse(values["CUEKB_BASE_URL"]).scheme == "https"
-    accounts = json.loads(values["LOCAL_USERS_JSON"][1:-1])
-    knowledge_bases = {str(UUID(value)) for value in values["KNOWLEDGE_BASE_IDS"].split(",")}
-    assert len(accounts) >= 2
-    assert all(account["role"] == "customer" for account in accounts)
-    assert all(set(account["knowledge_base_ids"]) <= knowledge_bases for account in accounts)
-    assert all(account["password_hash"].startswith("REPLACE_") for account in accounts)
     for key in (
         "POSTGRES_PASSWORD",
         "REDIS_PASSWORD",
-        "AUTH_COOKIE_SECRET",
+        "TENANT_ID",
         "OPENAI_API_KEY",
         "CUEKB_API_KEY",
-        "CUEKB_API_REVISION",
+        "VOICECHAT_API_KEY",
     ):
         assert values[key].startswith("REPLACE_")
+    assert "CUEKB_TOP_K" not in values and "MAX_VOICE_SESSIONS" not in values
     assert not (ROOT / ".env.production.example").exists()
 
 
@@ -98,35 +110,35 @@ def test_cloud_deployment_uses_prebuilt_images():
     assert "compose build" not in script
     assert 'docker image inspect "$image"' in script
     assert script.count("compose up -d --no-build") == 3
-    assert "LOCAL_USERS_JSON" in script
+    assert "IMAGE_TAG" in script
+    assert "LOCAL_USERS_JSON" not in script and "API_BIND_ADDRESS" not in script
     assert "APP_ENV" not in script
     nginx = (ROOT / "deploy/nginx.conf").read_text()
     assert "listen 8087 ssl;" in nginx
     assert "ssl_certificate /etc/nginx/tls/tls.crt;" in nginx
-    assert "location = /api/v1/auth/login" in nginx
-    assert "zone=login_limit" in nginx
+    assert "/api/v1/auth/login" not in nginx
+    assert "login_limit" not in nginx
 
 
-def test_deployment_rejects_public_api_bind_and_missing_tls_files(tmp_path):
+def test_deployment_rejects_missing_compatible_base_url_and_tls_files(tmp_path):
     docker = tmp_path / "docker"
     docker.write_text("#!/bin/sh\nexit 0\n")
     docker.chmod(0o755)
     env = {**os.environ, "PATH": f"{tmp_path}:{os.environ['PATH']}"}
     values = {
-        "AUTH_MODE": "local",
-        "API_IMAGE": "api:test",
-        "WEB_IMAGE": "web:test",
+        "IMAGE_TAG": "test",
         "POSTGRES_PASSWORD": "postgres-pass",
         "REDIS_PASSWORD": "redis-pass",
-        "AUTH_COOKIE_SECRET": "a" * 32,
-        "LOCAL_USERS_JSON": "accounts",
         "TENANT_ID": "tenant",
         "KNOWLEDGE_BASE_IDS": "00000000-0000-4000-8000-000000000001",
         "AGENT_PROVIDER": "openai",
         "AGENT_MODEL": "model",
         "OPENAI_API_KEY": "key",
-        "ENABLED_TOOLS": "search_knowledge",
-        "API_BIND_ADDRESS": "0.0.0.0",
+        "PUBLIC_ORIGIN": "https://voice.test:8087",
+        "CUEKB_BASE_URL": "https://cuekb.test",
+        "CUEKB_API_KEY": "cuekb-key",
+        "VOICECHAT_WS_URL": "wss://voicechat.test/ws",
+        "VOICECHAT_API_KEY": "voice-key",
         "WEB_TLS_CERT_FILE": "/missing/cert.pem",
         "WEB_TLS_KEY_FILE": "/missing/key.pem",
     }
@@ -142,10 +154,11 @@ def test_deployment_rejects_public_api_bind_and_missing_tls_files(tmp_path):
             check=False,
         )
 
-    rejected_ip = check()
-    assert rejected_ip.returncode != 0
-    assert "API_BIND_ADDRESS must be a host RFC 1918 private IPv4 address" in rejected_ip.stderr
-    values["API_BIND_ADDRESS"] = "192.168.1.10"
+    values["AGENT_PROVIDER"] = "compatible"
+    rejected_model = check()
+    assert rejected_model.returncode != 0
+    assert "AGENT_BASE_URL" in rejected_model.stderr
+    values["AGENT_PROVIDER"] = "openai"
     rejected_cert = check()
     assert rejected_cert.returncode != 0
     assert "WEB_TLS_CERT_FILE must point to a readable file" in rejected_cert.stderr
@@ -162,7 +175,7 @@ def test_deployment_readiness_verifier_requires_real_matching_configuration():
             "is_mock": False,
             "enabled_tools": ["search_knowledge"],
             "text_configured": True,
-            "voice_configured": False,
+            "voice_configured": True,
         },
         {"search_knowledge"},
     )["enabled_tools"] == ["search_knowledge"]

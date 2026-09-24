@@ -1,6 +1,6 @@
 # 语音客服 Agent：架构与演进设计
 
-更新：2026-09-23。本文负责产品边界、模块职责与控制流程；当前状态只维护在 [任务板](TASK_BOARD.md)。§2–7 区分现有实现与条件性设计，§10 为尚未实施的优化建议；真实能力以 [验收记录](acceptance-report.md) 为准。
+更新：2026-09-24。本文负责产品边界、模块职责与控制流程；当前状态只维护在 [任务板](TASK_BOARD.md)。§2–7 区分现有实现与条件性设计，§10 为尚未实施的优化建议；真实能力以 [验收记录](acceptance-report.md) 为准。
 
 ## 1. 产品定位与范围
 
@@ -21,8 +21,7 @@
 flowchart TB
     U[测试浏览器：简单 HTML 语音门户]
     W[Web 容器：Nginx HTTPS 8087]
-    P[私网 API 客户端]
-    G[消息与语音网关：认证、HTTP、SSE、WebSocket]
+    G[消息与语音网关：验证身份、HTTP、SSE、WebSocket]
     C[SessionCoordinator：会话、任务、改问、结果提交]
     V[VoiceChatAdapter]
     N[独立 NVIDIA VoiceChat 服务]
@@ -37,7 +36,6 @@ flowchart TB
     R[(Redis：租约、协调)]
     U <-->|HTTPS JSON / SSE / WSS 音频消息| W
     W <-->|同源 /api/；容器网络 api:8000| G
-    P <-->|宿主私网 IP:8088；Bearer token| G
     G <--> C
     G <--> V
     V <--> N
@@ -174,7 +172,7 @@ D05 已实现独立 request_revision、停止播报和取消查询接口；兼�
 
 ## 7. 权限、事实与故障边界
 
-- 本阶段身份来自服务端本地测试账号与签名会话；客户测试账号仅能访问自己授权会话与知识，不能授予 operator/admin 来绕过当前身份限制。对外客户身份集成和访客模式不在本期开放。
+- 本阶段所有门户请求使用服务端固定的 validation customer 身份、tenant 和 KB 范围；请求正文不能覆盖，管理 API 始终拒绝。正式多客户身份、登录和访客模式在核心语音闭环验证后另行设计。
 - 有效 KB 范围 = 客户授权 ∩ 部署允许 ∩ CueKB 服务主体权限。CueKB API Key 身份不能通过自定义 user/tenant 请求头变成客户级委托身份。
 - 资料属于不可信内容，仅作为证据；不执行资料中的指令/URL，不允许模型选择密钥、主机或扩大权限。
 - 引用存在性不代表结论充分。保留版本、定位、降级原因与适用条件；缺失元数据不伪造，空命中/冲突/故障分开处理。

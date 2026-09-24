@@ -1,6 +1,6 @@
 # HTML 门户与消息/语音接口
 
-更新：2026-09-23。本文确定测试门户和接口边界；D01–D05、E01–E03 的当前实现使用本文 v1 格式，真实服务能力仍按验收记录放行。总架构见 [architecture.md](architecture.md)。
+更新：2026-09-24。本文确定测试门户和接口边界；D01–D05、E01–E03 的当前实现使用本文 v1 格式，真实服务能力仍按验收记录放行。总架构见 [architecture.md](architecture.md)。
 
 ## 1. 简单门户
 
@@ -40,15 +40,15 @@
 | POST `/conversations/{cid}/tasks/current/cancel` | expected_epoch、expected_revision；取消当前查询并拒绝晚到结果 |
 | POST `/conversations/{cid}/interrupt` | `{expected_epoch}`；当前是取消业务、失效 epoch、关闭语音的硬中断 |
 
-同一文字幂等键相同正文不重复执行，不同正文返回 409。管理 API 不属于客户协议权限集合。受限测试身份和鉴权策略见 [接入文档](integration.md)。
+同一文字幂等键相同正文不重复执行，不同正文返回 409。管理 API 不属于客户协议权限集合。验证身份和知识范围见 [接入文档](integration.md)。
 
 SSE 的 `id` 是持久化 `server_seq`，不是 JSON `event_id`。仅重放业务事件，不重放实时音频。前端按 `event_id` 去重；不得把 SSE 和 WebSocket 的序号混为一个全局连续序列。
 
 ## 4. WebSocket 和音频（当前 v1）
 
-连接签发的 `ws_url`，路径 `/api/v1/voice-sessions/{sid}/stream?ticket=...`，生产必须 WSS。票据有效 60 秒、一次性，绑定认证身份、会话、epoch、Origin；握手失败不能静默切换匿名连接。URL query 与凭据不得写访问日志。
+连接签发的 `ws_url`，路径 `/api/v1/voice-sessions/{sid}/stream?ticket=...`，部署必须 WSS。票据有效 60 秒、一次性，绑定服务端验证身份、会话、epoch、Origin；握手失败不能静默切换其它身份。URL query 与凭据不得写访问日志。
 
-本阶段门户只供测试账号使用，可直接访问 Web 容器的公网 HTTPS `8087`；Nginx 是该 Web 镜像内的静态文件服务，无需另行部署。测试账号通过 `POST /api/v1/auth/login` 获取短期签名会话 Cookie；同一响应的 Bearer token 可供私网客户端访问 API `8088`。角色和 KB 范围以服务端账号配置为准。浏览器只请求 Web 同源 `/api/`，镜像内的 Nginx 将其转到容器网络中的 `api:8000`，不要求公网浏览器直接访问私网 API。
+本阶段门户可直接访问 Web 容器的公网 HTTPS `8087`；Nginx 是该 Web 镜像内的静态文件服务，无需另行部署。无需登录，API 将所有请求映射为服务端固定的 customer 验证身份，tenant 和 KB 范围只来自部署配置。浏览器只请求 Web 同源 `/api/`，镜像内的 Nginx 将其转到容器网络中的 `api:8000`；API 不映射宿主端口。
 
 ### 4.1 上行消息
 

@@ -697,25 +697,6 @@ a:focus-visible {
   display: grid;
   place-items: center;
 }
-.login-card {
-  padding: 45px;
-  background: white;
-  border: 1px solid #e1e7df;
-  border-radius: 20px;
-  text-align: center;
-}
-.login-card > .anticon {
-  font-size: 45px;
-  color: #16685b;
-}
-.login-card h1 {
-  font-size: 24px;
-}
-.login-card p {
-  color: #879775;
-  line-height: 2;
-  margin-bottom: 28px;
-}
 .admin-tool {
   display: flex;
   align-items: center;

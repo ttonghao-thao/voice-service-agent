@@ -16,9 +16,11 @@ def validate_ready(payload, expected_tools):
     if payload.get("status") != "ready":
         raise ValueError("API readiness is not ready")
     if payload.get("is_mock") is not False:
-        raise ValueError("Production readiness reports a mock provider")
+        raise ValueError("Deployment readiness reports a mock provider")
     if set(payload.get("enabled_tools", [])) != expected_tools:
         raise ValueError("API enabled tools do not match deployment configuration")
+    if payload.get("text_configured") is not True or payload.get("voice_configured") is not True:
+        raise ValueError("Text model and VoiceChat must both be configured")
     return {
         "status": payload["status"],
         "enabled_tools": sorted(expected_tools),
@@ -28,7 +30,7 @@ def validate_ready(payload, expected_tools):
 
 
 def main():
-    parser = argparse.ArgumentParser(description="Verify the running production API readiness contract")
+    parser = argparse.ArgumentParser(description="Verify the running validation API readiness contract")
     parser.add_argument("--base-url", default="http://127.0.0.1:8000")
     args = parser.parse_args()
     from app.config import Settings

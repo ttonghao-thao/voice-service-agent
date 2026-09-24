@@ -1,4 +1,4 @@
-import { type FormEvent, useCallback, useEffect, useRef, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 import {
   Alert,
   Button,
@@ -21,12 +21,10 @@ import {
   CheckCircleOutlined,
   LoadingOutlined,
   MessageOutlined,
-  LogoutOutlined,
 } from "@ant-design/icons";
 import {
   Answer,
   api,
-  ApiError,
   Capabilities,
   Conversation,
   Me,
@@ -56,11 +54,7 @@ const statuses: Record<string, string> = {
 
 export default function App() {
   const [me, setMe] = useState<Me | null>(null),
-    [login, setLogin] = useState(false),
     [caps, setCaps] = useState<Capabilities | null>(null);
-  const [username, setUsername] = useState(""),
-    [password, setPassword] = useState(""),
-    [signingIn, setSigningIn] = useState(false);
   const [conversations, setConversations] = useState<Conversation[]>([]),
     [cid, setCid] = useState(""),
     [turns, setTurns] = useState<Turn[]>([]),
@@ -188,8 +182,7 @@ export default function App() {
         const list = await loadList();
         if (current && list[0]) setCid(list[0].id);
       } catch (e) {
-        if (e instanceof ApiError && e.status === 401) setLogin(true);
-        else setError((e as Error).message);
+        setError((e as Error).message);
       } finally {
         if (current) setLoading(false);
       }
@@ -350,22 +343,8 @@ export default function App() {
         </span>
         <div>
           <strong>{me?.user_id || "Customer support"}</strong>
-          <small>
-            {me?.auth_mode === "fixture" ? "Test fixture" : "Restricted test account"}
-          </small>
+          <small>{me?.auth_mode === "fixture" ? "Test fixture" : "Validation customer"}</small>
         </div>
-        {me?.auth_mode === "local" && (
-          <Button
-            type="text"
-            aria-label="Sign out"
-            icon={<LogoutOutlined />}
-            onClick={() =>
-              void fetch("/api/v1/auth/logout", { method: "POST" }).then(() =>
-                location.reload(),
-              )
-            }
-          />
-        )}
       </div>
     </>
   );
@@ -472,35 +451,6 @@ export default function App() {
     return (
       <div className="login-screen">
         <Spin size="large" tip="Opening customer support" />
-      </div>
-    );
-  if (login)
-    return (
-      <div className="login-screen">
-        <div className="login-card">
-          <CustomerServiceOutlined />
-          <h1>VoiceBridge Customer Support</h1>
-          <p>Restricted validation portal. Sign in with a test account.</p>
-          {error && <Alert type="error" showIcon message={error} />}
-          <form onSubmit={(event: FormEvent) => {
-            event.preventDefault();
-            setSigningIn(true);
-            setError("");
-            void api("/auth/login", {
-              method: "POST",
-              body: JSON.stringify({ username, password }),
-            }).then(() => location.reload()).catch((e: Error) => {
-              setError(e.message);
-              setSigningIn(false);
-            });
-          }}>
-            <Input aria-label="Username" autoComplete="username" placeholder="Username" value={username}
-              onChange={(event) => setUsername(event.target.value)} required />
-            <Input.Password aria-label="Password" autoComplete="current-password" placeholder="Password"
-              value={password} onChange={(event) => setPassword(event.target.value)} required />
-            <Button type="primary" size="large" htmlType="submit" loading={signingIn}>Sign in</Button>
-          </form>
-        </div>
       </div>
     );
   return (
