@@ -24,7 +24,6 @@ class StrictModel(BaseModel):
 
 class Principal(StrictModel):
     user_id: str
-    tenant_id: str
     roles: frozenset[str] = frozenset()
     scopes: frozenset[str] = frozenset()
     knowledge_base_ids: tuple[str, ...] = ()

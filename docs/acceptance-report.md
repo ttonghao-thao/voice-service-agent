@@ -1,6 +1,6 @@
 # 验收状态与真实服务门槛
 
-更新：2026-09-25。**D01–D06、D08–D10、E01–E03 已完成历史编码和本地自动化验证，D12 已完成功能验证入口收敛；D07 的真实服务端到端验收仍未完成**。本期仅验收英文知识库客服；真实验证在云端 Docker 环境执行。缺口和实施顺序见 [任务板](TASK_BOARD.md)。
+更新：2026-09-25。**D01–D06、D08–D10、E01–E03 已完成历史编码和本地自动化验证，D13 已完成独立测试通话、实时字幕与 HTTP 门户改造；D07 的真实服务端到端验收仍未完成**。本期仅验收英文知识库客服；真实验证在云端 Docker 环境执行。缺口和实施顺序见 [任务板](TASK_BOARD.md)。
 
 编码阶段约束（2026-09-16 确认）：CueKB/VoiceChat 无真实接口可调用，满足已确认接口规范和处理逻辑并通过相应契约/本地测试，即满足该阶段验收要求。Docker 环境不提供，仅在必要时静态检查镜像制作和启动代码，不搭建环境或执行镜像构建。以下真实服务与容器验收项留待后续部署阶段，不作为编码完成的阻塞项。
 
@@ -10,7 +10,7 @@
 
 | 要回答的问题 | 证据位置与边界 |
 | --- | --- |
-| 最近应用验证 | §1 的 2026-09-25 Python 依赖工具链简化：全新 Python 3.12 venv/pip 安装、73 项 pytest、Ruff；不代表真实 Docker 构建 |
+| 最近应用验证 | §1 的 2026-09-25 D13：72 项 pytest、6 项前端单测、4 项 Chromium E2E、构建、Ruff、契约与迁移循环；不代表真实服务或 Docker 验收 |
 | M3、D08、D01–D06 何时验证 | §1 对应日期；不累加各次测试数作为当前总数 |
 | 真实服务是否通过 | §3：仍待验证；测试文件存在、配置 verified 或本地测试通过都不能替代真实记录 |
 | 下一阶段怎样执行 | [部署 D07-A–F](deployment.md#d07-分阶段执行设计)，场景标准见 §4，放行见 §5 |
@@ -19,6 +19,13 @@
 历史文档审计（2026-09-22）：9 份活动 Markdown 的 63 处本地链接及章节锚点、代码块闭合、`git diff --check` 与当时的仅文档修改检查通过。AGENTS 从 3688 减为 2912 UTF-8 字节（约 21%），这是当时入口大小变化，不是实际 token 节省测量。历史快照未修改；当前 D11 的验证另记于 §1。
 
 ## 1. 按日期记录的编码与部署前验证
+
+### 2026-09-25 D13 独立测试通话、实时字幕与 HTTP 门户
+
+- 删除启动时 `TENANT_ID` 与固定 `validation-customer`。每次创建 conversation 时生成独立 owner 和高熵 call token；token 哈希入库，明文只返回一次并保存在当前标签页内存。HTTP/SSE 以 Bearer 认证，WS ticket 绑定同一 owner/conversation/epoch；交叉 token、缺 token 和结束后复用均被拒绝。Alembic 0005 将 conversation 的 tenant/user 所有权迁移为 owner/token hash，并移除 admin audit tenant。
+- 门户加载时不再读取 conversation 列表；每次点击 “Start call” 都创建新 conversation，结束通话撤销 token。`portal.transcript.*` 和 `portal.speech_text.*` 分别实时打印用户输入与 VoiceChat 实际输出字幕；业务答案/证据继续与口述字幕分离。
+- Web Nginx 改为公网 HTTP `8087`，移除证书挂载、TLS 启动参数和 `.env` TLS/tenant 项；内部 `/api/` 仍只转发到容器网络 API。公网 HTTP 麦克风是否被目标浏览器允许尚未实机验证，是 D07 阻断项。
+- 本地验证：72 项 pytest 通过（1 条 Starlette/AnyIO 上游弃用警告）；6 项前端音频单测、4 项 Chromium 门户/音频 E2E 和 TypeScript/Vite 构建通过；Ruff、部署脚本语法、契约导出和 `git diff --check` 通过；Alembic 临时 SQLite `upgrade head → downgrade base → upgrade head` 通过。真实 PostgreSQL、Docker、公网 HTTP 浏览器麦克风、多人语音、CueKB、VoiceChat 和文本模型未运行。
 
 ### 2026-09-25 D08 Python 依赖工具链简化
 
@@ -102,7 +109,7 @@
 
 - 真实 VoiceChat 英文语音、工具往返、工具等待时的新问题回答、pending call 结清和实际口述准确性；E03 仅完成本地代码与契约验证。中文不属于本期验收范围。
 - CueKB 原生 `/v1/search` 的真实服务连接、受限 Key/ACL 和真实知识正确性；本地仅使用符合当前 CueKB schema 的受控响应与显式 mock。
-- 服务端固定验证身份的真实 CueKB 范围、管理 API 拒绝和真实文本模型。正式多客户登录、账号隔离和撤权生命周期不在本期；天气/股票不在本期验收范围。
+- 独立 call capability 的真实多人隔离、CueKB 范围、管理 API 拒绝和真实文本模型。正式多客户登录、账号恢复和撤权生命周期不在本期；天气/股票不在本期验收范围。
 - 真实 PostgreSQL/Redis/Docker、负载均衡故障、容量及端到端性能。
 - 任务 revision、停止播报和安静边界轮换尚未在真实 VoiceChat 上验证；特别是工具阶段改问、pending call 安全结清和实际音频抑制仍受 D01 能力门槛约束。
 
@@ -115,7 +122,7 @@
 | ID | 场景 | 完成依据 |
 | --- | --- | --- |
 | V01 | 简单 HTML 门户 + 标准消息 | 独立客户端创建会话、收发音频/字幕/答案，窄屏可用；不调用供应商私网 API |
-| V02 | 验证身份与知识权限 | 固定 customer 的 tenant/KB 只能来自服务端；请求不能扩大范围；客户不能管理工具 |
+| V02 | 独立 call capability 与知识权限 | 两个标签页 token/conversation 交叉访问失败；结束后 token 失效；KB 只能来自服务端；call capability 不能管理工具 |
 | V03 | 真实 CueKB 知识闭环 | 英文语音→原生工具→授权检索→有依据回答→实际口述；保留版本、定位及 trace |
 | V04 | 无依据、降级、冲突与故障 | 空命中、unassessed、degraded、版本冲突、401/403/422/429/5xx/超时分别正确处理；无假数据回退 |
 | V05 | 工具等待时的交互 | 延迟工具 5 秒，等待中测试新问题、改问、取消、附和；记录是否在返回前回答新问题，ACK 不算 |

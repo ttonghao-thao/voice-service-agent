@@ -1,6 +1,6 @@
 # 后端服务与工具接入
 
-更新：2026-09-24。按主题读取。架构决策见 [architecture.md](architecture.md)，当前差距见 [任务板](TASK_BOARD.md)。
+更新：2026-09-25。按主题读取。架构决策见 [architecture.md](architecture.md)，当前差距见 [任务板](TASK_BOARD.md)。
 
 ## 1. 运行依赖与配置状态
 
@@ -10,7 +10,7 @@
 | CueKB | 知识检索与版本来源 | 专用 adapter、契约和受控测试已实现；真实服务/ACL 待 D07 |
 | 文本模型 | BusinessRuntime 的推理与业务回答 | 已有 openai / compatible adapter；真实模型未验收 |
 | 第三方工具 | 本期不启用 | 天气代理代码仍保留，生产默认无需天气配置 |
-| 验证身份 | 测试门户的固定 customer 身份、tenant 与 KB 范围 | 服务端固定验证身份已实现；正式客户身份服务暂缓 |
+| 通话 capability | 每次测试通话的独立 owner/token 与服务端 KB 范围 | 标签页内存 token 已实现；正式客户身份服务暂缓 |
 
 当前环境变量名和启动校验以 `apps/api/app/config.py`、`.env.example` 为准。本期 Compose 固定真实 CueKB 与 `search_knowledge`；运行配置只需 `CUEKB_BASE_URL` 和 `CUEKB_API_KEY`，检索模式与条数使用代码默认值。旧 `RAG_*` 配置和 `/v1/retrieve` 契约已退出活动实现。
 
@@ -104,15 +104,15 @@ Runtime 复用授权工具和证据校验，输出 display_text、短 speech_tex
 
 只读 HTTP 按剩余预算做有限重试；当前对网络/5xx 最多一次，429/4xx/错误 JSON/超大正文不自动重试。缓存必须包含权限范围、查询条件、供应商和有效期，不能把历史数字作为新实时事实。
 
-## 6. 验证身份与知识范围（D02、D12）
+## 6. 独立通话与知识范围（D02、D13）
 
-本阶段没有登录、外部 IdP 或正式客户认证。门户请求统一映射为服务端固定的 `validation-customer`；`TENANT_ID` 和 `KNOWLEDGE_BASE_IDS` 来自部署配置，角色固定为 customer，只有 `knowledge:read`。严格请求模型拒绝正文覆盖身份、tenant 或 KB 范围，管理 API 继续拒绝该身份。同一部署上的测试者共享该验证身份及其可见会话，因此一次部署只供一个受控测试组使用。门户只通过公网 HTTPS `8087` 的同源 `/api/` 进入 API 容器；API 不映射宿主端口。
+本阶段没有登录、外部 IdP、tenant 或正式客户认证。每次在标签页点击开始通话，服务端创建独立 conversation/owner，并只返回一次高熵 `call_access_token`；后续 HTTP/SSE 通过 Bearer token 解析 owner，WS ticket 再绑定 owner、conversation、epoch 和 Origin。token 不写 cookie、localStorage 或 sessionStorage，刷新/关闭标签页不会恢复历史，结束通话会撤销 token。`KNOWLEDGE_BASE_IDS` 来自部署配置，call capability 固定为 customer 且只有 `knowledge:read`；请求正文不能覆盖 owner 或 KB 范围，管理 API 继续拒绝。门户只通过公网 HTTP `8087` 的同源 `/api/` 进入 API 容器；API 不映射宿主端口。
 
-这一简化只移除验证阶段的账号管理、密码、Cookie/JWT 和独立 API 客户端入口，不改变 SessionCoordinator、业务 Agent、ToolRegistry、CueKB 授权过滤或 VoiceChat 全双工链路。正式多客户身份、账号隔离和撤权生命周期等验证通过后再设计。
+这一 capability 只提供测试通话的对象隔离，不是登录态；它不改变 SessionCoordinator、业务 Agent、ToolRegistry、CueKB 授权过滤或 VoiceChat 全双工链路。正式多客户身份、账号恢复和撤权生命周期等验证通过后再设计。
 
 每条新知识引用记录本轮服务端授权 KB 范围。历史消息和 SSE 重放在读取时复核当前范围；范围被缩小后，涉及已撤销范围的整个旧答案会替换为 `KB_ACCESS_REVOKED`，不只隐藏链接。送入后续 Agent 的历史也执行相同裁剪，避免旧证据通过上下文再次泄露。升级前没有范围标签的旧引用不向 customer 展示；operator/admin 仅在仍拥有部署完整 KB 范围时兼容读取。
 
-本地测试覆盖固定验证身份不能访问管理 API、KB 范围由服务端确定，以及历史/SSE 的范围复核逻辑；真实 CueKB Key/ACL、并发会话和未来正式客户身份接入仍需另行验收。
+本地测试覆盖两次通话 token 不同、交叉访问失败、结束后 token 失效、管理 API 拒绝、KB 范围由服务端确定，以及历史/SSE 的范围复核逻辑；真实 CueKB Key/ACL、多人并发语音和未来正式客户身份接入仍需另行验收。
 
 ## 7. Q04：原件查看的后续设计
 

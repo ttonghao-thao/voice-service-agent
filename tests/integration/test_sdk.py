@@ -12,7 +12,6 @@ KB_SUPPORT = "00000000-0000-4000-8000-000000000001"
 async def test_non_ascii_speech_keeps_written_answer_but_uses_ascii_voice_fallback(app, conversation):
     principal = Principal(
         user_id="dev-operator",
-        tenant_id="dev-tenant",
         scopes=frozenset({"knowledge:read"}),
         knowledge_base_ids=(KB_SUPPORT,),
     )
@@ -33,7 +32,6 @@ async def test_non_ascii_speech_keeps_written_answer_but_uses_ascii_voice_fallba
 async def test_actual_sdk_runner_executes_registered_tool_and_validates_output(app, conversation, streaming):
     p = Principal(
         user_id="dev-operator",
-        tenant_id="dev-tenant",
         scopes=frozenset({"knowledge:read"}),
         knowledge_base_ids=(KB_SUPPORT,),
     )

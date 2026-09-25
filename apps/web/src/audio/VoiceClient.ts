@@ -41,7 +41,7 @@ export class VoiceClient {
     try {
       if (!navigator.mediaDevices?.getUserMedia)
         throw new Error(
-          "The browser cannot access the microphone. Use HTTPS or localhost.",
+          "The browser does not allow microphone access for this HTTP origin.",
         );
       this.context = new AudioContext();
       await this.context.resume();

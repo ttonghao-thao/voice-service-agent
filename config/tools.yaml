@@ -12,7 +12,6 @@ tools:
     timeout_ms: 5000
     read_only: true
     enabled: true
-    allowed_tenants: ['*']
     result_limit: 32768
     retry_policy: {max_retries: 1}
     audit_policy: evidence_only
@@ -28,7 +27,6 @@ tools:
     timeout_ms: 4000
     read_only: true
     enabled: true
-    allowed_tenants: ['*']
     result_limit: 32768
     retry_policy: {max_retries: 1}
     audit_policy: evidence_only

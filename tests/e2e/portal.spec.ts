@@ -6,25 +6,23 @@ test("English text flow, citations, refreshed history and narrow layout", async 
   await expect(
     page.getByRole("heading", { name: "Support that responds" }),
   ).toBeVisible();
-  await page.getByRole("button", { name: "New conversation" }).click();
   await page
     .getByRole("textbox", { name: "Your question" })
     .fill("Find the integration sample.");
   await page.getByRole("button", { name: "Send question" }).click();
   await expect(page.locator(".assistant-message")).toContainText(
-    "Synthetic integration excerpt",
+    /synthetic integration excerpt/i,
   );
   await expect(page.locator(".citation-title")).toContainText("C1");
   await page.reload();
-  await expect(page.locator(".assistant-message")).toContainText(
-    "Synthetic integration excerpt",
-  );
+  await expect(page.getByText("Hello. How can I help today?")).toBeVisible();
+  await expect(page.locator(".assistant-message")).toHaveCount(0);
   await page.screenshot({
     path: "../../artifacts/portal-desktop.png",
     fullPage: true,
   });
   await page.setViewportSize({ width: 390, height: 844 });
-  await expect(page.getByRole("button", { name: "Conversation list" })).toBeVisible();
+  await expect(page.getByRole("button", { name: "Call information" })).toBeVisible();
   expect(
     await page.evaluate(
       () => document.documentElement.scrollWidth <= window.innerWidth,
@@ -38,7 +36,6 @@ test("English text flow, citations, refreshed history and narrow layout", async 
 });
 test("Missing knowledge cannot appear as a real business answer", async ({ page }) => {
   await page.goto("/");
-  await page.getByRole("button", { name: "New conversation" }).click();
   await page
     .getByRole("textbox", { name: "Your question" })
     .fill("What is the nonexistent refund policy?");
@@ -52,7 +49,7 @@ test("Text remains available when the microphone fails", async ({ page }) => {
     };
   });
   await page.goto("/");
-  await page.getByRole("button", { name: "Start voice", exact: true }).click();
+  await page.getByRole("button", { name: "Start call", exact: true }).click();
   await expect(page.getByRole("alert")).toBeVisible();
   await expect(
     page.getByRole("textbox", { name: "Your question" }),

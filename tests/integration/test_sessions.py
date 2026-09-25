@@ -13,7 +13,6 @@ KB_PRIVATE = "00000000-0000-4000-8000-000000000002"
 def dev_user():
     return Principal(
         user_id="dev-operator",
-        tenant_id="dev-tenant",
         scopes=frozenset({"knowledge:read", "weather:read"}),
         knowledge_base_ids=(KB_SUPPORT,),
     )
@@ -69,17 +68,10 @@ async def test_empty_rag_never_fabricates(client, app, conversation):
     assert data["items"][0]["answer"]["status"] == "insufficient_evidence"
 
 
-@pytest.mark.parametrize(
-    "other",
-    [
-        Principal(user_id="other", tenant_id="dev-tenant"),
-        Principal(user_id="dev-operator", tenant_id="other"),
-    ],
-)
-async def test_object_access_isolation(app, conversation, other):
+async def test_object_access_isolation(app, conversation):
     async with app.state.store.sessions() as db:
         with pytest.raises(DomainError):
-            await app.state.store.get(db, conversation, other)
+            await app.state.store.get(db, conversation, Principal(user_id="other"))
 
 
 async def test_cancel_resistant_result_cannot_commit(app, conversation):
@@ -222,7 +214,6 @@ async def test_customer_isolation_admin_denial_and_kb_revocation(client, app):
     identity = {
         "principal": Principal(
             user_id="customer-a",
-            tenant_id="dev-tenant",
             roles=frozenset({"customer"}),
             scopes=frozenset({"knowledge:read"}),
             knowledge_base_ids=(KB_PRIVATE, KB_SUPPORT),

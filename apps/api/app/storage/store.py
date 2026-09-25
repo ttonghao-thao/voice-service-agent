@@ -35,11 +35,29 @@ class Store:
         if lock:
             q = q.with_for_update()
         c = (await db.execute(q)).scalar_one_or_none()
-        if c is None or (
-            principal and (c.tenant_id != principal.tenant_id or c.user_id != principal.user_id)
-        ):
+        if c is None or (principal and c.owner_id != principal.user_id):
             raise DomainError("FORBIDDEN", "Conversation not found or access denied", 404)
         return c
+
+    async def owner_for_token(self, cid, token):
+        digest = hashlib.sha256(token.encode()).hexdigest()
+        async with self.sessions() as db:
+            c = (
+                await db.execute(
+                    select(Conversation).where(
+                        Conversation.id == cid,
+                        Conversation.access_token_hash == digest,
+                    )
+                )
+            ).scalar_one_or_none()
+        if c is None:
+            raise DomainError("AUTH_REQUIRED", "Call access is invalid or expired", 401)
+        return c.owner_id
+
+    async def revoke_access(self, principal, cid):
+        async with self.transaction() as db:
+            c = await self.get(db, cid, principal, lock=True)
+            c.access_token_hash = None
 
     async def event(self, db, c, kind, payload, turn_id=None):
         c.event_seq += 1

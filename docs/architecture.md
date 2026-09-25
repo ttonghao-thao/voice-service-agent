@@ -1,6 +1,6 @@
 # 语音客服 Agent：架构与演进设计
 
-更新：2026-09-24。本文负责产品边界、模块职责与控制流程；当前状态只维护在 [任务板](TASK_BOARD.md)。§2–7 区分现有实现与条件性设计，§10 为尚未实施的优化建议；真实能力以 [验收记录](acceptance-report.md) 为准。
+更新：2026-09-25。本文负责产品边界、模块职责与控制流程；当前状态只维护在 [任务板](TASK_BOARD.md)。§2–7 区分现有实现与条件性设计，§10 为尚未实施的优化建议；真实能力以 [验收记录](acceptance-report.md) 为准。
 
 ## 1. 产品定位与范围
 
@@ -20,8 +20,8 @@
 ```mermaid
 flowchart TB
     U[测试浏览器：简单 HTML 语音门户]
-    W[Web 容器：Nginx HTTPS 8087]
-    G[消息与语音网关：验证身份、HTTP、SSE、WebSocket]
+    W[Web 容器：Nginx HTTP 8087]
+    G[消息与语音网关：call capability、HTTP、SSE、WebSocket]
     C[SessionCoordinator：会话、任务、改问、结果提交]
     V[VoiceChatAdapter]
     N[独立 NVIDIA VoiceChat 服务]
@@ -34,7 +34,7 @@ flowchart TB
     E[已接入的第三方系统]
     S[(PostgreSQL：业务状态、证据、审计)]
     R[(Redis：租约、协调)]
-    U <-->|HTTPS JSON / SSE / WSS 音频消息| W
+    U <-->|HTTP JSON / SSE / WS 音频消息| W
     W <-->|同源 /api/；容器网络 api:8000| G
     G <--> C
     G <--> V
@@ -72,17 +72,17 @@ flowchart TB
 - 门户交付为静态 HTML/CSS/浏览器脚本，复用 TypeScript AudioWorklet 音频代码；可用现有构建链产出，不强制为“简单 HTML”更换前端框架。
 - 当前 React/Ant Design 页面已精简为客户入口，复用既有音频底层；工具管理只保留受权限保护的独立后端运维 API。
 - 云端用 Docker Compose 运行本项目 Web/API/迁移/数据库/Redis；VoiceChat、CueKB 独立部署和维护。详情见 [部署](deployment.md)。
-- Web 镜像内的 Nginx 直接对公网提供 HTTPS；仅代理同源 `/api/` 到容器网络中的 API。API 另映射到宿主机私网地址，供当前受限身份的独立客户端调用；本期未提供专门的系统间身份。
+- Web 镜像内的 Nginx 直接对公网提供 HTTP；仅代理同源 `/api/` 到容器网络中的 API，API 不映射宿主端口。每次点击开始通话生成只属于当前标签页的 owner/token；本期未提供正式客户或系统间身份。
 
 ## 3. 门户与标准消息接口
 
-客户端只调用本项目 API。采用标准 HTTPS JSON、SSE 和 WebSocket；业务事件由本项目版本化定义，不声称与 NVIDIA、OpenAI 或某个行业消息标准直接兼容。
+客户端只调用本项目 API。采用标准 HTTP JSON、SSE 和 WebSocket；业务事件由本项目版本化定义，不声称与 NVIDIA、OpenAI 或某个行业消息标准直接兼容。
 
 | 通道 | 用途 |
 | --- | --- |
-| HTTPS `/api/v1` | 认证、能力查询、创建会话、申请语音票据、结束/打断、可选文字输入 |
+| HTTP `/api/v1` | capability、能力查询、创建会话、申请语音票据、结束/打断、可选文字输入 |
 | SSE 会话事件 | 查询状态、经校验答案和可恢复的业务事件 |
-| WSS 语音消息 | 连续上行/下行音频、用户转写、实际口述字幕、实时控制 |
+| WS 语音消息 | 连续上行/下行音频、用户转写、实际口述字幕、实时控制 |
 
 保留当前 `/api/v1` 路径及 `portal.*` 事件族。客户端不接收模型工具调用权限，不知道 CueKB/VoiceChat 的私网地址或密钥；相同契约可供以后其他客户端使用。详见 [门户契约](portal-protocol.md)。
 
@@ -90,8 +90,8 @@ flowchart TB
 
 ### 4.1 一次语音知识问答
 
-1. 本阶段测试门户经服务端本地账号认证，服务端解析测试身份与可用知识范围；创建 conversation。真实客户身份接入留待对外开放前设计。
-2. 申请一次性语音票据并连接 WSS；网关连接独立 VoiceChat，确认握手及音频格式后通知门户 ready。
+1. 测试人员在当前标签页点击开始通话；服务端创建独立 conversation/owner 和高熵 call token，KB 范围仍由服务端部署配置决定。其它标签页不读取该 conversation。
+2. 使用 call token 申请一次性语音票据并连接 WS；网关连接独立 VoiceChat，确认握手及音频格式后通知门户 ready。
 3. 门户持续上传包括静音在内的音频，网关并行收发；VoiceChat 生成用户转写、语音或工具请求。
 4. VoiceChat 调用统一工具 `consult_service_agent(user_request)`。网关按连接、epoch、call_id 去重，交给 SessionCoordinator。
 5. Coordinator 创建业务任务；BusinessRuntime 根据已确认上下文调用授权知识工具。CueKBAdapter 从服务端注入 KB 范围，调用 `POST /v1/search`。
@@ -172,7 +172,7 @@ D05 已实现独立 request_revision、停止播报和取消查询接口；兼�
 
 ## 7. 权限、事实与故障边界
 
-- 本阶段所有门户请求使用服务端固定的 validation customer 身份、tenant 和 KB 范围；请求正文不能覆盖，管理 API 始终拒绝。正式多客户身份、登录和访客模式在核心语音闭环验证后另行设计。
+- 本阶段每次点击开始通话都由服务端创建独立 owner，并签发只绑定该 conversation 的 call token；不存在启动级 tenant、共享 customer、Cookie 或可恢复历史。KB 范围仍由服务端配置，请求正文不能覆盖，管理 API 始终拒绝。正式客户身份与登录在核心语音闭环验证后另行设计。
 - 有效 KB 范围 = 客户授权 ∩ 部署允许 ∩ CueKB 服务主体权限。CueKB API Key 身份不能通过自定义 user/tenant 请求头变成客户级委托身份。
 - 资料属于不可信内容，仅作为证据；不执行资料中的指令/URL，不允许模型选择密钥、主机或扩大权限。
 - 引用存在性不代表结论充分。保留版本、定位、降级原因与适用条件；缺失元数据不伪造，空命中/冲突/故障分开处理。

@@ -13,8 +13,8 @@ class Base(DeclarativeBase):
 class Conversation(Base):
     __tablename__ = "conversations"
     id: Mapped[str] = mapped_column(String(36), primary_key=True, default=uid)
-    tenant_id: Mapped[str] = mapped_column(String(128), index=True)
-    user_id: Mapped[str] = mapped_column(String(128), index=True)
+    owner_id: Mapped[str] = mapped_column(String(128), index=True)
+    access_token_hash: Mapped[str | None] = mapped_column(String(64), unique=True)
     title: Mapped[str] = mapped_column(String(100))
     locale: Mapped[str] = mapped_column(String(20), default="en-US")
     epoch: Mapped[int] = mapped_column(Integer, default=0)
@@ -105,7 +105,6 @@ class ToolRun(Base):
 class AdminAudit(Base):
     __tablename__ = "admin_audits"
     id: Mapped[str] = mapped_column(String(36), primary_key=True, default=uid)
-    tenant_id: Mapped[str] = mapped_column(String(128), index=True)
     user_id: Mapped[str] = mapped_column(String(128))
     action: Mapped[str] = mapped_column(String(80))
     details: Mapped[dict] = mapped_column(JSON)

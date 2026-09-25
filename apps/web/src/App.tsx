@@ -11,7 +11,6 @@ import {
 import {
   AudioOutlined,
   AudioMutedOutlined,
-  PlusOutlined,
   SendOutlined,
   StopOutlined,
   CustomerServiceOutlined,
@@ -20,16 +19,15 @@ import {
   MenuOutlined,
   CheckCircleOutlined,
   LoadingOutlined,
-  MessageOutlined,
 } from "@ant-design/icons";
 import {
   Answer,
   api,
   Capabilities,
   Conversation,
-  Me,
   PortalEvent,
-  RecordItem,
+  setCallAccessToken,
+  streamEvents,
   Turn,
 } from "./api";
 import { VoiceClient, VoiceState } from "./audio/VoiceClient";
@@ -53,17 +51,15 @@ const statuses: Record<string, string> = {
 };
 
 export default function App() {
-  const [me, setMe] = useState<Me | null>(null),
-    [caps, setCaps] = useState<Capabilities | null>(null);
-  const [conversations, setConversations] = useState<Conversation[]>([]),
-    [cid, setCid] = useState(""),
-    [turns, setTurns] = useState<Turn[]>([]),
-    [records, setRecords] = useState<RecordItem[]>([]);
+  const [caps, setCaps] = useState<Capabilities | null>(null);
+  const [cid, setCid] = useState(""),
+    [turns, setTurns] = useState<Turn[]>([]);
   const [draft, setDraft] = useState(""),
     [error, setError] = useState(""),
     [loading, setLoading] = useState(true),
     [sending, setSending] = useState(false),
-    [progress, setProgress] = useState("");
+    [progress, setProgress] = useState(""),
+    [callEnded, setCallEnded] = useState(false);
   const [voiceState, setVoiceState] = useState<VoiceState>("closed"),
     [muted, setMuted] = useState(false),
     [volume, setVolume] = useState(0.8),
@@ -79,13 +75,13 @@ export default function App() {
     requestRevision = useRef(0),
     active = useRef(""),
     voice = useRef<VoiceClient | null>(null),
+    stopEvents = useRef<(() => void) | null>(null),
     lastEvent = useRef(new Set<string>()),
     end = useRef<HTMLDivElement>(null);
   const onError = useCallback((message: string) => setError(message), []);
   const refresh = useCallback(async (id: string, older?: string) => {
     const data = await api<{
       items: Turn[];
-      records: RecordItem[];
       epoch: number;
       request_revision: number;
       next_before: string | null;
@@ -105,7 +101,6 @@ export default function App() {
           ]
         : data.items,
     );
-    setRecords(data.records);
     const answer = [...data.items].reverse().find((t) => t.answer)?.answer;
     if (answer && !older) setSelected(answer);
   }, []);
@@ -166,21 +161,12 @@ export default function App() {
       void voice.current?.stop();
     };
   }, [handleEvent, onError]);
-  const loadList = useCallback(async () => {
-    const data = await api<{ items: Conversation[] }>("/conversations");
-    setConversations(data.items);
-    return data.items;
-  }, []);
   useEffect(() => {
     let current = true;
     void (async () => {
       try {
-        const user = await api<Me>("/auth/me");
-        if (!current) return;
-        setMe(user);
-        setCaps(await api<Capabilities>("/capabilities"));
-        const list = await loadList();
-        if (current && list[0]) setCid(list[0].id);
+        const capabilities = await api<Capabilities>("/capabilities");
+        if (current) setCaps(capabilities);
       } catch (e) {
         setError((e as Error).message);
       } finally {
@@ -190,42 +176,52 @@ export default function App() {
     return () => {
       current = false;
     };
-  }, [loadList]);
+  }, []);
   useEffect(() => {
-    active.current = cid;
-    epoch.current = 0;
-    requestRevision.current = 0;
-    setTurns([]);
-    setRecords([]);
-    setSelected(null);
-    setTranscripts({});
-    setProgress("");
-    lastEvent.current.clear();
     if (!cid) return;
-    void voice.current?.stop();
     void refresh(cid).catch((e) => setError(e.message));
-    const events = new EventSource(`/api/v1/conversations/${cid}/events`);
-    events.onmessage = ({ data }) => {
-      try {
-        handleEvent(JSON.parse(data));
-      } catch {
-        setError("Unrecognized conversation event");
-      }
+    const stop = streamEvents(
+      `/conversations/${cid}/events`,
+      handleEvent,
+      (message) => setError(message),
+    );
+    stopEvents.current = stop;
+    return () => {
+      stop();
+      if (stopEvents.current === stop) stopEvents.current = null;
     };
-    return () => events.close();
   }, [cid, refresh, handleEvent]);
   useEffect(() => {
     end.current?.scrollIntoView({ behavior: "smooth", block: "end" });
   }, [turns, progress, transcripts]);
+  async function closeCurrentCall() {
+    stopEvents.current?.();
+    stopEvents.current = null;
+    await voice.current?.stop();
+    const id = active.current;
+    active.current = "";
+    if (id) await api(`/conversations/${id}`, { method: "DELETE" }).catch(() => {});
+    setCallAccessToken("");
+  }
   async function newConversation() {
     try {
-      await voice.current?.stop();
+      await closeCurrentCall();
       const c = await api<Conversation>("/conversations", {
         method: "POST",
         body: JSON.stringify({ title: "New conversation", locale: "en-US" }),
       });
+      if (!c.access_token) throw new Error("The server did not issue call access");
+      setCallAccessToken(c.access_token);
+      active.current = c.id;
+      epoch.current = 0;
+      requestRevision.current = 0;
+      setTurns([]);
+      setSelected(null);
+      setTranscripts({});
+      setProgress("");
+      setCallEnded(false);
+      lastEvent.current.clear();
       setCid(c.id);
-      await loadList();
       setSidebar(false);
       return c.id;
     } catch (e) {
@@ -241,7 +237,7 @@ export default function App() {
     try {
       voice.current?.clear();
       await voice.current?.stop();
-      const id = cid || (await newConversation());
+      const id = !cid || callEnded ? await newConversation() : cid;
       if (!id) return;
       const result = await api<{
         turn_id: string;
@@ -265,17 +261,22 @@ export default function App() {
         setProgress("Processing");
         await refresh(id);
       }
-      await loadList();
     } catch (e) {
       setError((e as Error).message);
     } finally {
       setSending(false);
     }
   }
-  async function startVoice() {
+  async function startCall() {
     setError("");
-    const id = cid || (await newConversation());
+    const id = await newConversation();
     if (id) await voice.current?.start(id);
+  }
+  async function endCall() {
+    if (!active.current || callEnded) return;
+    await closeCurrentCall();
+    setCallEnded(true);
+    setProgress("");
   }
   async function cancelCurrent() {
     const id = cid;
@@ -309,41 +310,17 @@ export default function App() {
           VoiceBridge<small>SERVICE DESK</small>
         </div>
       </div>
-      <Button
-        type="primary"
-        size="large"
-        icon={<PlusOutlined />}
-        block
-        onClick={() => void newConversation()}
-      >
-        New conversation
-      </Button>
-      <div className="section-label">
-        My conversations <span>{conversations.length}</span>
+      <div className="call-isolation">
+        <strong>Private test call</strong>
+        <p>Each tab creates its own conversation when you start a call. No history is shared with other tabs.</p>
       </div>
-      <nav className="conversations">
-        {conversations.map((c) => (
-          <button
-            className={"conversation " + (c.id === cid ? "active" : "")}
-            key={c.id}
-            onClick={() => {
-              setCid(c.id);
-              setSidebar(false);
-            }}
-          >
-            <MessageOutlined />
-            <span>{c.title}</span>
-            {c.id === cid && <i />}
-          </button>
-        ))}
-      </nav>
       <div className="sidebar-foot">
         <span className="avatar">
-          {me?.user_id.slice(0, 1).toUpperCase() || "C"}
+          <AudioOutlined />
         </span>
         <div>
-          <strong>{me?.user_id || "Customer support"}</strong>
-          <small>{me?.auth_mode === "fixture" ? "Test fixture" : "Validation customer"}</small>
+          <strong>{cid && !callEnded ? "Call in this tab" : "No active call"}</strong>
+          <small>{stateLabels[voiceState]}</small>
         </div>
       </div>
     </>
@@ -463,7 +440,7 @@ export default function App() {
               className="mobile-menu"
               type="text"
               icon={<MenuOutlined />}
-              aria-label="Conversation list"
+              aria-label="Call information"
               onClick={() => setSidebar(true)}
             />
             <span className="breadcrumb">
@@ -564,7 +541,19 @@ export default function App() {
                   )}
                 </div>
               ) : null}
-              {turns.map((t) => (
+              {Object.entries(transcripts).map(([key, t]) => (
+                <article
+                  className={t.kind === "Spoken reply" ? "assistant-message live-transcript" : "user-message live-transcript"}
+                  key={key}
+                >
+                  <span className="message-label">
+                    {t.kind === "Spoken reply" ? "Assistant · Voice output" : "You · Voice input"}
+                    {!t.done ? " · Live" : ""}
+                  </span>
+                  <p>{t.text || "…"}</p>
+                </article>
+              ))}
+              {turns.filter((t) => t.channel !== "voice").map((t) => (
                 <article className="turn" key={t.id}>
                   <div className="user-message">
                     <span className="message-label">
@@ -624,45 +613,25 @@ export default function App() {
                   </div>
                 </article>
               ))}
-              {Object.entries(transcripts).map(([key, t]) => (
-                <div className="transcript" key={key}>
-                  <span>
-                    {t.kind}
-                    {!t.done ? " · Transcribing" : ""}
-                  </span>
-                  <p>{t.text}</p>
-                </div>
-              ))}
-              {records.filter((r) => r.kind === "voicechat_transcript").length >
-                0 && (
-                <details className="voice-records">
-                  <summary>Saved voice transcript · recorded separately from the answer</summary>
-                  {records
-                    .filter((r) => r.kind === "voicechat_transcript")
-                    .map((r) => (
-                      <p key={r.epoch + r.source_id}>{r.payload.text}</p>
-                    ))}
-                  <small>
-                    Playback progress is a browser estimate and does not prove the full answer was heard.
-                  </small>
-                </details>
+              {selected && (selected.citations.length > 0 || selected.cards.length > 0) && (
+                <button className="source-button voice-source-button" onClick={() => setSourcesOpen(true)}>
+                  <FileTextOutlined /> View verified answer sources <span>↗</span>
+                </button>
               )}
               <div ref={end} />
             </div>
             <div className="composer">
               <div className="voice-controls">
                 <Button
-                  aria-label={
-                    voiceState === "ready" ? "Restart voice" : "Start voice"
-                  }
-                  type={voiceState === "ready" ? "default" : "primary"}
+                  aria-label="Start call"
+                  type="primary"
                   icon={<AudioOutlined />}
                   disabled={
-                    !caps?.voice_available || voiceState === "connecting"
+                    !caps?.voice_available || voiceState === "connecting" || voiceState === "ready" || voiceState === "reconnecting"
                   }
-                  onClick={() => void startVoice()}
+                  onClick={() => void startCall()}
                 >
-                  {voiceState === "ready" ? "Restart voice" : "Start voice"}
+                  Start call
                 </Button>
                 <Button
                   aria-label={muted ? "Unmute microphone" : "Mute microphone"}
@@ -692,10 +661,10 @@ export default function App() {
                 </Button>
                 <Button
                   type="text"
-                  disabled={voiceState === "closed"}
-                  onClick={() => void voice.current?.stop()}
+                  disabled={!cid || callEnded}
+                  onClick={() => void endCall()}
                 >
-                  End voice
+                  End call
                 </Button>
               </div>
               {voiceState === "ready" && (
@@ -771,7 +740,7 @@ export default function App() {
         </footer>
       </main>
       <Drawer
-        title="My conversations"
+        title="Call information"
         placement="left"
         open={sidebar}
         onClose={() => setSidebar(false)}

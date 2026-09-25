@@ -66,6 +66,7 @@ export interface Conversation {
   title: string;
   epoch: number;
   request_revision: number;
+  access_token?: string;
 }
 export interface PortalEvent {
   type: string;
@@ -87,12 +88,6 @@ export interface Capabilities {
   provider: string;
   voice_session_max_seconds: number;
 }
-export interface Me {
-  user_id: string;
-  tenant_id: string;
-  scopes: string[];
-  auth_mode: string;
-}
 export class ApiError extends Error {
   constructor(
     public code: string,
@@ -102,11 +97,25 @@ export class ApiError extends Error {
     super(message);
   }
 }
+
+let callAccessToken = "";
+
+export function setCallAccessToken(token: string) {
+  callAccessToken = token;
+}
+
+function requestHeaders(init: RequestInit) {
+  const headers = new Headers(init.headers);
+  if (!headers.has("Content-Type") && init.body !== undefined)
+    headers.set("Content-Type", "application/json");
+  if (callAccessToken) headers.set("Authorization", `Bearer ${callAccessToken}`);
+  return headers;
+}
+
 export async function api<T>(path: string, init: RequestInit = {}): Promise<T> {
   const response = await fetch("/api/v1" + path, {
     ...init,
-    headers: { "Content-Type": "application/json", ...init.headers },
-    credentials: "same-origin",
+    headers: requestHeaders(init),
   });
   const data = await response.json();
   if (!response.ok)
@@ -116,4 +125,69 @@ export async function api<T>(path: string, init: RequestInit = {}): Promise<T> {
       response.status,
     );
   return data;
+}
+
+export function streamEvents(
+  path: string,
+  onEvent: (event: PortalEvent) => void,
+  onError: (message: string) => void,
+) {
+  const controller = new AbortController();
+  const token = callAccessToken;
+  let cursor = 0;
+
+  const pause = () =>
+    new Promise<void>((resolve) => {
+      const timer = window.setTimeout(resolve, 500);
+      controller.signal.addEventListener(
+        "abort",
+        () => {
+          window.clearTimeout(timer);
+          resolve();
+        },
+        { once: true },
+      );
+    });
+
+  void (async () => {
+    while (!controller.signal.aborted) {
+      try {
+        const headers = new Headers({ Accept: "text/event-stream" });
+        if (token) headers.set("Authorization", `Bearer ${token}`);
+        if (cursor) headers.set("Last-Event-ID", String(cursor));
+        const response = await fetch("/api/v1" + path, {
+          headers,
+          signal: controller.signal,
+          cache: "no-store",
+        });
+        if (!response.ok || !response.body)
+          throw new Error(`Event stream failed (${response.status})`);
+        const reader = response.body.getReader();
+        const decoder = new TextDecoder();
+        let buffer = "";
+        while (!controller.signal.aborted) {
+          const { value, done } = await reader.read();
+          if (done) break;
+          buffer += decoder.decode(value, { stream: true }).replace(/\r\n/g, "\n");
+          let boundary;
+          while ((boundary = buffer.indexOf("\n\n")) >= 0) {
+            const block = buffer.slice(0, boundary);
+            buffer = buffer.slice(boundary + 2);
+            let data = "";
+            for (const line of block.split("\n")) {
+              if (line.startsWith("id:")) cursor = Number(line.slice(3).trim()) || cursor;
+              if (line.startsWith("data:")) data += line.slice(5).trimStart();
+            }
+            if (data) onEvent(JSON.parse(data));
+          }
+        }
+      } catch (error) {
+        if (controller.signal.aborted) break;
+        onError(error instanceof Error ? error.message : "Event stream disconnected");
+      }
+      await pause();
+    }
+  })();
+
+  return () => controller.abort();
 }

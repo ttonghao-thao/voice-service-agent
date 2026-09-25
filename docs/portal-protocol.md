@@ -1,12 +1,14 @@
 # HTML 门户与消息/语音接口
 
-更新：2026-09-24。本文确定测试门户和接口边界；D01–D05、E01–E03 的当前实现使用本文 v1 格式，真实服务能力仍按验收记录放行。总架构见 [architecture.md](architecture.md)。
+更新：2026-09-25。本文确定测试门户和接口边界；D01–D05、D13、E01–E03 的当前实现使用本文 v1 格式，真实服务能力仍按验收记录放行。总架构见 [architecture.md](architecture.md)。
 
 ## 1. 简单门户
 
 一个客户页面即可：开始语音、结束语音、连接/聆听/查询/播放状态、用户转写、实际口述字幕、最终答案与可展开引用。麦克风被拒绝、断网或语音不可用时给出明确恢复提示；可选显示文字输入。
 
-- 用户主动点击后申请麦克风，ready 后连续发送音频，包括静音；生产依赖 HTTPS 安全上下文。
+- 页面加载不创建 conversation 或读取历史；每个标签页点击 “Start call” 后创建全新的 conversation/call token，再申请语音 session。token 只在该标签页内存中保存，刷新即丢失。
+- 用户主动点击后申请麦克风，ready 后连续发送音频，包括静音。当前按需求提供公网 HTTP；普通浏览器可能拒绝非 secure context 的麦克风，目标测试浏览器必须在 D07 实机确认。
+- `portal.transcript.delta/done` 作为用户输入气泡流式打印，`portal.speech_text.delta/done` 作为实际 VoiceChat 输出气泡流式打印；done 替换对应临时文本，不用业务答案冒充实际口述。
 - 客户页面不展示工具配置、模型参数、内部运行日志或后台管理菜单。
 - 当前交互区分“停止播报”和“取消查询”：前者清除客户端缓冲并由服务端抑制当前 response，保留仍有效业务任务；后者使当前 revision 失效，存在无法安全结清的原生 call 时关闭旧语音连接。
 - 显示业务答案与实际语音字幕的区别；来源与版本可查看，工具密钥和内部地址不可出现在页面。
@@ -16,7 +18,7 @@
 
 ## 2. “标准消息接口”的含义
 
-使用通用 HTTPS JSON、SSE、WebSocket 传输；`/api/v1` 和 `portal.*` 是本项目公开且版本化的应用契约，不是 NVIDIA 原生 API，也不声称兼容 OpenAI Realtime。
+使用通用 HTTP JSON、SSE、WebSocket 传输；`/api/v1` 和 `portal.*` 是本项目公开且版本化的应用契约，不是 NVIDIA 原生 API，也不声称兼容 OpenAI Realtime。
 
 门户只处理会话、音频、字幕、状态、答案与错误。CueKB schema、VoiceChat 原生 function call 和供应商凭据均留在服务端。新增第三方工具不要求门户理解供应商消息。
 
@@ -24,16 +26,16 @@
 
 ## 3. HTTP 与 SSE（当前路径）
 
-所有业务接口都在 `/api/v1` 下，需认证及会话归属检查。
+所有业务接口都在 `/api/v1` 下。创建 conversation 不需要登录；响应返回一次性展示的高熵 `access_token`。此后该 conversation 的 HTTP/SSE 请求必须使用 `Authorization: Bearer <call_access_token>`，结束 conversation 后 token 失效。
 
 | 方法和路径 | 用途/关键返回 |
 | --- | --- |
 | GET `/capabilities` | 配置和适配器声明的能力；部署声明不等于自动实测 |
-| POST `/conversations` | 请求 title、locale；返回 id、title、epoch、request_revision、locale；新会话仅接受 `en-US`，旧会话保留原 locale |
-| GET `/conversations` | 当前用户会话分页 |
+| POST `/conversations` | 点击开始通话时请求 title、locale；返回 id、epoch、request_revision、locale、access_token；新会话仅接受 `en-US` |
 | GET `/conversations/{cid}/messages` | 当前用户的会话历史 |
 | POST `/conversations/{cid}/voice-sessions` | 返回 voice_session_id、epoch、request_revision、ws_url（含一次性 ticket） |
 | DELETE `/conversations/{cid}/voice-sessions/{sid}` | 关闭语音，保留会话历史；当前同时触发硬中断 |
+| DELETE `/conversations/{cid}` | 结束本标签页通话、关闭语音并撤销 call token |
 | POST `/conversations/{cid}/messages` | `{text}`，要求 Idempotency-Key；202 返回 task_id/turn_id、epoch、request_revision、status；新问题 supersede 旧运行任务 |
 | GET `/conversations/{cid}/events` | SSE 业务流；`Last-Event-ID` 或 `after` 恢复游标 |
 | POST `/conversations/{cid}/playback/stop` | expected_epoch、expected_revision、可选 response_id；停止当前播报，不取消查询 |
@@ -46,9 +48,9 @@ SSE 的 `id` 是持久化 `server_seq`，不是 JSON `event_id`。仅重放业�
 
 ## 4. WebSocket 和音频（当前 v1）
 
-连接签发的 `ws_url`，路径 `/api/v1/voice-sessions/{sid}/stream?ticket=...`，部署必须 WSS。票据有效 60 秒、一次性，绑定服务端验证身份、会话、epoch、Origin；握手失败不能静默切换其它身份。URL query 与凭据不得写访问日志。
+连接签发的 `ws_url`，路径 `/api/v1/voice-sessions/{sid}/stream?ticket=...`；公网 HTTP 部署使用 WS。票据有效 60 秒、一次性，绑定 call owner、conversation、epoch、Origin；握手失败不能静默切换其它身份。URL query 与凭据不得写访问日志。
 
-本阶段门户可直接访问 Web 容器的公网 HTTPS `8087`；Nginx 是该 Web 镜像内的静态文件服务，无需另行部署。无需登录，API 将所有请求映射为服务端固定的 customer 验证身份，tenant 和 KB 范围只来自部署配置。浏览器只请求 Web 同源 `/api/`，镜像内的 Nginx 将其转到容器网络中的 `api:8000`；API 不映射宿主端口。
+本阶段门户可直接访问 Web 容器的公网 HTTP `8087`；Nginx 是该 Web 镜像内的静态文件服务，无需另行部署。无需登录或 tenant；每次 call 的 owner/token 由服务端生成，KB 范围只来自部署配置。浏览器只请求 Web 同源 `/api/`，镜像内的 Nginx 将其转到容器网络中的 `api:8000`；API 不映射宿主端口。
 
 ### 4.1 上行消息
 

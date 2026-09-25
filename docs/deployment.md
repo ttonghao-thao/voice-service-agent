@@ -1,22 +1,22 @@
 # 部署与运行
 
-> 2026-09-24：本文描述当前代码的运行方式，不代表真实服务已经验收。本期 Compose 固定本地受限测试身份、真实 CueKB、`search_knowledge` 和 NVIDIA VoiceChat，不需要天气代理配置。真实验收仍须按 [任务板](TASK_BOARD.md) D07 执行。最终系统边界见 [架构](architecture.md)。
+> 2026-09-25：本文描述当前代码的运行方式，不代表真实服务已经验收。本期 Compose 使用每次通话独立的临时 capability、真实 CueKB、`search_knowledge` 和 NVIDIA VoiceChat，不需要天气代理配置。真实验收仍须按 [任务板](TASK_BOARD.md) D07 执行。最终系统边界见 [架构](architecture.md)。
 
 ## 部署方式边界
 
 本阶段只有一套功能验证部署配置：`.env.example` 是唯一模板，实际 `.env` 不提交；`deploy/compose.production.yaml` 是唯一 Compose 拓扑，无需逐项修改 Compose。PostgreSQL、Redis、迁移、API、Web 是当前业务链路的必要容器；VoiceChat、CueKB 仍独立部署。应用代码保留显式注入的 fixture 设置供自动化测试使用；正常 API 启动会执行严格部署校验，拒绝 fixture 身份、mock、自动建表，以及缺少真实文本模型、CueKB 或 NVIDIA VoiceChat WSS 配置的部署。
 
-门户只用于测试，可从公网直接访问 `https://<证书覆盖的域名或公网 IP>:8087`。Nginx 已打包在 Web 镜像中，负责提供静态门户和终止 HTTPS，无需独立部署 Nginx 或外层反向代理。它在容器内监听 `0.0.0.0:8087`，Compose 同端口公开映射；填写证书和私钥在宿主机上的绝对路径，容器只读挂载。`PUBLIC_ORIGIN` 必须与浏览器实际使用的 HTTPS origin 完全一致，证书须受测试设备信任；若使用公网 IP，证书须包含该 IP 的 SAN。浏览器麦克风依赖可信 HTTPS，不能用 HTTP 地址验收语音。
+门户只用于受控测试，可从公网直接访问 `http://<域名或公网 IP>:8087`。Nginx 已打包在 Web 镜像中，负责提供静态门户，无需证书挂载或外层反向代理。它在容器内监听 `0.0.0.0:8087`，Compose 同端口公开映射；`PUBLIC_ORIGIN` 必须与浏览器实际使用的 HTTP origin 完全一致。普通公网 HTTP 通常不属于浏览器 secure context，目标测试浏览器必须明确允许该 origin 使用麦克风；这一兼容性必须在 D07 实机验证，不能由构建通过替代。
 
 API 容器内部监听 `0.0.0.0:8000`，不映射宿主端口。浏览器只从 Web 同源 `/api/` 调用，Web 容器内的 Nginx 将请求转到 Compose `app` 网络的 `api:8000`。PostgreSQL、Redis 也只在容器网络中；公网仅开放 Web 的 `8087`。独立 API 客户端与正式系统间鉴权不属于本期核心验证。
 
 编码机没有 Docker 或真实 CueKB/VoiceChat 接口；本地只运行契约、静态与夹具测试。镜像/容器、PostgreSQL/Redis、真实供应商和浏览器验收归 D07，不能以本地测试或 `/health/ready` 冒充通过。
 
-## 配置与受限测试身份
+## 配置与独立测试通话
 
-复制 `.env.example` 为 `.env`；模板中的 `voice.example.com`、`cuekb.example.com`、证书路径、镜像标签、租户和 KB UUID 仅演示填写格式。替换示例值和所有 `REPLACE_` 值。Compose 固定 `AUTH_MODE=validation`、`CUEKB_MODE=real`、`ENABLED_TOOLS=search_knowledge`、`VOICE_PROVIDER=nvidia`；容量、超时、语言和检索条数沿用代码默认值。不需要账号 JSON、密码哈希、Cookie 密钥、能力开关、服务 revision、健康地址、OIDC、`APP_ENV` 或第二份 env 文件。
+复制 `.env.example` 为 `.env`；模板中的 `voice.example.com`、`cuekb.example.com`、镜像标签和 KB UUID 仅演示填写格式。替换示例值和所有 `REPLACE_` 值。Compose 固定 `AUTH_MODE=validation`、`CUEKB_MODE=real`、`ENABLED_TOOLS=search_knowledge`、`VOICE_PROVIDER=nvidia`；容量、超时、语言和检索条数沿用代码默认值。不需要 tenant、账号 JSON、密码哈希、Cookie 密钥、TLS 文件、能力开关、服务 revision、健康地址、OIDC、`APP_ENV` 或第二份 env 文件。
 
-所有门户请求使用服务端固定的 `validation-customer`，角色始终为 customer，只拥有 `knowledge:read`；`TENANT_ID` 和 `KNOWLEDGE_BASE_IDS` 由服务端配置决定，浏览器和模型不能覆盖，管理 API 仍拒绝访问。同一部署上的测试者共享该身份及其可见会话，因此一次部署只供一个受控测试组使用。这一身份只为尽快验证英文语音闭环，不作为正式客户认证方案；验证入口的网络访问范围由部署环境控制。
+门户首次加载不创建身份或读取历史。测试人员在当前标签页点击 “Start call” 时，API 创建新的 conversation、随机 owner 和高熵 `call_access_token`；token 只保存在该标签页 JavaScript 内存中，HTTP/SSE 请求以 Bearer 发送，WS 使用与该 owner/conversation/epoch 绑定的一次性 ticket。其它标签页不会得到该 token，不能读取或控制本次通话；结束通话撤销 token。`KNOWLEDGE_BASE_IDS` 仍由服务端配置并对所有测试通话统一生效，浏览器和模型不能扩大范围，管理 API 仍拒绝匿名 call capability。这不是正式客户认证方案。
 
 ## 镜像构建与部署
 
@@ -47,7 +47,7 @@ chmod 600 .env
 ./scripts/deploy-cloud.sh .env
 ```
 
-脚本检查必需值、私网地址、TLS 文件、本地镜像和 Compose 配置，等待 PostgreSQL/Redis 健康，用 API 镜像执行 Alembic，再启动 API、核验容器内 `/health/ready`，最后启动 Web。配置和账号错误会在 API 启动时失败；镜像不会由部署脚本构建或自动拉取。readiness 只证明容器和启用工具的配置就绪，不能证明 CueKB、VoiceChat、文字答案或英语口述质量。当前依赖镜像固定为 `postgres:17.6-alpine` 和 `redis:7-alpine` 对应 digest；已有 PostgreSQL 数据卷在更换镜像前须备份并验证目标版本兼容，不把切换标签视为无风险降级。
+脚本检查必需值、HTTP 公网入口、本地镜像和 Compose 配置，等待 PostgreSQL/Redis 健康，用 API 镜像执行 Alembic，再启动 API、核验容器内 `/health/ready`，最后启动 Web。配置错误会在 API 启动时失败；镜像不会由部署脚本构建或自动拉取。readiness 只证明容器和启用工具的配置就绪，不能证明 CueKB、VoiceChat、文字答案或英语口述质量。当前依赖镜像固定为 `postgres:17.6-alpine` 和 `redis:7-alpine` 对应 digest；已有 PostgreSQL 数据卷在更换镜像前须备份并验证目标版本兼容，不把切换标签视为无风险降级。
 
 ```sh
 docker compose --env-file .env -f deploy/compose.production.yaml ps
@@ -84,7 +84,7 @@ Redis 持有每个 conversation 的独占租约，15 秒 TTL、4 秒续约。未
 
 | 阶段 | 执行方案 | 退出条件与证据 |
 | --- | --- | --- |
-| D07-A 基线与环境 | 固定应用 commit、API/Web 镜像、VoiceChat API/digest、CueKB 服务版本、文本模型与脱敏配置摘要；准备验证 KB 和授权英文样本。按唯一流程独立构建镜像，执行迁移、健康和恢复预检，验证公网 HTTPS `8087` 的证书与麦克风 | 记录版本、配置与迁移结果；`verify_deployment.py` 确认文字、语音和知识工具均已配置；readiness 只作为入口条件 |
+| D07-A 基线与环境 | 固定应用 commit、API/Web 镜像、VoiceChat API/digest、CueKB 服务版本、文本模型与脱敏配置摘要；准备验证 KB 和授权英文样本。按唯一流程独立构建镜像，执行迁移、健康和恢复预检，验证公网 HTTP `8087` 及目标浏览器麦克风权限 | 记录版本、配置与迁移结果；`verify_deployment.py` 确认文字、语音和知识工具均已配置；readiness 只作为入口条件 |
 | D07-B 真实文字与范围 | 用服务端固定 customer 身份验证 KB 范围不可由请求覆盖、管理 API 被拒绝，再跑真实文本模型 → CueKB M3 的支持/澄清/冲突/故障场景 | V02–V04、V10 的文字部分具备 trace、引用版本、状态和权限证据；失败不得归类为空命中 |
 | D07-C 英文基础语音 | 在隔离的云端验收部署固定供应商版本，用授权录音执行协议探针并人工听音，再验证门户 → VoiceChat → 本项目 → 真实 CueKB → 实际口述 | V01/V03/V07/V09 有录音授权、事件、实际回答和人工判定；探针的合成工具结果不充当知识闭环证据 |
 | D07-D 竞态与恢复 | 工具等待 5 秒时分别附和、新问、改问、取消、停止播报；在结果写回及播报边界断网；测试超过两分钟及多次轮换 | V05/V06/V08 留下旧 revision 拒绝、pending call 结清或关闭、新连接无旧音频的证据；增强能力不通过则只评估 basic |

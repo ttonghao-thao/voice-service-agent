@@ -8,7 +8,6 @@ from fastapi.responses import JSONResponse
 
 from app.agent_runtime.runtime import BusinessRuntime
 from app.api.auth import Auth
-from app.api.auth import router as auth_router
 from app.api.logging import configure_logging
 from app.api.routes import capabilities, router
 from app.config import Settings
@@ -29,9 +28,9 @@ def create_app(settings=None):
     async def lifespan(app):
         if not injected_settings:
             settings.validate_deployment()
-        auth = Auth(settings)
         async with AsyncExitStack() as cleanup:
             store = Store(settings.database_url)
+            auth = Auth(settings, store)
             cleanup.push_async_callback(store.engine.dispose)
             client = await cleanup.enter_async_context(
                 httpx.AsyncClient(timeout=5, follow_redirects=False, limits=httpx.Limits(max_connections=50))
@@ -151,7 +150,6 @@ def create_app(settings=None):
             status_code=500,
         )
 
-    app.include_router(auth_router)
     app.include_router(router)
     return app
 

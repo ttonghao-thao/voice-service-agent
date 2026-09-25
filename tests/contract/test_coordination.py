@@ -45,7 +45,7 @@ async def test_new_owner_advances_durable_epoch_before_new_output(app, conversat
     from app.contracts import Principal
     from app.sessions.coordinator import SessionCoordinator
 
-    user = Principal(user_id="dev-operator", tenant_id="dev-tenant")
+    user = Principal(user_id="dev-operator")
     backend = RedisContract()
     one, two = Coordination(app.state.settings), Coordination(app.state.settings)
     one.redis = two.redis = backend

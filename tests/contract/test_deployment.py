@@ -36,11 +36,8 @@ def test_cloud_compose_is_a_production_only_container_topology():
     assert "ports" not in services["postgres"] and "ports" not in services["redis"]
     assert services["web"]["ports"] == ["0.0.0.0:8087:8087"]
     assert "ports" not in services["api"]
-    assert services["web"]["volumes"] == [
-        "${WEB_TLS_CERT_FILE:?Set the TLS certificate path in .env}:/etc/nginx/tls/tls.crt:ro",
-        "${WEB_TLS_KEY_FILE:?Set the TLS private key path in .env}:/etc/nginx/tls/tls.key:ro",
-    ]
-    assert "https://127.0.0.1:8087/health/live" in services["web"]["healthcheck"]["test"][-1]
+    assert "volumes" not in services["web"]
+    assert "http://127.0.0.1:8087/health/live" in services["web"]["healthcheck"]["test"][-1]
     images = json.loads((ROOT / "deploy/images.lock.json").read_text())
     assert services["postgres"]["image"] == images["postgres"]
     assert services["redis"]["image"] == images["redis"]
@@ -64,11 +61,8 @@ def test_cloud_environment_template_cannot_enable_development_fallbacks():
     assert set(values) == {
         "IMAGE_TAG",
         "PUBLIC_ORIGIN",
-        "WEB_TLS_CERT_FILE",
-        "WEB_TLS_KEY_FILE",
         "POSTGRES_PASSWORD",
         "REDIS_PASSWORD",
-        "TENANT_ID",
         "KNOWLEDGE_BASE_IDS",
         "AGENT_PROVIDER",
         "AGENT_MODEL",
@@ -87,15 +81,12 @@ def test_cloud_environment_template_cannot_enable_development_fallbacks():
     assert "VOICE_PROVIDER" not in values
     assert values["VOICECHAT_WS_URL"].startswith("REPLACE_")
     origin = urlparse(values["PUBLIC_ORIGIN"])
-    assert origin.scheme == "https" and origin.port == 8087 and origin.path == ""
-    assert values["WEB_TLS_CERT_FILE"].startswith("/")
-    assert values["WEB_TLS_KEY_FILE"].startswith("/")
+    assert origin.scheme == "http" and origin.port == 8087 and origin.path == ""
     assert values["IMAGE_TAG"]
     assert urlparse(values["CUEKB_BASE_URL"]).scheme == "https"
     for key in (
         "POSTGRES_PASSWORD",
         "REDIS_PASSWORD",
-        "TENANT_ID",
         "OPENAI_API_KEY",
         "CUEKB_API_KEY",
         "VOICECHAT_API_KEY",
@@ -114,13 +105,14 @@ def test_cloud_deployment_uses_prebuilt_images():
     assert "LOCAL_USERS_JSON" not in script and "API_BIND_ADDRESS" not in script
     assert "APP_ENV" not in script
     nginx = (ROOT / "deploy/nginx.conf").read_text()
-    assert "listen 8087 ssl;" in nginx
-    assert "ssl_certificate /etc/nginx/tls/tls.crt;" in nginx
+    assert "listen 8087;" in nginx
+    assert "ssl_certificate" not in nginx
     assert "/api/v1/auth/login" not in nginx
     assert "login_limit" not in nginx
+    assert "proxy_set_header X-Forwarded-For $remote_addr;" in nginx
 
 
-def test_deployment_rejects_missing_compatible_base_url_and_tls_files(tmp_path):
+def test_deployment_rejects_missing_compatible_base_url_and_accepts_http_origin(tmp_path):
     docker = tmp_path / "docker"
     docker.write_text("#!/bin/sh\nexit 0\n")
     docker.chmod(0o755)
@@ -129,18 +121,15 @@ def test_deployment_rejects_missing_compatible_base_url_and_tls_files(tmp_path):
         "IMAGE_TAG": "test",
         "POSTGRES_PASSWORD": "postgres-pass",
         "REDIS_PASSWORD": "redis-pass",
-        "TENANT_ID": "tenant",
         "KNOWLEDGE_BASE_IDS": "00000000-0000-4000-8000-000000000001",
         "AGENT_PROVIDER": "openai",
         "AGENT_MODEL": "model",
         "OPENAI_API_KEY": "key",
-        "PUBLIC_ORIGIN": "https://voice.test:8087",
+        "PUBLIC_ORIGIN": "http://voice.test:8087",
         "CUEKB_BASE_URL": "https://cuekb.test",
         "CUEKB_API_KEY": "cuekb-key",
         "VOICECHAT_WS_URL": "wss://voicechat.test/ws",
         "VOICECHAT_API_KEY": "voice-key",
-        "WEB_TLS_CERT_FILE": "/missing/cert.pem",
-        "WEB_TLS_KEY_FILE": "/missing/key.pem",
     }
     env_file = tmp_path / ".env"
 
@@ -159,9 +148,8 @@ def test_deployment_rejects_missing_compatible_base_url_and_tls_files(tmp_path):
     assert rejected_model.returncode != 0
     assert "AGENT_BASE_URL" in rejected_model.stderr
     values["AGENT_PROVIDER"] = "openai"
-    rejected_cert = check()
-    assert rejected_cert.returncode != 0
-    assert "WEB_TLS_CERT_FILE must point to a readable file" in rejected_cert.stderr
+    accepted_http = check()
+    assert accepted_http.returncode == 0
 
 
 def test_deployment_readiness_verifier_requires_real_matching_configuration():

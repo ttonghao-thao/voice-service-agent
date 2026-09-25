@@ -80,6 +80,22 @@ a:focus-visible {
 .section-label span {
   font-size: 11px;
 }
+.call-isolation {
+  flex: 1;
+  border: 1px solid #d8e2d8;
+  background: #f7faf7;
+  border-radius: 10px;
+  padding: 16px;
+  color: #50675c;
+}
+.call-isolation strong {
+  color: #214f3f;
+}
+.call-isolation p {
+  margin: 8px 0 0;
+  font-size: 12px;
+  line-height: 1.6;
+}
 .conversations {
   flex: 1;
   overflow: auto;
@@ -147,6 +163,12 @@ a:focus-visible {
   font-size: 10px;
   color: #8a998b;
   margin-top: 4px;
+}
+.live-transcript {
+  margin: 10px 0;
+}
+.voice-source-button {
+  margin: 10px 0 16px;
 }
 .workspace {
   min-width: 0;

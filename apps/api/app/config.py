@@ -18,9 +18,7 @@ class Settings(BaseSettings):
     database_url: str = "sqlite+aiosqlite:///./voice-service.db"
     redis_url: str | None = None
     dev_user_id: str = "dev-operator"
-    dev_tenant_id: str = "dev-tenant"
     dev_admin: bool = False
-    tenant_id: str = ""
     knowledge_base_ids: str = "00000000-0000-4000-8000-000000000001"
     agent_provider: Literal["mock", "openai", "compatible"] = "mock"
     agent_model: str = ""
@@ -107,7 +105,7 @@ class Settings(BaseSettings):
             raise ValueError("Deployment requires real weather when weather is enabled")
         origin = urlparse(self.public_origin)
         if (
-            origin.scheme != "https"
+            origin.scheme != "http"
             or not origin.hostname
             or origin.username
             or origin.password
@@ -115,9 +113,7 @@ class Settings(BaseSettings):
             or origin.query
             or origin.fragment
         ):
-            raise ValueError("PUBLIC_ORIGIN must be an HTTPS origin without a path")
-        if not self.tenant_id:
-            raise ValueError("Deployment requires a tenant")
+            raise ValueError("PUBLIC_ORIGIN must be an HTTP origin without a path")
         if self.voice_provider != "nvidia":
             raise ValueError("Deployment requires NVIDIA VoiceChat for end-to-end validation")
         urls = [self.agent_base_url]

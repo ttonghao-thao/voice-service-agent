@@ -281,7 +281,7 @@ class WeatherAdapter:
         except (ValueError, ZoneInfoNotFoundError) as exc:
             raise DomainError("TOOL_BAD_ARGUMENTS", "请提供明确日期或有效地点时区", 422) from exc
         key = (
-            ctx.principal.tenant_id,
+            ctx.principal.user_id,
             place.id,
             target.isoformat(),
             args.units,

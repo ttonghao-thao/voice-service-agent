@@ -124,10 +124,9 @@ def test_portal_event_contracts_are_discriminated_and_strict():
 def deployment_settings(**overrides):
     values = {
         "auth_mode": "validation",
-        "public_origin": "https://portal.example.invalid",
+        "public_origin": "http://portal.example.invalid:8087",
         "database_url": "postgresql+asyncpg://service:secret@postgres/service",
         "redis_url": "redis://:secret@redis:6379/0",
-        "tenant_id": "tenant",
         "agent_provider": "openai",
         "agent_model": "configured-model",
         "openai_api_key": "configured-key",
@@ -157,8 +156,9 @@ def test_compatible_model_requires_explicit_base_url():
 @pytest.mark.parametrize(
     ("field", "value", "message"),
     [
-        ("public_origin", "https://portal.example.invalid/", "PUBLIC_ORIGIN"),
-        ("public_origin", "https://portal.example.invalid/app", "PUBLIC_ORIGIN"),
+        ("public_origin", "https://portal.example.invalid", "PUBLIC_ORIGIN"),
+        ("public_origin", "http://portal.example.invalid:8087/", "PUBLIC_ORIGIN"),
+        ("public_origin", "http://portal.example.invalid:8087/app", "PUBLIC_ORIGIN"),
         ("auth_mode", "fixture", "fixture identity"),
         ("voice_provider", "disabled", "NVIDIA VoiceChat"),
         ("agent_provider", "mock", "mock providers"),

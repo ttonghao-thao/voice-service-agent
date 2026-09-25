@@ -26,7 +26,6 @@ class ToolSpec(StrictModel):
     timeout_ms: int = Field(ge=100, le=12000)
     read_only: Literal[True]
     enabled: bool
-    allowed_tenants: list[str]
     result_limit: int = Field(ge=1024, le=32768)
     retry_policy: dict
     audit_policy: Literal["evidence_only"]
@@ -66,7 +65,6 @@ class ToolRegistry:
             for name, spec in self.specs.items()
             if self.deployment_enabled(name)
             and spec.permission_scope in principal.scopes
-            and ("*" in spec.allowed_tenants or principal.tenant_id in spec.allowed_tenants)
             and await self.store.enabled(name)
         }
 

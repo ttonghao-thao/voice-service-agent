@@ -62,13 +62,6 @@
       "title": "Enabled",
       "type": "boolean"
     },
-    "allowed_tenants": {
-      "items": {
-        "type": "string"
-      },
-      "title": "Allowed Tenants",
-      "type": "array"
-    },
     "result_limit": {
       "maximum": 32768,
       "minimum": 1024,
@@ -99,7 +92,6 @@
     "timeout_ms",
     "read_only",
     "enabled",
-    "allowed_tenants",
     "result_limit",
     "retry_policy",
     "audit_policy"

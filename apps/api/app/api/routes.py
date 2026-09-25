@@ -1,5 +1,8 @@
 import asyncio
+import hashlib
 import json
+import secrets
+from ipaddress import ip_address
 from typing import Annotated
 
 from app.api.auth import principal
@@ -13,6 +16,7 @@ from app.contracts import (
     StrictModel,
     TaskControlInput,
     now,
+    uid,
 )
 from app.storage.models import AdminAudit, Conversation, Event, Record, ToolConfig, ToolRun, Turn
 from fastapi import APIRouter, Depends, Header, Query, Request, WebSocket
@@ -25,6 +29,16 @@ User = Annotated[Principal, Depends(principal)]
 
 def _configured_kbs(settings):
     return {value.strip() for value in settings.knowledge_base_ids.split(",") if value.strip()}
+
+
+def _client_address(request):
+    candidate = request.headers.get("x-forwarded-for", "").split(",", 1)[0].strip()
+    if not candidate and request.client:
+        candidate = request.client.host
+    try:
+        return str(ip_address(candidate))
+    except ValueError:
+        return "unknown"
 
 
 def _answer_for_principal(answer, user, settings):
@@ -138,7 +152,14 @@ def capabilities(s):
 
 
 @router.get("/capabilities")
-async def get_capabilities(request: Request, user: User):
+async def get_capabilities(request: Request):
+    auth = request.app.state.auth
+    user = Principal(
+        user_id="capability-check",
+        roles=frozenset({"customer"}),
+        scopes=frozenset({"knowledge:read"}),
+        knowledge_base_ids=auth.knowledge_base_ids(),
+    )
     return {
         **capabilities(request.app.state.settings),
         "available_tools": sorted(await request.app.state.registry.allowed(user)),
@@ -148,53 +169,42 @@ async def get_capabilities(request: Request, user: User):
 async def limited(request, user):
     await request.app.state.coordination.check()
     await request.app.state.coordination.rate_limit(
-        f"{user.tenant_id}:{user.user_id}", request.app.state.settings.request_limit_per_minute
+        user.user_id, request.app.state.settings.request_limit_per_minute
     )
 
 
 @router.post("/conversations", status_code=201)
-async def create_conversation(body: ConversationInput, request: Request, user: User):
-    await limited(request, user)
+async def create_conversation(body: ConversationInput, request: Request):
+    settings = request.app.state.settings
+    access_token = secrets.token_urlsafe(32)
+    if settings.auth_mode == "validation":
+        owner_id = uid()
+        await request.app.state.coordination.check()
+        await request.app.state.coordination.rate_limit(
+            "call-create:" + _client_address(request), settings.request_limit_per_minute
+        )
+    else:
+        user = await request.app.state.auth.principal(request)
+        owner_id = user.user_id
+        await limited(request, user)
     async with request.app.state.store.transaction() as db:
-        c = Conversation(tenant_id=user.tenant_id, user_id=user.user_id, title=body.title, locale=body.locale)
+        c = Conversation(
+            owner_id=owner_id,
+            access_token_hash=hashlib.sha256(access_token.encode()).hexdigest(),
+            title=body.title,
+            locale=body.locale,
+        )
         db.add(c)
         await db.flush()
-        return {
+        result = {
             "id": c.id,
             "title": c.title,
             "epoch": c.epoch,
             "request_revision": c.request_revision,
             "locale": c.locale,
         }
-
-
-@router.get("/conversations")
-async def conversations(
-    request: Request, user: User, offset: int = Query(0, ge=0), limit: int = Query(30, ge=1, le=100)
-):
-    async with request.app.state.store.sessions() as db:
-        rows = (
-            await db.execute(
-                select(Conversation)
-                .where(Conversation.tenant_id == user.tenant_id, Conversation.user_id == user.user_id)
-                .order_by(Conversation.updated_at.desc())
-                .offset(offset)
-                .limit(limit)
-            )
-        ).scalars()
-        return {
-            "items": [
-                {
-                    "id": c.id,
-                    "title": c.title,
-                    "epoch": c.epoch,
-                    "request_revision": c.request_revision,
-                    "locale": c.locale,
-                    "updated_at": c.updated_at.isoformat(),
-                }
-                for c in rows
-            ]
-        }
+        result["access_token"] = access_token
+        return result
 
 
 @router.get("/conversations/{cid}/messages")
@@ -378,6 +388,17 @@ async def end_voice(cid: str, sid: str, request: Request, user: User):
     return {"status": "closed", "epoch": await request.app.state.coordinator.interrupt(user, cid, expected)}
 
 
+@router.delete("/conversations/{cid}")
+async def close_conversation(cid: str, request: Request, user: User):
+    async with request.app.state.store.sessions() as db:
+        c = await request.app.state.store.get(db, cid, user)
+        expected = c.epoch
+    await request.app.state.coordinator.interrupt(user, cid, expected)
+    await request.app.state.voice.close_conversation(cid)
+    await request.app.state.store.revoke_access(user, cid)
+    return {"status": "closed"}
+
+
 @router.websocket("/voice-sessions/{sid}/stream")
 async def voice_stream(ws: WebSocket, sid: str, ticket: str = ""):
     await ws.app.state.voice.stream(ws, sid, ticket)
@@ -441,7 +462,6 @@ async def toggle_tool(name: str, body: ToolPatch, request: Request, user: User):
             db.add(ToolConfig(name=name, enabled=body.enabled))
         db.add(
             AdminAudit(
-                tenant_id=user.tenant_id,
                 user_id=user.user_id,
                 action="tool.enabled",
                 details={"name": name, "enabled": body.enabled},
@@ -504,7 +524,7 @@ async def drain(request: Request, user: User):
     coordinator = request.app.state.coordinator
     coordinator.draining = True
     async with request.app.state.store.transaction() as db:
-        db.add(AdminAudit(tenant_id=user.tenant_id, user_id=user.user_id, action="gateway.drain", details={}))
+        db.add(AdminAudit(user_id=user.user_id, action="gateway.drain", details={}))
     return {
         "status": "draining",
         "message": "This replica no longer accepts new sessions. Active sessions will finish within their limits before shutdown.",

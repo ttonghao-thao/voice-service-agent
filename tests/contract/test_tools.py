@@ -21,7 +21,6 @@ def test_search_filters_require_explicit_nonempty_values():
 def dev_user():
     return Principal(
         user_id="dev-operator",
-        tenant_id="dev-tenant",
         scopes=frozenset({"knowledge:read", "weather:read"}),
         knowledge_base_ids=(KB_SUPPORT,),
     )
@@ -79,7 +78,7 @@ async def test_weather_ambiguity_and_target_timezone(app, monkeypatch):
             },
         )
 
-    ctx = RunContext(Principal(user_id="u", tenant_id="t"), "c", "t", 0)
+    ctx = RunContext(Principal(user_id="u"), "c", "t", 0)
     async with httpx.AsyncClient(transport=httpx.MockTransport(handler)) as client:
         adapter = WeatherAdapter(settings, client)
         out = await adapter.invoke(WeatherInput(place="东京", date="明天"), ctx)
@@ -343,7 +342,6 @@ async def test_new_registered_tool_needs_no_chat_or_voice_changes(app, conversat
         timeout_ms=1000,
         read_only=True,
         enabled=True,
-        allowed_tenants=["dev-tenant"],
         result_limit=32768,
         retry_policy={"max_retries": 0},
         audit_policy="evidence_only",
