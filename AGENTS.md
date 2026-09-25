@@ -28,6 +28,6 @@
 - real 失败不回退 mock；未执行的真实服务、浏览器、数据库及云端检查不得写 passed。中文/天气/股票不属本期，不引入训练、GPU 或新队列服务。
 - DB 用 Alembic；`AUTO_CREATE_SCHEMA` 仅限隔离测试。只有一套验证 `.env`/Compose 部署配置，镜像独立构建；fixture 仅由自动化测试显式注入。
 - Web 镜像内的 Nginx 直接提供公网 HTTPS `8087`，无独立 Nginx 服务；仅将同源 `/api/` 转至容器内 `api:8000`。验证阶段不映射 API 宿主端口，不提供独立客户端或正式客户认证入口。
-- 锁文件为 `uv.lock`、`apps/web/package-lock.json`。实际修改协议/schema 后执行 `PYTHONPATH=apps/api uv run python scripts/export_contracts.py`。
+- Python 生产/开发依赖分别固定在 `requirements.txt`、`requirements-dev.txt`，Web 锁文件为 `apps/web/package-lock.json`。实际修改协议/schema 后执行 `PYTHONPATH=apps/api python scripts/export_contracts.py`。
 - 不提交密钥、录音、票据、本地 DB 或产物。文档任务仅改文档，不改代码、配置、生成契约和依赖锁。
 - 复杂任务先在任务板维护里程碑，逐步实施验证；设计归主题文档、证据归验收记录。完成报告说明变更、验证和未验证项。

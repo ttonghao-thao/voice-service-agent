@@ -28,6 +28,16 @@ docker build -f deploy/Dockerfile.api -t "voice-service-agent-api:$release_tag" 
 docker build -f deploy/Dockerfile.web -t "voice-service-agent-web:$release_tag" .
 ```
 
+API 镜像只使用 Python 基础镜像自带的 `pip`，按 `requirements.txt` 中的精确版本安装生产依赖。仓库不使用额外的 Python 包管理器或独立锁文件；`requirements-dev.txt` 引用相同生产依赖并追加测试/Lint 工具。修改依赖时直接更新这两份 requirements，并在全新 Python 3.12 虚拟环境中完成安装和回归：
+
+```sh
+python3.12 -m venv .venv
+. .venv/bin/activate
+python -m pip install --disable-pip-version-check -r requirements-dev.txt
+```
+
+Docker 先复制 `requirements.txt` 再复制应用源码，因此仅修改业务代码不会重新安装依赖。
+
 把相同标签的镜像和仓库发布目录送到部署机，填写 `.env` 的单个 `IMAGE_TAG`，然后部署：
 
 ```sh

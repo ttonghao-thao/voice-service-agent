@@ -25,9 +25,19 @@ API → VoiceChatAdapter / 后台客服 Agent / ToolRegistry → 独立 VoiceCha
 
 ## 验证命令
 
+使用 Python 3.12 创建本地虚拟环境并安装固定版本的开发依赖：
+
 ```sh
-uv run --locked pytest -q
-uv run --locked ruff check apps/api tests scripts
+python3.12 -m venv .venv
+. .venv/bin/activate
+python -m pip install --disable-pip-version-check -r requirements-dev.txt
+```
+
+然后执行：
+
+```sh
+python -m pytest -q
+ruff check apps/api tests scripts
 npm test --prefix apps/web
 npm run build --prefix apps/web
 ```
@@ -43,7 +53,7 @@ npm run test:e2e
 测试产物写入被忽略的 artifacts/test-results 等目录。真实语音探测：
 
 ```sh
-PYTHONPATH=apps/api uv run python scripts/probe_voicechat.py \
+PYTHONPATH=apps/api python scripts/probe_voicechat.py \
   --api-version <target-api-revision> \
   --image-digest sha256:<target-image-digest> \
   --wav /path/to/authorized-first-question.wav \
