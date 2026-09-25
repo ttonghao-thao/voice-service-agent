@@ -36,8 +36,11 @@ def test_cloud_compose_is_a_production_only_container_topology():
     assert "ports" not in services["postgres"] and "ports" not in services["redis"]
     assert services["web"]["ports"] == ["0.0.0.0:8087:8087"]
     assert "ports" not in services["api"]
-    assert "volumes" not in services["web"]
-    assert "http://127.0.0.1:8087/health/live" in services["web"]["healthcheck"]["test"][-1]
+    assert services["web"]["volumes"] == [
+        "${WEB_TLS_CERT_FILE:?Set the TLS certificate path in .env}:/etc/nginx/tls/tls.crt:ro",
+        "${WEB_TLS_KEY_FILE:?Set the TLS private key path in .env}:/etc/nginx/tls/tls.key:ro",
+    ]
+    assert "https://127.0.0.1:8087/health/live" in services["web"]["healthcheck"]["test"][-1]
     images = json.loads((ROOT / "deploy/images.lock.json").read_text())
     assert services["postgres"]["image"] == images["postgres"]
     assert services["redis"]["image"] == images["redis"]
@@ -61,6 +64,8 @@ def test_cloud_environment_template_cannot_enable_development_fallbacks():
     assert set(values) == {
         "IMAGE_TAG",
         "PUBLIC_ORIGIN",
+        "WEB_TLS_CERT_FILE",
+        "WEB_TLS_KEY_FILE",
         "POSTGRES_PASSWORD",
         "REDIS_PASSWORD",
         "KNOWLEDGE_BASE_IDS",
@@ -81,7 +86,9 @@ def test_cloud_environment_template_cannot_enable_development_fallbacks():
     assert "VOICE_PROVIDER" not in values
     assert values["VOICECHAT_WS_URL"].startswith("REPLACE_")
     origin = urlparse(values["PUBLIC_ORIGIN"])
-    assert origin.scheme == "http" and origin.port == 8087 and origin.path == ""
+    assert origin.scheme == "https" and origin.port == 8087 and origin.path == ""
+    assert values["WEB_TLS_CERT_FILE"].startswith("/")
+    assert values["WEB_TLS_KEY_FILE"].startswith("/")
     assert values["IMAGE_TAG"]
     assert urlparse(values["CUEKB_BASE_URL"]).scheme == "https"
     for key in (
@@ -105,14 +112,14 @@ def test_cloud_deployment_uses_prebuilt_images():
     assert "LOCAL_USERS_JSON" not in script and "API_BIND_ADDRESS" not in script
     assert "APP_ENV" not in script
     nginx = (ROOT / "deploy/nginx.conf").read_text()
-    assert "listen 8087;" in nginx
-    assert "ssl_certificate" not in nginx
+    assert "listen 8087 ssl;" in nginx
+    assert "ssl_certificate /etc/nginx/tls/tls.crt;" in nginx
     assert "/api/v1/auth/login" not in nginx
     assert "login_limit" not in nginx
     assert "proxy_set_header X-Forwarded-For $remote_addr;" in nginx
 
 
-def test_deployment_rejects_missing_compatible_base_url_and_accepts_http_origin(tmp_path):
+def test_deployment_requires_https_and_readable_tls_files(tmp_path):
     docker = tmp_path / "docker"
     docker.write_text("#!/bin/sh\nexit 0\n")
     docker.chmod(0o755)
@@ -125,11 +132,13 @@ def test_deployment_rejects_missing_compatible_base_url_and_accepts_http_origin(
         "AGENT_PROVIDER": "openai",
         "AGENT_MODEL": "model",
         "OPENAI_API_KEY": "key",
-        "PUBLIC_ORIGIN": "http://voice.test:8087",
+        "PUBLIC_ORIGIN": "https://voice.test:8087",
         "CUEKB_BASE_URL": "https://cuekb.test",
         "CUEKB_API_KEY": "cuekb-key",
         "VOICECHAT_WS_URL": "wss://voicechat.test/ws",
         "VOICECHAT_API_KEY": "voice-key",
+        "WEB_TLS_CERT_FILE": "/missing/cert.pem",
+        "WEB_TLS_KEY_FILE": "/missing/key.pem",
     }
     env_file = tmp_path / ".env"
 
@@ -148,8 +157,23 @@ def test_deployment_rejects_missing_compatible_base_url_and_accepts_http_origin(
     assert rejected_model.returncode != 0
     assert "AGENT_BASE_URL" in rejected_model.stderr
     values["AGENT_PROVIDER"] = "openai"
-    accepted_http = check()
-    assert accepted_http.returncode == 0
+    rejected_cert = check()
+    assert rejected_cert.returncode != 0
+    assert "WEB_TLS_CERT_FILE must point to a readable file" in rejected_cert.stderr
+
+    cert = tmp_path / "cert.pem"
+    key = tmp_path / "key.pem"
+    cert.write_text("test certificate")
+    key.write_text("test key")
+    values["WEB_TLS_CERT_FILE"] = str(cert)
+    values["WEB_TLS_KEY_FILE"] = str(key)
+    values["PUBLIC_ORIGIN"] = "http://voice.test:8087"
+    rejected_http = check()
+    assert rejected_http.returncode != 0
+    assert "HTTPS origin" in rejected_http.stderr
+    values["PUBLIC_ORIGIN"] = "https://voice.test:8087"
+    accepted_https = check()
+    assert accepted_https.returncode == 0
 
 
 def test_deployment_readiness_verifier_requires_real_matching_configuration():

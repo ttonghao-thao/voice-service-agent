@@ -7,7 +7,7 @@
 一个客户页面即可：开始语音、结束语音、连接/聆听/查询/播放状态、用户转写、实际口述字幕、最终答案与可展开引用。麦克风被拒绝、断网或语音不可用时给出明确恢复提示；可选显示文字输入。
 
 - 页面加载不创建 conversation 或读取历史；每个标签页点击 “Start call” 后创建全新的 conversation/call token，再申请语音 session。token 只在该标签页内存中保存，刷新即丢失。
-- 用户主动点击后申请麦克风，ready 后连续发送音频，包括静音。当前按需求提供公网 HTTP；普通浏览器可能拒绝非 secure context 的麦克风，目标测试浏览器必须在 D07 实机确认。
+- 用户主动点击后申请麦克风，ready 后连续发送音频，包括静音。门户使用公网 HTTPS，使页面满足浏览器 secure context 前提；证书信任与实际麦克风授权仍须在 D07 实机确认。
 - `portal.transcript.delta/done` 作为用户输入气泡流式打印，`portal.speech_text.delta/done` 作为实际 VoiceChat 输出气泡流式打印；done 替换对应临时文本，不用业务答案冒充实际口述。
 - 客户页面不展示工具配置、模型参数、内部运行日志或后台管理菜单。
 - 当前交互区分“停止播报”和“取消查询”：前者清除客户端缓冲并由服务端抑制当前 response，保留仍有效业务任务；后者使当前 revision 失效，存在无法安全结清的原生 call 时关闭旧语音连接。
@@ -26,7 +26,7 @@
 
 ## 3. HTTP 与 SSE（当前路径）
 
-所有业务接口都在 `/api/v1` 下。创建 conversation 不需要登录；响应返回一次性展示的高熵 `access_token`。此后该 conversation 的 HTTP/SSE 请求必须使用 `Authorization: Bearer <call_access_token>`，结束 conversation 后 token 失效。
+所有业务接口都在 `/api/v1` 下。创建 conversation 不需要登录；响应返回一次性展示的高熵 `access_token`。此后该 conversation 的 HTTPS/SSE 请求必须使用 `Authorization: Bearer <call_access_token>`，结束 conversation 后 token 失效。
 
 | 方法和路径 | 用途/关键返回 |
 | --- | --- |
@@ -48,9 +48,9 @@ SSE 的 `id` 是持久化 `server_seq`，不是 JSON `event_id`。仅重放业�
 
 ## 4. WebSocket 和音频（当前 v1）
 
-连接签发的 `ws_url`，路径 `/api/v1/voice-sessions/{sid}/stream?ticket=...`；公网 HTTP 部署使用 WS。票据有效 60 秒、一次性，绑定 call owner、conversation、epoch、Origin；握手失败不能静默切换其它身份。URL query 与凭据不得写访问日志。
+连接签发的 `ws_url`，路径 `/api/v1/voice-sessions/{sid}/stream?ticket=...`；公网 HTTPS 部署使用 WSS。票据有效 60 秒、一次性，绑定 call owner、conversation、epoch、Origin；握手失败不能静默切换其它身份。URL query 与凭据不得写访问日志。
 
-本阶段门户可直接访问 Web 容器的公网 HTTP `8087`；Nginx 是该 Web 镜像内的静态文件服务，无需另行部署。无需登录或 tenant；每次 call 的 owner/token 由服务端生成，KB 范围只来自部署配置。浏览器只请求 Web 同源 `/api/`，镜像内的 Nginx 将其转到容器网络中的 `api:8000`；API 不映射宿主端口。
+本阶段门户可直接访问 Web 容器的公网 HTTPS `8087`；Nginx 在 Web 镜像内终止 TLS 并提供静态门户，无需另行部署。无需登录或 tenant；每次 call 的 owner/token 由服务端生成，KB 范围只来自部署配置。浏览器只请求 Web 同源 `/api/`，镜像内的 Nginx 将其转到容器网络中的 `api:8000`；API 不映射宿主端口。
 
 ### 4.1 上行消息
 

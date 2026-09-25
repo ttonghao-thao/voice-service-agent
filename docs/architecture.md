@@ -20,8 +20,8 @@
 ```mermaid
 flowchart TB
     U[测试浏览器：简单 HTML 语音门户]
-    W[Web 容器：Nginx HTTP 8087]
-    G[消息与语音网关：call capability、HTTP、SSE、WebSocket]
+    W[Web 容器：Nginx HTTPS 8087]
+    G[消息与语音网关：call capability、HTTPS、SSE、WebSocket]
     C[SessionCoordinator：会话、任务、改问、结果提交]
     V[VoiceChatAdapter]
     N[独立 NVIDIA VoiceChat 服务]
@@ -34,7 +34,7 @@ flowchart TB
     E[已接入的第三方系统]
     S[(PostgreSQL：业务状态、证据、审计)]
     R[(Redis：租约、协调)]
-    U <-->|HTTP JSON / SSE / WS 音频消息| W
+    U <-->|HTTPS JSON / SSE / WSS 音频消息| W
     W <-->|同源 /api/；容器网络 api:8000| G
     G <--> C
     G <--> V
@@ -72,7 +72,7 @@ flowchart TB
 - 门户交付为静态 HTML/CSS/浏览器脚本，复用 TypeScript AudioWorklet 音频代码；可用现有构建链产出，不强制为“简单 HTML”更换前端框架。
 - 当前 React/Ant Design 页面已精简为客户入口，复用既有音频底层；工具管理只保留受权限保护的独立后端运维 API。
 - 云端用 Docker Compose 运行本项目 Web/API/迁移/数据库/Redis；VoiceChat、CueKB 独立部署和维护。详情见 [部署](deployment.md)。
-- Web 镜像内的 Nginx 直接对公网提供 HTTP；仅代理同源 `/api/` 到容器网络中的 API，API 不映射宿主端口。每次点击开始通话生成只属于当前标签页的 owner/token；本期未提供正式客户或系统间身份。
+- Web 镜像内的 Nginx 直接终止 TLS 并对公网提供 HTTPS；仅代理同源 `/api/` 到容器网络中的 API，API 不映射宿主端口。每次点击开始通话生成只属于当前标签页的 owner/token；本期未提供正式客户或系统间身份。
 
 ## 3. 门户与标准消息接口
 

@@ -105,7 +105,7 @@ class Settings(BaseSettings):
             raise ValueError("Deployment requires real weather when weather is enabled")
         origin = urlparse(self.public_origin)
         if (
-            origin.scheme != "http"
+            origin.scheme != "https"
             or not origin.hostname
             or origin.username
             or origin.password
@@ -113,7 +113,7 @@ class Settings(BaseSettings):
             or origin.query
             or origin.fragment
         ):
-            raise ValueError("PUBLIC_ORIGIN must be an HTTP origin without a path")
+            raise ValueError("PUBLIC_ORIGIN must be an HTTPS origin without a path")
         if self.voice_provider != "nvidia":
             raise ValueError("Deployment requires NVIDIA VoiceChat for end-to-end validation")
         urls = [self.agent_base_url]

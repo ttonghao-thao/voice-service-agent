@@ -14,7 +14,7 @@
 | --- | --- |
 | 完成情况、下一步 | [任务板](docs/TASK_BOARD.md) §1–3 |
 | 架构、取消、交付、优化设计 | [架构](docs/architecture.md) §2、4–6、10 |
-| 门户、HTTP/SSE/WS、音频 | [门户契约](docs/portal-protocol.md) 对应章节 |
+| 门户、HTTPS/SSE/WSS、音频 | [门户契约](docs/portal-protocol.md) 对应章节 |
 | CueKB、VoiceChat、文本模型、身份 | [接入](docs/integration.md) 对应服务章节 |
 | Web/API 入口、镜像、部署、迁移、D07 | [部署](docs/deployment.md) 对应章节 |
 | 测试证据、放行 | [验收](docs/acceptance-report.md) §0、3–5；命令见 README |
@@ -27,7 +27,7 @@
 - 编码阶段无 CueKB/VoiceChat 真实接口，按规范与受控夹具交付，不尝试真实调用。无 Docker 环境：只静态检查，不安装、拉取、构建或启动容器。真实验证归 D07 部署阶段。
 - real 失败不回退 mock；未执行的真实服务、浏览器、数据库及云端检查不得写 passed。中文/天气/股票不属本期，不引入训练、GPU 或新队列服务。
 - DB 用 Alembic；`AUTO_CREATE_SCHEMA` 仅限隔离测试。只有一套验证 `.env`/Compose 部署配置，镜像独立构建；fixture 仅由自动化测试显式注入。
-- Web 镜像内的 Nginx 直接提供公网 HTTP `8087`，无独立 Nginx 服务；仅将同源 `/api/` 转至容器内 `api:8000`。每次点击开始通话签发仅存于当前标签页内存的 call token，不共享 conversation/history；验证阶段不映射 API 宿主端口，不提供正式客户认证入口。
+- Web 镜像内的 Nginx 直接提供公网 HTTPS `8087`，无独立 Nginx 服务；仅将同源 `/api/` 转至容器内 `api:8000`。每次点击开始通话签发仅存于当前标签页内存的 call token，不共享 conversation/history；验证阶段不映射 API 宿主端口，不提供正式客户认证入口。
 - Python 生产/开发依赖分别固定在 `requirements.txt`、`requirements-dev.txt`，Web 锁文件为 `apps/web/package-lock.json`。实际修改协议/schema 后执行 `PYTHONPATH=apps/api python scripts/export_contracts.py`。
 - 不提交密钥、录音、票据、本地 DB 或产物。文档任务仅改文档，不改代码、配置、生成契约和依赖锁。
 - 复杂任务先在任务板维护里程碑，逐步实施验证；设计归主题文档、证据归验收记录。完成报告说明变更、验证和未验证项。

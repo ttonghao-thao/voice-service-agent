@@ -1,6 +1,6 @@
 # 验收状态与真实服务门槛
 
-更新：2026-09-25。**D01–D06、D08–D10、E01–E03 已完成历史编码和本地自动化验证，D13 已完成独立测试通话、实时字幕与 HTTP 门户改造；D07 的真实服务端到端验收仍未完成**。本期仅验收英文知识库客服；真实验证在云端 Docker 环境执行。缺口和实施顺序见 [任务板](TASK_BOARD.md)。
+更新：2026-09-25。**D01–D06、D08–D10、E01–E03 已完成历史编码和本地自动化验证，D13 已完成独立测试通话、实时字幕与 HTTPS 门户改造；D07 的真实服务端到端验收仍未完成**。本期仅验收英文知识库客服；真实验证在云端 Docker 环境执行。缺口和实施顺序见 [任务板](TASK_BOARD.md)。
 
 编码阶段约束（2026-09-16 确认）：CueKB/VoiceChat 无真实接口可调用，满足已确认接口规范和处理逻辑并通过相应契约/本地测试，即满足该阶段验收要求。Docker 环境不提供，仅在必要时静态检查镜像制作和启动代码，不搭建环境或执行镜像构建。以下真实服务与容器验收项留待后续部署阶段，不作为编码完成的阻塞项。
 
@@ -20,12 +20,12 @@
 
 ## 1. 按日期记录的编码与部署前验证
 
-### 2026-09-25 D13 独立测试通话、实时字幕与 HTTP 门户
+### 2026-09-25 D13 独立测试通话、实时字幕与 HTTPS 门户
 
-- 删除启动时 `TENANT_ID` 与固定 `validation-customer`。每次创建 conversation 时生成独立 owner 和高熵 call token；token 哈希入库，明文只返回一次并保存在当前标签页内存。HTTP/SSE 以 Bearer 认证，WS ticket 绑定同一 owner/conversation/epoch；交叉 token、缺 token 和结束后复用均被拒绝。Alembic 0005 将 conversation 的 tenant/user 所有权迁移为 owner/token hash，并移除 admin audit tenant。
+- 删除启动时 `TENANT_ID` 与固定 `validation-customer`。每次创建 conversation 时生成独立 owner 和高熵 call token；token 哈希入库，明文只返回一次并保存在当前标签页内存。HTTPS/SSE 以 Bearer 认证，WSS ticket 绑定同一 owner/conversation/epoch；交叉 token、缺 token 和结束后复用均被拒绝。Alembic 0005 将 conversation 的 tenant/user 所有权迁移为 owner/token hash，并移除 admin audit tenant。
 - 门户加载时不再读取 conversation 列表；每次点击 “Start call” 都创建新 conversation，结束通话撤销 token。`portal.transcript.*` 和 `portal.speech_text.*` 分别实时打印用户输入与 VoiceChat 实际输出字幕；业务答案/证据继续与口述字幕分离。
-- Web Nginx 改为公网 HTTP `8087`，移除证书挂载、TLS 启动参数和 `.env` TLS/tenant 项；内部 `/api/` 仍只转发到容器网络 API。公网 HTTP 麦克风是否被目标浏览器允许尚未实机验证，是 D07 阻断项。
-- 本地验证：72 项 pytest 通过（1 条 Starlette/AnyIO 上游弃用警告）；6 项前端音频单测、4 项 Chromium 门户/音频 E2E 和 TypeScript/Vite 构建通过；Ruff、部署脚本语法、契约导出和 `git diff --check` 通过；Alembic 临时 SQLite `upgrade head → downgrade base → upgrade head` 通过。真实 PostgreSQL、Docker、公网 HTTP 浏览器麦克风、多人语音、CueKB、VoiceChat 和文本模型未运行。
+- Web Nginx 最终确认为公网 HTTPS `8087`，保留证书/私钥只读挂载、TLS 启动参数和 `.env` TLS 路径；仅删除启动级 tenant。内部 `/api/` 仍只转发到容器网络 API。真实证书链、域名和浏览器麦克风权限尚未实机验证，归 D07。
+- 本地验证：72 项 pytest 通过（1 条 Starlette/AnyIO 上游弃用警告）；6 项前端音频单测、4 项 Chromium 门户/音频 E2E 和 TypeScript/Vite 构建通过；Ruff、部署脚本语法、契约导出和 `git diff --check` 通过；Alembic 临时 SQLite `upgrade head → downgrade base → upgrade head` 通过。真实 PostgreSQL、Docker、公网 TLS/浏览器、多人语音、CueKB、VoiceChat 和文本模型未运行。
 
 ### 2026-09-25 D08 Python 依赖工具链简化
 

@@ -1,9 +1,9 @@
 # Voice Service Agent · 语音客服 Agent
 
-测试人员可通过公网 HTTP 门户验证语音服务；后台 API 是本阶段重点。本项目管理会话、业务推理、工具和回答，后台连接独立的 **NVIDIA VoiceChat** 与 **CueKB**；第三方查询按实际接入启用。
+测试人员可通过公网 HTTPS 门户验证语音服务；后台 API 是本阶段重点。本项目管理会话、业务推理、工具和回答，后台连接独立的 **NVIDIA VoiceChat** 与 **CueKB**；第三方查询按实际接入启用。
 
 ```text
-公网浏览器 → HTTP :8087 → Web 容器（Nginx 直接提供门户）
+公网浏览器 → HTTPS :8087 → Web 容器（Nginx 终止 TLS 并直接提供门户）
                             └─ 同源 /api/ → API 容器 :8000
 API → VoiceChatAdapter / 后台客服 Agent / ToolRegistry → 独立 VoiceChat、文本模型、CueKB
     └─ PostgreSQL / Redis
@@ -21,7 +21,7 @@ API → VoiceChatAdapter / 后台客服 Agent / ToolRegistry → 独立 VoiceCha
 
 ## 本机验证
 
-项目只维护一套功能验证部署配置。编码机使用显式注入的夹具、契约和静态检查验证实现，不用第二套 env 或 Compose。实际启动只需在 `.env` 填写镜像、HTTP origin、数据库、文本模型、CueKB、VoiceChat 和 KB 范围；固定模式、容量与超时使用 Compose/代码默认值。Web 镜像内置 Nginx，浏览器直接访问公网 HTTP `8087`；API 只在容器网络中供同源 `/api/` 使用。每个标签页点击开始通话时创建独立 conversation 和临时 call token，不加载或共享其他标签页历史。部署步骤见 [部署文档](docs/deployment.md)。
+项目只维护一套功能验证部署配置。编码机使用显式注入的夹具、契约和静态检查验证实现，不用第二套 env 或 Compose。实际启动只需在 `.env` 填写镜像、HTTPS origin、TLS 证书路径、数据库、文本模型、CueKB、VoiceChat 和 KB 范围；固定模式、容量与超时使用 Compose/代码默认值。Web 镜像内置 Nginx，浏览器直接访问公网 HTTPS `8087`；API 只在容器网络中供同源 `/api/` 使用。每个标签页点击开始通话时创建独立 conversation 和临时 call token，不加载或共享其他标签页历史。部署步骤见 [部署文档](docs/deployment.md)。
 
 ## 验证命令
 
@@ -71,13 +71,13 @@ PYTHONPATH=apps/api python scripts/probe_voicechat.py \
 ./scripts/deploy-cloud.sh .env
 ```
 
-配置准备、`ENABLED_TOOLS`、HTTP 浏览器麦克风约束、迁移、粘性路由和回滚见 [部署文档](docs/deployment.md)。CueKB-only 可只启用知识工具，但仍必须完成真实服务验收后才能放行。
+配置准备、`ENABLED_TOOLS`、TLS 证书、浏览器麦克风权限、迁移、粘性路由和回滚见 [部署文档](docs/deployment.md)。CueKB-only 可只启用知识工具，但仍必须完成真实服务验收后才能放行。
 
 ## 代码入口
 
 | 位置 | 责任 |
 | --- | --- |
-| `apps/api/app/api/` | HTTP/SSE/WS、认证、管理 |
+| `apps/api/app/api/` | HTTPS/SSE/WSS、认证、管理 |
 | `apps/api/app/voice/` | VoiceChat 适配、音频与工具桥接 |
 | `apps/api/app/sessions/` | 会话、任务、epoch、租约与取消 |
 | `apps/api/app/agent_runtime/` | 后台客服 Agent、SDK 循环、答案校验 |

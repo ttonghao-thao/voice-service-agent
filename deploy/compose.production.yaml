@@ -71,7 +71,7 @@ services:
     env_file: ${DEPLOY_ENV_FILE:-../.env}
     environment:
       <<: *application-environment
-      PUBLIC_ORIGIN: ${PUBLIC_ORIGIN:?Set the test HTTP origin in .env}
+      PUBLIC_ORIGIN: ${PUBLIC_ORIGIN:?Set the test HTTPS origin in .env}
     depends_on:
       migrate: {condition: service_completed_successfully}
       redis: {condition: service_healthy}
@@ -99,10 +99,13 @@ services:
     pull_policy: never
     ports:
       - "0.0.0.0:8087:8087"
+    volumes:
+      - "${WEB_TLS_CERT_FILE:?Set the TLS certificate path in .env}:/etc/nginx/tls/tls.crt:ro"
+      - "${WEB_TLS_KEY_FILE:?Set the TLS private key path in .env}:/etc/nginx/tls/tls.key:ro"
     depends_on:
       api: {condition: service_healthy}
     healthcheck:
-      test: ["CMD-SHELL", "wget -q -O /dev/null http://127.0.0.1:8087/health/live"]
+      test: ["CMD-SHELL", "wget --no-check-certificate -q -O /dev/null https://127.0.0.1:8087/health/live"]
       interval: 10s
       timeout: 3s
       retries: 6
