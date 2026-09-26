@@ -12,7 +12,7 @@
 | 第三方工具 | 本期不启用 | 天气代理代码仍保留，生产默认无需天气配置 |
 | 通话 capability | 每次测试通话的独立 owner/token 与服务端 KB 范围 | 标签页内存 token 已实现；正式客户身份服务暂缓 |
 
-当前环境变量名和启动校验以 `apps/api/app/config.py`、`.env.example` 为准。本期 Compose 固定真实 CueKB 与 `search_knowledge`；运行配置只需 `CUEKB_BASE_URL` 和 `CUEKB_API_KEY`，检索模式与条数使用代码默认值。旧 `RAG_*` 配置和 `/v1/retrieve` 契约已退出活动实现。
+当前环境变量名和启动校验以 `apps/api/app/config.py`、`.env.example` 为准。本期 Compose 固定真实 CueKB 与 `search_knowledge`；运行配置只需 `CUEKB_BASE_URL` 和 `CUEKB_API_KEY`，检索模式与条数使用代码默认值。OpenAI-compatible 文本模型和 CueKB 基地址均接受 HTTP/HTTPS；HTTP 只用于已隔离、受控的内部网络，对外门户仍必须使用 HTTPS。旧 `RAG_*` 配置和 `/v1/retrieve` 契约已退出活动实现。
 
 部署只使用一套功能验证配置；正常 API 启动拒绝 fixture 身份、mock、自动建表和未配置的 VoiceChat。自动化测试显式注入 fixture 设置，不代表另一个部署环境。VoiceChat API 版本、镜像 digest、事件和人工听音结论由协议探针参数及报告记录，不再复制为运行时开关。
 

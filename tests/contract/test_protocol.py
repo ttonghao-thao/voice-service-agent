@@ -153,6 +153,46 @@ def test_compatible_model_requires_explicit_base_url():
         settings.validate_deployment()
 
 
+@pytest.mark.parametrize("scheme", ["http", "https"])
+def test_internal_text_model_and_cuekb_allow_http_or_https(scheme):
+    settings = deployment_settings(
+        agent_provider="compatible",
+        agent_base_url=f"{scheme}://model.internal:8003/v1",
+        cuekb_base_url=f"{scheme}://cuekb.internal:8085",
+    )
+    settings.validate_deployment()
+
+
+@pytest.mark.parametrize(
+    ("field", "value"),
+    [
+        ("agent_base_url", "ftp://model.internal/v1"),
+        ("cuekb_base_url", "ws://cuekb.internal:8085"),
+        ("cuekb_base_url", "http:///missing-host"),
+    ],
+)
+def test_deployment_rejects_non_http_text_or_cuekb_url(field, value):
+    overrides = {
+        "agent_provider": "compatible",
+        "agent_base_url": "http://model.internal:8003/v1",
+        field: value,
+    }
+    settings = deployment_settings(**overrides)
+    with pytest.raises(ValueError, match="HTTP or HTTPS"):
+        settings.validate_deployment()
+
+
+def test_deployment_keeps_weather_on_https():
+    settings = deployment_settings(
+        enabled_tools="weather",
+        weather_mode="real",
+        weather_base_url="http://weather.internal",
+        weather_api_key="configured-key",
+    )
+    with pytest.raises(ValueError, match="Weather integration requires HTTPS"):
+        settings.validate_deployment()
+
+
 @pytest.mark.parametrize(
     ("field", "value", "message"),
     [
@@ -174,19 +214,6 @@ def test_deployment_rejects_unsafe_configuration(field, value, message):
 def test_external_tracing_stays_disabled():
     with pytest.raises(ValidationError):
         Settings(_env_file=None, external_tracing_enabled=True)
-
-
-@pytest.mark.parametrize(
-    ("field", "value"),
-    [
-        ("cuekb_base_url", "http://cuekb.example.invalid"),
-        ("agent_base_url", "http://model.example.invalid"),
-    ],
-)
-def test_deployment_rejects_non_tls_service_endpoints(field, value):
-    settings = deployment_settings(**{field: value})
-    with pytest.raises(ValueError, match="TLS"):
-        settings.validate_deployment()
 
 
 def test_websocket_handshake_and_oidc_logs_redact_query_credentials():

@@ -90,7 +90,7 @@ def test_cloud_environment_template_cannot_enable_development_fallbacks():
     assert values["WEB_TLS_CERT_FILE"].startswith("/")
     assert values["WEB_TLS_KEY_FILE"].startswith("/")
     assert values["IMAGE_TAG"]
-    assert urlparse(values["CUEKB_BASE_URL"]).scheme == "https"
+    assert urlparse(values["CUEKB_BASE_URL"]).scheme in {"http", "https"}
     for key in (
         "POSTGRES_PASSWORD",
         "REDIS_PASSWORD",

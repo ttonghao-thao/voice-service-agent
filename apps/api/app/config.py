@@ -116,13 +116,21 @@ class Settings(BaseSettings):
             raise ValueError("PUBLIC_ORIGIN must be an HTTPS origin without a path")
         if self.voice_provider != "nvidia":
             raise ValueError("Deployment requires NVIDIA VoiceChat for end-to-end validation")
-        urls = [self.agent_base_url]
+        http_integrations = []
+        if self.agent_provider == "compatible":
+            http_integrations.append(self.agent_base_url)
         if "search_knowledge" in self.enabled_tool_names:
-            urls.append(self.cuekb_base_url)
-        if "weather" in self.enabled_tool_names:
-            urls.append(self.weather_base_url)
-        if any(url and urlparse(url).scheme != "https" for url in urls):
-            raise ValueError("Deployment HTTP integrations require TLS")
+            http_integrations.append(self.cuekb_base_url)
+        if any(
+            url
+            and (urlparse(url).scheme not in ("http", "https") or not urlparse(url).hostname)
+            for url in http_integrations
+        ):
+            raise ValueError(
+                "AGENT_BASE_URL and CUEKB_BASE_URL require HTTP or HTTPS URLs with a host"
+            )
+        if "weather" in self.enabled_tool_names and urlparse(self.weather_base_url).scheme != "https":
+            raise ValueError("Weather integration requires HTTPS")
         if self.voicechat_ws_url and not self.voicechat_ws_url.startswith("wss://"):
             raise ValueError("Deployment VoiceChat requires WSS")
         if self.voice_provider == "nvidia" and not (

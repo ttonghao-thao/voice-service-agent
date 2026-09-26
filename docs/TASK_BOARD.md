@@ -1,10 +1,10 @@
 # 当前任务板
 
-更新：2026-09-25。目标设计见 [architecture.md](architecture.md)，状态证据见 [acceptance-report.md](acceptance-report.md)。本期范围已确定为英文知识库客服，默认只启用 `search_knowledge`。
+更新：2026-09-26。目标设计见 [architecture.md](architecture.md)，状态证据见 [acceptance-report.md](acceptance-report.md)。本期范围已确定为英文知识库客服，默认只启用 `search_knowledge`。
 
 ## 1. 当前结论与审计基线
 
-当前代码以 D01–D06、D08–D10、E01–E03 的本地验证为基础；D13 已将 D12 的共享验证身份替换为每次通话独立的临时 capability，并最终确认 Web `8087` 使用 HTTPS。D09/D12 的账号与共享身份属于已被本期新要求替换的历史实现；D10 的 Web TLS 入口继续保留，私网 API 入口已由 D12 移除。D07 尚未完成真实环境验收。2026-09-22 的 `9b44859` 是历史文档审计基线，验证日期和范围见 [验收 §0–2](acceptance-report.md#0-当前审计与证据索引)。
+当前代码以 D01–D06、D08–D10、D13–D14、E01–E03 的本地验证为基础；D13 已将 D12 的共享验证身份替换为每次通话独立的临时 capability，并最终确认 Web `8087` 使用 HTTPS。D14 允许隔离内网中的 OpenAI-compatible 文本模型与 CueKB 使用 HTTP 或 HTTPS，不放宽公网门户 HTTPS 和 VoiceChat WSS。D09/D12 的账号与共享身份属于已被本期新要求替换的历史实现；D10 的 Web TLS 入口继续保留，私网 API 入口已由 D12 移除。D07 尚未完成真实环境验收。2026-09-22 的 `9b44859` 是历史文档审计基线，验证日期和范围见 [验收 §0–2](acceptance-report.md#0-当前审计与证据索引)。
 
 当前主链：客户门户 → HTTPS/SSE/WSS → SessionCoordinator → BusinessRuntime → ToolRegistry → CueKB；原生语音由 VoiceGateway/VoiceChatAdapter 桥接。服务端 call capability 与 KB 授权、取消/revision、单写入器、安静边界轮换、M3 逐块证据、英文提示词/门户均已存在。PostgreSQL/Redis 接入代码存在，真实迁移、租约和恢复尚未验收。
 
@@ -12,7 +12,7 @@
 
 ## 2. 已完成的编码里程碑
 
-D01–D06、D08–D10、E01–E03 已完成代码和本地自动化验证。编码阶段没有 CueKB/VoiceChat 真实接口，也没有 Docker 环境；按接口规范、处理逻辑、契约及本地自动化测试验收，真实联调和容器运行不作为编码交付前提。D07 的部署前代码与静态验证已具备，真实部署环境生产验收仍待执行。
+D01–D06、D08–D10、D13–D14、E01–E03 已完成代码和本地自动化验证。编码阶段没有 CueKB/VoiceChat 真实接口，也没有 Docker 环境；按接口规范、处理逻辑、契约及本地自动化测试验收，真实联调和容器运行不作为编码交付前提。D07 的部署前代码与静态验证已具备，真实部署环境生产验收仍待执行。
 
 | ID | 任务与影响模块 | 完成条件 | 状态 |
 | --- | --- | --- | --- |
@@ -28,10 +28,11 @@ D01–D06、D08–D10、E01–E03 已完成代码和本地自动化验证。编�
 | E02 | 检索条件、逐块引用与文档。Runtime 工具输入、门户、集成文档 | 明确型号/版本经工具输入传递；引用显示来源块、截断及关系证据；历史读取兼容 | 编码、本地测试及前端构建完成；真实资料验收待 D07 |
 | E03 | 英文语音与门户适配。`voice/`、Runtime、门户、消息契约 | 英文提示词/文案/默认语言、VoiceChat ASCII 工具结果及英文样本契约验证 | 编码和本地契约验证完成；实际英文语音与口述正确性待 D07 云端 Docker 验收 |
 | D13 | 独立测试通话、实时字幕与 HTTPS 门户。`api/auth.py`、存储/迁移、Web、部署 | 点击开始即创建独立 conversation/token；标签页不共享历史；实时打印输入转写和实际口述字幕；移除 `TENANT_ID`，保留 Web TLS | 编码与本地自动化验证完成；公网证书/浏览器及真实多人语音仍待 D07 |
+| D14 | 隔离内网文本模型与 CueKB 传输协议。`config.py`、部署模板/文档 | `AGENT_PROVIDER=compatible` 的 base URL 和启用中的 CueKB 接受 HTTP/HTTPS；拒绝非 HTTP 协议或缺少 host；公网门户仍为 HTTPS，VoiceChat 仍为 WSS | 编码与本地契约验证完成；真实内网路由、防火墙和服务调用待 D07 |
 
 ## 3. 待完成与建议顺序
 
-D13 已替换 D12 的共享身份设计并通过本地回归；HTTPS 门户继续作为唯一公网入口。D07 的真实服务验收仍待执行。Q 系列是审计提出的增量设计，尚未编码或安排，不把它们自动追加为原有编码交付前提。
+D13 已替换 D12 的共享身份设计并通过本地回归；D14 已放开隔离内网文本模型与 CueKB 的 HTTP/HTTPS 选择。HTTPS 门户继续作为唯一公网入口。D07 的真实服务验收仍待执行。Q 系列是审计提出的增量设计，尚未编码或安排，不把它们自动追加为原有编码交付前提。
 
 | 顺序 / ID | 工作与状态 | 依赖 / 完成条件 | 方案入口 |
 | --- | --- | --- | --- |
@@ -51,7 +52,7 @@ D13 已替换 D12 的共享身份设计并通过本地回归；HTTPS 门户继�
 | P1 / Q03 | 运维指标与验收报告完整性，建议待排期 | 可分解延迟/故障；报告显示缺测与预期分母，避免部分样本冒充整体通过 | [架构 §10.3](architecture.md#103-q03可观测性与报告完整性) |
 | P2 / Q04 | 鉴权原件查看，待业务与上游契约确认 | 版本固定、撤权复查、受控下载；未确认接口前不创建假入口 | [接入 §7](integration.md#7-q04原件查看的后续设计) |
 
-D13 不修改 VoiceGateway、SessionCoordinator、BusinessRuntime、CueKB adapter、revision/epoch、单写入器或 pending call 结清语义。本地夹具测试不记为真实服务验收。下一步按 D07-A–D 执行端到端全双工验证；云端实测缺陷回到原模块修复并复测。
+D13–D14 不修改 VoiceGateway、SessionCoordinator、BusinessRuntime、CueKB adapter、revision/epoch、单写入器或 pending call 结清语义。本地夹具测试不记为真实服务验收。下一步按 D07-A–D 执行端到端全双工验证；云端实测缺陷回到原模块修复并复测。
 
 ## 4. 文档整理里程碑
 
