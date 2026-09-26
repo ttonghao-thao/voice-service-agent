@@ -4,7 +4,7 @@
 
 ## 部署方式边界
 
-本阶段只有一套功能验证部署配置：`.env.example` 是唯一模板，实际 `.env` 不提交；`deploy/compose.production.yaml` 是唯一 Compose 拓扑，无需逐项修改 Compose。PostgreSQL、Redis、迁移、API、Web 是当前业务链路的必要容器；VoiceChat、CueKB 仍独立部署。应用代码保留显式注入的 fixture 设置供自动化测试使用；正常 API 启动会执行严格部署校验，拒绝 fixture 身份、mock、自动建表，以及缺少真实文本模型、CueKB 或 NVIDIA VoiceChat WSS 配置的部署。
+本阶段只有一套功能验证部署配置：`.env.example` 是唯一模板，实际 `.env` 不提交；`deploy/compose.production.yaml` 是唯一 Compose 拓扑，无需逐项修改 Compose。PostgreSQL、Redis、迁移、API、Web 是当前业务链路的必要容器；VoiceChat、CueKB 仍独立部署。应用代码保留显式注入的 fixture 设置供自动化测试使用；正常 API 启动会执行严格部署校验，拒绝 fixture 身份、mock、自动建表，以及缺少真实文本模型、CueKB 或 NVIDIA VoiceChat WS/WSS 配置的部署。
 
 门户只用于受控测试，可从公网直接访问 `https://<域名>:8087`。Nginx 已打包在 Web 镜像中，直接终止 TLS 并提供静态门户，无需外层反向代理。它在容器内监听 `0.0.0.0:8087`，Compose 同端口公开映射；`PUBLIC_ORIGIN` 必须与浏览器实际使用的 HTTPS origin 完全一致。证书和私钥通过只读挂载提供，证书链、域名匹配、浏览器信任及麦克风授权必须在 D07 实机验证。
 
@@ -54,7 +54,7 @@ docker compose --env-file .env -f deploy/compose.production.yaml ps
 docker compose --env-file .env -f deploy/compose.production.yaml logs --tail=200 api web
 ```
 
-`AGENT_MODEL` 是 BusinessRuntime 后台文本 Agent 调用的模型标识，用于理解任务、选择 `search_knowledge` 并组织有依据的答案；它不是 VoiceChat 的实时语音模型。`AGENT_PROVIDER=openai` 时使用官方端点，无需 `AGENT_BASE_URL`；只有接 OpenAI-compatible 服务时才改为 `compatible` 并填写该 HTTP/HTTPS 基地址，两者不需要同时独立部署。`CUEKB_BASE_URL` 是独立 CueKB HTTP/HTTPS 基地址，应用附加 `/v1/search`；HTTP 仅用于已隔离、受控的内部网络。`VOICECHAT_WS_URL` 是独立语音服务提供的 WSS 地址，不由门户域名推断。本期固定只开放 `search_knowledge`，无需天气配置。数据库/Redis 凭据使用 URL 安全字符，容器内连接串由 Compose 构造。
+`AGENT_MODEL` 是 BusinessRuntime 后台文本 Agent 调用的模型标识，用于理解任务、选择 `search_knowledge` 并组织有依据的答案；它不是 VoiceChat 的实时语音模型。`AGENT_PROVIDER=openai` 时使用官方端点，无需 `AGENT_BASE_URL`；只有接 OpenAI-compatible 服务时才改为 `compatible` 并填写该 HTTP/HTTPS 基地址，两者不需要同时独立部署。`CUEKB_BASE_URL` 是独立 CueKB HTTP/HTTPS 基地址，应用附加 `/v1/search`；HTTP 仅用于已隔离、受控的内部网络。`VOICECHAT_WS_URL` 是 API 到独立语音服务的 WS/WSS endpoint，不由门户域名推断；WS 仅用于同主机或受控隔离内网，且对应端口不得公网暴露。浏览器公网入口仍强制 HTTPS/WSS。本期固定只开放 `search_knowledge`，无需天气配置。数据库/Redis 凭据使用 URL 安全字符，容器内连接串由 Compose 构造。
 
 本期部署直接开放已配置的英文全双工链路，不再用人工填写的“已验证”布尔值阻止启动。部署后用固定 VoiceChat API 版本和镜像 digest 运行 `scripts/probe_voicechat.py --api-version ... --image-digest ... --wav ...`，人工复核输出音频，再通过门户验证实际录音→CueKB→口述。探针报告负责记录证据，运行配置只负责连接服务；真实失败不回退 mock。Web Nginx 直接终止 HTTPS，并处理 SSE buffering、WS upgrade、请求大小和安全头；不得记录凭据或语音票据。
 

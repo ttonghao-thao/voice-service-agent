@@ -1,6 +1,6 @@
 # 验收状态与真实服务门槛
 
-更新：2026-09-26。**D01–D06、D08–D10、D13–D14、E01–E03 已完成历史编码和本地自动化验证；D07 的真实服务端到端验收仍未完成**。D13 实现独立测试通话、实时字幕与 HTTPS 门户；D14 允许隔离内网文本模型与 CueKB 使用 HTTP/HTTPS。本期仅验收英文知识库客服；真实验证在云端 Docker 环境执行。缺口和实施顺序见 [任务板](TASK_BOARD.md)。
+更新：2026-09-26。**D01–D06、D08–D10、D13–D15、E01–E03 已完成历史编码和本地自动化验证；D07 的真实服务端到端验收仍未完成**。D13 实现独立测试通话、实时字幕与 HTTPS 门户；D14 允许隔离内网文本模型与 CueKB 使用 HTTP/HTTPS；D15 允许同主机或受控隔离内网 VoiceChat 使用 WS/WSS。本期仅验收英文知识库客服；真实验证在云端 Docker 环境执行。缺口和实施顺序见 [任务板](TASK_BOARD.md)。
 
 编码阶段约束（2026-09-16 确认）：CueKB/VoiceChat 无真实接口可调用，满足已确认接口规范和处理逻辑并通过相应契约/本地测试，即满足该阶段验收要求。Docker 环境不提供，仅在必要时静态检查镜像制作和启动代码，不搭建环境或执行镜像构建。以下真实服务与容器验收项留待后续部署阶段，不作为编码完成的阻塞项。
 
@@ -10,7 +10,7 @@
 
 | 要回答的问题 | 证据位置与边界 |
 | --- | --- |
-| 最近应用验证 | §1 的 2026-09-26 D14：76 项 pytest、Ruff、部署脚本语法与差异检查；不代表真实内网服务或 Docker 验收 |
+| 最近应用验证 | §1 的 2026-09-26 D15：80 项 pytest、Ruff、部署脚本语法与差异检查；不代表真实内网 VoiceChat 或 Docker 验收 |
 | M3、D08、D01–D06 何时验证 | §1 对应日期；不累加各次测试数作为当前总数 |
 | 真实服务是否通过 | §3：仍待验证；测试文件存在、配置 verified 或本地测试通过都不能替代真实记录 |
 | 下一阶段怎样执行 | [部署 D07-A–F](deployment.md#d07-分阶段执行设计)，场景标准见 §4，放行见 §5 |
@@ -20,9 +20,15 @@
 
 ## 1. 按日期记录的编码与部署前验证
 
+### 2026-09-26 D15 同主机/隔离内网 VoiceChat WS/WSS
+
+- 生产配置校验已允许 `VOICECHAT_WS_URL` 使用含 host 的 `ws://` 或 `wss://`，并拒绝 HTTP 等非 WebSocket scheme 及缺少 host 的地址。`websockets.connect()` 适配逻辑不变，无需外置 VoiceChat TLS 代理或新增证书配置。
+- `.env.example`、部署和接入文档已明确：WS 只用于同主机或受控隔离内网，会明文传输 VoiceChat Bearer token，对应端口不得公网暴露；浏览器公网 HTTPS/WSS 边界不变。
+- 本地验证：80 项 pytest 通过（1 条 Starlette/AnyIO 上游弃用警告）；Ruff、`sh -n scripts/deploy-cloud.sh` 和 `git diff --check` 通过。未运行 Docker、真实 VoiceChat WS、网络路由、防火墙或英文语音闭环，这些仍归 D07。
+
 ### 2026-09-26 D14 隔离内网文本模型与 CueKB HTTP/HTTPS
 
-- 生产校验已允许 `AGENT_PROVIDER=compatible` 的 `AGENT_BASE_URL` 和启用中的 `CUEKB_BASE_URL` 使用 `http://` 或 `https://`；仍拒绝其它 scheme 及缺少 host 的 URL。浏览器 `PUBLIC_ORIGIN` 仍必须为无路径 HTTPS origin，NVIDIA VoiceChat 仍必须使用 WSS，未启用的天气扩展仍保留 HTTPS 约束。
+- 生产校验已允许 `AGENT_PROVIDER=compatible` 的 `AGENT_BASE_URL` 和启用中的 `CUEKB_BASE_URL` 使用 `http://` 或 `https://`；仍拒绝其它 scheme 及缺少 host 的 URL。浏览器 `PUBLIC_ORIGIN` 仍必须为无路径 HTTPS origin，VoiceChat 在 D14 当时仍保持 WSS（后由 D15 替换为 WS/WSS），未启用的天气扩展仍保留 HTTPS 约束。
 - `.env.example`、部署和接入文档已同步 HTTP 仅用于已隔离、受控且从 API 容器可达的内部网络。该改动不会验证现场网段是否真实私有，防火墙、路由、Bearer 明文传输范围与真实服务调用属于 D07。
 - 本地验证：76 项 pytest 通过（1 条 Starlette/AnyIO 上游弃用警告）；Ruff、`sh -n scripts/deploy-cloud.sh` 和 `git diff --check` 通过。未运行 Docker、真实 vLLM/CueKB、私有网络路由或外置 Nginx。
 

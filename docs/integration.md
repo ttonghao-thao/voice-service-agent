@@ -12,7 +12,7 @@
 | 第三方工具 | 本期不启用 | 天气代理代码仍保留，生产默认无需天气配置 |
 | 通话 capability | 每次测试通话的独立 owner/token 与服务端 KB 范围 | 标签页内存 token 已实现；正式客户身份服务暂缓 |
 
-当前环境变量名和启动校验以 `apps/api/app/config.py`、`.env.example` 为准。本期 Compose 固定真实 CueKB 与 `search_knowledge`；运行配置只需 `CUEKB_BASE_URL` 和 `CUEKB_API_KEY`，检索模式与条数使用代码默认值。OpenAI-compatible 文本模型和 CueKB 基地址均接受 HTTP/HTTPS；HTTP 只用于已隔离、受控的内部网络，对外门户仍必须使用 HTTPS。旧 `RAG_*` 配置和 `/v1/retrieve` 契约已退出活动实现。
+当前环境变量名和启动校验以 `apps/api/app/config.py`、`.env.example` 为准。本期 Compose 固定真实 CueKB 与 `search_knowledge`；运行配置只需 `CUEKB_BASE_URL` 和 `CUEKB_API_KEY`，检索模式与条数使用代码默认值。OpenAI-compatible 文本模型和 CueKB 基地址均接受 HTTP/HTTPS；VoiceChat endpoint 接受 WS/WSS。HTTP/WS 只用于同主机或已隔离、受控的内部网络，对外门户仍必须使用 HTTPS/WSS。旧 `RAG_*` 配置和 `/v1/retrieve` 契约已退出活动实现。
 
 部署只使用一套功能验证配置；正常 API 启动拒绝 fixture 身份、mock、自动建表和未配置的 VoiceChat。自动化测试显式注入 fixture 设置，不代表另一个部署环境。VoiceChat API 版本、镜像 digest、事件和人工听音结论由协议探针参数及报告记录，不再复制为运行时开关。
 
@@ -72,6 +72,8 @@ CueKB 上游 HTTP 响应上限为 256 KiB，内部工具输出上限为 32 KiB�
 
 ## 3. VoiceChat 接入与能力门槛
 
+`VOICECHAT_WS_URL` 是 API 容器到独立 VoiceChat 的服务端连接，与浏览器同源 WSS 不是同一条链路。同主机或受控隔离内网可配置 `ws://`；跨主机非受控网络使用 `wss://`。WS 会明文传输 VoiceChat Bearer token，因此对应端口不得公网暴露，并须在 D07 核对路由和防火墙边界。
+
 保留 `session.created → session.update → session.updated`；在首次配置注册 `consult_service_agent(user_request)`，只允许既定函数和 schema。
 
 原生事件 `response.function_call_arguments.done` 进入网关后调用后台业务任务；结果经 `conversation.item.create` / `function_call_output` 以同一有效 call_id 回传。当前网关只支持一个 pending 原生调用；转写完成不能再次触发相同任务。
@@ -90,7 +92,7 @@ CueKB 上游 HTTP 响应上限为 256 KiB，内部工具输出上限为 32 KiB�
 
 ## 4. 文本模型与业务 Agent
 
-当前 `AGENT_PROVIDER=openai` 使用 Responses API，明确配置模型/API key；`compatible` 配置独立 HTTP base URL 并使用 Chat Completions。这些是本仓库适配器行为，真实供应商必须另验工具调用、结构化输出、streaming 和错误语义。VoiceChat WSS 地址不能代替文本模型 endpoint。
+当前 `AGENT_PROVIDER=openai` 使用 Responses API，明确配置模型/API key；`compatible` 配置独立 HTTP base URL 并使用 Chat Completions。这些是本仓库适配器行为，真实供应商必须另验工具调用、结构化输出、streaming 和错误语义。VoiceChat WS/WSS 地址不能代替文本模型 endpoint。
 
 Runtime 复用授权工具和证据校验，输出 display_text、短 speech_text、引用和业务状态；SDK 的工具循环与耗时受整轮 deadline 约束。复杂知识子 agent 若启用，权限/预算继承并缩小，独立临时上下文，只返回候选结果。
 

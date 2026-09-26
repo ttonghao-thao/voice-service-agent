@@ -163,6 +163,27 @@ def test_internal_text_model_and_cuekb_allow_http_or_https(scheme):
     settings.validate_deployment()
 
 
+@pytest.mark.parametrize("scheme", ["ws", "wss"])
+def test_voicechat_allows_ws_or_wss(scheme):
+    settings = deployment_settings(
+        voicechat_ws_url=f"{scheme}://voicechat.internal:9000/v1/realtime"
+    )
+    settings.validate_deployment()
+
+
+@pytest.mark.parametrize(
+    "value",
+    [
+        "http://voicechat.internal:9000/v1/realtime",
+        "wss:///missing-host",
+    ],
+)
+def test_voicechat_rejects_non_websocket_or_missing_host(value):
+    settings = deployment_settings(voicechat_ws_url=value)
+    with pytest.raises(ValueError, match="WS or WSS URL with a host"):
+        settings.validate_deployment()
+
+
 @pytest.mark.parametrize(
     ("field", "value"),
     [

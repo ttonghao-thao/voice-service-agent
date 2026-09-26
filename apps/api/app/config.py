@@ -131,8 +131,11 @@ class Settings(BaseSettings):
             )
         if "weather" in self.enabled_tool_names and urlparse(self.weather_base_url).scheme != "https":
             raise ValueError("Weather integration requires HTTPS")
-        if self.voicechat_ws_url and not self.voicechat_ws_url.startswith("wss://"):
-            raise ValueError("Deployment VoiceChat requires WSS")
+        voicechat_url = urlparse(self.voicechat_ws_url)
+        if self.voicechat_ws_url and (
+            voicechat_url.scheme not in ("ws", "wss") or not voicechat_url.hostname
+        ):
+            raise ValueError("VOICECHAT_WS_URL requires a WS or WSS URL with a host")
         if self.voice_provider == "nvidia" and not (
             self.voicechat_ws_url and self.voicechat_api_key.get_secret_value()
         ):
