@@ -165,3 +165,186 @@ test("Voice turns render as paired chat instead of transcript history", async ({
   await expect(turn).toContainText("Voice knowledge answer");
   await expect(page.locator(".live-captions")).toHaveCount(0);
 });
+
+test("Completed voice transcript stays visible until its persisted turn takes over", async ({
+  page,
+}) => {
+  await page.addInitScript(() => {
+    navigator.mediaDevices.getUserMedia = async () => {
+      const context = new AudioContext();
+      const destination = context.createMediaStreamDestination();
+      (
+        window as typeof window & { __fakeMicrophoneContext?: AudioContext }
+      ).__fakeMicrophoneContext = context;
+      return destination.stream;
+    };
+    class FakeWebSocket {
+      static OPEN = 1;
+      readyState = 1;
+      bufferedAmount = 0;
+      onmessage: ((event: MessageEvent) => void) | null = null;
+      onclose: (() => void) | null = null;
+      onerror: (() => void) | null = null;
+      send() {}
+      close() {
+        this.readyState = 3;
+        this.onclose?.();
+      }
+      constructor() {
+        (window as typeof window & { __fakeVoiceSocket?: FakeWebSocket })
+          .__fakeVoiceSocket = this;
+        setTimeout(() => {
+          this.emit("portal.session.ready", {
+            sample_rate: 24000,
+            format: "pcm16",
+            chunk_ms: 80,
+            is_mock: false,
+          });
+        }, 50);
+      }
+      emit(type: string, payload: Record<string, unknown>) {
+        this.onmessage?.(
+          new MessageEvent("message", {
+            data: JSON.stringify({
+              type,
+              event_id: crypto.randomUUID(),
+              conversation_id: "caption-conversation",
+              epoch: 1,
+              request_revision: 1,
+              server_seq: 1,
+              turn_id: null,
+              payload,
+            }),
+          }),
+        );
+      }
+    }
+    (window as typeof window & { WebSocket: typeof WebSocket }).WebSocket =
+      FakeWebSocket as unknown as typeof WebSocket;
+  });
+  await page.route("**/api/v1/capabilities", async (route) => {
+    await route.fulfill({
+      json: {
+        is_mock: false,
+        voice_available: true,
+        text_configured: true,
+        agent_provider: "compatible",
+        cuekb_mode: "real",
+        weather_mode: "mock",
+        provider: "nvidia",
+        voice_session_max_seconds: 105,
+      },
+    });
+  });
+  await page.route("**/api/v1/conversations", async (route) => {
+    await route.fulfill({
+      status: 201,
+      json: {
+        id: "caption-conversation",
+        title: "Voice question",
+        epoch: 0,
+        request_revision: 0,
+        locale: "en-US",
+        access_token: "caption-token",
+      },
+    });
+  });
+  await page.route(
+    "**/api/v1/conversations/caption-conversation/voice-sessions",
+    async (route) => {
+      await route.fulfill({
+        status: 201,
+        json: {
+          voice_session_id: "caption-session",
+          epoch: 1,
+          request_revision: 0,
+          ws_url: "/api/v1/voice-sessions/caption-session/stream?ticket=test",
+        },
+      });
+    },
+  );
+  let messageReads = 0;
+  await page.route(
+    "**/api/v1/conversations/caption-conversation/messages**",
+    async (route) => {
+      messageReads += 1;
+      await route.fulfill({
+        json: {
+          epoch: 1,
+          request_revision: 1,
+          next_before: null,
+          items:
+            messageReads === 1
+              ? []
+              : [
+                  {
+                    id: "voice-turn",
+                    user_text: "Find the actual product guide",
+                    channel: "voice",
+                    status: "running",
+                    answer: null,
+                    epoch: 1,
+                    request_revision: 1,
+                    parent_task_id: null,
+                    cancellation_reason: null,
+                    delivery_status: "pending_validation",
+                    output_suppressed: false,
+                  },
+                ],
+        },
+      });
+    },
+  );
+  await page.route(
+    "**/api/v1/conversations/caption-conversation/events",
+    async (route) => {
+      await route.fulfill({
+        status: 200,
+        contentType: "text/event-stream",
+        body: "",
+      });
+    },
+  );
+  await page.goto("/");
+  await page.getByRole("button", { name: "Start call", exact: true }).click();
+  await expect(
+    page.getByRole("main").getByText("Voice ready", { exact: true }),
+  ).toBeVisible();
+  await page.evaluate(() => {
+    const socket = (
+      window as typeof window & {
+        __fakeVoiceSocket?: {
+          emit(type: string, payload: Record<string, unknown>): void;
+        };
+      }
+    ).__fakeVoiceSocket;
+    socket?.emit("portal.transcript.delta", {
+      item_id: "input-1",
+      text: "Find the actual ",
+    });
+    socket?.emit("portal.transcript.done", {
+      item_id: "input-1",
+      text: "Find the actual product guide",
+    });
+  });
+  await expect(page.locator(".live-captions")).toContainText(
+    "Find the actual product guide",
+  );
+  await page.evaluate(() => {
+    const socket = (
+      window as typeof window & {
+        __fakeVoiceSocket?: {
+          emit(type: string, payload: Record<string, unknown>): void;
+        };
+      }
+    ).__fakeVoiceSocket;
+    socket?.emit("portal.tool.started", {
+      message: "Processing",
+      user_text: "Find the actual product guide",
+    });
+  });
+  await expect(page.locator(".turn")).toContainText(
+    "Find the actual product guide",
+  );
+  await expect(page.locator(".live-captions")).toHaveCount(0);
+});

@@ -4,6 +4,7 @@ import json
 import logging
 import secrets
 import time
+from collections import deque
 from dataclasses import dataclass
 
 import anyio
@@ -23,6 +24,7 @@ from app.contracts import (
 from app.voice.provider import BRIDGE_NAME, MockVoiceAdapter, NvidiaVoiceChatAdapter
 
 logger = logging.getLogger(__name__)
+TRANSCRIPT_FINAL_TIMEOUT_SECONDS = 5
 
 
 @dataclass
@@ -154,6 +156,11 @@ class VoiceGateway:
         outgoing = asyncio.Queue(maxsize=12)
         wake = asyncio.Event()
         pending, workers, sent_samples = {}, set(), {}
+        input_transcripts = {}
+        unbound_inputs = deque()
+        consumed_inputs = set()
+        authorized_responses = set()
+        authorized_output_slots = 0
         seq, client_seq, started = 0, -1, time.monotonic()
         frames, last_input, last_ack, last_playback_stop = 0, started, 0.0, 0.0
         input_state = "quiet"
@@ -189,6 +196,7 @@ class VoiceGateway:
                         await ws.send_json(event)
 
         async def upstream_writer():
+            nonlocal authorized_output_slots
             while True:
                 await wake.wait()
                 wake.clear()
@@ -196,12 +204,14 @@ class VoiceGateway:
                     if not await current():
                         return
                     if not controls.empty():
-                        call, tid, revision, text = controls.get_nowait()
+                        call, tid, revision, text, authorize_output = controls.get_nowait()
                         # This is the final fence immediately at the single writer.
                         async with self.coordinator.lock(session.conversation_id):
                             if await current(tid, revision) and pending.get(call) == "ready":
                                 await provider.submit_tool_result(call, text)
                                 pending[call] = "sent"
+                                if authorize_output:
+                                    authorized_output_slots += 1
                                 logger.info(
                                     "voice_tool_result_submitted conversation_id=%s turn_id=%s call_id=%s",
                                     session.conversation_id,
@@ -212,7 +222,24 @@ class VoiceGateway:
                         audio = incoming.get_nowait()
                         await provider.send_audio(audio)
 
-        async def bridge(payload):
+        def transcript_future(item_id):
+            future = input_transcripts.get(item_id)
+            if future is None:
+                future = asyncio.get_running_loop().create_future()
+                input_transcripts[item_id] = future
+            return future
+
+        def prune_inputs():
+            for item_id, future in list(input_transcripts.items()):
+                if item_id in consumed_inputs and future.done():
+                    input_transcripts.pop(item_id, None)
+                    consumed_inputs.discard(item_id)
+                    try:
+                        unbound_inputs.remove(item_id)
+                    except ValueError:
+                        pass
+
+        async def bridge(payload, input_item_id, final_transcript):
             call_id = payload["call_id"]
             tid = None
             revision = session.request_revision
@@ -229,11 +256,26 @@ class VoiceGateway:
                 ):
                     raise ValueError("Unsupported bridge")
                 args = BridgeArguments.model_validate_json(payload["arguments"])
+                request = (
+                    await asyncio.wait_for(
+                        asyncio.shield(final_transcript),
+                        TRANSCRIPT_FINAL_TIMEOUT_SECONDS,
+                    )
+                ).strip()
+                if not request or len(request) > 2000:
+                    raise ValueError("Invalid final transcript")
+                logger.info(
+                    "voice_transcript_bound conversation_id=%s call_id=%s input_item_id=%s arguments_match=%s",
+                    session.conversation_id,
+                    call_id,
+                    input_item_id,
+                    request == args.user_request.strip(),
+                )
                 turn, task = await self.coordinator.submit(
                     session.principal,
                     session.conversation_id,
                     f"voice:{session.epoch}:{call_id}",
-                    args.user_request,
+                    request,
                     "voice",
                     session.epoch,
                     call_id,
@@ -279,17 +321,21 @@ class VoiceGateway:
                     type(exc).__name__,
                 )
                 text = json.dumps(
-                    {"status": "failed", "speech_text": "The request failed. Please ask again.", "language": "en-US"}, ensure_ascii=True
+                    {
+                        "status": "failed",
+                        "speech_text": "I could not confirm the completed request. Please ask again.",
+                        "language": "en-US",
+                    },
+                    ensure_ascii=True,
                 )
             if await current(tid, revision):
                 pending[call_id] = "ready"
-                controls.put_nowait((call_id, tid, revision, text))
+                controls.put_nowait((call_id, tid, revision, text, True))
                 wake.set()
 
         async def receiver():
-            nonlocal input_state
-            user_speech_seen = False
-            requires_bridge = True
+            nonlocal input_state, authorized_output_slots
+            customer_input_seen = False
             async for event in provider.events():
                 if not await current():
                     return
@@ -311,15 +357,58 @@ class VoiceGateway:
                         raise DomainError("VOICE_PROTOCOL_ERROR", "Too many voice tool calls", 502)
                     if any(v in ("running", "ready") for v in pending.values()):
                         raise DomainError("VOICE_PROTOCOL_ERROR", "Parallel cloud tool calls are unsupported. Please ask again.", 502)
-                    requires_bridge = False
+                    response_id = event.payload.get("response_id")
+                    input_item_id = next(
+                        (item for item in unbound_inputs if item not in consumed_inputs),
+                        None,
+                    )
+                    if input_item_id is None:
+                        pending[call] = "ready"
+                        if response_id:
+                            session.suppressed_responses.add(response_id)
+                        controls.put_nowait(
+                            (
+                                call,
+                                None,
+                                session.request_revision,
+                                json.dumps(
+                                    {
+                                        "status": "failed",
+                                        "speech_text": "No completed customer request was received. Please wait for the customer to speak.",
+                                        "language": "en-US",
+                                    },
+                                    ensure_ascii=True,
+                                ),
+                                False,
+                            )
+                        )
+                        wake.set()
+                        logger.warning(
+                            "voice_unbound_tool_settled conversation_id=%s call_id=%s",
+                            session.conversation_id,
+                            call,
+                        )
+                        continue
+                    final_transcript = transcript_future(input_item_id)
+                    consumed_inputs.add(input_item_id)
+                    prune_inputs()
+                    if response_id:
+                        authorized_responses.add(response_id)
                     logger.info(
-                        "voice_tool_call_received conversation_id=%s call_id=%s tool=%s",
+                        "voice_tool_call_received conversation_id=%s call_id=%s tool=%s input_item_id=%s",
                         session.conversation_id,
                         call,
                         event.payload.get("name"),
+                        input_item_id,
                     )
                     pending[call] = "running"
-                    task = asyncio.create_task(bridge(event.payload))
+                    task = asyncio.create_task(
+                        bridge(
+                            event.payload,
+                            input_item_id,
+                            final_transcript,
+                        )
+                    )
                     workers.add(task)
                     task.add_done_callback(workers.discard)
                     continue
@@ -328,15 +417,48 @@ class VoiceGateway:
                 if event.kind == "input.state":
                     input_state = event.payload["state"]
                     if input_state == "speaking":
-                        user_speech_seen = True
-                        requires_bridge = True
+                        customer_input_seen = True
+                        item_id = event.payload["item_id"]
+                        if item_id not in input_transcripts:
+                            prune_inputs()
+                            if len(input_transcripts) >= 16:
+                                raise DomainError(
+                                    "VOICE_PROTOCOL_ERROR",
+                                    "Too many unfinished voice inputs",
+                                    502,
+                                )
+                            transcript_future(item_id)
+                            unbound_inputs.append(item_id)
+                    emit("input.state", {"state": input_state})
+                    continue
+                if event.kind == "transcript.done":
+                    customer_input_seen = True
+                    item_id = event.payload["item_id"]
+                    if item_id not in input_transcripts:
+                        prune_inputs()
+                        if len(input_transcripts) >= 16:
+                            raise DomainError(
+                                "VOICE_PROTOCOL_ERROR",
+                                "Too many unfinished voice inputs",
+                                502,
+                            )
+                        unbound_inputs.append(item_id)
+                    future = transcript_future(item_id)
+                    if not future.done():
+                        future.set_result(event.payload["text"])
+                    prune_inputs()
                 response_id = event.payload.get("response_id")
                 if (
                     response_id
-                    and requires_bridge
                     and event.kind.startswith(("speech_text", "audio"))
+                    and response_id not in (session.suppressed_responses or set())
                 ):
-                    if user_speech_seen:
+                    if response_id in authorized_responses and authorized_output_slots:
+                        authorized_output_slots -= 1
+                    elif response_id not in authorized_responses and authorized_output_slots:
+                        authorized_output_slots -= 1
+                        authorized_responses.add(response_id)
+                    if response_id not in authorized_responses and customer_input_seen:
                         logger.warning(
                             "voice_unbridged_response_rejected conversation_id=%s response_id=%s",
                             session.conversation_id,
@@ -348,12 +470,13 @@ class VoiceGateway:
                             502,
                             True,
                         )
-                    session.suppressed_responses.add(response_id)
-                    logger.info(
-                        "voice_initial_response_suppressed conversation_id=%s response_id=%s",
-                        session.conversation_id,
-                        response_id,
-                    )
+                    if response_id not in authorized_responses:
+                        session.suppressed_responses.add(response_id)
+                        logger.info(
+                            "voice_initial_response_suppressed conversation_id=%s response_id=%s",
+                            session.conversation_id,
+                            response_id,
+                        )
                 if response_id and session.suppress_next_response:
                     session.suppressed_responses.add(response_id)
                 suppressed = bool(
@@ -383,6 +506,8 @@ class VoiceGateway:
                         session.suppress_next_response = False
                     continue
                 emit(event.kind, event.payload)
+                if event.kind == "audio.done":
+                    authorized_responses.discard(response_id)
 
         async def browser():
             nonlocal client_seq, frames, last_input, last_ack, last_playback_stop

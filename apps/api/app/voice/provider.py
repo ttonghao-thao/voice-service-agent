@@ -90,7 +90,16 @@ def normalize(event):
             payload[dest] = value
         return VoiceEvent(target, payload)
     if kind in ("input_audio_buffer.speech_started", "input_audio_buffer.speech_stopped"):
-        return VoiceEvent("input.state", {"state": "speaking" if kind.endswith("started") else "quiet"})
+        item_id = event.get("item_id")
+        if not isinstance(item_id, str) or not 0 < len(item_id) <= 128:
+            raise DomainError("VOICE_PROTOCOL_ERROR", "Voice input state lacks an identifier", 502)
+        return VoiceEvent(
+            "input.state",
+            {
+                "state": "speaking" if kind.endswith("started") else "quiet",
+                "item_id": item_id,
+            },
+        )
     if kind == "error":
         raise DomainError("VOICE_UNAVAILABLE", "Cloud voice processing failed. Restart voice or use text.", 502, True)
     if kind == "session.end":

@@ -153,7 +153,13 @@ export default function App() {
         setTranscripts((old) => {
           const next = { ...old };
           if (event.type.endsWith(".done")) {
-            delete next[key];
+            next[key] = {
+              kind: event.type.includes("speech_text")
+                ? "Spoken reply"
+                : "Your transcript",
+              text: String(event.payload.text),
+              done: true,
+            };
           } else {
             next[key] = {
               kind: event.type.includes("speech_text")
@@ -169,6 +175,26 @@ export default function App() {
     },
     [refresh],
   );
+  useEffect(() => {
+    const voiceRequests = new Set(
+      turns
+        .filter((turn) => turn.channel === "voice")
+        .map((turn) => turn.user_text.trim()),
+    );
+    setTranscripts((old) => {
+      const next = Object.fromEntries(
+        Object.entries(old).filter(
+          ([, item]) =>
+            !(
+              item.kind === "Your transcript" &&
+              item.done &&
+              voiceRequests.has(item.text.trim())
+            ),
+        ),
+      );
+      return Object.keys(next).length === Object.keys(old).length ? old : next;
+    });
+  }, [turns]);
   useEffect(() => {
     voice.current = new VoiceClient(
       handleEvent,

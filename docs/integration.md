@@ -78,7 +78,11 @@ CueKB 上游 HTTP 响应上限为 256 KiB，内部工具输出上限为 32 KiB�
 
 原生事件 `response.function_call_arguments.done` 进入网关后调用后台业务任务；结果经 `conversation.item.create` / `function_call_output` 以同一有效 call_id 回传。当前网关只支持一个 pending 原生调用；转写完成不能再次触发相同任务。
 
+D17 将 `input_audio_buffer.speech_started` 的 `item_id` 保留在服务端适配边界，并把后续完成态 transcript 绑定到同一用户输入。VoiceChat 工具调用只能消费一个尚未绑定的 input item；如果连接初始阶段在没有用户输入时自行发出工具调用，网关只返回失败结果以结清 call，不创建业务 Turn。工具参数仍须通过 `BridgeArguments` 校验，但最终 ASR transcript 是送入 SessionCoordinator、BusinessRuntime 和门户持久用户气泡的权威文本，避免模型改写工具参数后替代客户原话。
+
 VoiceChat 的提示词要求每个完整用户发言（包括问候、听不清和闲聊）调用 `consult_service_agent`。网关另执行服务端后置条件：用户发言后若供应商在没有合法 bridge call 的情况下直接输出语音或字幕，则以 `VOICE_TOOL_REQUIRED` 失败关闭；连接建立时供应商自行生成的欢迎语被抑制。提示词只是引导，不能代替该 fail-closed 边界。
+
+已绑定工具调用的原生 response，以及合法工具结果后紧随的一个输出 response，拥有服务端口述授权；该授权按 response 生命周期消费，不再由全局 `speech_started` 布尔值切换。这样后续用户输入或收音误触发不会把已经桥接的业务口述错误拒绝，同时其它未桥接直接输出仍按 `VOICE_TOOL_REQUIRED` 关闭。真实供应商是否沿用原 response_id、是否产生独立输出 response，以及回声/静音下的事件质量仍须在 D07 固定版本实测。
 
 本期 VoiceChat 提示词、工具描述、ACK 和工具结果均限制为 ASCII 文本（允许换行）。会话历史中的非 ASCII 行不会送给 VoiceChat；真实 CueKB 文本和文字答复仍保留原文，若业务模型生成非 ASCII 口述摘要，语音只提示用户查看门户中的文字答复。新会话仅接受 `en-US`，旧语言会话不能开启语音。此处理是本项目的接口约束，不代表已验证实际英语口述效果。
 

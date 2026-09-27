@@ -80,6 +80,20 @@ def test_tool_before_transcript_preserves_native_ids():
     assert BridgeArguments.model_validate_json(e.payload["arguments"]).user_request == "杭州明天天气"
 
 
+def test_input_state_preserves_native_item_identity():
+    started = normalize(
+        {"type": "input_audio_buffer.speech_started", "item_id": "input-1"}
+    )
+    stopped = normalize(
+        {"type": "input_audio_buffer.speech_stopped", "item_id": "input-1"}
+    )
+    assert started.kind == "input.state"
+    assert started.payload == {"state": "speaking", "item_id": "input-1"}
+    assert stopped.payload == {"state": "quiet", "item_id": "input-1"}
+    with pytest.raises(DomainError):
+        normalize({"type": "input_audio_buffer.speech_started"})
+
+
 def test_missing_response_identity_is_protocol_error():
     with pytest.raises(DomainError):
         normalize({"type": "response.output_audio.delta", "delta": "AAAA"})

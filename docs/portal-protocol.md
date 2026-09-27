@@ -1,6 +1,6 @@
 # HTML 门户与消息/语音接口
 
-更新：2026-09-27。本文确定测试门户和接口边界；D01–D05、D13、D16、E01–E03 的当前实现使用本文 v1 格式，真实服务能力仍按验收记录放行。总架构见 [architecture.md](architecture.md)。
+更新：2026-09-27。本文确定测试门户和接口边界；D01–D05、D13、D16–D17、E01–E03 的当前实现使用本文 v1 格式，真实服务能力仍按验收记录放行。总架构见 [architecture.md](architecture.md)。
 
 ## 1. 简单门户
 
@@ -8,7 +8,7 @@
 
 - 页面加载不创建 conversation 或读取历史；每个标签页点击 “Start call” 后创建全新的 conversation/call token，再申请语音 session。token 只在该标签页内存中保存，刷新即丢失。
 - 用户主动点击后申请麦克风，ready 后连续发送音频，包括静音。门户显示浏览器实际选择的设备、采样率、声道及 echo cancellation/noise suppression/auto gain 设置；这些诊断值不等同于收音准确率。门户使用公网 HTTPS，使页面满足浏览器 secure context 前提；证书信任、实际麦克风授权、设备选择和英文识别质量仍须在 D07 实机确认。
-- `portal.transcript.delta/done` 与 `portal.speech_text.delta/done` 只作为当前输入/口述的临时 Live captions；新输入、播放清理或音频结束后收敛，不进入聊天历史。文字与语音请求都由持久业务 Turn 按一问一答展示最终答案和引用，不能过滤 voice Turn，也不用业务答案冒充实时口述。
+- `portal.transcript.delta/done` 与 `portal.speech_text.delta/done` 只作为当前输入/口述的临时 Live captions；用户完成 transcript 保留到同文本的持久 voice Turn 接管，口述字幕在音频结束后清理，新输入或播放清理时收敛，不把字幕另存为聊天历史。文字与语音请求都由持久业务 Turn 按一问一答展示最终答案和引用，不能过滤 voice Turn，也不用业务答案冒充实时口述。
 - 客户页面不展示工具配置、模型参数、内部运行日志或后台管理菜单。
 - 当前交互区分“停止播报”和“取消查询”：前者清除客户端缓冲并由服务端抑制当前 response，保留仍有效业务任务；后者使当前 revision 失效，存在无法安全结清的原生 call 时关闭旧语音连接。
 - 显示业务答案与实际语音字幕的区别；来源与版本可查看，工具密钥和内部地址不可出现在页面。
@@ -116,10 +116,11 @@ SSE 的 `id` 是持久化 `server_seq`，不是 JSON `event_id`。仅重放业�
 ### 4.3 时序和背压
 
 1. 创建会话 → 签发票据 → WS 握手 → VoiceChat 握手 → portal.session.ready。
-2. 并行持续收发音频；原生工具进入后台 worker，音频任务不等待业务 Runtime。
-3. 已接受业务答案走 SSE；工具结果经合法 native call 回传后，语音/字幕走 WS。
-4. 停止播报只抑制当前输出；取消查询推进 revision，并在无法安全结清 pending call 时关闭连接；结束/硬打断释放语音资源。
-5. 网络恢复重新取票，不重放旧录音；恢复业务历史不等于恢复模型隐藏状态。
+2. 并行持续收发音频；`speech_started` 的 input item 与最终 ASR transcript 形成一次用户输入，原生工具只能绑定尚未消费的 input item；没有用户输入的初始工具调用只结清为失败，不创建业务 Turn。
+3. 工具参数仍做 schema 校验，但最终 ASR transcript 才是业务请求和用户气泡的权威文本；工具可早于 transcript 到达，后台 worker 有界等待完成态 transcript 后再进入 Runtime。
+4. 已接受业务答案走 SSE；工具结果经合法 native call 回传后，对应 response 或紧随其后的一个输出 response 才可将语音/字幕送往门户。新的 `speech_started` 不会撤销仍有效的已桥接口述；未桥接的直接输出继续失败关闭。
+5. 停止播报只抑制当前输出；取消查询推进 revision，并在无法安全结清 pending call 时关闭连接；结束/硬打断释放语音资源。
+6. 网络恢复重新取票，不重放旧录音；恢复业务历史不等于恢复模型隐藏状态。
 
 保持有界队列、单写入器、发送速率校验和采集 watchdog；过载显式拒绝/恢复，不能无限积压后追赶播放。当前默认 105 秒在输入 quiet 且无 pending call 时触发安全轮换，浏览器清除旧音频并取得新 ticket；宽限期内仍未安全时显式结束，不恢复模型隐藏状态。
 
