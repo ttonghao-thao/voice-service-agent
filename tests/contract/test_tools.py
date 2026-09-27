@@ -8,7 +8,7 @@ from app.agent_runtime.context import RunContext
 from app.contracts import AgentAnswer, DomainError, Principal
 from app.tools.adapters import CueKBAdapter, WeatherAdapter, bounded_json
 from app.tools.schemas import CueKBSearchInput, WeatherInput
-from pydantic import ValidationError
+from pydantic import SecretStr, ValidationError
 
 KB_SUPPORT = "00000000-0000-4000-8000-000000000001"
 
@@ -371,3 +371,23 @@ async def test_deployment_allowlist_cannot_be_overridden_by_admin_or_principal(c
     assert weather["deployment_enabled"] is False and weather["enabled"] is False
     response = await client.patch("/api/v1/admin/tools/weather", json={"enabled": True})
     assert response.status_code == 409 and response.json()["code"] == "TOOL_NOT_DEPLOYED"
+
+
+async def test_cuekb_admin_probe_uses_real_readiness_path(client, app):
+    requested = []
+
+    class ProbeClient:
+        async def get(self, url, **kwargs):
+            requested.append((url, kwargs))
+            return httpx.Response(200, request=httpx.Request("GET", url), json={"status": "ready"})
+
+    app.state.settings.cuekb_mode = "real"
+    app.state.settings.cuekb_base_url = "http://cuekb.test:8085"
+    app.state.settings.cuekb_api_key = SecretStr("scoped-key")
+    app.state.client = ProbeClient()
+
+    response = await client.post("/api/v1/admin/tools/search_knowledge/test")
+
+    assert response.status_code == 200
+    assert requested[0][0] == "http://cuekb.test:8085/v1/ready"
+    assert requested[0][1]["headers"]["Authorization"] == "Bearer scoped-key"

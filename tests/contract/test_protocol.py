@@ -265,3 +265,32 @@ def test_websocket_handshake_and_oidc_logs_redact_query_credentials():
     )
     SensitiveQueryFilter().filter(record)
     assert "synthetic-code" not in record.getMessage() and "synthetic-state" not in record.getMessage()
+
+
+def test_application_logging_is_visible_redacted_and_idempotent():
+    import logging
+
+    from app.api.logging import ApplicationLogHandler, configure_logging
+
+    configure_logging()
+    configure_logging()
+    logger = logging.getLogger("app.tools.registry")
+    handlers = [
+        handler
+        for handler in logging.getLogger("app").handlers
+        if isinstance(handler, ApplicationLogHandler)
+    ]
+
+    assert logger.isEnabledFor(logging.INFO)
+    assert len(handlers) == 1
+    record = logging.LogRecord(
+        "app.tools.registry",
+        logging.INFO,
+        __file__,
+        1,
+        "endpoint=%s",
+        ("wss://voice.test/stream?ticket=secret",),
+        None,
+    )
+    assert handlers[0].filters[0].filter(record) is True
+    assert record.args[0].endswith("ticket=[REDACTED]")

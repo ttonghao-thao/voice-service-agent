@@ -78,6 +78,8 @@ CueKB 上游 HTTP 响应上限为 256 KiB，内部工具输出上限为 32 KiB�
 
 原生事件 `response.function_call_arguments.done` 进入网关后调用后台业务任务；结果经 `conversation.item.create` / `function_call_output` 以同一有效 call_id 回传。当前网关只支持一个 pending 原生调用；转写完成不能再次触发相同任务。
 
+VoiceChat 的提示词要求每个完整用户发言（包括问候、听不清和闲聊）调用 `consult_service_agent`。网关另执行服务端后置条件：用户发言后若供应商在没有合法 bridge call 的情况下直接输出语音或字幕，则以 `VOICE_TOOL_REQUIRED` 失败关闭；连接建立时供应商自行生成的欢迎语被抑制。提示词只是引导，不能代替该 fail-closed 边界。
+
 本期 VoiceChat 提示词、工具描述、ACK 和工具结果均限制为 ASCII 文本（允许换行）。会话历史中的非 ASCII 行不会送给 VoiceChat；真实 CueKB 文本和文字答复仍保留原文，若业务模型生成非 ASCII 口述摘要，语音只提示用户查看门户中的文字答复。新会话仅接受 `en-US`，旧语言会话不能开启语音。此处理是本项目的接口约束，不代表已验证实际英语口述效果。
 
 适配器明确校验在线 API 的 24 kHz PCM16 输入/输出，门户 80 ms 上行。模型卡内部音频采样率不能直接替换在线接口格式；变更须以服务契约及握手为准。
@@ -95,6 +97,10 @@ CueKB 上游 HTTP 响应上限为 256 KiB，内部工具输出上限为 32 KiB�
 当前 `AGENT_PROVIDER=openai` 使用 Responses API，明确配置模型/API key；`compatible` 配置独立 HTTP base URL 并使用 Chat Completions。这些是本仓库适配器行为，真实供应商必须另验工具调用、结构化输出、streaming 和错误语义。VoiceChat WS/WSS 地址不能代替文本模型 endpoint。
 
 Runtime 复用授权工具和证据校验，输出 display_text、短 speech_text、引用和业务状态；SDK 的工具循环与耗时受整轮 deadline 约束。复杂知识子 agent 若启用，权限/预算继承并缩小，独立临时上下文，只返回候选结果。
+
+本期只有 `search_knowledge`，因此 Runtime 对 Responses API 与 compatible Chat Completions 都设置必需工具选择并关闭并行工具调用，同时在模型输出后再次校验已发生授权的 `search_knowledge` 调用。模型未调用工具时返回 `AGENT_REQUIRED_TOOL_NOT_CALLED`；adapter 的授权、契约、限流、超时或上游错误优先于模型声称的 `insufficient_evidence`，只有真实检索结果才能形成未命中/证据不足状态。
+
+Runtime、ToolRegistry、CueKB adapter 与 VoiceGateway 记录脱敏阶段日志，包含 conversation/turn/tool、调用状态、耗时、trace 及 endpoint 的 scheme/host/port/path；不记录问题正文、API key、URL userinfo、供应商原始错误或工具结果正文。管理员的 `search_knowledge` 连通性探测使用 CueKB `/v1/ready`，业务检索仍使用 `/v1/search`。
 
 ## 5. 第三方扩展（D06）
 

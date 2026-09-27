@@ -1,5 +1,6 @@
 import asyncio
 import json
+import logging
 import re
 
 from agents import (
@@ -14,6 +15,8 @@ from agents import (
 from app.config import ROOT
 from app.contracts import AgentAnswer, AnswerBundle, now, printable_ascii
 from openai import AsyncOpenAI
+
+logger = logging.getLogger(__name__)
 
 
 class BusinessRuntime:
@@ -34,9 +37,19 @@ class BusinessRuntime:
         ctx.tool_versions = {
             name: await self.registry.store.tool_revision(name) for name in ctx.allowed_tools
         }
+        logger.info(
+            "agent_run_started conversation_id=%s turn_id=%s provider=%s allowed_tools=%s",
+            ctx.conversation_id,
+            ctx.turn_id,
+            self.settings.agent_provider,
+            ",".join(sorted(ctx.allowed_tools)),
+        )
+        if "search_knowledge" not in ctx.allowed_tools:
+            return self.failure(
+                "AGENT_NO_AUTHORIZED_TOOL",
+                "No authorized knowledge search is available for this request.",
+            )
         if self.settings.agent_provider == "mock":
-            if "search_knowledge" not in ctx.allowed_tools:
-                return self.failure("AGENT_NO_AUTHORIZED_TOOL", "No authorized knowledge tool is enabled for this demonstration.")
             result = await self.registry.invoke("search_knowledge", {"query": request}, ctx)
             citations = list(ctx.evidence.values())
             return AnswerBundle(
@@ -62,6 +75,12 @@ class BusinessRuntime:
             adapter = self.registry.adapters[spec.adapter_id]
 
             async def invoke(wrapper, args, tool_name=name):
+                logger.info(
+                    "agent_tool_call_received conversation_id=%s turn_id=%s tool=%s",
+                    ctx.conversation_id,
+                    ctx.turn_id,
+                    tool_name,
+                )
                 if progress:
                     await progress("Searching " + self.registry.specs[tool_name].display_name)
                 return json.dumps(
@@ -96,7 +115,11 @@ class BusinessRuntime:
             model=model_class(model=self.settings.agent_model, openai_client=self.client),
             tools=tools,
             output_type=AgentAnswer,
-            model_settings=ModelSettings(parallel_tool_calls=False),
+            # BusinessRuntime receives only customer-support requests. Require a
+            # trusted tool on the first model step; Agent resets the choice after
+            # the call so the following step can produce the structured answer.
+            model_settings=ModelSettings(tool_choice="required", parallel_tool_calls=False),
+            reset_tool_choice=True,
         )
         inputs = history + [{"role": "user", "content": request}]
         stream = None
@@ -115,13 +138,28 @@ class BusinessRuntime:
                     )
                     raw = result.final_output
             answer = AgentAnswer.model_validate(raw)
-            return await self.validate(answer, ctx)
+            validated = await self.validate(answer, ctx)
+            logger.info(
+                "agent_run_finished conversation_id=%s turn_id=%s status=%s invoked_tools=%s reason_code=%s",
+                ctx.conversation_id,
+                ctx.turn_id,
+                validated.status,
+                ",".join(sorted(ctx.invoked)),
+                validated.reason_code or "none",
+            )
+            return validated
         except TimeoutError:
             return self.failure("AGENT_TIMEOUT", "The request timed out. Please try again later.")
         except asyncio.CancelledError:
             raise
-        except Exception:
+        except Exception as exc:
             # Do not propagate provider exceptions: their payloads can contain private prompts and credentials.
+            logger.error(
+                "agent_run_failed conversation_id=%s turn_id=%s exception_type=%s",
+                ctx.conversation_id,
+                ctx.turn_id,
+                type(exc).__name__,
+            )
             return self.failure("AGENT_FAILED", "The request failed. Please try again later.")
         finally:
             if stream is not None and not stream.is_complete:
@@ -129,8 +167,25 @@ class BusinessRuntime:
 
     async def validate(self, answer, ctx):
         references = set(re.findall(r"\[(C\d+)\]", answer.display_text))
-        if ctx.tool_errors and answer.status == "answered":
-            return self.failure(ctx.tool_errors[-1], "The search failed, so I cannot provide a reliable answer right now.")
+        if "search_knowledge" in ctx.allowed_tools and "search_knowledge" not in ctx.invoked:
+            return self.failure(
+                "AGENT_REQUIRED_TOOL_NOT_CALLED",
+                "Knowledge search was not executed, so I cannot provide a reliable answer right now.",
+            )
+        if ctx.tool_errors:
+            code = ctx.tool_errors[-1]
+            configuration_errors = {
+                "CUEKB_AUTH_FAILED",
+                "CUEKB_FORBIDDEN",
+                "CUEKB_CONTRACT_ERROR",
+                "TOOL_NOT_CONFIGURED",
+            }
+            message = (
+                "Knowledge access is not configured correctly. Please contact a representative."
+                if code in configuration_errors
+                else "The knowledge search failed temporarily. Please try again later."
+            )
+            return self.failure(code, message)
         if references - set(answer.citation_ids) or any(
             cid not in ctx.evidence for cid in answer.citation_ids
         ):

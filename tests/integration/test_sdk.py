@@ -43,6 +43,7 @@ async def test_actual_sdk_runner_executes_registered_tool_and_validates_output(a
         body = json.loads(request.content)
         requests.append(body)
         if len(requests) == 1:
+            assert body["tool_choice"] == "required"
             output = [
                 {
                     "type": "function_call",
@@ -115,3 +116,175 @@ async def test_actual_sdk_runner_executes_registered_tool_and_validates_output(a
     assert result.citations[0].citation_id == "C1"
     assert len(requests) == 2
     assert "previous_response_id" not in requests[0]
+
+
+async def test_knowledge_answer_fails_when_required_tool_was_not_called(app, conversation):
+    principal = Principal(
+        user_id="dev-operator",
+        scopes=frozenset({"knowledge:read"}),
+        knowledge_base_ids=(KB_SUPPORT,),
+    )
+    context = RunContext(principal, conversation, "turn-1", 0)
+    context.allowed_tools = {"search_knowledge"}
+    answer = AgentAnswer(
+        status="insufficient_evidence",
+        display_text="I could not find this in the knowledge base.",
+        speech_text="I could not find this.",
+        citation_ids=[],
+    )
+
+    result = await app.state.coordinator.runtime.validate(answer, context)
+
+    assert result.status == "failed"
+    assert result.reason_code == "AGENT_REQUIRED_TOOL_NOT_CALLED"
+    assert "not executed" in result.display_text
+
+
+async def test_tool_failure_cannot_be_rewritten_as_insufficient_evidence(app, conversation):
+    principal = Principal(
+        user_id="dev-operator",
+        scopes=frozenset({"knowledge:read"}),
+        knowledge_base_ids=(KB_SUPPORT,),
+    )
+    context = RunContext(principal, conversation, "turn-1", 0)
+    context.allowed_tools = {"search_knowledge"}
+    context.invoked.add("search_knowledge")
+    context.tool_errors.append("CUEKB_AUTH_FAILED")
+    answer = AgentAnswer(
+        status="insufficient_evidence",
+        display_text="No matching information was found.",
+        speech_text="No matching information was found.",
+        citation_ids=[],
+    )
+
+    result = await app.state.coordinator.runtime.validate(answer, context)
+
+    assert result.status == "failed"
+    assert result.reason_code == "CUEKB_AUTH_FAILED"
+    assert "not configured correctly" in result.display_text
+
+
+@pytest.mark.parametrize("streaming", [False, True])
+async def test_compatible_chat_completions_runs_required_tool_loop(
+    app, conversation, streaming
+):
+    principal = Principal(
+        user_id="dev-operator",
+        scopes=frozenset({"knowledge:read"}),
+        knowledge_base_ids=(KB_SUPPORT,),
+    )
+    turn, _, _ = await app.state.store.begin_turn(
+        principal,
+        conversation,
+        f"compatible-{streaming}",
+        "Find the integration sample",
+        "text" if streaming else "voice",
+        0,
+    )
+    context = RunContext(
+        principal,
+        conversation,
+        turn.id,
+        turn.epoch,
+        request_revision=turn.request_revision,
+    )
+    requests = []
+
+    def handler(request):
+        body = json.loads(request.content)
+        requests.append(body)
+        first = len(requests) == 1
+        if first:
+            assert body["tool_choice"] == "required"
+            message = {
+                "role": "assistant",
+                "content": None,
+                "tool_calls": [
+                    {
+                        "id": "call_compatible",
+                        "type": "function",
+                        "function": {
+                            "name": "search_knowledge",
+                            "arguments": '{"query":"Find the integration sample"}',
+                        },
+                    }
+                ],
+            }
+            finish_reason = "tool_calls"
+        else:
+            tool_message = next(item for item in body["messages"] if item.get("role") == "tool")
+            assert tool_message["tool_call_id"] == "call_compatible"
+            assert "Synthetic integration excerpt" in tool_message["content"]
+            message = {
+                "role": "assistant",
+                "content": json.dumps(
+                    {
+                        "status": "answered",
+                        "display_text": "Compatible model used the knowledge result [C1]",
+                        "speech_text": "Compatible model used the knowledge result.",
+                        "citation_ids": ["C1"],
+                    }
+                ),
+            }
+            finish_reason = "stop"
+        if body.get("stream"):
+            delta = {"role": "assistant", **message}
+            if delta.get("tool_calls"):
+                delta["tool_calls"][0]["index"] = 0
+            chunk = {
+                "id": f"chatcmpl-{len(requests)}",
+                "object": "chat.completion.chunk",
+                "created": 1788600000,
+                "model": "contract-fixture",
+                "choices": [{"index": 0, "delta": delta, "finish_reason": None}],
+            }
+            finished = {
+                **chunk,
+                "choices": [{"index": 0, "delta": {}, "finish_reason": finish_reason}],
+            }
+            content = "".join(
+                "data: " + json.dumps(item) + "\n\n" for item in (chunk, finished)
+            ) + "data: [DONE]\n\n"
+            return httpx.Response(200, content=content, headers={"Content-Type": "text/event-stream"})
+        return httpx.Response(
+            200,
+            json={
+                "id": f"chatcmpl-{len(requests)}",
+                "object": "chat.completion",
+                "created": 1788600000,
+                "model": "contract-fixture",
+                "choices": [
+                    {
+                        "index": 0,
+                        "message": message,
+                        "finish_reason": finish_reason,
+                    }
+                ],
+                "usage": {"prompt_tokens": 10, "completion_tokens": 10, "total_tokens": 20},
+            },
+        )
+
+    runtime = app.state.coordinator.runtime
+    app.state.settings.agent_provider = "compatible"
+    app.state.settings.agent_model = "contract-fixture"
+
+    async def report_progress(_):
+        return None
+
+    async with httpx.AsyncClient(transport=httpx.MockTransport(handler)) as http:
+        runtime.client = AsyncOpenAI(
+            api_key="synthetic-test-key",
+            base_url="http://compatible.test/v1",
+            http_client=http,
+            max_retries=0,
+        )
+        result = await runtime.run(
+            "Find the integration sample",
+            context,
+            [],
+            report_progress if streaming else None,
+        )
+
+    assert result.status == "answered", result
+    assert result.citations[0].citation_id == "C1"
+    assert len(requests) == 2

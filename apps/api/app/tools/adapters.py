@@ -1,6 +1,8 @@
 import asyncio
 import json
+import logging
 from datetime import date, datetime, timedelta
+from urllib.parse import urlparse
 from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
 import httpx
@@ -16,6 +18,8 @@ from app.tools.schemas import (
     WeatherResponse,
 )
 from pydantic import TypeAdapter
+
+logger = logging.getLogger(__name__)
 
 
 async def bounded_json(client, method, url, *, limit=32768, error_map=None, **kwargs):
@@ -96,6 +100,20 @@ class CueKBAdapter:
         else:
             if not self.settings.cuekb_base_url or not self.settings.cuekb_api_key.get_secret_value():
                 raise DomainError("TOOL_NOT_CONFIGURED", "Knowledge base is not configured", 503)
+            endpoint = self.settings.cuekb_base_url.rstrip("/") + "/v1/search"
+            parsed_endpoint = urlparse(endpoint)
+            endpoint_host = parsed_endpoint.hostname or "unknown"
+            if parsed_endpoint.port:
+                endpoint_host += f":{parsed_endpoint.port}"
+            logger.info(
+                "cuekb_request_started conversation_id=%s turn_id=%s endpoint=%s://%s%s kb_count=%s",
+                ctx.conversation_id,
+                ctx.turn_id,
+                parsed_endpoint.scheme,
+                endpoint_host,
+                parsed_endpoint.path,
+                len(ctx.principal.knowledge_base_ids),
+            )
             body = CueKBSearchRequest(
                 query=args.query,
                 kb_ids=list(ctx.principal.knowledge_base_ids),
@@ -110,7 +128,7 @@ class CueKBAdapter:
             data = await bounded_json(
                 self.client,
                 "POST",
-                self.settings.cuekb_base_url.rstrip("/") + "/v1/search",
+                endpoint,
                 headers={
                     "Authorization": "Bearer " + self.settings.cuekb_api_key.get_secret_value(),
                 },
@@ -125,6 +143,14 @@ class CueKBAdapter:
             )
         result = CueKBSearchResponse.model_validate(data)
         trace_id = str(result.trace_id)
+        logger.info(
+            "cuekb_response_validated conversation_id=%s turn_id=%s trace_id=%s retrieval_status=%s hit_count=%s",
+            ctx.conversation_id,
+            ctx.turn_id,
+            trace_id,
+            result.retrieval_status,
+            len(result.hits),
+        )
         content_revisions = {str(key): value for key, value in result.content_revisions.items()}
         budget = 6000
         hits = []

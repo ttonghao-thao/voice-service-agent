@@ -1,14 +1,14 @@
 # HTML 门户与消息/语音接口
 
-更新：2026-09-25。本文确定测试门户和接口边界；D01–D05、D13、E01–E03 的当前实现使用本文 v1 格式，真实服务能力仍按验收记录放行。总架构见 [architecture.md](architecture.md)。
+更新：2026-09-27。本文确定测试门户和接口边界；D01–D05、D13、D16、E01–E03 的当前实现使用本文 v1 格式，真实服务能力仍按验收记录放行。总架构见 [architecture.md](architecture.md)。
 
 ## 1. 简单门户
 
 一个客户页面即可：开始语音、结束语音、连接/聆听/查询/播放状态、用户转写、实际口述字幕、最终答案与可展开引用。麦克风被拒绝、断网或语音不可用时给出明确恢复提示；可选显示文字输入。
 
 - 页面加载不创建 conversation 或读取历史；每个标签页点击 “Start call” 后创建全新的 conversation/call token，再申请语音 session。token 只在该标签页内存中保存，刷新即丢失。
-- 用户主动点击后申请麦克风，ready 后连续发送音频，包括静音。门户使用公网 HTTPS，使页面满足浏览器 secure context 前提；证书信任与实际麦克风授权仍须在 D07 实机确认。
-- `portal.transcript.delta/done` 作为用户输入气泡流式打印，`portal.speech_text.delta/done` 作为实际 VoiceChat 输出气泡流式打印；done 替换对应临时文本，不用业务答案冒充实际口述。
+- 用户主动点击后申请麦克风，ready 后连续发送音频，包括静音。门户显示浏览器实际选择的设备、采样率、声道及 echo cancellation/noise suppression/auto gain 设置；这些诊断值不等同于收音准确率。门户使用公网 HTTPS，使页面满足浏览器 secure context 前提；证书信任、实际麦克风授权、设备选择和英文识别质量仍须在 D07 实机确认。
+- `portal.transcript.delta/done` 与 `portal.speech_text.delta/done` 只作为当前输入/口述的临时 Live captions；新输入、播放清理或音频结束后收敛，不进入聊天历史。文字与语音请求都由持久业务 Turn 按一问一答展示最终答案和引用，不能过滤 voice Turn，也不用业务答案冒充实时口述。
 - 客户页面不展示工具配置、模型参数、内部运行日志或后台管理菜单。
 - 当前交互区分“停止播报”和“取消查询”：前者清除客户端缓冲并由服务端抑制当前 response，保留仍有效业务任务；后者使当前 revision 失效，存在无法安全结清的原生 call 时关闭旧语音连接。
 - 显示业务答案与实际语音字幕的区别；来源与版本可查看，工具密钥和内部地址不可出现在页面。
@@ -101,8 +101,8 @@ SSE 的 `id` 是持久化 `server_seq`，不是 JSON `event_id`。仅重放业�
 | 事件 | 通道 | payload / 客户端行为 |
 | --- | --- | --- |
 | `portal.session.ready` | WS | 确认音频格式后开始采集发送 |
-| `portal.transcript.delta` / `done` | WS | item_id、text；done 替换该条最终用户转写 |
-| `portal.speech_text.delta` / `done` | WS | response_id、可选 item_id、text；实际模型口述字幕 |
+| `portal.transcript.delta` / `done` | WS | item_id、text；更新当前用户 Live caption，业务历史由 Turn 提供 |
+| `portal.speech_text.delta` / `done` | WS | response_id、可选 item_id、text；更新当前实际口述 Live caption，不合并成历史答案 |
 | `portal.audio.delta` / `done` | WS | response_id、delta 的 audio；播放/结束该回复；过期 epoch 一律丢弃 |
 | `portal.input.state` | WS | state=speaking/quiet；仅输入状态，不自动等于取消业务 |
 | `portal.tool.started` | SSE | 客户可理解的查询状态；不暴露私有工具参数 |
@@ -127,7 +127,7 @@ SSE 的 `id` 是持久化 `server_seq`，不是 JSON `event_id`。仅重放业�
 
 - v1 固定当前音频格式与已定义必需字段；未来二进制音频/不同格式需要明确协商或新版本，不能暗改现有字段含义。
 - 兼容性新增先由 capability 声明并提供降级；未知服务端非关键展示事件可忽略，未知客户端控制事件拒绝；格式/鉴权错误不得继续播放。
-- 当前已有典型错误：AUTH_REQUIRED、FORBIDDEN、VOICE_UNAVAILABLE、VOICE_CAPACITY_EXCEEDED、VOICE_PROTOCOL_ERROR、VOICE_SESSION_ROTATION_REQUIRED、VOICE_SESSION_EXPIRED、AUDIO_BACKPRESSURE。
+- 当前已有典型错误：AUTH_REQUIRED、FORBIDDEN、VOICE_UNAVAILABLE、VOICE_CAPACITY_EXCEEDED、VOICE_PROTOCOL_ERROR、VOICE_TOOL_REQUIRED、VOICE_SESSION_ROTATION_REQUIRED、VOICE_SESSION_EXPIRED、AUDIO_BACKPRESSURE。`VOICE_TOOL_REQUIRED` 表示用户完整发言后 VoiceChat 试图绕过 `consult_service_agent` 直接回答；该输出被拒绝，不能作为客服答案播放。
 - 工具错误在业务层映射为稳定的失败/无依据/澄清状态；不能把 401/403/429/5xx 都显示为“没有知识”。
 - 不把服务商 error 原文、密钥或内部堆栈直接转发客户。完整错误集合随实现和契约同步维护。
 

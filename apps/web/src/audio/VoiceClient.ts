@@ -1,6 +1,14 @@
 import { api, PortalEvent } from "../api";
 export type VoiceState =
   "closed" | "connecting" | "ready" | "reconnecting" | "error";
+export interface MicrophoneDiagnostics {
+  label: string;
+  sampleRate?: number;
+  channelCount?: number;
+  echoCancellation?: boolean;
+  noiseSuppression?: boolean;
+  autoGainControl?: boolean;
+}
 export class VoiceClient {
   private context?: AudioContext;
   private node?: AudioWorkletNode;
@@ -22,11 +30,14 @@ export class VoiceClient {
     private onEvent: (e: PortalEvent) => void,
     private onState: (state: VoiceState) => void,
     private onError: (message: string) => void,
+    private onMicrophone: (diagnostics: MicrophoneDiagnostics) => void,
   ) {}
   private visibility = () => {
     if (document.hidden) {
       void this.stop();
-      this.onError("Voice stopped when the page went into the background. Resume when you return.");
+      this.onError(
+        "Voice stopped when the page went into the background. Resume when you return.",
+      );
     }
   };
   private offline = () => {
@@ -43,7 +54,7 @@ export class VoiceClient {
         throw new Error(
           "The browser cannot access the microphone. Verify HTTPS, browser support, and microphone permission.",
         );
-      this.context = new AudioContext();
+      this.context = new AudioContext({ latencyHint: "interactive" });
       await this.context.resume();
       this.media = await navigator.mediaDevices.getUserMedia({
         audio: {
@@ -52,6 +63,16 @@ export class VoiceClient {
           noiseSuppression: true,
           autoGainControl: true,
         },
+      });
+      const microphone = this.media.getAudioTracks()[0];
+      const microphoneSettings = microphone?.getSettings() || {};
+      this.onMicrophone({
+        label: microphone?.label || "Default microphone",
+        sampleRate: microphoneSettings.sampleRate,
+        channelCount: microphoneSettings.channelCount,
+        echoCancellation: microphoneSettings.echoCancellation,
+        noiseSuppression: microphoneSettings.noiseSuppression,
+        autoGainControl: microphoneSettings.autoGainControl,
       });
       if (generation !== this.generation) {
         this.media.getTracks().forEach((t) => t.stop());
@@ -215,7 +236,9 @@ export class VoiceClient {
       };
       this.ws.onerror = () => {
         this.clear();
-        this.onError("Voice connection failed. Text questions remain available.");
+        this.onError(
+          "Voice connection failed. Text questions remain available.",
+        );
         void this.stop();
       };
       document.addEventListener("visibilitychange", this.visibility);
@@ -223,7 +246,9 @@ export class VoiceClient {
     } catch (error) {
       await this.stop();
       this.onState("error");
-      this.onError(error instanceof Error ? error.message : "Voice startup failed");
+      this.onError(
+        error instanceof Error ? error.message : "Voice startup failed",
+      );
     }
   }
   clearForEpoch(epoch: number) {

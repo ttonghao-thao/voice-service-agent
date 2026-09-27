@@ -8,7 +8,9 @@ test.use({
   },
   permissions: ["microphone"],
 });
-test("Synthetic microphone transport, playback stop, rotation and cleanup", async ({ page }) => {
+test("Synthetic microphone transport, playback stop, rotation and cleanup", async ({
+  page,
+}) => {
   const errors: string[] = [];
   page.on("pageerror", (e) => errors.push(e.message));
   const frames: { epoch: number; seq: number; payload: { audio: string } }[] =
@@ -25,10 +27,13 @@ test("Synthetic microphone transport, playback stop, rotation and cleanup", asyn
   await page.goto("/");
   await page.getByRole("button", { name: "Start call", exact: true }).click();
   await expect(main.getByText("Voice ready", { exact: true })).toBeVisible();
+  await expect(main.getByText(/Microphone:/)).toBeVisible();
   await expect.poll(() => frames.length).toBeGreaterThan(10);
   const firstEpoch = frames[0].epoch;
   expect(Buffer.from(frames[0].payload.audio, "base64").length).toBe(3840);
-  await page.getByRole("button", { name: "Mute microphone", exact: true }).click();
+  await page
+    .getByRole("button", { name: "Mute microphone", exact: true })
+    .click();
   await expect
     .poll(() => {
       const tail = frames.slice(-2);
@@ -41,15 +46,21 @@ test("Synthetic microphone transport, playback stop, rotation and cleanup", asyn
     })
     .toBe(true);
   const beforeStop = frames.length;
-  await page.getByRole("button", { name: "Stop playback", exact: true }).click();
+  await page
+    .getByRole("button", { name: "Stop playback", exact: true })
+    .click();
   await expect.poll(() => frames.length).toBeGreaterThan(beforeStop);
   expect(frames.at(-1)?.epoch).toBe(firstEpoch);
   await page.getByRole("button", { name: "End call", exact: true }).click();
-  await expect(main.getByText("Voice disconnected", { exact: true })).toBeVisible();
+  await expect(
+    main.getByText("Voice disconnected", { exact: true }),
+  ).toBeVisible();
   await page.getByRole("button", { name: "Start call", exact: true }).click();
   await expect(main.getByText("Voice ready", { exact: true })).toBeVisible();
   await expect.poll(() => frames.filter((f) => f.seq === 0).length).toBe(2);
   await page.getByRole("button", { name: "End call", exact: true }).click();
-  await expect(main.getByText("Voice disconnected", { exact: true })).toBeVisible();
+  await expect(
+    main.getByText("Voice disconnected", { exact: true }),
+  ).toBeVisible();
   expect(errors).toEqual([]);
 });

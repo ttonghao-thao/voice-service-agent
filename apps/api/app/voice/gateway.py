@@ -1,6 +1,7 @@
 import asyncio
 import base64
 import json
+import logging
 import secrets
 import time
 from dataclasses import dataclass
@@ -20,6 +21,8 @@ from app.contracts import (
     uid,
 )
 from app.voice.provider import BRIDGE_NAME, MockVoiceAdapter, NvidiaVoiceChatAdapter
+
+logger = logging.getLogger(__name__)
 
 
 @dataclass
@@ -199,6 +202,12 @@ class VoiceGateway:
                             if await current(tid, revision) and pending.get(call) == "ready":
                                 await provider.submit_tool_result(call, text)
                                 pending[call] = "sent"
+                                logger.info(
+                                    "voice_tool_result_submitted conversation_id=%s turn_id=%s call_id=%s",
+                                    session.conversation_id,
+                                    tid,
+                                    call,
+                                )
                     else:
                         audio = incoming.get_nowait()
                         await provider.send_audio(audio)
@@ -208,6 +217,11 @@ class VoiceGateway:
             tid = None
             revision = session.request_revision
             try:
+                logger.info(
+                    "voice_bridge_started conversation_id=%s call_id=%s",
+                    session.conversation_id,
+                    call_id,
+                )
                 if (
                     payload["name"] != BRIDGE_NAME
                     or not isinstance(payload["arguments"], str)
@@ -230,6 +244,13 @@ class VoiceGateway:
                 bundle = await task if task else None
                 if not bundle or not await current(tid, revision):
                     return
+                logger.info(
+                    "voice_bridge_finished conversation_id=%s turn_id=%s call_id=%s status=%s",
+                    session.conversation_id,
+                    tid,
+                    call_id,
+                    bundle.status,
+                )
                 if bundle.speech_language != "en-US" or not printable_ascii(bundle.speech_text):
                     text = json.dumps({
                         "status": "failed",
@@ -249,7 +270,14 @@ class VoiceGateway:
                     )
             except asyncio.CancelledError:
                 raise
-            except Exception:
+            except Exception as exc:
+                logger.error(
+                    "voice_bridge_failed conversation_id=%s turn_id=%s call_id=%s exception_type=%s",
+                    session.conversation_id,
+                    tid or "none",
+                    call_id,
+                    type(exc).__name__,
+                )
                 text = json.dumps(
                     {"status": "failed", "speech_text": "The request failed. Please ask again.", "language": "en-US"}, ensure_ascii=True
                 )
@@ -260,6 +288,8 @@ class VoiceGateway:
 
         async def receiver():
             nonlocal input_state
+            user_speech_seen = False
+            requires_bridge = True
             async for event in provider.events():
                 if not await current():
                     return
@@ -267,10 +297,27 @@ class VoiceGateway:
                     call = event.payload["call_id"]
                     if call in pending:
                         continue
+                    if (
+                        event.payload.get("name") != BRIDGE_NAME
+                        or not isinstance(event.payload.get("arguments"), str)
+                        or len(event.payload["arguments"]) > 12000
+                    ):
+                        raise DomainError(
+                            "VOICE_PROTOCOL_ERROR",
+                            "Voice requested an unsupported business tool",
+                            502,
+                        )
                     if len(pending) >= 128:
                         raise DomainError("VOICE_PROTOCOL_ERROR", "Too many voice tool calls", 502)
                     if any(v in ("running", "ready") for v in pending.values()):
                         raise DomainError("VOICE_PROTOCOL_ERROR", "Parallel cloud tool calls are unsupported. Please ask again.", 502)
+                    requires_bridge = False
+                    logger.info(
+                        "voice_tool_call_received conversation_id=%s call_id=%s tool=%s",
+                        session.conversation_id,
+                        call,
+                        event.payload.get("name"),
+                    )
                     pending[call] = "running"
                     task = asyncio.create_task(bridge(event.payload))
                     workers.add(task)
@@ -280,7 +327,33 @@ class VoiceGateway:
                     return
                 if event.kind == "input.state":
                     input_state = event.payload["state"]
+                    if input_state == "speaking":
+                        user_speech_seen = True
+                        requires_bridge = True
                 response_id = event.payload.get("response_id")
+                if (
+                    response_id
+                    and requires_bridge
+                    and event.kind.startswith(("speech_text", "audio"))
+                ):
+                    if user_speech_seen:
+                        logger.warning(
+                            "voice_unbridged_response_rejected conversation_id=%s response_id=%s",
+                            session.conversation_id,
+                            response_id,
+                        )
+                        raise DomainError(
+                            "VOICE_TOOL_REQUIRED",
+                            "Voice did not reach the knowledge assistant. Restart voice or use text.",
+                            502,
+                            True,
+                        )
+                    session.suppressed_responses.add(response_id)
+                    logger.info(
+                        "voice_initial_response_suppressed conversation_id=%s response_id=%s",
+                        session.conversation_id,
+                        response_id,
+                    )
                 if response_id and session.suppress_next_response:
                     session.suppressed_responses.add(response_id)
                 suppressed = bool(

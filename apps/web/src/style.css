@@ -167,6 +167,27 @@ a:focus-visible {
 .live-transcript {
   margin: 10px 0;
 }
+.live-captions {
+  margin: 10px 0 18px;
+  padding: 10px 12px;
+  border-left: 2px solid #9db88c;
+  background: #f8faf6;
+  color: #65745c;
+  font-size: 11px;
+}
+.live-captions strong {
+  display: block;
+  margin-bottom: 5px;
+  color: #4f6647;
+}
+.live-captions p {
+  margin: 3px 0;
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+}
+.live-captions p span {
+  color: #87957d;
+}
 .voice-source-button {
   margin: 10px 0 16px;
 }
@@ -526,6 +547,15 @@ a:focus-visible {
 .voice-live .ant-slider {
   width: 70px;
   margin: 0 5px;
+}
+.microphone-status {
+  margin: -6px 0 12px 26px;
+  color: #7f8e76;
+  font-size: 9px;
+  overflow-wrap: anywhere;
+}
+.microphone-status.warning {
+  color: #9a5b13;
 }
 .pulse-bars {
   height: 17px;

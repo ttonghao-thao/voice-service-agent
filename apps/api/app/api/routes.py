@@ -490,7 +490,7 @@ async def test_tool(name: str, request: Request, user: User):
         raise DomainError("TOOL_NOT_CONFIGURED", "Tool endpoint is not configured", 503)
     try:
         response = await request.app.state.client.get(
-            base.rstrip("/") + "/health",
+            base.rstrip("/") + ("/v1/ready" if name == "search_knowledge" else "/health"),
             timeout=3,
             headers={"Authorization": "Bearer " + getattr(s, spec.secret_ref).get_secret_value()},
         )

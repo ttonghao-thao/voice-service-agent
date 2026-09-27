@@ -1,5 +1,6 @@
 import asyncio
 import json
+import logging
 import time
 from typing import Literal
 
@@ -9,6 +10,8 @@ from app.contracts import DomainError, StrictModel
 from app.storage.models import ToolRun
 from app.tools.adapters import CueKBAdapter, WeatherAdapter
 from pydantic import Field, ValidationError
+
+logger = logging.getLogger(__name__)
 
 
 class ToolSpec(StrictModel):
@@ -71,6 +74,12 @@ class ToolRegistry:
     async def invoke(self, name, arguments, ctx):
         started = time.monotonic()
         status, output = "ok", {}
+        logger.info(
+            "tool_run_started conversation_id=%s turn_id=%s tool=%s",
+            ctx.conversation_id,
+            ctx.turn_id,
+            name,
+        )
         saved_evidence, saved_cards, saved_slots, saved_retrievals = (
             dict(ctx.evidence),
             list(ctx.cards),
@@ -121,6 +130,15 @@ class ToolRegistry:
             ctx.tool_errors.append(status)
             return {"status": "failed", "code": status, "message": "Search service failed. Please try again later."}
         finally:
+            duration_ms = int((time.monotonic() - started) * 1000)
+            logger.info(
+                "tool_run_finished conversation_id=%s turn_id=%s tool=%s status=%s duration_ms=%s",
+                ctx.conversation_id,
+                ctx.turn_id,
+                name,
+                status,
+                duration_ms,
+            )
             if status != "ok":
                 ctx.evidence, ctx.cards, ctx.slots, ctx.retrievals = (
                     saved_evidence,
@@ -136,7 +154,7 @@ class ToolRegistry:
                         epoch=ctx.epoch,
                         name=name,
                         status=status,
-                        duration_ms=int((time.monotonic() - started) * 1000),
+                        duration_ms=duration_ms,
                         evidence={
                             "citations": [x.model_dump() for x in ctx.evidence.values()],
                             "cards": ctx.cards,

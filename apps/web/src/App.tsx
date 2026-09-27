@@ -1,13 +1,5 @@
 import { useCallback, useEffect, useRef, useState } from "react";
-import {
-  Alert,
-  Button,
-  Drawer,
-  Input,
-  Slider,
-  Spin,
-  Tag,
-} from "antd";
+import { Alert, Button, Drawer, Input, Slider, Spin, Tag } from "antd";
 import {
   AudioOutlined,
   AudioMutedOutlined,
@@ -30,7 +22,11 @@ import {
   streamEvents,
   Turn,
 } from "./api";
-import { VoiceClient, VoiceState } from "./audio/VoiceClient";
+import {
+  MicrophoneDiagnostics,
+  VoiceClient,
+  VoiceState,
+} from "./audio/VoiceClient";
 
 const stateLabels: Record<VoiceState, string> = {
   closed: "Voice disconnected",
@@ -63,7 +59,8 @@ export default function App() {
   const [voiceState, setVoiceState] = useState<VoiceState>("closed"),
     [muted, setMuted] = useState(false),
     [volume, setVolume] = useState(0.8),
-    [inputState, setInputState] = useState("quiet");
+    [inputState, setInputState] = useState("quiet"),
+    [microphone, setMicrophone] = useState<MicrophoneDiagnostics | null>(null);
   const [selected, setSelected] = useState<Answer | null>(null),
     [sidebar, setSidebar] = useState(false),
     [sourcesOpen, setSourcesOpen] = useState(false),
@@ -131,32 +128,54 @@ export default function App() {
       }
       if (event.type === "portal.playback.clear") {
         voice.current?.clearForEpoch(event.epoch);
+        setTranscripts({});
         setProgress("");
         void refresh(event.conversation_id).catch((e) => setError(e.message));
       }
-      if (event.type === "portal.input.state")
+      if (event.type === "portal.input.state") {
         setInputState(String(event.payload.state));
+        if (event.payload.state === "speaking") setTranscripts({});
+      }
+      if (event.type === "portal.audio.done") {
+        setTranscripts((old) =>
+          Object.fromEntries(
+            Object.entries(old).filter(
+              ([, item]) => item.kind !== "Spoken reply",
+            ),
+          ),
+        );
+      }
       if (
         event.type.includes("transcript.") ||
         event.type.includes("speech_text.")
       ) {
         const key = `${event.epoch}:${event.type.includes("speech_text") ? "voice" : "user"}:${event.payload.item_id || event.payload.response_id}`;
-        setTranscripts((old) => ({
-          ...old,
-          [key]: {
-            kind: event.type.includes("speech_text") ? "Spoken reply" : "Your transcript",
-            text: event.type.endsWith(".done")
-              ? String(event.payload.text)
-              : (old[key]?.text || "") + String(event.payload.text),
-            done: event.type.endsWith(".done"),
-          },
-        }));
+        setTranscripts((old) => {
+          const next = { ...old };
+          if (event.type.endsWith(".done")) {
+            delete next[key];
+          } else {
+            next[key] = {
+              kind: event.type.includes("speech_text")
+                ? "Spoken reply"
+                : "Your transcript",
+              text: (old[key]?.text || "") + String(event.payload.text),
+              done: false,
+            };
+          }
+          return next;
+        });
       }
     },
     [refresh],
   );
   useEffect(() => {
-    voice.current = new VoiceClient(handleEvent, setVoiceState, onError);
+    voice.current = new VoiceClient(
+      handleEvent,
+      setVoiceState,
+      onError,
+      setMicrophone,
+    );
     return () => {
       void voice.current?.stop();
     };
@@ -200,7 +219,8 @@ export default function App() {
     await voice.current?.stop();
     const id = active.current;
     active.current = "";
-    if (id) await api(`/conversations/${id}`, { method: "DELETE" }).catch(() => {});
+    if (id)
+      await api(`/conversations/${id}`, { method: "DELETE" }).catch(() => {});
     setCallAccessToken("");
   }
   async function newConversation() {
@@ -210,7 +230,8 @@ export default function App() {
         method: "POST",
         body: JSON.stringify({ title: "New conversation", locale: "en-US" }),
       });
-      if (!c.access_token) throw new Error("The server did not issue call access");
+      if (!c.access_token)
+        throw new Error("The server did not issue call access");
       setCallAccessToken(c.access_token);
       active.current = c.id;
       epoch.current = 0;
@@ -243,14 +264,11 @@ export default function App() {
         turn_id: string;
         epoch: number;
         request_revision: number;
-      }>(
-        `/conversations/${id}/messages`,
-        {
-          method: "POST",
-          headers: { "Idempotency-Key": crypto.randomUUID() },
-          body: JSON.stringify({ text }),
-        },
-      );
+      }>(`/conversations/${id}/messages`, {
+        method: "POST",
+        headers: { "Idempotency-Key": crypto.randomUUID() },
+        body: JSON.stringify({ text }),
+      });
       if (active.current === id) {
         epoch.current = Math.max(epoch.current, result.epoch);
         requestRevision.current = Math.max(
@@ -312,14 +330,19 @@ export default function App() {
       </div>
       <div className="call-isolation">
         <strong>Private test call</strong>
-        <p>Each tab creates its own conversation when you start a call. No history is shared with other tabs.</p>
+        <p>
+          Each tab creates its own conversation when you start a call. No
+          history is shared with other tabs.
+        </p>
       </div>
       <div className="sidebar-foot">
         <span className="avatar">
           <AudioOutlined />
         </span>
         <div>
-          <strong>{cid && !callEnded ? "Call in this tab" : "No active call"}</strong>
+          <strong>
+            {cid && !callEnded ? "Call in this tab" : "No active call"}
+          </strong>
           <small>{stateLabels[voiceState]}</small>
         </div>
       </div>
@@ -336,14 +359,19 @@ export default function App() {
         <div className="evidence-placeholder">
           <FileTextOutlined />
           <p>Answers backed by sources</p>
-          <small>After a search, view knowledge sources, versions, and locations here.</small>
+          <small>
+            After a search, view knowledge sources, versions, and locations
+            here.
+          </small>
         </div>
       ) : (
         <>
           <Tag color={selected.status === "answered" ? "green" : "orange"}>
             {statuses[selected.status] || selected.status}
           </Tag>
-          {selected.is_mock && <Tag color="orange">Synthetic integration data</Tag>}
+          {selected.is_mock && (
+            <Tag color="orange">Synthetic integration data</Tag>
+          )}
           {selected.citations.map((c) => (
             <article className="citation" key={c.citation_id}>
               <div className="citation-title">
@@ -353,10 +381,14 @@ export default function App() {
               <p>{c.content}</p>
               {c.context_parts?.length > 0 && (
                 <details className="citation-context">
-                  <summary>Context and source locations ({c.context_parts.length})</summary>
+                  <summary>
+                    Context and source locations ({c.context_parts.length})
+                  </summary>
                   {c.context_parts.map((part) => (
                     <div key={part.chunk_id}>
-                      <strong>{part.title_path.join(" / ") || "Source excerpt"}</strong>
+                      <strong>
+                        {part.title_path.join(" / ") || "Source excerpt"}
+                      </strong>
                       {part.anchor.page ? ` · page ${part.anchor.page}` : ""}
                       <p>{part.source_text}</p>
                     </div>
@@ -367,21 +399,30 @@ export default function App() {
                 <div className="citation-relations">
                   {c.relations.map((relation) => (
                     <span key={relation.relation_id}>
-                      Relationship evidence: {relation.relation_type} ({relation.stance})
-                      {Object.entries(relation.conditions).map(([key, value]) => ` · ${key}: ${value}`).join("")}
+                      Relationship evidence: {relation.relation_type} (
+                      {relation.stance})
+                      {Object.entries(relation.conditions)
+                        .map(([key, value]) => ` · ${key}: ${value}`)
+                        .join("")}
                     </span>
                   ))}
-                  <small>These relations are source claims; their truth has not been established.</small>
+                  <small>
+                    These relations are source claims; their truth has not been
+                    established.
+                  </small>
                 </div>
               )}
               {(c.context_truncated || c.context_omitted) && (
                 <div className="citation-warning">
-                  {c.context_omitted ? "Some context was omitted by this service." : "CueKB limited the returned context."}
+                  {c.context_omitted
+                    ? "Some context was omitted by this service."
+                    : "CueKB limited the returned context."}
                 </div>
               )}
               {c.hits_omitted > 0 && (
                 <div className="citation-warning">
-                  {c.hits_omitted} matching source(s) were omitted by this service's evidence budget.
+                  {c.hits_omitted} matching source(s) were omitted by this
+                  service's evidence budget.
                 </div>
               )}
               <div className="citation-meta">
@@ -395,7 +436,9 @@ export default function App() {
                 )}
               </div>
               {(c.scope_limited || c.retrieval_status === "degraded") && (
-                <div className="citation-warning">This source came from a limited or degraded search.</div>
+                <div className="citation-warning">
+                  This source came from a limited or degraded search.
+                </div>
               )}
               {c.source_uri && (
                 <a
@@ -413,12 +456,13 @@ export default function App() {
           ))}
           {!selected.citations.length && !selected.cards.length && (
             <p className="muted">
-              No evidence is available to show. Please clarify your question or contact a representative.
+              No evidence is available to show. Please clarify your question or
+              contact a representative.
             </p>
           )}
           <div className="evidence-note">
-            <CheckCircleOutlined />{" "}
-            The server validates source access; the conclusion still needs business review.
+            <CheckCircleOutlined /> The server validates source access; the
+            conclusion still needs business review.
           </div>
         </>
       )}
@@ -457,7 +501,10 @@ export default function App() {
           <div>
             <div className="eyebrow">CUSTOMER SUPPORT</div>
             <h1>Support that responds</h1>
-            <p>Speak naturally, keep a written record, and review the sources behind each answer.</p>
+            <p>
+              Speak naturally, keep a written record, and review the sources
+              behind each answer.
+            </p>
           </div>
           <Button
             className="sources-toggle"
@@ -469,8 +516,9 @@ export default function App() {
         </div>
         {caps?.is_mock && (
           <div className="mode-notice">
-            <span>Integration mode</span>{" "}
-            This environment includes demo services. Unconfigured real models and tools cannot produce real business answers.
+            <span>Integration mode</span> This environment includes demo
+            services. Unconfigured real models and tools cannot produce real
+            business answers.
             {caps.provider === "mock"
               ? "Voice only verifies capture and transport; it does not recognize or synthesize speech."
               : ""}
@@ -514,18 +562,28 @@ export default function App() {
                   </div>
                   <h2>Hello. How can I help today?</h2>
                   <p>
-                    Speak or type your question. I will search company knowledge you are allowed to access.
-                    <br />I will ask for clarification when the evidence is insufficient.
+                    Speak or type your question. I will search company knowledge
+                    you are allowed to access.
+                    <br />I will ask for clarification when the evidence is
+                    insufficient.
                   </p>
                   <div className="suggestions">
                     <button
-                      onClick={() => setDraft("Find the product troubleshooting procedure")}
+                      onClick={() =>
+                        setDraft("Find the product troubleshooting procedure")
+                      }
                     >
                       <FileTextOutlined />
                       <strong>Search knowledge</strong>
                       <span>Products, services, and procedures</span>
                     </button>
-                    <button onClick={() => setDraft("What should I prepare before a product upgrade?")}>
+                    <button
+                      onClick={() =>
+                        setDraft(
+                          "What should I prepare before a product upgrade?",
+                        )
+                      }
+                    >
                       <AudioOutlined />
                       <strong>Ask naturally</strong>
                       <span>Procedures, versions, and precautions</span>
@@ -541,19 +599,7 @@ export default function App() {
                   )}
                 </div>
               ) : null}
-              {Object.entries(transcripts).map(([key, t]) => (
-                <article
-                  className={t.kind === "Spoken reply" ? "assistant-message live-transcript" : "user-message live-transcript"}
-                  key={key}
-                >
-                  <span className="message-label">
-                    {t.kind === "Spoken reply" ? "Assistant · Voice output" : "You · Voice input"}
-                    {!t.done ? " · Live" : ""}
-                  </span>
-                  <p>{t.text || "…"}</p>
-                </article>
-              ))}
-              {turns.filter((t) => t.channel !== "voice").map((t) => (
+              {turns.map((t) => (
                 <article className="turn" key={t.id}>
                   <div className="user-message">
                     <span className="message-label">
@@ -597,10 +643,14 @@ export default function App() {
                       </>
                     ) : t.status === "running" ? (
                       <div className="processing">
-                        <LoadingOutlined /> {progress || "Processing your question"}
+                        <LoadingOutlined />{" "}
+                        {progress || "Processing your question"}
                       </div>
                     ) : (
-                      <p className="muted">This request has stopped. No further result will be submitted.</p>
+                      <p className="muted">
+                        This request has stopped. No further result will be
+                        submitted.
+                      </p>
                     )}
                     {t.status === "failed" && (
                       <Button
@@ -613,11 +663,27 @@ export default function App() {
                   </div>
                 </article>
               ))}
-              {selected && (selected.citations.length > 0 || selected.cards.length > 0) && (
-                <button className="source-button voice-source-button" onClick={() => setSourcesOpen(true)}>
-                  <FileTextOutlined /> View verified answer sources <span>↗</span>
-                </button>
+              {Object.entries(transcripts).length > 0 && (
+                <div className="live-captions" aria-live="polite">
+                  <strong>Live captions</strong>
+                  {Object.entries(transcripts).map(([key, transcript]) => (
+                    <p key={key}>
+                      <span>{transcript.kind}:</span> {transcript.text || "…"}
+                    </p>
+                  ))}
+                </div>
               )}
+              {selected &&
+                (selected.citations.length > 0 ||
+                  selected.cards.length > 0) && (
+                  <button
+                    className="source-button voice-source-button"
+                    onClick={() => setSourcesOpen(true)}
+                  >
+                    <FileTextOutlined /> View verified answer sources{" "}
+                    <span>↗</span>
+                  </button>
+                )}
               <div ref={end} />
             </div>
             <div className="composer">
@@ -627,7 +693,10 @@ export default function App() {
                   type="primary"
                   icon={<AudioOutlined />}
                   disabled={
-                    !caps?.voice_available || voiceState === "connecting" || voiceState === "ready" || voiceState === "reconnecting"
+                    !caps?.voice_available ||
+                    voiceState === "connecting" ||
+                    voiceState === "ready" ||
+                    voiceState === "reconnecting"
                   }
                   onClick={() => void startCall()}
                 >
@@ -668,35 +737,61 @@ export default function App() {
                 </Button>
               </div>
               {voiceState === "ready" && (
-                <div className="voice-live">
-                  <span className="pulse-bars">
-                    <i />
-                    <i />
-                    <i />
-                    <i />
-                  </span>
-                  <span>
-                    {muted
-                      ? "Microphone muted"
-                      : inputState === "speaking"
-                        ? "Listening"
-                        : "Voice is ready. You can ask a question."}
-                    {progress ? " · " + progress : ""}
-                  </span>
-                  <label>
-                    Volume
-                    <Slider
-                      value={volume}
-                      min={0}
-                      max={1}
-                      step={0.05}
-                      onChange={(v) => {
-                        setVolume(v);
-                        voice.current?.setVolume(v);
-                      }}
-                    />
-                  </label>
-                </div>
+                <>
+                  <div className="voice-live">
+                    <span className="pulse-bars">
+                      <i />
+                      <i />
+                      <i />
+                      <i />
+                    </span>
+                    <span>
+                      {muted
+                        ? "Microphone muted"
+                        : inputState === "speaking"
+                          ? "Listening"
+                          : "Voice is ready. You can ask a question."}
+                      {progress ? " · " + progress : ""}
+                    </span>
+                    <label>
+                      Volume
+                      <Slider
+                        value={volume}
+                        min={0}
+                        max={1}
+                        step={0.05}
+                        onChange={(v) => {
+                          setVolume(v);
+                          voice.current?.setVolume(v);
+                        }}
+                      />
+                    </label>
+                  </div>
+                  {microphone && (
+                    <div
+                      className={`microphone-status ${microphone.echoCancellation === false ? "warning" : ""}`}
+                    >
+                      Microphone: {microphone.label}
+                      {microphone.sampleRate
+                        ? ` · ${microphone.sampleRate} Hz`
+                        : ""}
+                      {microphone.channelCount
+                        ? ` · ${microphone.channelCount} channel`
+                        : ""}
+                      {microphone.echoCancellation === false
+                        ? " · echo cancellation unavailable; use a headset"
+                        : microphone.echoCancellation
+                          ? " · echo cancellation on"
+                          : " · echo cancellation not reported"}
+                      {microphone.noiseSuppression === true
+                        ? " · noise suppression on"
+                        : ""}
+                      {microphone.autoGainControl === true
+                        ? " · auto gain on"
+                        : ""}
+                    </div>
+                  )}
+                </>
               )}
               <div className="text-composer">
                 <Input.TextArea
@@ -727,7 +822,9 @@ export default function App() {
                 />
               </div>
               <div className="composer-foot">
-                <span>Sending a text question ends the current voice connection.</span>
+                <span>
+                  Sending a text question ends the current voice connection.
+                </span>
                 <span>{draft.length} / 2000</span>
               </div>
             </div>
@@ -736,7 +833,9 @@ export default function App() {
         </div>
         <footer className="page-footer">
           <span>VoiceBridge · Customer support portal</span>
-          <span>Read-only tools · raw recordings are not stored by default</span>
+          <span>
+            Read-only tools · raw recordings are not stored by default
+          </span>
         </footer>
       </main>
       <Drawer

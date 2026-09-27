@@ -82,3 +82,35 @@ def test_input_activity_never_cancels_without_explicit_control(tmp_path):
             assert ws.receive_json()["payload"]["state"] == "speaking"
             assert ws.receive_json()["payload"]["state"] == "quiet"
             assert client.get(f"/api/v1/conversations/{cid}/messages").json()["items"] == []
+
+
+def test_voice_response_after_user_speech_requires_business_bridge(tmp_path):
+    app = create_app(
+        Settings(
+            _env_file=None,
+            auto_create_schema=True,
+            database_url=f"sqlite+aiosqlite:///{tmp_path}/required-bridge.db",
+        )
+    )
+
+    class Scripted(MockVoiceAdapter):
+        async def connect(self, summary):
+            await self.queue.put(VoiceEvent("input.state", {"state": "speaking"}))
+            await self.queue.put(
+                VoiceEvent(
+                    "speech_text.delta",
+                    {"response_id": "unbridged", "text": "I can answer directly."},
+                )
+            )
+
+    with TestClient(app) as client:
+        app.state.voice.provider_factory = Scripted
+        cid = client.post("/api/v1/conversations", json={}).json()["id"]
+        issued = client.post(f"/api/v1/conversations/{cid}/voice-sessions", json={}).json()
+        with client.websocket_connect(
+            issued["ws_url"], headers={"Origin": "http://localhost:5173"}
+        ) as ws:
+            assert ws.receive_json()["type"] == "portal.session.ready"
+            error = ws.receive_json()
+            assert error["type"] == "portal.error"
+            assert error["payload"]["code"] == "VOICE_TOOL_REQUIRED"

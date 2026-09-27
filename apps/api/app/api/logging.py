@@ -23,8 +23,27 @@ class SensitiveQueryFilter(logging.Filter):
         return True
 
 
+class ApplicationLogHandler(logging.StreamHandler):
+    """Marker handler so repeated app construction cannot duplicate log lines."""
+
+
 def configure_logging():
     for name in ("uvicorn.error", "uvicorn.access"):
         logger = logging.getLogger(name)
         if not any(isinstance(f, SensitiveQueryFilter) for f in logger.filters):
             logger.addFilter(SensitiveQueryFilter())
+
+    application_logger = logging.getLogger("app")
+    application_logger.setLevel(logging.INFO)
+    application_logger.propagate = False
+    if not any(
+        isinstance(handler, ApplicationLogHandler)
+        for handler in application_logger.handlers
+    ):
+        handler = ApplicationLogHandler()
+        handler.setLevel(logging.INFO)
+        handler.setFormatter(
+            logging.Formatter("%(asctime)s %(levelname)s %(name)s %(message)s")
+        )
+        handler.addFilter(SensitiveQueryFilter())
+        application_logger.addHandler(handler)
