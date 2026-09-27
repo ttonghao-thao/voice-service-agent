@@ -308,6 +308,44 @@ async def test_unearned_answer_and_fabricated_citations_rejected(app):
     assert (await runtime.validate(answer, ctx)).status == "insufficient_evidence"
 
 
+async def test_model_failed_status_cannot_override_successful_retrieval(app, conversation):
+    runtime = app.state.coordinator.runtime
+    registry = app.state.registry
+    principal = dev_user()
+    turn, _, _ = await app.state.store.begin_turn(
+        principal,
+        conversation,
+        "model-failed-with-evidence",
+        "Find the integration sample",
+        "text",
+    )
+    ctx = RunContext(
+        principal,
+        conversation,
+        turn.id,
+        turn.epoch,
+        request_revision=turn.request_revision,
+    )
+    ctx.allowed_tools = {"search_knowledge"}
+    ctx.tool_versions = {"search_knowledge": await registry.store.tool_revision("search_knowledge")}
+    result = await registry.invoke("search_knowledge", {"query": "Find the integration sample"}, ctx)
+    assert result["hits"] and "C1" in ctx.evidence
+
+    normalized = await runtime.validate(
+        AgentAnswer(
+            status="failed",
+            display_text="The retrieved answer is supported [C1]",
+            speech_text="The retrieved answer is supported.",
+            citation_ids=["C1"],
+        ),
+        ctx,
+    )
+
+    assert normalized.status == "answered"
+    assert normalized.reason_code is None
+    assert normalized.citations[0].citation_id == "C1"
+
+
 async def test_new_registered_tool_needs_no_chat_or_voice_changes(app, conversation):
     from app.contracts import StrictModel
     from app.tools.registry import ToolSpec

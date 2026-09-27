@@ -91,7 +91,12 @@ def _answer_for_principal(answer, user, settings):
                 "metadata": citation.get("metadata", {}),
             }
         )
-    return {**answer, "citations": citations}
+    visible = {**answer, "citations": citations}
+    # Repair rows written before D18, when a model-provided `failed` status could
+    # be persisted together with a successful answer and verified sources.
+    if visible.get("status") == "failed" and visible.get("reason_code") is None:
+        visible["status"] = "answered" if citations or visible.get("cards") else "insufficient_evidence"
+    return visible
 
 
 def _event_for_principal(payload, user, settings):
@@ -231,11 +236,10 @@ async def messages(
                 )
             ).scalars()
         )
-        return {
-            "epoch": c.epoch,
-            "request_revision": c.request_revision,
-            "voice_session_id": c.voice_session_id,
-            "items": [
+        items = []
+        for t in reversed(turns):
+            answer = _answer_for_principal(t.answer, user, request.app.state.settings)
+            items.append(
                 {
                     "id": t.id,
                     "epoch": t.epoch,
@@ -244,15 +248,21 @@ async def messages(
                     "native_call_id": t.native_call_id,
                     "user_text": t.user_text,
                     "channel": t.channel,
-                    "status": t.status,
+                    # Once an answer exists, its normalized terminal state is the
+                    # customer-visible state. This also repairs pre-D18 rows.
+                    "status": answer["status"] if answer else t.status,
                     "cancellation_reason": t.cancellation_reason,
                     "delivery_status": t.delivery_status,
                     "output_suppressed": t.output_suppressed,
-                    "answer": _answer_for_principal(t.answer, user, request.app.state.settings),
+                    "answer": answer,
                     "created_at": t.created_at.isoformat(),
                 }
-                for t in reversed(turns)
-            ],
+            )
+        return {
+            "epoch": c.epoch,
+            "request_revision": c.request_revision,
+            "voice_session_id": c.voice_session_id,
+            "items": items,
             "records": [
                 visible
                 for r in reversed(records)

@@ -12,7 +12,9 @@ def test_english_knowledge_release_samples_match_voice_contract():
     assert len(samples) >= 6
     assert len({sample["case_id"] for sample in samples}) == len(samples)
     assert {sample["category"] for sample in samples} == {"knowledge", "clarification", "small_talk"}
-    assert Settings(_env_file=None).enabled_tool_names == {"search_knowledge"}
+    settings = Settings(_env_file=None)
+    assert settings.enabled_tool_names == {"search_knowledge"}
+    assert settings.agent_deadline_ms == 30000
     for sample in samples:
         assert sample["text"].isascii()
         assert sample["expected"].isascii()

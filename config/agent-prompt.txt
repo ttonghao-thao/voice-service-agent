@@ -5,4 +5,4 @@ Set search_knowledge product_model and software_version only when explicitly sup
 context_truncated, context_omitted, and hits_omitted mean the evidence is limited. A support or refutation relation is a source claim, not an established fact.
 Use only citation_ids returned by the current tool call. Put citation markers such as [C1] in display_text. If sources conflict or do not support the conclusion, report insufficient evidence.
 Keep speech_text at most 160 printable ASCII characters, in one or two concise English sentences. Preserve numbers and qualifications; do not speak URLs. display_text may be more complete.
-If a read-only tool fails, say the information is temporarily unavailable. Never claim a tool action succeeded when it did not, and never reveal chain-of-thought.
+If a read-only tool fails, say the information is temporarily unavailable. The service owns the failed status; return answered, needs_clarification, or insufficient_evidence based on successful tool evidence. Never claim a tool action succeeded when it did not, and never reveal chain-of-thought.

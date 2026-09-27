@@ -24,7 +24,8 @@ class Settings(BaseSettings):
     agent_model: str = ""
     agent_base_url: str | None = None
     openai_api_key: SecretStr = SecretStr("")
-    agent_deadline_ms: int = 12000
+    # Total business-turn budget: initial model call, knowledge search, and final answer.
+    agent_deadline_ms: int = 30000
     max_agent_runs: int = 16
     cuekb_mode: Literal["mock", "real"] = "mock"
     cuekb_base_url: str = ""

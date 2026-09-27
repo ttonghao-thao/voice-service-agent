@@ -130,6 +130,8 @@ SSE 的 `id` 是持久化 `server_seq`，不是 JSON `event_id`。仅重放业�
 - 兼容性新增先由 capability 声明并提供降级；未知服务端非关键展示事件可忽略，未知客户端控制事件拒绝；格式/鉴权错误不得继续播放。
 - 当前已有典型错误：AUTH_REQUIRED、FORBIDDEN、VOICE_UNAVAILABLE、VOICE_CAPACITY_EXCEEDED、VOICE_PROTOCOL_ERROR、VOICE_TOOL_REQUIRED、VOICE_SESSION_ROTATION_REQUIRED、VOICE_SESSION_EXPIRED、AUDIO_BACKPRESSURE。`VOICE_TOOL_REQUIRED` 表示用户完整发言后 VoiceChat 试图绕过 `consult_service_agent` 直接回答；该输出被拒绝，不能作为客服答案播放。
 - 工具错误在业务层映射为稳定的失败/无依据/澄清状态；不能把 401/403/429/5xx 都显示为“没有知识”。
+- `failed` 是服务端运行/工具异常状态，不能由模型覆盖成功检索结果；已有正文与已校验 citations 的答案必须在 Answer、Turn 和来源面板显示同一终态。读取历史矛盾记录时以规范化后的 Answer 终态为准。
+- `AGENT_DEADLINE_MS` 是首次模型调用、CueKB 检索和最终模型回答的完整业务 Turn 总预算，不是单个请求超时；验证部署默认并在 `.env.example` 显式填写 `30000` 毫秒，真实延迟分布仍在 D07 测量后冻结。
 - 不把服务商 error 原文、密钥或内部堆栈直接转发客户。完整错误集合随实现和契约同步维护。
 
 ## 6. 接口验收

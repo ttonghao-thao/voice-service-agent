@@ -68,6 +68,50 @@ async def test_empty_rag_never_fabricates(client, app, conversation):
     assert data["items"][0]["answer"]["status"] == "insufficient_evidence"
 
 
+async def test_legacy_failed_answer_with_sources_has_consistent_visible_status(client, app, conversation):
+    user = dev_user()
+    turn, _, _ = await app.state.store.begin_turn(
+        user,
+        conversation,
+        "legacy-model-failed",
+        "Find the integration sample",
+        "text",
+    )
+    async with app.state.store.transaction() as db:
+        saved = await db.get(Turn, turn.id)
+        saved.status = "failed"
+        saved.answer = {
+            "answer_id": uid(),
+            "status": "failed",
+            "display_text": "A supported legacy answer [C1]",
+            "speech_text": "A supported legacy answer.",
+            "speech_language": "en-US",
+            "citations": [
+                {
+                    "citation_id": "C1",
+                    "document_id": "00000000-0000-4000-8000-000000000101",
+                    "chunk_id": "00000000-0000-4000-8000-000000000102",
+                    "title": "Legacy source",
+                    "content": "Legacy evidence",
+                    "version_id": "00000000-0000-4000-8000-000000000103",
+                    "trace_id": "legacy-trace",
+                    "retrieval_id": "legacy-trace",
+                    "rank": 1,
+                    "authorized_kb_ids": [KB_SUPPORT],
+                }
+            ],
+            "cards": [],
+            "reason_code": None,
+            "is_mock": False,
+        }
+
+    data = (await client.get(f"/api/v1/conversations/{conversation}/messages")).json()
+    visible = data["items"][0]
+    assert visible["status"] == "answered"
+    assert visible["answer"]["status"] == "answered"
+    assert visible["answer"]["citations"][0]["citation_id"] == "C1"
+
+
 async def test_object_access_isolation(app, conversation):
     async with app.state.store.sessions() as db:
         with pytest.raises(DomainError):

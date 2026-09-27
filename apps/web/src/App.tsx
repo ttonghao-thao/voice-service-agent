@@ -46,6 +46,10 @@ const statuses: Record<string, string> = {
   running: "Searching",
 };
 
+function visibleTurnStatus(turn: Turn) {
+  return turn.answer?.status || turn.status;
+}
+
 export default function App() {
   const [caps, setCaps] = useState<Capabilities | null>(null);
   const [cid, setCid] = useState(""),
@@ -641,14 +645,14 @@ export default function App() {
                       <strong>Answer</strong>
                       <Tag
                         color={
-                          t.status === "answered"
+                          visibleTurnStatus(t) === "answered"
                             ? "green"
-                            : t.status === "running"
+                            : visibleTurnStatus(t) === "running"
                               ? "processing"
                               : "default"
                         }
                       >
-                        {statuses[t.status]}
+                        {statuses[visibleTurnStatus(t)] || visibleTurnStatus(t)}
                       </Tag>
                     </div>
                     {t.answer ? (
@@ -667,7 +671,7 @@ export default function App() {
                           </button>
                         )}
                       </>
-                    ) : t.status === "running" ? (
+                    ) : visibleTurnStatus(t) === "running" ? (
                       <div className="processing">
                         <LoadingOutlined />{" "}
                         {progress || "Processing your question"}
@@ -678,7 +682,7 @@ export default function App() {
                         submitted.
                       </p>
                     )}
-                    {t.status === "failed" && (
+                    {visibleTurnStatus(t) === "failed" && (
                       <Button
                         size="small"
                         onClick={() => setDraft(t.user_text)}

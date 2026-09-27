@@ -71,6 +71,7 @@ def test_cloud_environment_template_cannot_enable_development_fallbacks():
         "KNOWLEDGE_BASE_IDS",
         "AGENT_PROVIDER",
         "AGENT_MODEL",
+        "AGENT_DEADLINE_MS",
         "OPENAI_API_KEY",
         "CUEKB_BASE_URL",
         "CUEKB_API_KEY",
@@ -80,6 +81,7 @@ def test_cloud_environment_template_cannot_enable_development_fallbacks():
     assert "APP_ENV" not in values
     assert "AUTH_MODE" not in values
     assert values["AGENT_PROVIDER"] == "openai"
+    assert values["AGENT_DEADLINE_MS"] == "30000"
     assert "CUEKB_MODE" not in values
     assert "ENABLED_TOOLS" not in values
     assert not any(key.startswith("WEATHER_") for key in values)

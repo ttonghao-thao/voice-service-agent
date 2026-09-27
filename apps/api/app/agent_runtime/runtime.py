@@ -68,7 +68,9 @@ class BusinessRuntime:
                 reason_code=None if result.get("hits") else "CUEKB_NO_EVIDENCE",
             )
         if not self.client or not self.settings.agent_model:
-            return self.failure("AGENT_NOT_CONFIGURED", "The text model is not configured for business answers.")
+            return self.failure(
+                "AGENT_NOT_CONFIGURED", "The text model is not configured for business answers."
+            )
         tools = []
         for name in sorted(ctx.allowed_tools):
             spec = self.registry.specs[name]
@@ -189,7 +191,10 @@ class BusinessRuntime:
         if references - set(answer.citation_ids) or any(
             cid not in ctx.evidence for cid in answer.citation_ids
         ):
-            return self.failure("RAG_INVALID_CITATION", "Source validation failed, so I cannot provide a reliable answer right now.")
+            return self.failure(
+                "RAG_INVALID_CITATION",
+                "Source validation failed, so I cannot provide a reliable answer right now.",
+            )
         if not all(
             [
                 await self.registry.store.enabled(name)
@@ -199,7 +204,23 @@ class BusinessRuntime:
             ]
         ):
             return self.failure("FORBIDDEN", "Knowledge access changed. Please ask again.")
-        if answer.status == "answered":
+        # `failed` is a service-owned execution state. Some compatible models
+        # still emit it despite a successful tool call, which previously left a
+        # cited answer carrying a contradictory Search failed status. Accept the
+        # provider output for compatibility, then derive the business status from
+        # the validated evidence. Actual runtime/tool failures returned above.
+        status = answer.status
+        reason_code = None
+        if status == "failed":
+            status = "answered" if answer.citation_ids or ctx.cards else "insufficient_evidence"
+            reason_code = None if status == "answered" else "CUEKB_NO_EVIDENCE"
+            logger.info(
+                "agent_status_normalized conversation_id=%s turn_id=%s model_status=failed status=%s",
+                ctx.conversation_id,
+                ctx.turn_id,
+                status,
+            )
+        if status == "answered":
             conflicting = any(
                 item.get("evidence_status") in ("insufficient", "conflicting")
                 or item.get("retrieval_status") in ("not_found", "needs_clarification")
@@ -222,7 +243,9 @@ class BusinessRuntime:
                     reason_code="CUEKB_NO_EVIDENCE",
                 )
             if answer.citation_ids and "search_knowledge" not in ctx.invoked:
-                return self.failure("RAG_INVALID_CITATION", "No knowledge search was recorded for this request.")
+                return self.failure(
+                    "RAG_INVALID_CITATION", "No knowledge search was recorded for this request."
+                )
         degraded = any(
             item.get("retrieval_status") == "degraded"
             or item.get("scope_limited")
@@ -231,16 +254,18 @@ class BusinessRuntime:
         )
         display_text = answer.display_text
         speech_text = answer.speech_text
-        reason_code = None
-        if answer.status == "answered" and degraded:
-            display_text = "Note: Search scope was limited. The answer uses only currently available material.\n" + display_text
+        if status == "answered" and degraded:
+            display_text = (
+                "Note: Search scope was limited. The answer uses only currently available material.\n"
+                + display_text
+            )
             speech_text = ("Search scope was limited. " + speech_text)[:160]
             reason_code = "CUEKB_DEGRADED"
         if not printable_ascii(speech_text):
             speech_text = "Please read the written response in the portal."
             reason_code = "VOICE_NON_ASCII_SPEECH"
         return AnswerBundle(
-            status=answer.status,
+            status=status,
             display_text=display_text,
             speech_text=speech_text,
             citations=[ctx.evidence[c] for c in dict.fromkeys(answer.citation_ids)],
