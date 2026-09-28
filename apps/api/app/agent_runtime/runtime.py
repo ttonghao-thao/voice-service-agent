@@ -2,6 +2,7 @@ import asyncio
 import json
 import logging
 import re
+import time
 
 from agents import (
     Agent,
@@ -10,6 +11,7 @@ from agents import (
     OpenAIChatCompletionsModel,
     OpenAIResponsesModel,
     RunConfig,
+    RunHooks,
     Runner,
 )
 from app.config import ROOT
@@ -17,6 +19,31 @@ from app.contracts import AgentAnswer, AnswerBundle, now, printable_ascii
 from openai import AsyncOpenAI
 
 logger = logging.getLogger(__name__)
+
+
+class TimingHooks(RunHooks):
+    """Per-run timings only; never log prompts, tool arguments or model output."""
+
+    def __init__(self):
+        self.calls = 0
+        self.started = None
+
+    async def on_llm_start(self, context, agent, system_prompt, input_items):
+        self.calls += 1
+        self.started = time.monotonic()
+
+    async def on_llm_end(self, context, agent, response):
+        self.finish(context.context, "completed")
+
+    def finish(self, ctx, status):
+        if self.started is None:
+            return
+        logger.info(
+            "agent_model_call_finished conversation_id=%s turn_id=%s call_index=%s status=%s duration_ms=%s",
+            ctx.conversation_id, ctx.turn_id, self.calls, status,
+            round((time.monotonic() - self.started) * 1000),
+        )
+        self.started = None
 
 
 class BusinessRuntime:
@@ -125,22 +152,26 @@ class BusinessRuntime:
         )
         inputs = history + [{"role": "user", "content": request}]
         stream = None
+        timings = TimingHooks()
+        started = time.monotonic()
+        run_status = "failed"
         try:
             async with asyncio.timeout(self.settings.agent_deadline_ms / 1000):
                 if progress:
                     stream = Runner.run_streamed(
-                        agent, inputs, context=ctx, max_turns=8, run_config=RunConfig(tracing_disabled=True)
+                        agent, inputs, context=ctx, max_turns=8, hooks=timings, run_config=RunConfig(tracing_disabled=True)
                     )
                     async for _ in stream.stream_events():
                         pass  # Raw deltas and reasoning are never exposed before evidence validation.
                     raw = stream.final_output
                 else:
                     result = await Runner.run(
-                        agent, inputs, context=ctx, max_turns=8, run_config=RunConfig(tracing_disabled=True)
+                        agent, inputs, context=ctx, max_turns=8, hooks=timings, run_config=RunConfig(tracing_disabled=True)
                     )
                     raw = result.final_output
             answer = AgentAnswer.model_validate(raw)
             validated = await self.validate(answer, ctx)
+            run_status = validated.status
             logger.info(
                 "agent_run_finished conversation_id=%s turn_id=%s status=%s invoked_tools=%s reason_code=%s",
                 ctx.conversation_id,
@@ -151,8 +182,10 @@ class BusinessRuntime:
             )
             return validated
         except TimeoutError:
+            run_status = "timeout"
             return self.failure("AGENT_TIMEOUT", "The request timed out. Please try again later.")
         except asyncio.CancelledError:
+            run_status = "canceled"
             raise
         except Exception as exc:
             # Do not propagate provider exceptions: their payloads can contain private prompts and credentials.
@@ -164,6 +197,12 @@ class BusinessRuntime:
             )
             return self.failure("AGENT_FAILED", "The request failed. Please try again later.")
         finally:
+            timings.finish(ctx, run_status)
+            logger.info(
+                "agent_pipeline_finished conversation_id=%s turn_id=%s status=%s model_calls=%s duration_ms=%s",
+                ctx.conversation_id, ctx.turn_id, run_status, timings.calls,
+                round((time.monotonic() - started) * 1000),
+            )
             if stream is not None and not stream.is_complete:
                 stream.cancel(mode="immediate")
 

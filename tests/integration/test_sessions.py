@@ -458,3 +458,61 @@ async def test_total_deadline_also_covers_runtime_preparation(app, conversation)
     _, task = await app.state.coordinator.submit(dev_user(), conversation, "deadline", "联调示例")
     result = await task
     assert result.status == "failed" and result.reason_code == "AGENT_TIMEOUT"
+
+
+async def test_event_wakeup_is_scoped_post_commit_and_rollback_safe(app, conversation):
+    store = app.state.store
+    with store.listen(conversation) as first, store.listen(conversation) as second, store.listen("other") as other:
+        async with store.transaction() as db:
+            c = await store.get(db, conversation, lock=True)
+            await store.event(db, c, "portal.tool.started", {"message": "Searching"})
+            await db.flush()
+            assert not first.is_set() and not second.is_set()
+        assert first.is_set() and second.is_set() and not other.is_set()
+        first.clear()
+        with pytest.raises(RuntimeError):
+            async with store.transaction() as db:
+                c = await store.get(db, conversation, lock=True)
+                await store.event(db, c, "portal.tool.started", {"message": "Rolled back"})
+                raise RuntimeError("abort")
+        assert not first.is_set()
+    assert store.event_listeners == {}
+
+
+async def test_sse_wakes_from_commit_and_replays_persisted_cursor(app, conversation, monkeypatch):
+
+    from app.api import routes
+
+    user = dev_user()
+
+    class Request:
+        async def is_disconnected(self):
+            return False
+
+    request = Request()
+    request.app = app
+
+    async def authenticate(_):
+        return user
+
+    monkeypatch.setattr(routes, "principal", authenticate)
+    response = await routes.events(conversation, request, user, after=0, last_event_id=None)
+    reader = response.body_iterator
+    next_event = asyncio.create_task(anext(reader))
+    # Wait for registration, without depending on wall-clock latency thresholds.
+    for _ in range(100):
+        if conversation in app.state.store.event_listeners:
+            break
+        await asyncio.sleep(0)
+    async with app.state.store.transaction() as db:
+        c = await app.state.store.get(db, conversation, lock=True)
+        event = await app.state.store.event(db, c, "portal.tool.started", {"message": "Searching"})
+    payload = await asyncio.wait_for(next_event, 1)
+    assert f'id: {event.server_seq}' in payload and 'Searching' in payload
+    await reader.aclose()
+    assert not app.state.store.event_listeners
+    # Replay is backed by SQL even when no in-process notification remains.
+    response = await routes.events(conversation, request, user, after=event.server_seq - 1, last_event_id=None)
+    reader = response.body_iterator
+    assert await anext(reader) == payload
+    await reader.aclose()

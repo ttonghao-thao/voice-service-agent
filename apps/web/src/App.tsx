@@ -79,6 +79,10 @@ export default function App() {
     stopEvents = useRef<(() => void) | null>(null),
     lastEvent = useRef(new Set<string>()),
     end = useRef<HTMLDivElement>(null);
+  const knownTurns = useRef(new Set<string>());
+  const finalAnswers = useRef(
+    new Map<string, { epoch: number; revision: number; answer: Answer }>(),
+  );
   const onError = useCallback((message: string) => setError(message), []);
   const refresh = useCallback(async (id: string, older?: string) => {
     const data = await api<{
@@ -88,12 +92,32 @@ export default function App() {
       next_before: string | null;
     }>(`/conversations/${id}/messages${older ? "?before=" + older : ""}`);
     if (active.current !== id) return;
+    if (
+      data.epoch < epoch.current ||
+      data.request_revision < requestRevision.current
+    )
+      return;
     epoch.current = Math.max(epoch.current, data.epoch);
     requestRevision.current = Math.max(
       requestRevision.current,
       data.request_revision || 0,
     );
     setBefore(data.next_before);
+    data.items = data.items.map((turn) => {
+      knownTurns.current.add(turn.id);
+      const final = finalAnswers.current.get(turn.id);
+      return final &&
+        final.epoch === turn.epoch &&
+        final.revision === turn.request_revision &&
+        turn.status === "running"
+        ? {
+            ...turn,
+            status: final.answer.status,
+            answer: final.answer,
+            delivery_status: "accepted",
+          }
+        : turn;
+    });
     setTurns((previous) =>
       older
         ? [
@@ -126,9 +150,41 @@ export default function App() {
         void refresh(event.conversation_id).catch((e) => setError(e.message));
       }
       if (event.type === "portal.answer.final") {
+        if (event.request_revision < requestRevision.current) return;
         setProgress("");
-        setSelected(event.payload as unknown as Answer);
-        void refresh(event.conversation_id).catch((e) => setError(e.message));
+        const answer = event.payload as unknown as Answer;
+        setSelected(answer);
+        if (event.turn_id) {
+          finalAnswers.current.set(event.turn_id, {
+            epoch: event.epoch,
+            revision: event.request_revision,
+            answer,
+          });
+          if (finalAnswers.current.size > 100)
+            finalAnswers.current.delete(
+              finalAnswers.current.keys().next().value!,
+            );
+          setTurns((previous) =>
+            previous.map((turn) =>
+              turn.id === event.turn_id &&
+              turn.epoch === event.epoch &&
+              turn.request_revision === event.request_revision &&
+              turn.status === "running"
+                ? {
+                    ...turn,
+                    answer,
+                    status: answer.status,
+                    delivery_status: "accepted",
+                  }
+                : turn,
+            ),
+          );
+        }
+        // The event contains a validated, principal-filtered answer. Fetch only
+        // when its turn is not loaded (e.g. voice or reconnect), never to gate
+        // rendering a final answer for an existing bubble.
+        if (!event.turn_id || !knownTurns.current.has(event.turn_id))
+          void refresh(event.conversation_id).catch((e) => setError(e.message));
       }
       if (event.type === "portal.playback.clear") {
         voice.current?.clearForEpoch(event.epoch);
@@ -272,6 +328,8 @@ export default function App() {
       setProgress("");
       setCallEnded(false);
       lastEvent.current.clear();
+      knownTurns.current.clear();
+      finalAnswers.current.clear();
       setCid(c.id);
       setSidebar(false);
       return c.id;
@@ -306,7 +364,9 @@ export default function App() {
           result.request_revision,
         );
         setDraft("");
-        setProgress("Processing");
+        setProgress(
+          finalAnswers.current.has(result.turn_id) ? "" : "Processing",
+        );
         await refresh(id);
       }
     } catch (e) {
@@ -803,8 +863,9 @@ export default function App() {
                     >
                       Microphone: {microphone.label}
                       {microphone.sampleRate
-                        ? ` · ${microphone.sampleRate} Hz`
+                        ? ` · ${microphone.sampleRate} Hz capture`
                         : ""}
+                      {" · 24000 Hz sent"}
                       {microphone.channelCount
                         ? ` · ${microphone.channelCount} channel`
                         : ""}

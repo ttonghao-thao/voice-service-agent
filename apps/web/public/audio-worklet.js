@@ -18,7 +18,7 @@ class PortalAudioProcessor extends AudioWorkletProcessor {
     this.port.onmessage = ({ data: d }) => {
       if (d.type === "reset") {
         this.epoch = d.epoch;
-        this.suppressed = true;
+        this.suppressed = d.suppressed !== false;
         this.ring.clear();
         this.playback = new Resampler(24000, sampleRate);
         this.sourceSamples.clear();
@@ -98,6 +98,7 @@ class PortalAudioProcessor extends AudioWorkletProcessor {
             Math.floor((played * 24000) / sampleRate),
           ),
           buffered: this.ring.length,
+          done: this.finished && this.ring.length === 0,
         });
         if (this.finished && this.ring.length === 0) {
           this.ring.played.delete(response);

@@ -1,12 +1,12 @@
 # 后端服务与工具接入
 
-更新：2026-09-25。按主题读取。架构决策见 [architecture.md](architecture.md)，当前差距见 [任务板](TASK_BOARD.md)。
+更新：2026-09-28。按主题读取。架构决策见 [architecture.md](architecture.md)，当前差距见 [任务板](TASK_BOARD.md)。
 
 ## 1. 运行依赖与配置状态
 
 | 依赖 | 最终职责 | 当前实现状态 |
 | --- | --- | --- |
-| VoiceChat | 独立实时语音服务，原生工具调用 | 有 NVIDIA WebSocket adapter；真实部署未验收 |
+| VoiceChat | 独立实时语音服务，原生工具调用 | NVIDIA adapter 与 speech 逐轮协议同步修复；真实复测待 D07 |
 | CueKB | 知识检索与版本来源 | 专用 adapter、契约和受控测试已实现；真实服务/ACL 待 D07 |
 | 文本模型 | BusinessRuntime 的推理与业务回答 | 已有 openai / compatible adapter；真实模型未验收 |
 | 第三方工具 | 本期不启用 | 天气代理代码仍保留，生产默认无需天气配置 |
@@ -68,33 +68,68 @@ CueKB M3 已提供有界章节、相邻块及表头上下文，但预算耗尽�
 
 not_found 表示本次未命中，不能推导事实不存在；degraded 有 hits 时保留原因并判断可用性；401/403 为授权或配置问题，422 为契约问题，429 为负载限制，5xx/超时为服务故障。禁止统一降为“查无资料”。返回答案、读历史证据和原件时都需覆盖撤权策略。
 
-CueKB 上游 HTTP 响应上限为 256 KiB，内部工具输出上限为 32 KiB，模型证据正文加上下文预算为 6000 字符；三者是不同边界，超过内部预算时显式舍弃上下文或命中。原 5 秒知识工具、12 秒业务预算作为初始值，不能证明真实端到端时延已达标。
+CueKB 上游 HTTP 响应上限为 256 KiB，内部工具输出上限为 32 KiB，模型证据正文加上下文预算为 6000 字符；三者是不同边界，超过内部预算时显式舍弃上下文或命中。知识工具预算仍为 5 秒，业务整轮预算默认 30 秒，均不能证明真实端到端时延已达标。
 
 ## 3. VoiceChat 接入与能力门槛
 
-`VOICECHAT_WS_URL` 是 API 容器到独立 VoiceChat 的服务端连接，与浏览器同源 WSS 不是同一条链路。同主机或受控隔离内网可配置 `ws://`；跨主机非受控网络使用 `wss://`。WS 会明文传输 VoiceChat Bearer token，因此对应端口不得公网暴露，并须在 D07 核对路由和防火墙边界。
+### 3.1 连接与线上音频
 
-保留 `session.created → session.update → session.updated`；在首次配置注册 `consult_service_agent(user_request)`，只允许既定函数和 schema。
+API 通过 `VOICECHAT_WS_URL` 连接独立服务的 `/v1/realtime`。受控同主机/隔离网络可用 WS，其它非受控链路使用 WSS；浏览器始终访问本项目同源 HTTPS/WSS。VoiceChat 端口与公网门户端口不能混为一谈。
 
-原生事件 `response.function_call_arguments.done` 进入网关后调用后台业务任务；结果经 `conversation.item.create` / `function_call_output` 以同一有效 call_id 回传。当前网关只支持一个 pending 原生调用；转写完成不能再次触发相同任务。
+握手固定为 `session.created → session.update → session.updated`，首次配置注册 `consult_service_agent(user_request)`。Adapter 验证输入/输出为 `audio/pcm`、24000 Hz；不发送未证实的 `response.cancel`、`tool_choice`、动态 TTS 或后台推送字段。
 
-D17 将 `input_audio_buffer.speech_started` 的 `item_id` 保留在服务端适配边界，并把后续完成态 transcript 绑定到同一用户输入。VoiceChat 工具调用只能消费一个尚未绑定的 input item；如果连接初始阶段在没有用户输入时自行发出工具调用，网关只返回失败结果以结清 call，不创建业务 Turn。工具参数仍须通过 `BridgeArguments` 校验，但最终 ASR transcript 是送入 SessionCoordinator、BusinessRuntime 和门户持久用户气泡的权威文本，避免模型改写工具参数后替代客户原话。
+| 阶段 | 采样和行为 |
+| --- | --- |
+| 设备 / AudioContext | 常见 48 kHz 或 44.1 kHz，以浏览器实际设置为准 |
+| 门户 → API → VoiceChat | 单声道 PCM16 little-endian、24 kHz、80 ms、3840 bytes，包括静音 |
+| VoiceChat 模型输入 | speech 服务内重采样到 16 kHz；两步默认 2560 samples/160 ms |
+| 模型输出 → VoiceChat | 22.05 kHz codec 音频，按 response 重采样到 24 kHz |
+| VoiceChat → 门户 | 24 kHz PCM16；正常帧 80 ms，结束时允许短残帧，audio.done 前排空 |
+| 门户播放 | 重采样到 AudioContext，160 ms 起播缓冲、短回答完成时排空；ACK 仅估计进度 |
 
-VoiceChat 的提示词要求每个完整用户发言（包括问候、听不清和闲聊）调用 `consult_service_agent`。网关另执行服务端后置条件：用户发言后若供应商在没有合法 bridge call 的情况下直接输出语音或字幕，则以 `VOICE_TOOL_REQUIRED` 失败关闭；连接建立时供应商自行生成的欢迎语被抑制。提示词只是引导，不能代替该 fail-closed 边界。
+48 kHz capture 不表示发送了 48 kHz；内部 16 kHz 日志不表示接口应该改成 16 kHz。首包前几个零字节不能证明整段收音无声，供应商发送包数也不能证明音频含语音。
 
-已绑定工具调用的原生 response，以及合法工具结果后紧随的一个输出 response，拥有服务端口述授权；该授权按 response 生命周期消费，不再由全局 `speech_started` 布尔值切换。这样后续用户输入或收音误触发不会把已经桥接的业务口述错误拒绝，同时其它未桥接直接输出仍按 `VOICE_TOOL_REQUIRED` 关闭。真实供应商是否沿用原 response_id、是否产生独立输出 response，以及回声/静音下的事件质量仍须在 D07 固定版本实测。
+### 3.2 工具路由与最终用户输入
 
-本期 VoiceChat 提示词、工具描述、ACK 和工具结果均限制为 ASCII 文本（允许换行）。会话历史中的非 ASCII 行不会送给 VoiceChat；真实 CueKB 文本和文字答复仍保留原文，若业务模型生成非 ASCII 口述摘要，语音只提示用户查看门户中的文字答复。新会话仅接受 `en-US`，旧语言会话不能开启语音。此处理是本项目的接口约束，不代表已验证实际英语口述效果。
+VoiceChat 对每个完整客户发言调用统一业务 bridge，包括问候、闲聊、听不清和知识问题。工具描述与 `config/voice-prompt.txt` 保持这个范围；只允许 `BridgeArguments`，KB/凭据/主机不能进入模型可控参数。
 
-适配器明确校验在线 API 的 24 kHz PCM16 输入/输出，门户 80 ms 上行。模型卡内部音频采样率不能直接替换在线接口格式；变更须以服务契约及握手为准。
+网关按 `speech_started` 的 item_id 收集输入，工具消费尚未绑定的 input item；工具参数做 schema 校验，最终 ASR 文本才作为业务请求和持久用户气泡。最终 ASR 最多等待 5 秒；无有效输入的原生调用只返回失败以结清，不创建业务 Turn。ASR 完成事件不能再触发重复查询。
 
-目标部署必须记录容器 digest、服务/API revision、语言、事件样例和验收时间。`scripts/probe_voicechat.py` 固定目标版本，支持工具结果延迟 5 秒、等待期间发送不同的第二段录音、记录无正文的事件时间线，并可选择保存授权输出 WAV 供人工复核。等待提示语、持续收音、工具等待时自由回答、停止播报、取消推理仍是分别验证的能力；脚本不自动提升模式。已核对模型卡与限制页，但尚无目标容器的真实验证。
+独立 speech 在同一模型批次中先发 ASR，再发工具，再发 ACK/回答音频，以便网关先绑定输入并授权。原生 `response.function_call_arguments.done` 的 call_id 用于 `conversation.item.create/function_call_output` 回传；arguments 若由模型给出 JSON 字符串，服务端先解析对象再编码一次，不能双重 JSON 编码。
 
-- 基础：同 call 工具往返、英文音频、硬打断/关闭重连及旧连接隔离。
-- 增强：延迟工具 5 秒，期间新问题在旧结果返回前得到实际回答；改问后旧答案不交付，原 call 安全结清并可继续新调用。ACK 不计为新问题回答。
-- 不发送未证实的 response.cancel、动态 instructions、任意文本 TTS 或后台结果推送事件。失败不意味着服务支持的全部功能都不存在，只表示本部署未建立契约和证据。
+供应商最终渲染的工具模板不得追加“常识无需工具直接回答”等与应用规则冲突的路由。本项目工具描述覆盖每个完整输入；speech 使用现有 `USE_JINJA_TEMPLATE_PROMPT=1` 分支，保留 AVAILABLE_TOOLS、TOOLCALL、TOOL_RESPONSE 和独立 ACK 元数据。默认模板保持原样，不再为本项目改写。该环境变量在 Python 导入时读取，须随容器/进程启动生效。仅加强前置提示词不能抵消后置冲突模板，也不能替代网关后置条件。
 
-来源：[在线 API](https://github.com/NVIDIA-NeMo/Speech/blob/nemotron-labs-voicechat/voicechat_realtime_instructions/api-reference.md)、[部署](https://github.com/NVIDIA-NeMo/Speech/blob/nemotron-labs-voicechat/voicechat_realtime_instructions/deploy.md)、[模型卡](https://huggingface.co/nvidia/NVIDIA-NemotronLabs-VoiceChat-11B/blob/main/README.md)。当前 adapter 最初依据 NVIDIA revision `097dfe9e2f55baf653b83035868bdc89849f1b47`（API blob `06252330444f0a81679fdeb1f25c8ee067ac8c90`）；2026-09-16 模型卡页面显示 README 修订 `bd32b9997858b0acd9af64f26e4306cf91ad1c82`。这些均不是云端镜像版本。
+### 3.3 Response、ACK 与输出授权
+
+空闲 codec 数组不创建 response。BOS/有效口述或工具调用打开 response；工具和同批 ACK 使用相同 response_id。EOS 结束该轮：先刷新 soxr 与 PCM 尾帧，再排入 transcript.done/audio.done/response.done。静音等待结束后，后续实际回答创建新 ID。
+
+speech 输出 FIFO 中每条事件在生成时固定 response/item，单发送器按序发送。旧音频即使遇到慢网络，也不能因全局 ID 更新而被标成下一轮。默认两步输出出现相邻 EOS/BOS 时按确切的两个 80 ms codec 帧拆分；无法确定帧边界的异常批次显式失败，不猜测切割位置。
+
+网关授权规则：
+
+1. 初始未桥接输出被抑制；用户输入后未桥接的直接答案以 `VOICE_TOOL_REQUIRED` 关闭。
+2. 已绑定合法工具的 response 可承载固定 ACK；有效工具结果提交后最多再授权一个新 response。
+3. 若工具结果在 ACK 未播完时已返回，固定 ACK 不消耗后续答案的许可。固定 ACK 文本由 adapter 统一提供并按规范化空白精确识别。
+4. 若最终答案沿用工具 response，则该 response 完成时回收未使用的后续许可；若用新 response，则首次输出时消费许可。之后无关回答不能继承授权。
+5. 新 speech_started 不撤销有效回答；取消/revision/epoch/租约检查独立执行。初始被抑制 ID 的文字已完成、audio.done 未到，用户输入后又携带非空口述时记录 `voice_response_lifecycle_mismatch` 并显式报错，不能把整场连接放行。
+
+固定 ACK 不是证据答案，供应商写回成功不是客户已听到。业务答案、实际口述字幕和播放 ACK 分别记录。
+
+### 3.4 语言、版本和能力验证
+
+本期为 en-US，提示词、工具描述、ACK 和工具结果必须 ASCII；非 ASCII 历史不注入供应商，非 ASCII 口述摘要降级为查看门户的英文提示，文字证据仍保留原文。该传输限制不代表已证明口述事实正确。
+
+用户已确认现场云端与本机 `speech` 源码同源，且原生 HTML 已能对话、插话和逐句展示文字。自然让话不由本项目重新实现；普通发声不取消业务任务，显式停止清本地缓冲，明确取消/改问另由 Coordinator 处理。
+
+原生 HTML 不检查 response ID，按 transcript.done 分气泡；这不能证明音频也具备相同结束边界。原 WebSocket 音频队列与直接发送的字幕可能错序、ID 跨轮复用，adapter 无法仅凭现有事件可靠重建逐轮采样归属。当前确认基线采用 WebSocket 层修复以保留严格业务授权，模型本身不改；其他已满足有序归属的供应商版本无需此补丁。
+
+D19 上游补丁、适用源码 hash、CPU 测试与发布方式见 [VoiceChat 补丁交付](../deploy/voicechat/README.md)。本项目 API/Web 和独立 VoiceChat 必须分别重建发布，不引入第二套本项目 Compose 配置；云端实际运行 hash/digest 与听音仍须记录。
+
+基础验收要求每轮 ID/结束、同 call 工具往返、最终 ASR 绑定、英文音频、停止后继续和旧连接隔离。增强能力另测延迟工具期间的新问题、改问、取消和旧结果抑制，固定 ACK 不算新问题回答。
+
+`scripts/probe_voicechat.py` 使用授权 24 kHz WAV、固定 API revision/digest 和可控工具延迟，记录无正文事件时间线，可保存授权输出音频。它的工具结果是合成的，不能代替真实 CueKB 闭环。当前业务总预算默认 30 秒，独立模型源码的工具等待超时是另一预算；必须通过延迟探针核对，不能假定本项目 env 自动改变 GPU 服务。
+
+公开参考：[API](https://github.com/NVIDIA-NeMo/Speech/blob/nemotron-labs-voicechat/voicechat_realtime_instructions/api-reference.md)、[部署](https://github.com/NVIDIA-NeMo/Speech/blob/nemotron-labs-voicechat/voicechat_realtime_instructions/deploy.md)。原 adapter 文档基线为 NVIDIA revision `097dfe9e2f55baf653b83035868bdc89849f1b47`；实际服务以用户 speech 源码与发布 hash 为准，不能仅由公开文档推断私有镜像行为。
 
 ## 4. 文本模型与业务 Agent
 
@@ -105,6 +140,26 @@ Runtime 复用授权工具和证据校验，输出 display_text、短 speech_tex
 本期只有 `search_knowledge`，因此 Runtime 对 Responses API 与 compatible Chat Completions 都设置必需工具选择并关闭并行工具调用，同时在模型输出后再次校验已发生授权的 `search_knowledge` 调用。模型未调用工具时返回 `AGENT_REQUIRED_TOOL_NOT_CALLED`；adapter 的授权、契约、限流、超时或上游错误优先于模型声称的 `insufficient_evidence`，只有真实检索结果才能形成未命中/证据不足状态。
 
 Runtime、ToolRegistry、CueKB adapter 与 VoiceGateway 记录脱敏阶段日志，包含 conversation/turn/tool、调用状态、耗时、trace 及 endpoint 的 scheme/host/port/path；不记录问题正文、API key、URL userinfo、供应商原始错误或工具结果正文。管理员的 `search_knowledge` 连通性探测使用 CueKB `/v1/ready`，业务检索仍使用 `/v1/search`。
+
+### 4.1 查询延迟与优化边界
+
+现场反馈约 3 秒，尚无对应 turn 的完整分段日志，不能认定“CueKB 查询用了 3 秒”。默认按提交文字到完整答案分析：HTTP/鉴权/建 Turn → 模型生成检索参数 → CueKB 检索 → 模型生成结构化答案 → 证据/权限复核与提交 → SSE → 渲染。至少两次串行模型请求（与 [SDK agent loop](https://developers.openai.com/api/docs/guides/agents/running-agents) 一致）；额外工具轮次、上游排队/网络、有限重试会增加耗时。语音还包含说话结束判定、最终 ASR、原生工具提取、结果注入/TTS 和播放缓冲；ACK 不计作最终答案。
+
+原页面固定 300 ms 数据库轮询，并在 final 事件后再 GET messages 才显示聊天答案。现在事务提交后唤醒同进程 SSE，通知只作为加速，持久化 Event/server_seq 仍是事实来源；回滚不通知，跨进程或漏通知保留 300 ms 补查，重连按 cursor 补读。页面对已加载 Turn 直接应用鉴权过滤后的 final，未知 Turn 才补取；晚到的 running 快照不能覆盖已收到的 final，新 epoch/revision 不能被旧请求覆盖。
+
+这消除了同进程 0–300 ms 的轮询等待和已有气泡的一次 HTTP 往返，但不承诺总耗时从 3 秒降到某个数。保持模型规划和工具链，避免直接检索原句导致上下文改写、型号/版本过滤退化；不以提前显示未验证模型流取代事实校验。
+
+每个 `conversation_id/turn_id` 关联以下无正文日志：
+
+| 阶段 | 日志与字段 | 解释 |
+| --- | --- | --- |
+| 每次模型调用 | `agent_model_call_finished`：call_index/status/duration_ms | 模型网络往返和完整输出；失败/取消也结束计时，不代表 TTFT |
+| CueKB | `cuekb_response_validated`：trace_id/duration_ms/service_total_ms | 本项目往返含重试与解析；服务 total 若缺失为 null，不视为 0 |
+| 工具 | `tool_run_finished`：status/duration_ms | 权限、当前任务检查及 adapter；其范围包含 CueKB，不能重复相加 |
+| Agent | `agent_pipeline_finished`：model_calls/duration_ms | SDK 循环及结果校验，含模型与工具 |
+| 提交与总计 | `answer_delivery_finished`：commit_ms/total_ms/committed | total 从 Coordinator execute 开始，含业务链和提交；不含浏览器网络/渲染 |
+
+先收集同模型/KB/问题集的冷、热请求 p50/p95，按 turn 对齐。若模型阶段主导，再实测降低回答长度、模型服务排队与缓存；若 CueKB 主导，依据其 trace/timings 优化检索路径；若只在浏览器等待，检查 Nginx SSE 缓冲与额外代理。不得把 30 秒超时预算当实际等待，或把减少模型调用当不影响检索质量的已验证优化。
 
 ## 5. 第三方扩展（D06）
 

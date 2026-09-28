@@ -1,0 +1,946 @@
+--- a/s2s/audio_server.py
++++ b/s2s/audio_server.py
+@@ -184,9 +184,16 @@
+         self.encode_buffer = self.encode_buffer[self.chunk_size :]
+ 
+         # Convert float32 [-1.0, 1.0] to int16
+-        chunk_int16 = (chunk * 32768.0).astype(np.int16)
++        chunk_int16 = np.clip(chunk * 32768.0, -32768, 32767).astype("<i2")
+         return chunk_int16.tobytes()
+ 
++    def flush_encoded_chunk(self) -> bytes | None:
++        """Return a final short PCM frame without padding or dropping samples."""
++        if not self.encode_buffer.size:
++            return None
++        chunk = self.encode_buffer
++        self.encode_buffer = np.array([], dtype=np.float32)
++        return np.clip(chunk * 32768.0, -32768, 32767).astype("<i2").tobytes()
+ 
+ class TritonClientManager:
+     """Manages Triton client connection"""
+@@ -369,6 +376,7 @@
+         self.triton_client: Optional[httpclient.InferenceServerClient] = None
+         self.inference_queue: asyncio.Queue = asyncio.Queue(maxsize=MAX_QUEUE_SIZE)
+         self.send_task: Optional[asyncio.Task] = None
++        self.output_events: asyncio.Queue = asyncio.Queue(maxsize=MAX_QUEUE_SIZE)
+         self._prompt_task: Optional[asyncio.Task] = None
+         self.running = True
+         self.do_warmup = False  # Default: False, can be set to True to enable warmup
+@@ -398,11 +406,10 @@
+         # Accumulated transcripts
+         self.accumulated_user_transcript = []
+         self.accumulated_agent_transcript = []
+-        self._agent_text_previous_turn_nonempty = False
+-        self._agent_text_separator_pending = False
+ 
+         # Pipecat / OpenAI Realtime protocol state
+         self._response_active = False  # True while agent is generating a response
++        self._response_has_speech = False
+         self._speech_active = False  # True while user is speaking
+         self._response_id: Optional[str] = None
+         self._output_item_id: Optional[str] = None
+@@ -476,6 +483,8 @@
+             )
+ 
+         # Encode with proper frame buffering (send_loop will handle sending)
++        if not self._response_active:
++            await self._emit_response_created()
+         self.encode_audio_output(audio_clipped)
+         encode_time_ms = (time.time() - encode_start) * 1000
+ 
+@@ -506,7 +515,37 @@
+         Args:
+             audio_float32: Float32 audio normalized to [-1.0, 1.0]
+         """
++        if not self._response_active:
++            return
+         self.output_codec.encode(audio_float32)
++        while (chunk := self.output_codec.read_encoded_chunk()) is not None:
++            self._queue_audio_chunk(chunk)
++
++    def _queue_output_event(self, event: dict) -> None:
++        # Snapshot IDs at production time. A later model turn cannot relabel
++        # packets waiting on a slow WebSocket connection.
++        try:
++            self.output_events.put_nowait(event)
++        except asyncio.QueueFull as exc:
++            raise RuntimeError("Voice output queue exceeded its bounded capacity") from exc
++
++    def _queue_audio_chunk(self, chunk: bytes) -> None:
++        self._queue_output_event({
++            "type": "response.output_audio.delta",
++            "event_id": str(uuid.uuid4()),
++            "response_id": self._response_id,
++            "item_id": self._output_item_id,
++            "output_index": 0,
++            "content_index": 0,
++            "delta": base64.b64encode(chunk).decode("ascii"),
++        })
++
++    def _flush_response_audio(self) -> None:
++        tail = self.output_resampler.resample_chunk(np.array([], dtype=np.float32), last=True)
++        self.encode_audio_output(tail)
++        chunk = self.output_codec.flush_encoded_chunk()
++        if chunk is not None:
++            self._queue_audio_chunk(chunk)
+ 
+     async def initialize_triton_client(self):
+         """Initialize Triton client once per session"""
+@@ -762,62 +801,27 @@
+                 pass
+ 
+     async def _send_loop(self):
+-        """Background loop to continuously send encoded audio to client"""
++        """One ordered writer for audio, transcripts, tool events and turn boundaries."""
+         logger.info(f"Client {self.client_id}: Send loop started")
+-
+         try:
+             while self.running:
+-                # Read ALL available encoded audio before sleeping
+-                sent_any = False
+-
+-                # Use codec to read encoded chunks
+-                while self.running:
+-                    encoded_data = self.output_codec.read_encoded_chunk()
+-
+-                    if encoded_data is None:
+-                        break  # No more data available
+-
+-                    sent_any = True
+-
+-                    # Encode as base64
+-                    audio_base64 = base64.b64encode(encoded_data).decode('utf-8')
+-
+-                    # Send to client
+-                    response_msg = {
+-                        "type": "response.output_audio.delta",
+-                        "event_id": str(uuid.uuid4()),
+-                        "response_id": self._response_id or "",
+-                        "item_id": self._output_item_id or "",
+-                        "output_index": 0,
+-                        "content_index": 0,
+-                        "delta": audio_base64,
+-                    }
+-
+-                    try:
+-                        await asyncio.wait_for(self.websocket.send_text(json.dumps(response_msg)), timeout=2.0)
++                event = await self.output_events.get()
++                try:
++                    await asyncio.wait_for(self.websocket.send_text(json.dumps(event)), timeout=2.0)
++                    if event["type"] == "response.output_audio.delta":
+                         self.chunks_sent += 1
+-
+                         if self.chunks_sent % 50 == 0:
+                             logger.info(f"Client {self.client_id}: Sent {self.chunks_sent} audio packets")
+-                    except asyncio.TimeoutError:
+-                        logger.warning(f"Client {self.client_id}: Send timeout in send_loop")
+-                    except Exception as e:
+-                        if self.running:
+-                            logger.error(f"Client {self.client_id}: Error in send_loop: {e}")
+-                        break
+-
+-                # Only sleep if no data was sent (avoid busy loop when idle)
+-                if not sent_any:
+-                    await asyncio.sleep(0.001)  # 1ms poll interval when idle
+-
++                finally:
++                    self.output_events.task_done()
+         except asyncio.CancelledError:
+-            logger.info(f"Client {self.client_id}: Send loop cancelled")
+-        except Exception as e:
+-            logger.error(f"Client {self.client_id}: Send loop error: {e}", exc_info=True)
++            raise
++        except Exception:
++            logger.exception(f"Client {self.client_id}: Output writer failed")
++            self.running = False
++            await self.websocket.close(code=1011)
+         finally:
+             logger.info(f"Client {self.client_id}: Send loop stopped")
+-            if self._response_active:
+-                await self._emit_response_done()
+ 
+     async def send_session_end(self):
+         """Send session.end with server-side stats before disconnect."""
+@@ -905,10 +909,7 @@
+             "audio_start_ms": 0,
+             "item_id": self._input_item_id,
+         }
+-        try:
+-            await asyncio.wait_for(self.websocket.send_text(json.dumps(msg)), timeout=2.0)
+-        except Exception as e:
+-            logger.debug(f"Client {self.client_id}: Failed to send speech_started: {e}")
++        self._queue_output_event(msg)
+ 
+     async def _emit_speech_stopped(self):
+         """Emit VAD speech_stopped (Pipecat/OpenAI Realtime compatibility)."""
+@@ -921,14 +922,16 @@
+                 "item_id": self._input_item_id or str(uuid.uuid4()),
+             },
+         ]:
+-            try:
+-                await asyncio.wait_for(self.websocket.send_text(json.dumps(msg)), timeout=2.0)
+-            except Exception as e:
+-                logger.debug(f"Client {self.client_id}: Failed to send {msg['type']}: {e}")
++            self._queue_output_event(msg)
+ 
+     async def _emit_response_created(self):
+         """Emit response.created + output_item.added + content_part.added."""
++        if self._response_active:
++            return
++        self.output_codec = self._create_codec("pcm16", OUTPUT_SAMPLE_RATE)
++        self.output_resampler = soxr.ResampleStream(MODEL_OUTPUT_SAMPLE_RATE, OUTPUT_SAMPLE_RATE, 1, dtype="float32")
+         self._response_active = True
++        self._response_has_speech = False
+         self._response_id = str(uuid.uuid4())
+         self._output_item_id = str(uuid.uuid4())
+         for msg in [
+@@ -965,13 +968,12 @@
+                 "part": {"type": "audio"},
+             },
+         ]:
+-            try:
+-                await asyncio.wait_for(self.websocket.send_text(json.dumps(msg)), timeout=2.0)
+-            except Exception as e:
+-                logger.debug(f"Client {self.client_id}: Failed to send {msg['type']}: {e}")
++            self._queue_output_event(msg)
+ 
+     async def _emit_response_done(self):
+         """Emit response.audio.done + content_part.done + output_item.done + response.done."""
++        if not self._response_active:
++            return
+         self._response_active = False
+         for msg in [
+             {
+@@ -1022,10 +1024,7 @@
+                 },
+             },
+         ]:
+-            try:
+-                await asyncio.wait_for(self.websocket.send_text(json.dumps(msg)), timeout=2.0)
+-            except Exception as e:
+-                logger.debug(f"Client {self.client_id}: Failed to send {msg['type']}: {e}")
++            self._queue_output_event(msg)
+         self._response_id = None
+         self._output_item_id = None
+ 
+@@ -1040,7 +1039,7 @@
+             "content_index": 0,
+             "delta": delta,
+         }
+-        await self.websocket.send_text(json.dumps(msg))
++        self._queue_output_event(msg)
+ 
+     async def _emit_output_text_done(self, text: str):
+         """Emit response.output_text.done (backward compatibility)."""
+@@ -1053,7 +1052,7 @@
+             "content_index": 0,
+             "text": text,
+         }
+-        await self.websocket.send_text(json.dumps(msg))
++        self._queue_output_event(msg)
+ 
+     async def _emit_audio_transcript_delta(self, delta: str):
+         """Emit response.output_audio_transcript.delta."""
+@@ -1066,7 +1065,7 @@
+             "content_index": 0,
+             "delta": delta,
+         }
+-        await self.websocket.send_text(json.dumps(msg))
++        self._queue_output_event(msg)
+ 
+     async def _emit_audio_transcript_done(self, transcript: str):
+         """Emit response.output_audio_transcript.done."""
+@@ -1079,7 +1078,7 @@
+             "content_index": 0,
+             "transcript": transcript,
+         }
+-        await self.websocket.send_text(json.dumps(msg))
++        self._queue_output_event(msg)
+ 
+     async def _emit_input_audio_transcription_delta(self, delta: str):
+         """Emit conversation.item.input_audio_transcription.delta."""
+@@ -1090,7 +1089,7 @@
+             "content_index": 0,
+             "delta": delta,
+         }
+-        await self.websocket.send_text(json.dumps(msg))
++        self._queue_output_event(msg)
+ 
+     async def _emit_input_audio_transcription_completed(self, transcript: str):
+         """Emit conversation.item.input_audio_transcription.completed."""
+@@ -1101,7 +1100,7 @@
+             "content_index": 0,
+             "transcript": transcript,
+         }
+-        await self.websocket.send_text(json.dumps(msg))
++        self._queue_output_event(msg)
+ 
+     async def _dispatch_asr_text(self, asr_text_response: str):
+         """Send one ASR output chunk to the websocket client."""
+@@ -1316,100 +1315,12 @@
+             output_function_text = response.as_numpy("output_function_text")
+             output_audio = response.as_numpy("output_audio")
+ 
+-            # Keep audio as float32 (normalized to [-1.0, 1.0])
+-            output_audio_float32 = output_audio.astype(np.float32)
+-
+-            # Resample from model output rate (22050Hz) to output rate (24000Hz)
+-            if output_audio_float32.size > 0:
+-                # Flatten to 1D if needed
+-                if output_audio_float32.ndim > 1:
+-                    output_audio_float32 = output_audio_float32.flatten()
+-                # Resample 22050 -> 24000
+-                output_audio_float32 = self.output_resampler.resample_chunk(output_audio_float32)
+-
+-            # Decode text outputs
+-            text_response = "".join([t.decode("utf-8") for t in output_text])
+-            asr_text_response = "".join([t.decode("utf-8") for t in output_asr_text])
+-            function_text_response = "".join([t.decode("utf-8") for t in output_function_text])
+-            if asr_text_response:
+-                logger.debug(f"Client {self.client_id}: output_asr_text received chars={len(asr_text_response)}")
+-
+-            # if text_response:
+-            #    logger.info(f"Client {self.client_id}: Agent text: {text_response}")
+-            # if function_text_response:
+-            #    logger.info(f"Client {self.client_id}: Function text: {function_text_response}")
+-
+-            # Send audio response
+-            if output_audio_float32.size > 0:
+-                if not self._response_active:
+-                    await self._emit_response_created()
+-                try:
+-                    # Clip audio to valid range [-1.0, 1.0] to prevent distortion
+-                    output_audio_float32 = np.clip(output_audio_float32, -1.0, 1.0)
+-
+-                    # Encode with proper frame buffering (send_loop will handle sending)
+-                    self.encode_audio_output(output_audio_float32)
+-                except Exception as encode_error:
+-                    logger.warning(f"Client {self.client_id}: Failed to encode audio: {encode_error}")
+-                    raise  # Re-raise to stop processing
+-
+-            # Send text response if available
+-            if text_response:
+-                try:
+-                    # Clean agent markers while preserving exactly one separator
+-                    # between non-empty turns. Special-token-only chunks must not
+-                    # introduce leading or trailing whitespace.
+-                    has_start = "<s>" in text_response
+-                    has_done = "</s>" in text_response
+-                    if has_start:
+-                        self._agent_text_separator_pending = self._agent_text_previous_turn_nonempty
+-                    clean_text = text_response.replace("^", "").replace("<s>", "").replace("</s>", "")
+-                    if self._agent_text_separator_pending:
+-                        clean_text = clean_text.lstrip()
+-                        if clean_text:
+-                            clean_text = " " + clean_text
+-                            self._agent_text_separator_pending = False
+-
+-                    # Send the text delta (cleaned)
+-                    if clean_text:  # Only send if there's text after cleaning
+-                        await self._emit_audio_transcript_delta(clean_text)
+-                        if SEND_OUTPUT_TEXT_EVENTS:
+-                            await self._emit_output_text_delta(clean_text)
+-
+-                    # Accumulate agent transcript (original with markers for detection)
+-                    self.accumulated_agent_transcript.append(clean_text)
+-
+-                    # Check if transcript contains end-of-speech marker
+-                    if has_done:
+-                        # Send accumulated transcript (strip markers)
+-                        full_transcript = "".join(self.accumulated_agent_transcript)
+-                        await self._emit_audio_transcript_done(full_transcript)
+-                        if SEND_OUTPUT_TEXT_EVENTS:
+-                            await self._emit_output_text_done(full_transcript)
+-
+-                        self._agent_text_previous_turn_nonempty = bool(full_transcript.strip())
+-                        # Reset accumulation for next utterance
+-                        self.accumulated_agent_transcript = []
+-
+-                except Exception as send_error:
+-                    logger.warning(f"Client {self.client_id}: Failed to send text: {send_error}")
+-                    raise
+-
+-            # Send ASR text if available
+-            if asr_text_response:
+-                try:
+-                    await self._dispatch_asr_text(asr_text_response)
+-                except Exception as send_error:
+-                    logger.warning(f"Client {self.client_id}: Failed to send ASR text: {send_error}")
+-                    raise
+-
+-            # Process function tokens through tool-call state machine
+-            if function_text_response:
+-                try:
+-                    await self._process_function_text(function_text_response)
+-                except Exception as send_error:
+-                    logger.warning(f"Client {self.client_id}: Failed to send function text: {send_error}")
+-                    raise
++            await self._dispatch_model_output(
++                output_audio.astype(np.float32).reshape(-1),
++                "".join(t.decode("utf-8") for t in output_text),
++                "".join(t.decode("utf-8") for t in output_asr_text),
++                "".join(t.decode("utf-8") for t in output_function_text),
++            )
+ 
+             if self.triton_inferences % 50 == 0:
+                 logger.info(
+@@ -1437,17 +1348,93 @@
+                 logger.debug(f"Client {self.client_id}: Could not send error message (client may have disconnected)")
+             raise
+ 
++    async def _dispatch_model_output(self, audio, text, asr_text, function_text):
++        """Triton text/audio cover the same decoder-step interval.
++
++        Idle codec arrays are not spoken responses. A spoken BOS/content or a
++        tool call opens a response; EOS drains that response's resampler/PCM
++        tail before its done events. Never infer turns from PCM amplitude.
++        """
++        # With the configured two decoder steps, EOS+BOS is exactly two
++        # 80 ms codec frames. Split at the source-defined frame boundary, not
++        # at an amplitude threshold or a guessed wall-clock delay.
++        if "</s>" in text and "<s>" in text.split("</s>", 1)[1]:
++            frame_samples = int(MODEL_OUTPUT_SAMPLE_RATE * 0.08)
++            if text != "</s><s>" or audio.size != 2 * frame_samples:
++                raise ValueError("Ambiguous multi-turn Triton batch: expected two 80 ms EOS/BOS frames")
++            await self._dispatch_model_output(audio[:frame_samples], "</s>", asr_text, "")
++            await self._dispatch_model_output(audio[frame_samples:], "<s>", "", function_text)
++            return
++        if asr_text:
++            await self._dispatch_asr_text(asr_text)
++        # A new BOS ends an interrupted prior spoken turn. A tool-reserved
++        # response with no speech yet is retained for its first ACK/BOS.
++        if "<s>" in text and self._response_active and self._response_has_speech:
++            await self._finish_spoken_response()
++        # Function parsing occurs after token generation. If this batch ends
++        # a prior turn, its audio/EOS belongs to that turn, not to the new call.
++        if function_text and (
++            ("</s>" in text and "<s>" not in text)
++            or (self._response_active and self._response_has_speech)
++        ):
++            await self._dispatch_model_output(audio, text, "", "")
++            if self._response_active:
++                await self._finish_spoken_response()
++            await self._process_function_text(function_text)
++            return
++        # Bind user input and authorize the tool before any same-batch ACK audio.
++        if function_text:
++            await self._process_function_text(function_text)
++        clean_text = text.replace("^", "").replace("<s>", "").replace("</s>", "")
++        if not self._response_active and ("<s>" in text or clean_text.strip()):
++            await self._emit_response_created()
++        if not self._response_active:
++            return
++        if "<s>" in text or clean_text.strip():
++            self._response_has_speech = True
++        if audio.size:
++            audio = self.output_resampler.resample_chunk(audio)
++            self.encode_audio_output(np.clip(audio, -1.0, 1.0))
++        if clean_text:
++            self.accumulated_agent_transcript.append(clean_text)
++            await self._emit_audio_transcript_delta(clean_text)
++            if SEND_OUTPUT_TEXT_EVENTS:
++                await self._emit_output_text_delta(clean_text)
++        if "</s>" in text:
++            await self._finish_spoken_response()
++
++    async def _finish_spoken_response(self):
++        if not self._response_active:
++            return
++        self._flush_response_audio()
++        transcript = "".join(self.accumulated_agent_transcript)
++        await self._emit_audio_transcript_done(transcript)
++        if SEND_OUTPUT_TEXT_EVENTS:
++            await self._emit_output_text_done(transcript)
++        self.accumulated_agent_transcript = []
++        await self._emit_response_done()
++
+     async def _process_function_text(self, function_text: str) -> None:
+         """Process the function text response from the Triton inference"""
+         try:
+             parsed = json.loads(function_text)
+             calls = parsed if isinstance(parsed, list) else [parsed]
+         except json.JSONDecodeError:
+-            logger.error(f"Client {self.client_id}: Failed to parse tool call JSON: {function_text!r}")
++            raise ValueError("Invalid model tool-call JSON") from None
++
++        if not calls:
+             return
+-
+-        response_id = str(uuid.uuid4())
++        if not all(isinstance(call, dict) for call in calls):
++            raise ValueError("Tool calls must be JSON objects")
++        if not self._response_active:
++            await self._emit_response_created()
++        response_id = self._response_id
+         for output_index, call in enumerate(calls):
++            arguments = call.get("arguments", call.get("parameters", {}))
++            if isinstance(arguments, str):
++                arguments = json.loads(arguments)
++            if not isinstance(arguments, dict):
++                raise ValueError("Tool arguments must be a JSON object")
+             fn_done = {
+                 "event_id": str(uuid.uuid4()),
+                 "type": "response.function_call_arguments.done",
+@@ -1456,9 +1443,9 @@
+                 "output_index": output_index,
+                 "call_id": str(uuid.uuid4()),
+                 "name": call.get("name", ""),
+-                "arguments": json.dumps(call.get("arguments", call.get("parameters", {}))),
++                "arguments": json.dumps(arguments),
+             }
+-            await self.websocket.send_text(json.dumps(fn_done))
++            self._queue_output_event(fn_done)
+ 
+     async def finalize_sequence(self):
+         """Send final empty chunk to close Triton sequence"""
+@@ -1832,6 +1819,9 @@
+             try:
+                 await session.drain_inference_queue()
+                 await session.finalize_sequence()
++                if session._response_active:
++                    await session._finish_spoken_response()
++                await asyncio.wait_for(session.output_events.join(), timeout=SESSION_DRAIN_TIMEOUT)
+             except Exception as e:
+                 logger.warning(f"Client {client_id}: Error draining/finalizing sequence: {e}")
+ 
+--- a/docs/voicechat-api.md
++++ b/docs/voicechat-api.md
+@@ -1,132 +1,113 @@
+-# VoiceChat 实时语音 API 对接指南
++# VoiceChat 实时语音 API 与逐轮输出设计
+ 
+-面向要自己开发页面的开发者。协议以 `s2s/audio_server.py` 源码为准（本文档逐条核对过）。
++更新：2026-09-28。以本源码 `s2s/audio_server.py` 为实现依据；本次修复来自英文客服通话的“有转写、无口述”问题。CPU 协议/重采样测试不能替代 GPU、实际 ASR 或人工听音。模型权重与 Triton 推理逻辑未在本次修改。
+ 
+-## 1. 服务地址与拓扑
++## 1. 服务与客户端边界
+ 
+-| 部署 | WebSocket 地址 | 说明 |
+-|---|---|---|
+-| 直连云端 | `ws://<gpu-host>:9002/v1/realtime` | 页面自己注册/执行工具（可选） |
+-| 经 Agent 网关（推荐） | `ws://127.0.0.1:9020/v1/realtime` | 工具由网关注入并执行，页面零工具逻辑 |
++服务提供 `/v1/realtime`（兼容路径 `/realtime`），默认进程端口由 `--port` 指定，默认值 9000；实际云端端口与代理以部署配置为准。健康入口为 `/v1/realtime/health`，健康不代表工具或语音质量通过。
+ 
+-- 健康检查：`GET http://<host>:port/v1/realtime/health`
+-- 连接后**不需要先发任何消息**，服务端立刻下发 `session.created`；但发音频前应先完成 `session.update`
+-- 会话时长上限 300 秒（服务端 `MAX_SESSION_DURATION` 可调），到量服务端下发 `session.end` 并关闭；长对话请做好自动重连
++独立客户端直接连接此 WebSocket。经 voice-service-agent 的客户门户则访问其同源 `/api/v1/voice-sessions/{sid}/stream`，由网关持有 VoiceChat 凭据、执行工具和授权播放；浏览器不能绕过网关直接获得客服工具权限。公网浏览器入口与服务端内网 WS 是两条不同链路。
+ 
+-## 2. 音频规格
++## 2. 音频与时钟
+ 
+-| 方向 | 格式 | 采样率 | 封装 |
+-|---|---|---|---|
+-| 上行（麦克风） | PCM16 单声道 | 16000–48000 任意（服务端重采样到 16k） | base64，放 JSON 字段 `audio` |
+-| 下行（播放） | PCM16 单声道 | 固定 24000 | base64，`response.output_audio.delta` 的 `delta` 字段 |
++| 阶段 | 格式 |
++| --- | --- |
++| 客户端上行 | PCM16 little-endian、单声道；此源码可协商 16000–48000 Hz，英文客服网关固定 24000 Hz、80 ms/3840 bytes |
++| 模型输入 | 状态化 soxr 重采样到 16000 Hz；默认 MODEL_STEPS_PER_CALL=2，每次 2560 samples/160 ms |
++| 模型输出 | codec 22050 Hz，文本与音频来自相同 decoder-step 区间，每步 80 ms |
++| 客户端下行 | 固定 24000 Hz PCM16；常规 80 ms 分帧，最后一个包可以更短 |
+ 
+-推荐上行每 100ms 一包（16kHz 即 1600 采样 = 3200 字节）。播放端用 `AudioBuffer` 排队可无缝播报。
++输入包括静音并保持实时节奏。设备 48000 Hz 与实际线上 24000 Hz 可以同时成立；不能根据麦克风标签或内部 16000 Hz 日志擅自改网关格式。PCM 正满幅编码必须截断到 32767，不能溢出成负满幅。每轮完成时刷新 soxr 的剩余采样和 PCM 残帧，避免短回答无声或尾音截断。
+ 
+-## 3. 上行消息（服务端只接受这 4 种）
++## 3. 握手与上行消息
+ 
+-```js
+-// ① 配置会话（audio 格式、系统提示词、工具）
+-ws.send(JSON.stringify({
+-  type: "session.update",
+-  session: {
+-    audio: { input: { format: { type: "audio/pcm", rate: 16000 } } },  // rate 16k–48k
+-    instructions: "你是一个友好的语音助手…",   // 可选；系统提示词
+-    tools: [ ... ],                          // 可选；OpenAI 扁平格式工具定义
+-  },
+-}));
++连接成功收到 `session.created`，随后发送一次 `session.update` 并等待 `session.updated`。音频格式、instructions 和 tools 在首次配置中提供。英文客服只注册 `consult_service_agent`，示例：
+ 
+-// ② 上行音频（base64 PCM16）
+-ws.send(JSON.stringify({
+-  type: "input_audio_buffer.append",
+-  event_id: crypto.randomUUID(),             // 可选
+-  audio: b64,                                // base64(PCM16 mono)
+-}));
+-
+-// ③ 回传工具执行结果（仅当自己在 session.update 注册了 tools 时）
+-ws.send(JSON.stringify({
+-  type: "conversation.item.create",
+-  item: {
+-    type: "function_call_output",
+-    status: "completed",
+-    call_id, name,                           // 原样回填 function_call_arguments.done 事件里的值
+-    arguments: JSON.stringify(args),
+-    output: JSON.stringify(result),          // 工具结果 JSON 字符串
+-  },
+-}));
+-
+-// ④ 优雅结束（服务端会排空队列、下发 session.end 后再关闭）
+-ws.send(JSON.stringify({ type: "session.close" }));
++```json
++{
++  "type": "session.update",
++  "session": {
++    "audio": {
++      "input": {"format": {"type": "audio/pcm", "rate": 24000}},
++      "output": {"format": {"type": "audio/pcm", "rate": 24000}}
++    },
++    "instructions": "Route every completed customer utterance to consult_service_agent before answering.",
++    "tools": [{
++      "name": "consult_service_agent",
++      "description": "Send the complete customer utterance to the business assistant, including greetings and unclear speech.",
++      "parameters": {
++        "type": "object",
++        "properties": {"user_request": {"type": "string"}},
++        "required": ["user_request"],
++        "additionalProperties": false
++      },
++      "ack_messages": ["Please wait while I check the knowledge base."]
++    }]
++  }
++}
+ ```
+ 
+-工具定义格式（`s2s/nemotron-voicechat-client.py` 的 `_validate_tools` 同款）：
++持续发送 `{"type":"input_audio_buffer.append","audio":"<base64 PCM>"}`。收到原生工具调用后，用原 call_id 发送：
+ 
+-```js
+-tools: [{
+-  name: "get_weather",
+-  description: "查询指定城市的实时天气…（写给模型看，越口语化越准）",
+-  parameters: {
+-    type: "object",
+-    properties: { location: { type: "string", description: "城市名" } },
+-    required: ["location"],
+-  },
+-  ack_messages: ["好的，正在帮您查询天气。"],   // 可选：模型调用工具前先说这句
+-}]
++```json
++{
++  "type": "conversation.item.create",
++  "item": {
++    "type": "function_call_output",
++    "call_id": "<received call_id>",
++    "output": "{\"status\":\"answered\",\"speech_text\":\"Verified answer.\"}"
++  }
++}
+ ```
+ 
+-## 4. 下行事件（按会话生命周期）
++结束使用 `session.close` 或断线。此 API 不接受凭空假定可用的 `response.cancel`、任意文本 TTS 或后台结果推送。不同网关对参数、ASCII、身份和业务范围另有严格约束，不能将本机 loopback/示例工具当成生产知识服务。
+ 
+-| 事件 | 时机 / 载荷 |
+-|---|---|
+-| `session.created` | 连接即发；`session.model` 模型名 |
+-| `session.updated` | `session.update` 的确认；回显生效的 audio/instructions/tools |
+-| `input_audio_buffer.speech_started` / `.speech_stopped` | 服务端 VAD 检测到你开始/停止说话 |
+-| `conversation.item.input_audio_transcription.delta` / `.completed` | 你的语音被转写（流式 / 完整 `transcript`） |
+-| `response.created` | 助手开始生成回答 |
+-| `response.output_audio.delta` | 助手语音流（base64 24kHz PCM16，`delta` 字段），直接解码排队播放 |
+-| `response.output_audio_transcript.delta` / `.done` | 助手回答的文字（流式 / 完整 `transcript`） |
+-| `response.function_call_arguments.done` | 模型要调工具：`{call_id, name, arguments(JSON 字符串)}` |
+-| `response.output_item.added/.done`、`response.content_part.added/.done`、`response.output_audio.done` | 细粒度生命周期（UI 可忽略） |
+-| `response.output_text.delta` / `.done` | 兼容事件，服务端 `SEND_OUTPUT_TEXT_EVENTS=true` 才发 |
+-| `response.done` | 本轮回答结束 |
+-| `session.end` | 会话结束（收到 `stats`：chunks_received/chunks_sent/triton_inferences） |
+-| `error` | `{error: {code, message, type}}`，如 `unsupported_sample_rate`、`instructions_too_long`、`tools_not_set` |
++## 4. 下行事件与身份
+ 
+-## 5. 典型时序
++| 事件 | 标识及含义 |
++| --- | --- |
++| `session.created/updated` | 连接创建/配置确认；不是业务回复 |
++| `input_audio_buffer.speech_started/stopped` | 用户输入 item 的边界 |
++| `conversation.item.input_audio_transcription.delta/completed` | 同 input item 的临时/最终 ASR |
++| `response.created` | 实际口述或工具打开的新 response，不由空闲音频数组触发 |
++| `response.function_call_arguments.done` | call_id、name、单次 JSON 编码的 arguments；response_id 与该工具的 ACK 关联 |
++| `response.output_audio.delta` | 生成时固定 response_id/item_id 的 24 kHz PCM |
++| `response.output_audio_transcript.delta/done` | 实际口述文字，区别于后台知识答案 |
++| `response.output_audio.done` | 该轮所有 PCM（含尾帧）已经排在它之前，不代表客户已听完 |
++| `response.content_part.done/output_item.done/response.done` | 该轮输出生命周期完成；之后下一轮使用新 ID |
++| `error/session.end` | 显式错误或会话结束，不能假定错误后仍可继续 |
+ 
+-```
+-页面                         服务端
+- │◄── session.created ───────│ 连接即发
+- │─── session.update ───────►│ 格式+提示词+工具
+- │◄── session.updated ───────│
+- │─── input_audio_buffer.append (×N) ─►│  100ms/包持续上行
+- │◄── speech_started ────────│
+- │◄── transcription.delta… ──│ 你的话被转写
+- │◄── speech_stopped ────────│
+- │        （若模型决定调工具）
+- │◄── function_call_arguments.done ──│  {name, arguments}
+- │─── conversation.item.create ────►│  工具结果（*经网关时这步由网关做*)
+- │◄── response.created ──────│
+- │◄── output_audio.delta ×N ─│  语音流，边收边播
+- │◄── output_audio_transcript.done ─│  完整回答文本
+- │◄── response.done ─────────│
+- │─── session.close ────────►│ 结束
+- │◄── session.end ───────────│ 确认后连接关闭
++同一模型批次内先处理 ASR，再处理新工具，最后处理该工具的 ACK；这样消费方可以先绑定输入并授权。若该批次结束的是此前口述，其音频/EOS 先结束旧 response，再打开新工具 response；不能把初始欢迎语的 ID 用于客户工具。新 BOS 可结束被打断的旧口述，但保留尚未开始说话的工具 response 给第一段 ACK。
++
++## 5. 输出队列和 response 生命周期
++
++所有模型产生的 ASR、工具、音频、字幕与 done 事件进入有界 FIFO。事件在入队时捕获所属 ID；单发送器只发送事件快照，不从可变全局状态读取 ID。慢连接不能把旧音频改标为新回答。队列溢出或发送失败显式终止，不能静默丢弃边界。
++
++空闲 codec 数组仍用于模型内部时钟，但不打开/发送一个占满整场的音频 response。BOS、有效口述或工具调用打开 response；EOS 刷新音频尾部并完成该轮。固定 ACK 结束后，后续业务答案使用新的 response；消费者必须分别处理 ACK 和答案许可。
++
++默认两步模型输出的相邻 `</s><s>` 对应两个明确的 80 ms codec 帧，服务端分别结束旧轮和开启新轮。帧长度不匹配或更大批次包含无法确定采样边界的多轮输出时显式失败；不能用振幅阈值切音或静默猜测。修改 MODEL_STEPS_PER_CALL、codec 或 decoder 输出方式后必须重新验证此约定。
++
++主动 session.close 会先处理已接收输入、完成当前输出尾部并等待输出 FIFO 排空，再结束；意外断线直接释放，不伪造客户已收到完整输出。浏览器应在 audio.done 后继续排空自身播放缓冲，不立即丢弃尾音。
++
++## 6. 工具模板与业务路由
++
++知识客服部署必须在启动 WebSocket 进程前设置 `USE_JINJA_TEMPLATE_PROMPT=1`，使用已有 `s2s/prompt_template.jinja`。该分支保留工具定义、调用/返回格式和独立 ACK 元数据，不追加默认模板的“常识直接回答”路由。默认模板维持原样，避免影响其他 speech 客户端；应用 instructions 决定哪些请求走工具。客服网关要求每个完整客户发言走统一业务 bridge。修改环境后须重启进程/重建容器，不能仅在页面重发 session.update。
++
++模型 arguments 可能是对象或 JSON 字符串，服务端解析为对象后在原生事件中编码一次。畸形工具 JSON 显式失败；不能把双重编码的字符串传给业务参数验证。
++
++`session.updated` 只回显配置，不能证明模型遵守提示词。客服网关必须继续执行后置条件、最终 ASR 绑定和输出授权，真实失败不能回退假数据。
++
++## 7. 本地验证与发布
++
++在独立 Python 3.12 venv 中安装 `s2s/tests/requirements.txt`，执行：
++
++```sh
++python -m pytest s2s/tests/test_response_lifecycle.py -q
++python -m py_compile s2s/audio_server.py
+ ```
+ 
+-\* 连 Agent 网关时：页面**不注册 tools**（网关自动注入），也**不回传** function_call_output（网关代为执行）；页面只需把 `function_call_arguments.done` 当作 UI 展示事件。
++测试运行实际服务端 dispatch、soxr 和 PCM 编解码，注入受控模型输出；不连接 Triton、GPU 或真实上游。覆盖静音、ASR/工具/ACK 顺序、跨轮 ID、慢发送、短尾帧、EOS/BOS 边界、初始欢迎与工具切换、参数编码、模板和背压。
+ 
+-## 6. 自建页面的注意事项
++发布保留源码 hash、独立镜像 digest 和对应网关版本。重新构建 VoiceChat，并与 voice-service-agent API/Web 修复版本一起部署。其整轮业务默认 30 秒不等于本模型工具等待预算；工具超时需按实际模型配置与延迟探针对齐。
+ 
+-1. **麦克风授权**：`getUserMedia` 需要 localhost / https（或浏览器信任的上下文）。开发期可用 `python3 -m http.server` 起个本地静态服务再打开页面。
+-2. **重采样**：浏览器 AudioContext 通常是 44.1k/48k，需线性重采样到声明给服务端的 rate（最小实现见 `minimal-voicechat.html`，AudioWorklet 优先、ScriptProcessor 兜底——file:// 打开时 AudioWorklet 的 blob 模块会被 Chrome 拒绝）。
+-3. **回声消除**：采集参数加 `echoCancellation: true`，且播放不要接入采集链路，否则助手会被自己的声音触发。
+-4. **全双工**：助手说话时你可直接插话（speech_started 会打断生成），UI 上别做"排队说话"的限制。
+-5. **300 秒上限**：收到 `session.end` 后自动重连并重发 `session.update`，用户无感续聊。
+-6. **文本直测**：调工具或深脑智能体不必走语音，可用网关的 `POST /api/tools/call`、`POST /api/agent/chat` 先把业务链路调通。
+-
+-## 7. 最小可用参考实现
+-
+-见 [minimal-voicechat.html](../minimal-voicechat.html)：单文件、无依赖、约 200 行，包含连接、
+-session.update、麦克风采集重采样、音频播放队列、转写展示、工具事件展示、优雅关闭。推荐连
+-Agent 网关使用（默认 `127.0.0.1:9020`），改 `serverAddr` 即可直连云端。功能完整的正式客户端
+-见 [voicechat-client.html](../voicechat-client.html)。
++GPU 验收至少包括两轮英文问答、问候与澄清、固定 ACK 后的最终口述、快速/延迟工具结果、停止后继续、真实 48 kHz 麦克风、实际扬声器与录音对照。Sent 包数、ready、EOS 或 CPU 测试通过均不能替代人工听音和 ASR 准确性结论。
+--- /dev/null
++++ b/s2s/tests/test_response_lifecycle.py
+@@ -0,0 +1,170 @@
++"""CPU-only regressions: real server dispatch/resampling, controlled model outputs."""
++import asyncio
++import base64
++import importlib.util
++import json
++from pathlib import Path
++
++import numpy as np
++import pytest
++
++spec = importlib.util.spec_from_file_location("voicechat_server", Path(__file__).parents[1] / "audio_server.py")
++server = importlib.util.module_from_spec(spec)
++spec.loader.exec_module(server)
++
++ACK = "Please wait while I check the knowledge base."
++CALL = json.dumps([{"name": "consult_service_agent", "arguments": {"user_request": "hello"}}])
++
++
++class Socket:
++    def __init__(self):
++        self.events = []
++        self.closed = False
++
++    async def send_text(self, text):
++        await asyncio.sleep(0)
++        self.events.append(json.loads(text))
++
++    async def close(self, **kwargs):
++        self.closed = True
++
++
++def pending(session):
++    events = []
++    while not session.output_events.empty():
++        events.append(session.output_events.get_nowait())
++        session.output_events.task_done()
++    return events
++
++
++def pcm(events):
++    return np.frombuffer(b"".join(base64.b64decode(e["delta"]) for e in events
++                                 if e["type"] == "response.output_audio.delta"), dtype="<i2")
++
++
++@pytest.mark.asyncio
++async def test_idle_codec_arrays_do_not_create_or_poison_a_response():
++    session = server.AudioSession("test", Socket())
++    for _ in range(8):
++        await session._dispatch_model_output(np.zeros(3528, np.float32), "", "", "")
++    assert pending(session) == []
++    assert not session._response_active
++    await session._dispatch_model_output(np.ones(3528, np.float32) * .3, "<s>Hello</s>", "", "")
++    events = pending(session)
++    assert events[0]["type"] == "response.created"
++    assert events[-1]["type"] == "response.done"
++    assert len(pcm(events)) == 3840
++    assert not session._response_active
++
++
++@pytest.mark.asyncio
++async def test_tool_precedes_same_batch_ack_and_completed_asr_binds_one_input():
++    session = server.AudioSession("test", Socket())
++    await session._dispatch_model_output(np.zeros(3528, np.float32), "<s>" + ACK, "<s>hello</s>", CALL)
++    await session._dispatch_model_output(np.zeros(3528, np.float32), "</s>", "", "")
++    events = pending(session)
++    kinds = [e["type"] for e in events]
++    tool = next(e for e in events if e["type"] == "response.function_call_arguments.done")
++    asr = [e for e in events if e["type"].startswith(("input_audio_buffer.", "conversation.item.input_audio"))]
++    assert len({e["item_id"] for e in asr}) == 1
++    assert kinds.index("conversation.item.input_audio_transcription.completed") < kinds.index(tool["type"])
++    assert kinds.index(tool["type"]) < kinds.index("response.output_audio.delta")
++    assert {e["response_id"] for e in events if "response_id" in e} == {tool["response_id"]}
++    assert json.loads(tool["arguments"]) == {"user_request": "hello"}
++    assert kinds[-1] == "response.done"
++
++
++@pytest.mark.asyncio
++async def test_slow_writer_preserves_packet_ownership_done_order_and_short_audio_tail():
++    socket = Socket()
++    session = server.AudioSession("test", socket)
++    for value, text in [(0.4, "One"), (-0.4, "Two")]:
++        await session._dispatch_model_output(np.full(2000, value, np.float32), "<s>" + text + "</s>", "", "")
++    # Both response IDs have already been retired before the sender starts.
++    writer = asyncio.create_task(session._send_loop())
++    await asyncio.wait_for(session.output_events.join(), 2)
++    writer.cancel()
++    with pytest.raises(asyncio.CancelledError):
++        await writer
++    events = socket.events
++    ids = [e["response"]["id"] for e in events if e["type"] == "response.created"]
++    assert len(ids) == 2 and ids[0] != ids[1]
++    for response, sign in zip(ids, [1, -1], strict=True):
++        response_events = [e for e in events if e.get("response_id") == response]
++        audio = pcm(response_events)
++        assert len(audio) == round(2000 * 24000 / 22050)
++        assert np.mean(audio[100:-100]) * sign > 12000
++        audio_indexes = [i for i, e in enumerate(events) if e.get("response_id") == response and e["type"] == "response.output_audio.delta"]
++        done_index = next(i for i, e in enumerate(events) if e.get("response_id") == response and e["type"] == "response.output_audio.done")
++        assert max(audio_indexes) < done_index
++    assert events[-1]["type"] == "response.done"
++
++
++@pytest.mark.asyncio
++async def test_adjacent_eos_bos_uses_the_exact_80ms_codec_boundary():
++    session = server.AudioSession("test", Socket())
++    await session._dispatch_model_output(np.full(1764, .4, np.float32), "<s>First", "", "")
++    await session._dispatch_model_output(np.r_[np.full(1764, .4, np.float32), np.full(1764, -.4, np.float32)], "</s><s>", "", "")
++    await session._dispatch_model_output(np.full(1764, -.4, np.float32), "Second</s>", "", "")
++    events = pending(session)
++    ids = [e["response"]["id"] for e in events if e["type"] == "response.created"]
++    assert len(ids) == 2
++    for response, sign in zip(ids, [1, -1], strict=True):
++        audio = pcm([e for e in events if e.get("response_id") == response])
++        assert len(audio) == 3840
++        assert np.mean(audio[100:-100]) * sign > 12000
++
++
++@pytest.mark.asyncio
++async def test_malformed_batch_and_output_backpressure_fail_explicitly():
++    session = server.AudioSession("test", Socket())
++    with pytest.raises(ValueError, match="Ambiguous"):
++        await session._dispatch_model_output(np.zeros(100, np.float32), "</s><s>", "", "")
++    session.output_events = asyncio.Queue(maxsize=1)
++    session._queue_output_event({"type": "first"})
++    with pytest.raises(RuntimeError, match="bounded capacity"):
++        session._queue_output_event({"type": "second"})
++
++
++@pytest.mark.asyncio
++@pytest.mark.parametrize("arguments", [{"user_request": "hello"}, '{"user_request":"hello"}'])
++async def test_tool_argument_object_and_json_string_have_one_wire_encoding(arguments):
++    session = server.AudioSession("test", Socket())
++    await session._process_function_text(json.dumps([{"name": "consult_service_agent", "arguments": arguments}]))
++    event = pending(session)[-1]
++    assert json.loads(event["arguments"]) == {"user_request": "hello"}
++
++
++def test_pcm16_clips_full_scale_and_flushes_partial_little_endian_frame():
++    codec = server.PCM16Codec(chunk_size=2)
++    codec.encode(np.array([-2., 1., 2.], dtype=np.float32))
++    assert np.frombuffer(codec.read_encoded_chunk(), dtype="<i2").tolist() == [-32768, 32767]
++    assert np.frombuffer(codec.flush_encoded_chunk(), dtype="<i2").tolist() == [32767]
++    assert codec.flush_encoded_chunk() is None
++
++
++@pytest.mark.parametrize("use_jinja", [False, True])
++def test_jinja_preserves_application_routing_and_legacy_default_is_explicit(monkeypatch, use_jinja):
++    monkeypatch.setattr(server, "USE_JINJA_TEMPLATE_PROMPT", use_jinja)
++    tools = [{"name": "consult_service_agent", "ack_messages": [ACK], "parameters": {"type": "object"}}]
++    instruction = "Every completed customer utterance must call consult_service_agent."
++    prompt = server.AudioSession.build_prompt(instruction, json.dumps(tools))
++    assert instruction in prompt
++    assert ("answer directly from your own knowledge" not in prompt) == use_jinja
++    assert "<AVAILABLE_TOOLS>" in prompt and "<TOOLCALL>" in prompt
++    assert "<TOOL_ACK_MESSAGES>" in prompt and ACK in prompt
++
++
++@pytest.mark.asyncio
++@pytest.mark.parametrize("boundary_text", ["</s>", "<s>" + ACK])
++async def test_tool_never_reuses_an_initial_greeting_response(boundary_text):
++    session = server.AudioSession("test", Socket())
++    await session._dispatch_model_output(np.zeros(3528, np.float32), "<s>Welcome", "", "")
++    greeting = session._response_id
++    await session._dispatch_model_output(np.zeros(3528, np.float32), boundary_text, "<s>hello</s>", CALL)
++    events = pending(session)
++    call = next(e for e in events if e["type"] == "response.function_call_arguments.done")
++    assert call["response_id"] != greeting
++    greeting_done = next(i for i, e in enumerate(events) if e["type"] == "response.done" and e["response"]["id"] == greeting)
++    tool_index = events.index(call)
++    assert greeting_done < tool_index
+--- /dev/null
++++ b/s2s/tests/requirements.txt
+@@ -0,0 +1,39 @@
++aiohappyeyeballs==2.7.1
++aiohttp==3.14.3
++aiosignal==1.4.0
++annotated-doc==0.0.5
++annotated-types==0.8.0
++anyio==4.15.1
++attrs==26.1.0
++brotli==1.2.0
++certifi==2026.7.22
++fastapi==0.141.1
++frozenlist==1.8.0
++gevent==26.9.0
++geventhttpclient==2.3.9
++greenlet==3.3.2
++idna==3.20
++iniconfig==2.3.0
++Jinja2==3.1.6
++MarkupSafe==3.0.3
++ml_dtypes==0.5.4
++multidict==6.9.1
++numpy==2.5.3
++packaging==26.3
++pluggy==1.6.0
++propcache==0.5.4
++pydantic==2.13.5
++pydantic_core==2.46.5
++Pygments==2.21.0
++pytest==9.1.1
++pytest-asyncio==1.4.0
++python-rapidjson==1.25
++soxr==1.1.0
++starlette==1.7.0
++tritonclient==2.72.0
++typing-inspection==0.4.4
++typing_extensions==4.16.0
++urllib3==2.8.0
++yarl==1.25.1
++zope.event==6.2
++zope.interface==8.6

@@ -191,8 +191,9 @@ test("Completed voice transcript stays visible until its persisted turn takes ov
         this.onclose?.();
       }
       constructor() {
-        (window as typeof window & { __fakeVoiceSocket?: FakeWebSocket })
-          .__fakeVoiceSocket = this;
+        (
+          window as typeof window & { __fakeVoiceSocket?: FakeWebSocket }
+        ).__fakeVoiceSocket = this;
         setTimeout(() => {
           this.emit("portal.session.ready", {
             sample_rate: 24000,
@@ -347,4 +348,143 @@ test("Completed voice transcript stays visible until its persisted turn takes ov
     "Find the actual product guide",
   );
   await expect(page.locator(".live-captions")).toHaveCount(0);
+});
+
+test("Final SSE renders without a history round trip and survives an older pending response", async ({
+  page,
+}) => {
+  await page.addInitScript(() => {
+    const original = window.fetch.bind(window);
+    window.fetch = async (input, init) => {
+      if (String(input).endsWith("/events")) {
+        const body = new ReadableStream({
+          start(controller) {
+            (window as any).__emitAnswerEvent = (
+              type: string,
+              payload: object,
+            ) =>
+              controller.enqueue(
+                new TextEncoder().encode(
+                  "data: " +
+                    JSON.stringify({
+                      type,
+                      payload,
+                      event_id: crypto.randomUUID(),
+                      conversation_id: "latency-cid",
+                      epoch: 0,
+                      request_revision: 1,
+                      server_seq: 1,
+                      turn_id: "latency-turn",
+                    }) +
+                    "\n\n",
+                ),
+              );
+          },
+        });
+        return new Response(body, {
+          headers: { "Content-Type": "text/event-stream" },
+        });
+      }
+      return original(input, init);
+    };
+  });
+  await page.route("**/api/v1/conversations", (route) =>
+    route.fulfill({
+      status: 201,
+      json: {
+        id: "latency-cid",
+        title: "Test",
+        epoch: 0,
+        request_revision: 0,
+        access_token: "fixture",
+      },
+    }),
+  );
+  let reads = 0;
+  let hold = false;
+  let release: (() => void) | undefined;
+  await page.route(
+    "**/api/v1/conversations/latency-cid/messages**",
+    async (route) => {
+      if (route.request().method() === "POST") {
+        await route.fulfill({
+          status: 202,
+          json: { turn_id: "latency-turn", epoch: 0, request_revision: 1 },
+        });
+        return;
+      }
+      reads++;
+      if (hold)
+        await new Promise<void>((resolve) => {
+          release = resolve;
+        });
+      await route.fulfill({
+        json: {
+          epoch: 0,
+          request_revision: 1,
+          next_before: null,
+          items: [
+            {
+              id: "latency-turn",
+              user_text: "Find the guide",
+              channel: "text",
+              status: "running",
+              answer: null,
+              epoch: 0,
+              request_revision: 1,
+              parent_task_id: null,
+              cancellation_reason: null,
+              delivery_status: "pending_validation",
+              output_suppressed: false,
+            },
+          ],
+        },
+      });
+    },
+  );
+  await page.goto("/");
+  await page
+    .getByRole("textbox", { name: "Your question" })
+    .fill("Find the guide");
+  await page.getByRole("button", { name: "Send question" }).click();
+  await expect(page.locator(".turn")).toContainText("Find the guide");
+  await page
+    .getByRole("textbox", { name: "Your question" })
+    .fill("Another question");
+  await expect(
+    page.getByRole("button", { name: "Send question" }),
+  ).toBeEnabled();
+  hold = true;
+  await page.evaluate(() =>
+    (window as any).__emitAnswerEvent("portal.tool.started", {
+      message: "Searching",
+    }),
+  );
+  await expect.poll(() => !!release).toBe(true);
+  const beforeFinal = reads;
+  await page.evaluate(() =>
+    (window as any).__emitAnswerEvent("portal.answer.final", {
+      answer_id: "answer-final",
+      status: "answered",
+      display_text: "The verified final answer",
+      speech_text: "The verified final answer",
+      citations: [],
+      cards: [],
+      is_mock: false,
+      reason_code: null,
+    }),
+  );
+  await expect(page.locator(".assistant-message")).toContainText(
+    "The verified final answer",
+  );
+  expect(reads).toBe(beforeFinal);
+  const lateResponse = page.waitForResponse((response) =>
+    response.url().includes("/messages"),
+  );
+  release!();
+  await lateResponse;
+  await expect(page.locator(".assistant-message")).toContainText(
+    "The verified final answer",
+  );
+  expect(reads).toBe(beforeFinal);
 });

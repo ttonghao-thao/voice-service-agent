@@ -8,6 +8,7 @@ from app.contracts import BridgeArguments, DomainError, printable_ascii, uid
 from websockets.asyncio.client import connect
 
 BRIDGE_NAME = "consult_service_agent"
+BRIDGE_ACK = "Please wait while I check the knowledge base."
 
 
 def ascii_payload(value) -> bool:
@@ -38,8 +39,8 @@ def session_update(summary=""):
             "tools": [
                 {
                     "name": BRIDGE_NAME,
-                    "description": "Send the customer's complete knowledge question to the business assistant. Do not guess missing details.",
-                    "ack_messages": ["Please wait while I check the knowledge base."],
+                    "description": "Route every completed customer utterance to the business assistant, including greetings, unclear speech, small talk, and knowledge questions. Preserve the complete transcription; do not guess missing details.",
+                    "ack_messages": [BRIDGE_ACK],
                     "parameters": BridgeArguments.model_json_schema(),
                 }
             ],

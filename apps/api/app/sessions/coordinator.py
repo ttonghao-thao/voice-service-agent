@@ -1,10 +1,14 @@
 import asyncio
+import logging
+import time
 import weakref
 
 from app.agent_runtime.context import RunContext
 from app.contracts import DomainError
 from app.storage.models import Conversation, Turn
 from sqlalchemy import select
+
+logger = logging.getLogger(__name__)
 
 
 class SessionCoordinator:
@@ -137,6 +141,8 @@ class SessionCoordinator:
             return turn, task
 
     async def execute(self, ctx, request, history, channel):
+        started = time.monotonic()
+
         async def progress(message):
             async with self.lock(ctx.conversation_id):
                 await self.coordination.check(ctx.conversation_id)
@@ -176,6 +182,7 @@ class SessionCoordinator:
                     "authorized_kb_ids": answer_scope,
                 },
             ]
+            commit_started = time.monotonic()
             async with self.lock(ctx.conversation_id):
                 await self.coordination.check(ctx.conversation_id)
                 committed = await self.store.commit(
@@ -187,6 +194,12 @@ class SessionCoordinator:
                     new_history,
                     ctx.slots,
                 )
+            logger.info(
+                "answer_delivery_finished conversation_id=%s turn_id=%s channel=%s committed=%s commit_ms=%s total_ms=%s",
+                ctx.conversation_id, ctx.turn_id, channel, committed,
+                round((time.monotonic() - commit_started) * 1000),
+                round((time.monotonic() - started) * 1000),
+            )
             return bundle if committed else None
         except asyncio.CancelledError:
             raise

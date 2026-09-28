@@ -310,37 +310,45 @@ async def events(
 
     async def generate():
         nonlocal cursor
-        checked = 0
-        while not await request.is_disconnected():
-            if checked % 100 == 0:
-                try:
-                    await principal(request)
-                except DomainError:
-                    return
-            checked += 1
-            async with store.sessions() as db:
-                await store.get(db, cid, user)
-                rows = (
-                    (
-                        await db.execute(
-                            select(Event)
-                            .where(Event.conversation_id == cid, Event.server_seq > cursor)
-                            .order_by(Event.server_seq)
-                            .limit(100)
+        with store.listen(cid) as changed:
+            checked = 0
+            while not await request.is_disconnected():
+                if checked % 100 == 0:
+                    try:
+                        await principal(request)
+                    except DomainError:
+                        return
+                checked += 1
+                # Clear before reading: a commit during the read must not be lost.
+                changed.clear()
+                async with store.sessions() as db:
+                    await store.get(db, cid, user)
+                    rows = (
+                        (
+                            await db.execute(
+                                select(Event)
+                                .where(Event.conversation_id == cid, Event.server_seq > cursor)
+                                .order_by(Event.server_seq)
+                                .limit(100)
+                            )
                         )
+                        .scalars()
+                        .all()
                     )
-                    .scalars()
-                    .all()
-                )
-            for e in rows:
-                cursor = e.server_seq
-                safe_payload = _event_for_principal(
-                    e.payload, user, request.app.state.settings
-                )
-                yield f"id: {cursor}\ndata: {json.dumps(safe_payload, ensure_ascii=False)}\n\n"
-            if not rows and checked % 30 == 0:
-                yield ": keepalive\n\n"
-            await asyncio.sleep(0.3)
+                for e in rows:
+                    cursor = e.server_seq
+                    safe_payload = _event_for_principal(
+                        e.payload, user, request.app.state.settings
+                    )
+                    yield f"id: {cursor}\ndata: {json.dumps(safe_payload, ensure_ascii=False)}\n\n"
+                if not rows and checked % 30 == 0:
+                    yield ": keepalive\n\n"
+                if len(rows) == 100:
+                    continue
+                try:
+                    await asyncio.wait_for(changed.wait(), timeout=0.3)
+                except TimeoutError:
+                    pass  # Cross-process/reconnect fallback uses the persisted cursor.
 
     return StreamingResponse(
         generate(),

@@ -1,6 +1,6 @@
 import asyncio
 import hashlib
-from contextlib import asynccontextmanager
+from contextlib import asynccontextmanager, contextmanager
 from datetime import timedelta
 
 from app.contracts import DomainError, PortalEvent, now, portal_server_event_adapter, uid
@@ -14,6 +14,7 @@ class Store:
         self.write_lock = asyncio.Lock()
         self.engine = create_async_engine(url, pool_pre_ping=True)
         self.sessions = async_sessionmaker(self.engine, expire_on_commit=False)
+        self.event_listeners: dict[str, set[asyncio.Event]] = {}
 
     async def init_dev(self):
         async with self.engine.begin() as conn:
@@ -29,6 +30,23 @@ class Store:
         async with self.write_lock:
             async with self.sessions.begin() as db:
                 yield db
+            # Wake readers only after commit. The durable Event table remains
+            # authoritative; other workers still discover changes by polling.
+            for cid in db.info.get("event_conversations", ()):
+                for listener in self.event_listeners.get(cid, ()):
+                    listener.set()
+
+    @contextmanager
+    def listen(self, cid):
+        listener = asyncio.Event()
+        listeners = self.event_listeners.setdefault(cid, set())
+        listeners.add(listener)
+        try:
+            yield listener
+        finally:
+            listeners.discard(listener)
+            if not listeners:
+                self.event_listeners.pop(cid, None)
 
     async def get(self, db, cid, principal=None, lock=False):
         q = select(Conversation).where(Conversation.id == cid)
@@ -60,6 +78,7 @@ class Store:
             c.access_token_hash = None
 
     async def event(self, db, c, kind, payload, turn_id=None):
+        db.info.setdefault("event_conversations", set()).add(c.id)
         c.event_seq += 1
         c.updated_at = now()
         e = PortalEvent(

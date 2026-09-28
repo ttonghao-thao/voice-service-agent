@@ -1,13 +1,13 @@
 # HTML 门户与消息/语音接口
 
-更新：2026-09-27。本文确定测试门户和接口边界；D01–D05、D13、D16–D17、E01–E03 的当前实现使用本文 v1 格式，真实服务能力仍按验收记录放行。总架构见 [architecture.md](architecture.md)。
+更新：2026-09-28。本文是当前门户 v1 契约，覆盖独立通话、输入绑定、逐轮音频和停止后继续播放。D19 不新增公开事件字段；浏览器内部 Worklet 的排空标记不暴露为新的服务端协议。D20 使持久事件提交后唤醒 SSE，并直接应用 final 更新已有 Turn；真实服务能力仍按验收记录放行。总架构见 [architecture.md](architecture.md)。
 
 ## 1. 简单门户
 
 一个客户页面即可：开始语音、结束语音、连接/聆听/查询/播放状态、用户转写、实际口述字幕、最终答案与可展开引用。麦克风被拒绝、断网或语音不可用时给出明确恢复提示；可选显示文字输入。
 
 - 页面加载不创建 conversation 或读取历史；每个标签页点击 “Start call” 后创建全新的 conversation/call token，再申请语音 session。token 只在该标签页内存中保存，刷新即丢失。
-- 用户主动点击后申请麦克风，ready 后连续发送音频，包括静音。门户显示浏览器实际选择的设备、采样率、声道及 echo cancellation/noise suppression/auto gain 设置；这些诊断值不等同于收音准确率。门户使用公网 HTTPS，使页面满足浏览器 secure context 前提；证书信任、实际麦克风授权、设备选择和英文识别质量仍须在 D07 实机确认。
+- 开始通话成功以 `Voice ready` 为准；不承诺自动语音欢迎，连接初始未桥接输出被抑制。用户主动点击后申请麦克风，ready 后连续发送音频，包括静音。门户显示浏览器实际选择的设备、采样率、声道及 echo cancellation/noise suppression/auto gain 设置；这些诊断值不等同于收音准确率。门户使用公网 HTTPS，使页面满足浏览器 secure context 前提；证书信任、实际麦克风授权、设备选择和英文识别质量仍须在 D07 实机确认。
 - `portal.transcript.delta/done` 与 `portal.speech_text.delta/done` 只作为当前输入/口述的临时 Live captions；用户完成 transcript 保留到同文本的持久 voice Turn 接管，口述字幕在音频结束后清理，新输入或播放清理时收敛，不把字幕另存为聊天历史。文字与语音请求都由持久业务 Turn 按一问一答展示最终答案和引用，不能过滤 voice Turn，也不用业务答案冒充实时口述。
 - 客户页面不展示工具配置、模型参数、内部运行日志或后台管理菜单。
 - 当前交互区分“停止播报”和“取消查询”：前者清除客户端缓冲并由服务端抑制当前 response，保留仍有效业务任务；后者使当前 revision 失效，存在无法安全结清的原生 call 时关闭旧语音连接。
@@ -46,6 +46,8 @@
 
 SSE 的 `id` 是持久化 `server_seq`，不是 JSON `event_id`。仅重放业务事件，不重放实时音频。前端按 `event_id` 去重；不得把 SSE 和 WebSocket 的序号混为一个全局连续序列。
 
+SSE 的持久 Event 表与 server_seq/cursor 保持不变。同进程提交后通知订阅者立即读取已提交事件；不推送未提交对象，不在回滚时通知。跨进程继续 300 ms SQL 补查，监听器随连接释放。门户收到鉴权过滤后的 final 后直接更新已加载的 Turn，未知 Turn 才补取消息；延迟到达的历史快照不得覆盖更高 epoch/revision 或当前已验证的 final。
+
 ## 4. WebSocket 和音频（当前 v1）
 
 连接签发的 `ws_url`，路径 `/api/v1/voice-sessions/{sid}/stream?ticket=...`；公网 HTTPS 部署使用 WSS。票据有效 60 秒、一次性，绑定 call owner、conversation、epoch、Origin；握手失败不能静默切换其它身份。URL query 与凭据不得写访问日志。
@@ -68,7 +70,7 @@ SSE 的 `id` 是持久化 `server_seq`，不是 JSON `event_id`。仅重放业�
 }
 ```
 
-`audio` 为示意占位值。实际每帧 PCM16 little-endian、单声道、24 kHz、80 ms，即 1920 samples / 3840 bytes；不是 WAV 文件，不带 WAV header。浏览器设备采样率先经重采样转换。上行 seq 为连接内递增非负整数；重复丢弃，缺帧/过快/持续停顿触发显式错误。连接绑定身份与 conversation，正文不能覆盖。
+`audio` 为示意占位值。实际每帧 PCM16 little-endian、单声道、24 kHz、80 ms，即 1920 samples / 3840 bytes；不是 WAV 文件，不带 WAV header。浏览器设备采样率先经重采样转换。门户分别显示设备 `Hz capture` 和 `24000 Hz sent`，设备 48 kHz 不代表按 48 kHz 发送。上行 seq 为连接内递增非负整数；重复丢弃，缺帧/过快/持续停顿触发显式错误。连接绑定身份与 conversation，正文不能覆盖。
 
 | 客户端事件 | payload / 行为 |
 | --- | --- |
@@ -103,11 +105,11 @@ SSE 的 `id` 是持久化 `server_seq`，不是 JSON `event_id`。仅重放业�
 | `portal.session.ready` | WS | 确认音频格式后开始采集发送 |
 | `portal.transcript.delta` / `done` | WS | item_id、text；更新当前用户 Live caption，业务历史由 Turn 提供 |
 | `portal.speech_text.delta` / `done` | WS | response_id、可选 item_id、text；更新当前实际口述 Live caption，不合并成历史答案 |
-| `portal.audio.delta` / `done` | WS | response_id、delta 的 audio；播放/结束该回复；过期 epoch 一律丢弃 |
+| `portal.audio.delta` / `done` | WS | response_id、delta 的 audio；done 表示服务端发完，客户端仍须排空缓冲；过期 epoch 一律丢弃 |
 | `portal.input.state` | WS | state=speaking/quiet；仅输入状态，不自动等于取消业务 |
 | `portal.tool.started` | SSE | 客户可理解的查询状态；不暴露私有工具参数 |
 | `portal.answer.final` | SSE | 已校验 AnswerBundle；展示答案、来源、必要卡片 |
-| `portal.playback.clear` | SSE | 清理旧 epoch 的排队音频；不可被晚到 clear 清掉新连接 |
+| `portal.playback.clear` | SSE / WS | SSE 处理 epoch 失效；WS 同 epoch 停止当前播放。晚到旧 epoch clear 不能清掉新连接 |
 | `portal.session.ended` | SSE/连接生命周期 | 显示结束并释放设备；也须处理 WS close，不能只依赖单个消息 |
 | `portal.error` | WS；HTTP 使用错误响应 | code、message、retryable、trace_id；按错误恢复，不无限重试 |
 
@@ -115,14 +117,28 @@ SSE 的 `id` 是持久化 `server_seq`，不是 JSON `event_id`。仅重放业�
 
 ### 4.3 时序和背压
 
-1. 创建会话 → 签发票据 → WS 握手 → VoiceChat 握手 → portal.session.ready。
-2. 并行持续收发音频；`speech_started` 的 input item 与最终 ASR transcript 形成一次用户输入，原生工具只能绑定尚未消费的 input item；没有用户输入的初始工具调用只结清为失败，不创建业务 Turn。
-3. 工具参数仍做 schema 校验，但最终 ASR transcript 才是业务请求和用户气泡的权威文本；工具可早于 transcript 到达，后台 worker 有界等待完成态 transcript 后再进入 Runtime。
-4. 已接受业务答案走 SSE；工具结果经合法 native call 回传后，对应 response 或紧随其后的一个输出 response 才可将语音/字幕送往门户。新的 `speech_started` 不会撤销仍有效的已桥接口述；未桥接的直接输出继续失败关闭。
-5. 停止播报只抑制当前输出；取消查询推进 revision，并在无法安全结清 pending call 时关闭连接；结束/硬打断释放语音资源。
-6. 网络恢复重新取票，不重放旧录音；恢复业务历史不等于恢复模型隐藏状态。
+普通插话和停顿由 VoiceChat 推理处理，不触发应用自动取消。Stop playback 是显式本地控制，用于立即清空已到达的音频，并不取消查询；Cancel search/新请求替换控制任务有效性，结果提交和写回仍复核。原生 HTML 的连续播放方式不需要逐轮 ID，当前门户的严格抑制才依赖有序输出归属。
 
-保持有界队列、单写入器、发送速率校验和采集 watchdog；过载显式拒绝/恢复，不能无限积压后追赶播放。当前默认 105 秒在输入 quiet 且无 pending call 时触发安全轮换，浏览器清除旧音频并取得新 ticket；宽限期内仍未安全时显式结束，不恢复模型隐藏状态。
+建立 conversation/capability → 签发票据 → 连接 WS → VoiceChat 握手 → portal ready 后，采集与播放并行运行。用户 input item 的开始、临时转写和最终转写是同一输入；原生工具只能消费尚未绑定的 input item，网关等待完成态 ASR 后进入 Runtime。工具参数不能替代最终转写，无输入的工具不能创建业务 Turn。
+
+已接受业务答案走 SSE；合法工具 response 可播放固定等待 ACK，工具结果写回后最多放行一个后续回答。ACK 正在播报时结果提前到达，不能消耗最终答案许可；供应商沿用原 response 返回最终答案时须回收多余许可。新的输入活动不取消仍有效的已授权回答，未桥接直接输出仍失败关闭。供应商完整时序见 [接入 §3](integration.md#3-voicechat-接入与能力门槛)。
+
+浏览器按下面的状态转换控制播放：
+
+| 事件/操作 | 队列和许可 | 当前 response 身份 |
+| --- | --- | --- |
+| 初始连接 / 新 epoch | 清队列，等待 ready 才允许播放 | 清空 |
+| 合法 audio.delta | 入队并按 24 kHz 解码/重采样 | 记录该 response |
+| audio.done | 刷新重采样尾部，允许短回答排空；继续播放现有队列 | 保留到 Worklet 报实际排空 |
+| Stop playback / 同 epoch clear | 清队列，保留会话播放许可；丢弃已停止 response 的晚到 PCM | 停止请求携带仍在缓冲的 ID；没有当前 ID 时服务端按契约抑制下一段 |
+| 下一段合法 response | 正常入队播放 | 切到新 response，不等待被抑制旧段的 done |
+| 失效 / 结束 / 网络或音频错误 | 持续禁止播放并清队列、停止设备 | 清空；旧 epoch/旧连接不能恢复 |
+
+Worklet 的内部 `done` ACK 表示播放队列排空，向服务端发送的仍只有公开 `response_id/played_samples`。页面静音只影响上行麦克风，不关闭连接；音量控制只影响本地播放。播放估计不能证明扬声器有效或客户听见。
+
+所有方向保持有界队列和背压。门户上行固定序号及帧长，捕获停顿/网络积压报错；播放环最多缓冲约一秒，初始目标 160 ms，短尾帧不应被起播阈值吞掉。服务端生成事件有独立的序号，不能把 WS 和持久 SSE 的计数合并。
+
+取消查询推进 revision；无法安全结清 pending call 时关闭旧连接。恢复重新取票，不重放旧录音。默认 105 秒在输入 quiet 且无运行/待写回 call 时轮换，宽限内无法安全轮换则结束；历史恢复不等于恢复模型隐藏状态。
 
 ## 5. 版本和错误处理
 
@@ -136,4 +152,4 @@ SSE 的 `id` 是持久化 `server_seq`，不是 JSON `event_id`。仅重放业�
 
 ## 6. 接口验收
 
-D01/D04/D05 必须验证：独立简单客户端可接入、门户不直连供应商、身份/票据/Origin、正确音频格式、序号和去重、硬打断竞态、SSE 恢复、旧连接隔离、字幕与答案分离、窄屏和设备释放。真实语音结论记录于 [验收报告](acceptance-report.md)，不以合成音频替代。
+必须验证：独立简单客户端可接入、门户不直连供应商、身份/票据/Origin、正确音频格式、序号和去重、硬打断竞态、SSE 恢复、旧连接隔离、字幕与答案分离、窄屏和设备释放。D19 另覆盖固定 ACK 与快速结果竞态、audio.done 后仍在缓冲时停止、停止后下一轮恢复、旧 PCM 拒绝及 44.1/48 kHz 重采样。真实语音结论记录于 [验收报告](acceptance-report.md)，不以合成音频替代。

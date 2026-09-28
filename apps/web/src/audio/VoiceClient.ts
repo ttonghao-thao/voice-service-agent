@@ -26,6 +26,7 @@ export class VoiceClient {
   private muted = false;
   private volume = 0.8;
   private activeResponse = "";
+  private stoppedResponses = new Set<string>();
   constructor(
     private onEvent: (e: PortalEvent) => void,
     private onState: (state: VoiceState) => void,
@@ -156,6 +157,8 @@ export class VoiceClient {
             }),
           );
         } else if (d.type === "ack" && !this.suppressed) {
+          if (d.done && this.activeResponse === d.response)
+            this.activeResponse = "";
           this.ws.send(
             JSON.stringify({
               type: "portal.playback.ack",
@@ -188,7 +191,9 @@ export class VoiceClient {
           this.onState("ready");
         }
         if (event.type === "portal.audio.delta" && !this.suppressed) {
-          this.activeResponse = String(event.payload.response_id);
+          const response = String(event.payload.response_id);
+          if (this.stoppedResponses.has(response)) return;
+          this.activeResponse = response;
           const binary = atob(String(event.payload.audio));
           const bytes = Uint8Array.from(binary, (c) => c.charCodeAt(0));
           const view = new DataView(bytes.buffer);
@@ -206,13 +211,12 @@ export class VoiceClient {
           );
         }
         if (event.type === "portal.audio.done") {
+          this.stoppedResponses.delete(String(event.payload.response_id));
           this.node?.port.postMessage({
             type: "done",
             epoch: this.epoch,
             response: event.payload.response_id,
           });
-          if (this.activeResponse === event.payload.response_id)
-            this.activeResponse = "";
         }
         if (event.type === "portal.playback.clear") this.resetPlayback();
         if (event.type === "portal.error") {
@@ -256,10 +260,15 @@ export class VoiceClient {
   }
   private resetPlayback() {
     this.activeResponse = "";
-    this.node?.port.postMessage({ type: "reset", epoch: this.epoch });
+    this.node?.port.postMessage({
+      type: "reset",
+      epoch: this.epoch,
+      suppressed: this.suppressed,
+    });
   }
   stopPlayback() {
     const response = this.activeResponse || null;
+    if (response) this.stoppedResponses.add(response);
     this.resetPlayback();
     if (this.ws?.readyState === WebSocket.OPEN) {
       this.ws.send(
@@ -294,6 +303,7 @@ export class VoiceClient {
   async stop() {
     ++this.generation;
     this.ready = false;
+    this.stoppedResponses.clear();
     this.clear();
     const cid = this.cid,
       sid = this.sid;

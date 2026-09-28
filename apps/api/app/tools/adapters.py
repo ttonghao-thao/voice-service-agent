@@ -1,6 +1,7 @@
 import asyncio
 import json
 import logging
+import time
 from datetime import date, datetime, timedelta
 from urllib.parse import urlparse
 from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
@@ -63,6 +64,7 @@ class CueKBAdapter:
         self.settings, self.client = settings, client
 
     async def invoke(self, args, ctx):
+        started = time.monotonic()
         if not ctx.principal.knowledge_base_ids:
             raise DomainError("FORBIDDEN", "No authorized knowledge base is available", 403)
         if self.settings.cuekb_mode == "mock":
@@ -144,12 +146,14 @@ class CueKBAdapter:
         result = CueKBSearchResponse.model_validate(data)
         trace_id = str(result.trace_id)
         logger.info(
-            "cuekb_response_validated conversation_id=%s turn_id=%s trace_id=%s retrieval_status=%s hit_count=%s",
+            "cuekb_response_validated conversation_id=%s turn_id=%s trace_id=%s retrieval_status=%s hit_count=%s duration_ms=%s service_total_ms=%s",
             ctx.conversation_id,
             ctx.turn_id,
             trace_id,
             result.retrieval_status,
             len(result.hits),
+            round((time.monotonic() - started) * 1000),
+            result.timings_ms.get("total"),
         )
         content_revisions = {str(key): value for key, value in result.content_revisions.items()}
         budget = 6000

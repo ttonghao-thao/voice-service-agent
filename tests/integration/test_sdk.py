@@ -1,4 +1,5 @@
 import json
+import logging
 
 import httpx
 import pytest
@@ -7,6 +8,16 @@ from app.contracts import AgentAnswer, Principal
 from openai import AsyncOpenAI
 
 KB_SUPPORT = "00000000-0000-4000-8000-000000000001"
+
+
+@pytest.fixture(autouse=True)
+def capture_application_logs(app, caplog):
+    logger = logging.getLogger("app")
+    logger.addHandler(caplog.handler)
+    try:
+        yield
+    finally:
+        logger.removeHandler(caplog.handler)
 
 
 async def test_non_ascii_speech_keeps_written_answer_but_uses_ascii_voice_fallback(app, conversation):
@@ -29,7 +40,7 @@ async def test_non_ascii_speech_keeps_written_answer_but_uses_ascii_voice_fallba
 
 
 @pytest.mark.parametrize("streaming", [False, True])
-async def test_actual_sdk_runner_executes_registered_tool_and_validates_output(app, conversation, streaming):
+async def test_actual_sdk_runner_executes_registered_tool_and_validates_output(app, conversation, streaming, caplog):
     p = Principal(
         user_id="dev-operator",
         scopes=frozenset({"knowledge:read"}),
@@ -37,6 +48,7 @@ async def test_actual_sdk_runner_executes_registered_tool_and_validates_output(a
     )
     turn, _, _ = await app.state.store.begin_turn(p, conversation, "sdk", "Find the integration sample", "voice", 0)
     ctx = RunContext(p, conversation, turn.id, turn.epoch, request_revision=turn.request_revision)
+    caplog.set_level("INFO", logger="app.agent_runtime.runtime")
     requests = []
 
     def handler(request):
@@ -117,6 +129,12 @@ async def test_actual_sdk_runner_executes_registered_tool_and_validates_output(a
     assert len(requests) == 2
     assert "previous_response_id" not in requests[0]
 
+    timings = [record.message for record in caplog.records if "agent_model_call_finished" in record.message]
+    assert len(timings) == 2
+    assert "call_index=1" in timings[0] and "call_index=2" in timings[1]
+    assert all("status=completed" in line and "duration_ms=" in line for line in timings)
+    assert all("integration sample" not in line for line in timings)
+
 
 async def test_knowledge_answer_fails_when_required_tool_was_not_called(app, conversation):
     principal = Principal(
@@ -166,7 +184,7 @@ async def test_tool_failure_cannot_be_rewritten_as_insufficient_evidence(app, co
 
 @pytest.mark.parametrize("streaming", [False, True])
 async def test_compatible_chat_completions_runs_required_tool_loop(
-    app, conversation, streaming
+    app, conversation, streaming, caplog
 ):
     principal = Principal(
         user_id="dev-operator",
@@ -188,6 +206,7 @@ async def test_compatible_chat_completions_runs_required_tool_loop(
         turn.epoch,
         request_revision=turn.request_revision,
     )
+    caplog.set_level("INFO", logger="app.agent_runtime.runtime")
     requests = []
 
     def handler(request):
@@ -288,3 +307,9 @@ async def test_compatible_chat_completions_runs_required_tool_loop(
     assert result.status == "answered", result
     assert result.citations[0].citation_id == "C1"
     assert len(requests) == 2
+
+    timings = [record.message for record in caplog.records if "agent_model_call_finished" in record.message]
+    assert len(timings) == 2
+    assert "call_index=1" in timings[0] and "call_index=2" in timings[1]
+    assert all("status=completed" in line and "duration_ms=" in line for line in timings)
+    assert all("integration sample" not in line for line in timings)

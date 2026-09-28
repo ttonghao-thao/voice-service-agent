@@ -1,195 +1,168 @@
 # 语音客服 Agent：架构与演进设计
 
-更新：2026-09-25。本文负责产品边界、模块职责与控制流程；当前状态只维护在 [任务板](TASK_BOARD.md)。§2–7 区分现有实现与条件性设计，§10 为尚未实施的优化建议；真实能力以 [验收记录](acceptance-report.md) 为准。
+更新：2026-09-28。本文定义当前产品、模块职责、语音与业务状态及故障边界。实现状态见 [任务板](TASK_BOARD.md)，验证证据见 [验收记录](acceptance-report.md)。当前设计包含 D19 的 WebSocket 输出/播放修复、D20 的原生能力边界和查询交付优化；真实识别、GPU 推理与听音仍待部署复测。§10 保留尚未实施的建议，不与现有能力混写。
 
 ## 1. 产品定位与范围
 
-本项目提供面向客户的语音客服 Agent。客户在简单 HTML 门户点击开始并说话，系统通过独立 VoiceChat 进行语音交互，通过 CueKB 获取授权知识，给出有依据的客服回答。
+本期提供生产级英文知识库语音客服，仅启用 `search_knowledge`。客户在门户开始独立通话，用英文提问，系统从授权 CueKB 获取证据，给出文字答案、来源及短口述。VoiceChat 负责语音感知与生成，BusinessRuntime 负责客服任务和证据回答，两者不能互相替代。
 
-两类业务能力：
+每个完整客户发言，包括问候、听不清和闲聊，都先经 `consult_service_agent` 进入后台业务入口。缺少产品型号或专有名词时按最终转写澄清，不让语音模型改写成猜测的事实。知识请求必须通过 `search_knowledge` 的服务端后置条件；空命中、证据不足、澄清和系统故障是不同结果。VoiceChat 自有常识不能成为客服答案。
 
-1. **知识问答**：调用独立 CueKB 的检索 API，处理证据、适用条件、引用和澄清。
-2. **第三方扩展**：按部署实际接入和授权开放天气、股票或其他业务查询。只接 CueKB 时不提供第三方实时查询，未启用工具不影响启动或健康状态。
+门户以语音为主，文字是可选降级入口；不提供工具管理、知识上传或运维工作台。首期只读，不包含交易、订单修改、自动退款、天气/股票或正式人工坐席转接。中文、正式客户登录、跨组织完整多租户及子 Agent 调度均不在本期。默认单组织部署，知识范围由服务端确定。
 
-门户以语音为主，文字输入是可选降级入口。客户页面不包含工具管理、服务运维、知识上传等工作台功能；已有管理能力保留为受权限保护的独立运维入口。首期只读查询，不包含交易、订单修改、自动退款或人工坐席转接系统。
-
-本期产品范围为英文知识库客服，只启用 `search_knowledge`；天气和其他第三方能力留待新需求。中文支持须等目标语音模型具备相应能力后，再明确本项目的语言契约和验收范围。本项目不训练模型、不管理语音 GPU 栈。英文门户、提示词和默认语言已完成代码适配，真实英文语音链路仍待云端 Docker 验收。默认按单组织部署，客户可见知识范围由服务端决定；不宣称已有跨组织完整多租户能力。
+本项目不训练模型、不管理 GPU 调度。独立 `speech` 源码中的 WebSocket 协议修复随独立 VoiceChat 镜像交付；它不成为本项目的 Python 依赖或新服务。修改前后供应商代码版本必须进入发布基线。
 
 ## 2. 总体架构
 
 ```mermaid
 flowchart TB
-    U[测试浏览器：简单 HTML 语音门户]
+    U[浏览器：独立通话、AudioWorklet、答案与字幕]
     W[Web 容器：Nginx HTTPS 8087]
-    G[消息与语音网关：call capability、HTTPS、SSE、WebSocket]
-    C[SessionCoordinator：会话、任务、改问、结果提交]
-    V[VoiceChatAdapter]
-    N[独立 NVIDIA VoiceChat 服务]
+    G[VoiceGateway：票据、输入绑定、输出授权、单写入器]
+    C[SessionCoordinator：revision、epoch、任务、提交]
+    V[NvidiaVoiceChatAdapter：供应商事件归一化]
+    N[独立 VoiceChat：ASR、工具、逐轮语音与有序输出]
     B[BusinessRuntime：后台客服 Agent]
-    L[文本推理模型服务]
-    T[ToolRegistry：授权、契约、预算]
+    L[文本模型：OpenAI 或 compatible]
+    T[ToolRegistry：工具后置条件、权限、预算]
     K[CueKBAdapter]
-    Q[独立 CueKB 检索 API]
-    X[可选第三方适配器]
-    E[已接入的第三方系统]
+    Q[独立 CueKB：检索与来源]
     S[(PostgreSQL：业务状态、证据、审计)]
-    R[(Redis：租约、协调)]
-    U <-->|HTTPS JSON / SSE / WSS 音频消息| W
-    W <-->|同源 /api/；容器网络 api:8000| G
-    G <--> C
-    G <--> V
-    V <--> N
-    V -->|原生工具请求，经网关桥接| C
-    C <--> B
-    B <--> L
-    B --> T
-    T --> K --> Q
-    T --> X --> E
-    C -->|有效结果，经网关单写入器| V
+    R[(Redis：租约与协调)]
+    U <-->|同源 HTTPS JSON / SSE / WSS| W
+    W <-->|容器内 api:8000| G
+    G <--> V <--> N
+    G <-->|原生工具与有效结果| C
+    C <--> B <--> L
+    B --> T --> K --> Q
     C <--> S
     C <--> R
 ```
 
-三套业务系统独立运行：本项目、VoiceChat、CueKB。文本推理模型是本项目现有 BusinessRuntime 的额外推理依赖；“对接两个系统”不意味着只有两个后端连接或不需要文本模型。
+本项目、VoiceChat、CueKB 独立部署。文本模型是 BusinessRuntime 的推理依赖。浏览器只访问本项目同源入口，不获取供应商地址、密钥或原生工具执行权。天气等既有扩展适配器保留代码但本期不注册开放。
 
 ### 2.1 模块职责
 
 | 模块 | 负责 | 不承担 |
 | --- | --- | --- |
-| HTML 门户 | 开始/结束、采集、播放、字幕、答案/引用、状态提示 | 工具选择、权限判断、直接访问 VoiceChat/CueKB |
-| 消息与语音网关 | 版本化消息、票据、音频队列、背压、供应商事件转换 | 知识检索推理和供应商业务逻辑 |
-| SessionCoordinator | 任务版本、幂等、取消、租约、提交与交付控制 | 生成业务事实 |
-| BusinessRuntime | 理解任务、澄清、选工具、组织证据答案 | 自行授予权限、直接操作播放器 |
-| ToolRegistry / Adapter | 参数校验、服务端凭据、超时重试、结果映射 | 让模型任意构造 endpoint 或扩大 KB 范围 |
-| VoiceChat | 流式语音理解、接话、语音生成、原生工具调用 | 作为企业知识事实来源 |
-| CueKB | 授权范围内的检索、来源与版本 | 语音交互、替本项目完成回答充分性判断 |
+| 门户 / VoiceClient / AudioWorklet | 通话、收音、重采样、PCM 播放、字幕、状态和引用 | 知识权限、业务推理、供应商工具选择 |
+| VoiceGateway / Adapter | 票据与会话 fence、输入 item 绑定、工具往返、输出授权和背压 | 生成企业事实、把整场连接永久授权为一个回答 |
+| SessionCoordinator | 任务幂等、revision/epoch、取消、租约与业务提交 | 操作供应商隐藏状态 |
+| BusinessRuntime | 理解最终 ASR/文字请求、澄清、知识工具和有据回答 | 自行授予权限、直接播放音频 |
+| ToolRegistry / CueKBAdapter | 参数/结果契约、服务端凭据、范围、限时和证据映射 | 接受模型指定的 endpoint 或扩大 KB 范围 |
+| 独立 VoiceChat | 流式 ASR、原生工具、ACK/回答语音、每轮 response 和有序发送 | 用常识绕过业务工具、把音频包数量当作听音成功 |
+| CueKB | 授权检索、知识来源、版本与上下文 | 语音交互、替应用判断全部回答断言是否充分 |
 
-复用 `apps/api/app/{api,voice,sessions,agent_runtime,tools,storage}`；供应商结构在 adapter 内消化，不泄漏到业务核心或客户门户。CueKB 的数据库/索引、迁移和发布由 CueKB 自己管理，本项目不直连其数据库。
+沿用 `apps/api/app/{api,voice,sessions,agent_runtime,tools,storage}`。供应商结构只在 `voice/` 内归一化；Agents SDK 限于 `agent_runtime/`。本项目不直连 CueKB 数据库或索引。
 
 ### 2.2 技术与部署选择
 
-- 后端沿用 Python 3.12 / FastAPI / Agents SDK；存储 PostgreSQL，跨副本协调 Redis。
-- 门户交付为静态 HTML/CSS/浏览器脚本，复用 TypeScript AudioWorklet 音频代码；可用现有构建链产出，不强制为“简单 HTML”更换前端框架。
-- 当前 React/Ant Design 页面已精简为客户入口，复用既有音频底层；工具管理只保留受权限保护的独立后端运维 API。
-- 云端用 Docker Compose 运行本项目 Web/API/迁移/数据库/Redis；VoiceChat、CueKB 独立部署和维护。详情见 [部署](deployment.md)。
-- Web 镜像内的 Nginx 直接终止 TLS 并对公网提供 HTTPS；仅代理同源 `/api/` 到容器网络中的 API，API 不映射宿主端口。每次点击开始通话生成只属于当前标签页的 owner/token；本期未提供正式客户或系统间身份。
+后端为 Python 3.12/FastAPI/Agents SDK，状态存储 PostgreSQL，协调 Redis；依赖使用 pip 与固定版本 requirements。门户为 React/TypeScript，AudioWorklet 实现持续重采样和有界播放队列，不另建逐帧 AudioBufferSource 播放器。
+
+Web 镜像内置 Nginx，标准部署直接提供公网 HTTPS `8087`，仅把同源 `/api/` 转发到容器内 API `8000`；API/数据库/Redis 不映射公网端口。现场入口若为 `9002`，需按实际域名、TLS、端口和反向代理核对 `PUBLIC_ORIGIN`，不能从端口推断它直连 VoiceChat。服务端到独立服务的受控内网 HTTP/WS 与浏览器 HTTPS/WSS 是不同连接。详见 [部署](deployment.md)。
 
 ## 3. 门户与标准消息接口
 
-客户端只调用本项目 API。采用标准 HTTP JSON、SSE 和 WebSocket；业务事件由本项目版本化定义，不声称与 NVIDIA、OpenAI 或某个行业消息标准直接兼容。
+客户端契约是本项目的 `/api/v1` 和 `portal.*`，使用 HTTP JSON、SSE 和 WebSocket，不直接暴露 NVIDIA/OpenAI 事件。
 
 | 通道 | 用途 |
 | --- | --- |
-| HTTP `/api/v1` | capability、能力查询、创建会话、申请语音票据、结束/打断、可选文字输入 |
-| SSE 会话事件 | 查询状态、经校验答案和可恢复的业务事件 |
-| WS 语音消息 | 连续上行/下行音频、用户转写、实际口述字幕、实时控制 |
+| HTTPS JSON | 创建独立 conversation/call capability、申请票据、文字输入、停止/取消/结束 |
+| SSE | 持久业务进度、经验证答案和历史恢复 |
+| WSS | 连续音频、实时用户转写、实际口述文字、播放进度与错误 |
 
-保留当前 `/api/v1` 路径及 `portal.*` 事件族。客户端不接收模型工具调用权限，不知道 CueKB/VoiceChat 的私网地址或密钥；相同契约可供以后其他客户端使用。详见 [门户契约](portal-protocol.md)。
+Start call 创建当前标签页独有的 conversation、owner 和短期 token；token 只保存在标签页内存。ready 表示语音握手和格式已确认，不表示已有问候或业务答案；连接初始自行生成的欢迎语被抑制。用户实时字幕在完成态后保留到持久 voice Turn 接管；实际口述字幕与业务答案分别展示。详情见 [门户契约](portal-protocol.md)。
 
 ## 4. 端到端调用流程
 
 ### 4.1 一次语音知识问答
 
-1. 测试人员在当前标签页点击开始通话；服务端创建独立 conversation/owner 和高熵 call token，KB 范围仍由服务端部署配置决定。其它标签页不读取该 conversation。
-2. 使用 call token 申请一次性语音票据并连接 WS；网关连接独立 VoiceChat，确认握手及音频格式后通知门户 ready。
-3. 门户持续上传包括静音在内的音频，网关并行收发；VoiceChat 生成用户转写、语音或工具请求。
-4. VoiceChat 调用统一工具 `consult_service_agent(user_request)`。网关按连接、epoch、call_id 去重，交给 SessionCoordinator。
-5. Coordinator 创建业务任务；BusinessRuntime 根据已确认上下文调用授权知识工具。CueKBAdapter 从服务端注入 KB 范围，调用 `POST /v1/search`。
-6. Runtime 根据证据和适用条件输出 AnswerBundle：状态、展示答案、短口述、引用及必要卡片；依据不足时澄清或明确无依据。
-7. Coordinator 检查任务是否仍有效并提交业务结果；网关单写入器再次检查连接、call_id、epoch/turn/租约，向 VoiceChat 回传结果。
-8. VoiceChat 生成语音，门户播放；分别保留业务答案、实际口述字幕和估计播放进度。正确的文字答案不能代替实际口述正确性验收。
-
-最终用户转写仅用于字幕和记录，不能再触发与原生工具相同的一次查询。无直接关联字段时不靠文字相似度猜测 call_id 与输入 item 的关系。
+1. 开始通话创建独立 capability，申请一次性、绑定 owner/conversation/epoch/Origin 的 WS ticket；VoiceGateway 连接 VoiceChat，完成 `session.created → session.update → session.updated` 后发 portal ready。
+2. AudioWorklet 按 AudioContext 实际采样率重采样为 24 kHz、单声道 PCM16，每 80 ms 发送 3840 bytes，包括静音。48 kHz 采集与 VoiceChat 内部 16 kHz 推理都不改变这个线上协议。
+3. VoiceChat 先发用户 input item 的开始/最终 ASR，再发原生工具事件；同一推理批次内，ASR/工具必须排在 ACK 音频之前。空闲 codec 音频不能创建持续整场的 response。
+4. 网关将工具绑定到尚未消费的 input item，按 call_id 去重并验证参数；最终 ASR 是业务请求的权威文本。工具先于 ASR 完成时有界等待；无有效输入的工具只结清，不创建 Turn。最终 ASR 不额外启动第二次查询。
+5. Coordinator 建立受 revision/epoch/租约保护的 Turn；Runtime 在整轮预算内调用文本模型、ToolRegistry 与 CueKB `/v1/search`。KB 范围来自服务端，知识检索与答案状态由服务端校验。
+6. 业务答案通过有效性检查后提交，提交完成通知本机 SSE，门户直接更新已有 Turn；跨进程仍按持久游标补查，未知 Turn 才读取历史。VoiceGateway 单写入器在写回前再次核对 call、turn、revision、epoch 和租约，用原生 call_id 回传工具结果。
+7. 工具 ACK 和最终回答分别结束自己的音频 response；固定 ACK 不得提前消耗后续答案的授权。若供应商在原 response 内返回最终答案，则在完成时撤销未使用的后续许可。新输入活动不撤销仍有效的已授权回答，但未桥接的直接回答必须拒绝。
+8. VoiceChat 将音频、字幕和完成事件按生产顺序发送，排队事件携带原 response ID；尾部重采样和 PCM 残帧先发送，再发 audio.done。浏览器在实际队列排空后才清除当前播放身份，播放 ACK 只是估计。
 
 ### 4.2 工具与子 agent 的取舍
 
-CueKB 可以封装为 Tool。最终主线保留 **VoiceChat 统一业务工具 → 后台 BusinessRuntime → CueKB Tool**，便于统一权限、证据验证、第三方扩展及文字降级。
+保留 **VoiceChat 统一业务工具 → BusinessRuntime → CueKB Tool**。后台 Runtime 已承担被委派的客服任务；简单知识检索不另加一个只负责转发的 LLM。`parent_task_id` 记录前一轮任务，不代表子 Agent。
 
-BusinessRuntime 相对前台语音已是被委派的后台 Agent；简单检索不再增加一次仅负责转发的 LLM。复杂跨文档任务确有收益时，可在相同 runtime 边界内引入 KnowledgeAgent，限制为一层、有独立上下文和共享预算的子任务。
-
-子 agent 只返回候选证据/答案，由 Coordinator 统一提交；不能直接写主会话或播放音频。现有 `submit()` 会替换当前任务，不能用它启动子任务以免取消父任务。委派不等于工具等待期间的前台交谈能力。
+未来只有复杂跨文档样本证明收益时才评估一层 KnowledgeAgent。子任务只返回候选证据，由 Coordinator 统一提交；不直接写会话或播放音频。现有 `submit()` 会替换当前任务，不能把它当作子任务调度器。增加 Agent 不能解决供应商工具等待期间的交互限制。
 
 ### 4.3 第三方与文字入口
 
-第三方查询沿用相同 Runtime/ToolRegistry，适配器负责地点、证券代码、时间、单位等厂商语义。未接入的能力明确告知不可用，不用知识库旧资料或模型常识冒充实时结果。
+文字输入复用同一 Runtime/ToolRegistry 和知识范围，提交文字会终止当前语音，门户须提示该行为。未定义话轮竞争规则前不并行提交文字与语音任务。
 
-可选文字输入复用同一业务链路。当前实现提交文字会终止语音；首期保留并在门户提示，不在未定义话轮竞争规则时开启并行文字/语音提交。
+未来第三方查询仍通过既有工具边界，单独约定身份、时效、字段、预算和验收；本期不开放天气/股票，也不以旧知识或模型常识冒充实时结果。
 
 ## 5. 全双工、改问与工具生命周期
 
 ### 5.1 三个独立状态
 
-- **语音连接**：connecting / ready / recovering / closed。
-- **业务任务**：queued / running / completed / failed / canceled / expired / superseded。
-- **结果交付**：pending_validation / accepted / discarded，接受后另记文字发布、语音提交、估计播放及中断/送达未知。
+| 状态层 | 含义与边界 |
+| --- | --- |
+| 连接和播放 | 连接 ready 不等于有答案；清空当前播放不等于结束会话；audio.done 不等于扬声器队列已排空 |
+| 业务任务 | revision 控制当前请求；Turn 有运行、回答状态及 canceled/expired/superseded；epoch 隔离音频连接 |
+| 结果交付 | pending_validation/accepted/discarded 描述业务接受；供应商写回、实际口述、播放估计分开记录 |
 
-以上为概念状态，不能直接当作当前枚举或 NVIDIA 事件。当前 `Turn.status` 使用 running、回答状态及 canceled/expired/superseded；`delivery_status` 为 pending_validation/accepted/discarded。`task_id` 对应 turn ID，`request_revision`、`parent_task_id` 已持久化；后者在 `Store.begin_turn()` 记录前一轮 turn，并非子任务父节点。现有 conversation/turn/epoch 保留，业务 revision 与音频 epoch 分开。
+`accepted` 不证明客户听到。当前已有字幕和 playback_ack 持久化，但完整交付台账仍属 §10.1。`task_id` 对应 Turn，`parent_task_id` 不是子任务父节点。
 
-当前已有字幕和估计播放 ACK 持久化；完整交付阶段尚无独立台账，`accepted` 仅表示业务结果被接受。应用任务完成不代表客户已听到，完善方案见 §10.1。
-
-| 用户行为 | 任务处理 | 语音处理 |
+| 用户行为 | 业务处理 | 音频处理 |
 | --- | --- | --- |
-| 附和“嗯” | 默认继续，不能只因有声音就取消 | 按真实语音能力让话 |
-| “先别说” | 保留仍有效查询 | 清播放器，抑制当前回复后续音频 |
-| “不用查了” | 立即使任务失效，尽力取消外部等待 | 不交付晚到旧答案 |
-| “不是 A，是 B” | 立即增加 revision，A 标 superseded，建立 B 任务 | 只允许新条件结果交付 |
-| 断网、鉴权到期、租约失效 | 撤销提交权，释放资源 | 停止旧输出，受控恢复 |
+| 普通发声/附和 | 不单凭 speech_started 取消任务 | 保留模型声学让话，不额外自动清音；授权按 response 判断 |
+| Stop playback | 保留仍有效业务查询 | 立即清队列、抑制被停止 response；后续合法回答仍可播放 |
+| Cancel search | 推进 revision，使旧任务失效 | 不播放晚到旧答案；必要时关闭无法结清的原连接 |
+| 改问/新条件 | 原任务 superseded，创建新 revision | 只交付仍有效版本 |
+| 结束/硬打断/断网/失权 | 撤销提交和写回权、释放资源 | 禁止播放、清旧队列、停止麦克风；旧 epoch 不可恢复 |
 
-D05 已实现独立 request_revision、停止播报和取消查询接口；兼容 `interrupt` 仍是清音、任务取消、epoch 失效及关闭连接的组合操作。门户不再把硬中断标成仅停止播报。
+浏览器的播放许可与清队列分开：同 epoch 清音保留会话许可，失效/关闭才持续 suppressed。停止时即使服务端已发 audio.done，只要本地仍有缓冲，仍发送该 response ID，不能误抑制下一轮。
 
 ### 5.2 结果接受与原生调用结清
 
-每次工具执行绑定任务版本、授权上下文、deadline、工具版本和原生调用标识。结果到达先核对业务有效性，再在历史提交及语音写回边界复核，避免晚到结果与改问竞争。
+每次工具绑定有效输入、任务版本、授权范围、deadline 和 native call。业务提交和语音写回各执行一次 fence；只取消本地等待不代表外部 HTTP 或 GPU 推理已终止。
 
-外部请求不能确认终止时，允许其在原预算内结束，旧结果不进入当前答案；逻辑失效无需等待 HTTP 完成。内部取消不能被记为上游计算已停止。
+丢弃旧业务结果后仍须结清原生 pending call。仅在原连接和协议允许时返回失效说明；否则关闭旧连接，不能把旧 call_id 写到新连接，也不能以立即返回“已受理”冒充可在未来任意推送答案。
 
-**丢弃业务内容仍须处理原生 pending call。** 只在部署协议验证通过后，才用匹配 call_id 的失效说明结束旧调用；该说明不是 NVIDIA 取消指令。若不能安全结清且抑制旧播报，关闭旧连接并重建，不能永远等待，也不能把旧 call_id 写到新连接。立即回传“已受理”不构成以后任意推送结果的合法通道。
-
-当前原生连接保持单 pending call。新后台任务可否与旧任务并行执行，和语音服务能否同时接收新调用是两个问题；前者受应用预算限制，后者必须有协议证据。
+当前业务适配采用有序逐轮 response。原生 HTML 连续播放、不依赖 ID，能正常工作不等于满足本项目的逐轮抑制契约；当前 speech 基线只更新 WebSocket 传输层，不修改推理模型。不能在 adapter 把可能早于缓存 PCM 的 transcript.done 猜成 audio.done。原生 call response 可以承载固定 ACK，合法工具结果最多授权随后一个新 response；固定 ACK 的精确文本来自 adapter 配置。授权被消费或最终回答结束后必须回收，不因整场连接还在就持续有效。初始被抑制 ID 的一段文字已完成、尚未收到 audio.done，却在用户输入后再次携带非空口述，网关显式报生命周期错误，不能悄悄把它升级为整场授权。
 
 ### 5.3 能力门槛
 
-默认保守方案：持续音频传输、原生工具往返、等待提示语、显式硬打断与重连。目标增强：查询等待期间理解用户改问、针对新问题回答、旧结果抑制及新结果交付。
+本期基础能力目标是连续收发、原生工具往返、固定等待提示、显式停止/取消和关闭重连。工具等待时对新问题自由回答、修改旧请求并连续处理新原生调用是增强能力，必须独立实测；ACK 不算新问题的回答。
 
-模型卡的 on-hold message 不证明自由多轮交谈；官方限制页仍记录工具期间打断限制。公开不同推理实现有部分异步/插话路径，不能等同于当前独立服务能力。固定目标镜像/API 版本，按调用生成、HTTP 等待、结果注入、播报四阶段验收。[模型卡](https://huggingface.co/nvidia/NVIDIA-NemotronLabs-VoiceChat-11B/blob/main/README.md)、[限制说明](https://github.com/NVIDIA-NeMo/Speech/blob/nemotron-labs-voicechat/README.md#known-limitations)
+应用默认 105 秒在 quiet 且无运行/待写回工具时轮换；超过宽限期结束连接。轮换保留经授权裁剪的业务摘要，不恢复模型隐藏状态、不重放旧音频。供应商默认工具等待预算与本项目整轮 30 秒预算并不等价，部署必须核对并通过实际延迟探针后放行。
 
-若增强门槛未通过，只能声明基础语音客服可用，不能把增加子 agent 当作完整业务全双工已实现。当前默认 105 秒连接上限在 quiet 且无 pending call 时受控轮换并保留确认过的业务摘要；浏览器清除旧音频后取得新票据，不承诺恢复模型隐藏状态或重播旧音频。
+## 6. 应用控制层与资源边界
 
-## 6. 借鉴 harness 的应用控制层
+控制逻辑继续位于现有 Gateway、Coordinator、Runtime 和 Registry，不增加队列服务或 GPU 训练流程。浏览器、应用上行、应用下行和 VoiceChat 输出各有有界队列；背压和发送失败显式关闭/报错，不无限积压或丢帧后假称成功。
 
-这里 harness 指模型外的运行控制程序，借鉴会话、任务、工具和事件分层思路，落在现有模块中，不引入 Codex 服务作为运行依赖。
+应用对外写回保持单写入器，优先处理有效控制结果，再发送输入音频。独立 VoiceChat 对模型产生的 ASR、工具、音频、字幕和完成事件使用有界 FIFO；事件在入队时固定 ID，发送器不能读取已经切换到下一轮的全局 ID。供应商连接/错误事件仍由其会话控制路径处理。
 
-当前已实现任务版本、授权、有界上下文、提交隔离和租约恢复；下列父子任务预算与独立子任务上下文属于未来扩展约束，当前没有 KnowledgeAgent 调度器。
-
-- 会话持有身份、确认条件和有界历史；任务持有目标、revision、父子关系、状态、预算与取消原因。
-- 子任务使用独立 evidence/cards/slots 容器，不能共享可变 RunContext 后互相回滚；合并时重新校验引用。
-- 权限只能从父任务缩小；父子任务共享剩余时限/调用预算。限制循环、递归和并发，不为每个子任务重新发放全额预算。
-- 工具结果、主会话提交、媒体输出分离；Coordinator 是唯一业务提交者。持久化结果以唯一键和条件状态更新去重。
-- 重启只恢复允许恢复的业务状态；未确认送达标为 unknown，不盲重发语音或宣称网络 exactly-once。
-- PostgreSQL 保存业务历史/任务/证据与审计；Redis 管理租约。新字段通过 Alembic 迁移，历史 JSON 保留版本兼容。
-
-不增加新的消息队列或多 agent 服务集群，除非容量/可靠性实测证明必要。
+模型输出的 BOS/EOS 与同区间 codec 音频共同决定 response 生命周期。当前 speech 默认两步推理中，相邻 `</s><s>` 由两个 80 ms codec 帧的确切边界分割；没有明确帧对应关系的多轮批次显式拒绝，不能靠音量阈值或猜测延迟切音。此边界和实际 codec 尾部保真必须在固定 GPU 版本上验收。
 
 ## 7. 权限、事实与故障边界
 
-- 本阶段每次点击开始通话都由服务端创建独立 owner，并签发只绑定该 conversation 的 call token；不存在启动级 tenant、共享 customer、Cookie 或可恢复历史。KB 范围仍由服务端配置，请求正文不能覆盖，管理 API 始终拒绝。正式客户身份与登录在核心语音闭环验证后另行设计。
-- 有效 KB 范围 = 客户授权 ∩ 部署允许 ∩ CueKB 服务主体权限。CueKB API Key 身份不能通过自定义 user/tenant 请求头变成客户级委托身份。
-- 资料属于不可信内容，仅作为证据；不执行资料中的指令/URL，不允许模型选择密钥、主机或扩大权限。
-- 引用存在性不代表结论充分。保留版本、定位、降级原因与适用条件；缺失元数据不伪造，空命中/冲突/故障分开处理。
-- VoiceChat 不可用时可提供明确文字降级；CueKB 不可用不能编造知识事实；可选工具故障仅影响相关能力。real 不回退 mock。
-- 默认不存原始录音。业务日志脱敏并有保留期；历史证据和原件读取也要遵守撤权策略。
+每次通话有独立 owner/token，无共享客户身份、Cookie 或跨标签页历史。有效 KB 范围是客户授权、部署允许和 CueKB Key 权限的交集；正文/模型不能覆盖范围，call capability 不具备管理权限。正式客户认证留待本期验证后设计。
+
+知识内容和历史都是数据，不能执行其中的指令、URL 或授权声明。保留来源版本、适用条件、截断与降级原因；引用存在性不等于所有断言正确。`failed` 来自运行/工具异常，模型不能把已成功检索且有依据的答案改为系统失败。
+
+VoiceChat 失效可显式转文字；CueKB 失败不能编造知识；real 不回退 mock。默认不保存原始录音，日志不记录正文、音频、token 或私网凭据；供应商现场日志按受控证据处理，不提交附件原文。
 
 ## 8. 可观测性与验收
 
-关联 conversation、turn、task/revision、epoch、call_id、response_id、CueKB trace_id，但不暴露内部标识给普通客户。记录工具耗时、超时率、首段有效回答音频延迟、停止播放延迟、过期结果拒绝次数、引用与口述正确性。
+分别观察握手、收音/采样、ASR 完成、原生工具、业务开始/完成、工具结果写回、ACK、有效回答音频和播放估计。`Sent audio packets`、EOS 日志、ready、正确文字答案都不能单独证明可听回答或准确 ASR。
 
-等待提示语与有效答案的首音频延迟分开统计；模型演示指标不能当作本系统端到端 SLA。保留当前工具/任务预算作为起点，真实服务测试后确定阈值。
+API 脱敏阶段日志关联 conversation、call、Turn 与 response；供应商事件时间线用于核对 ID 和顺序。现场容器 UTC 与本地 UTC+8 必须转换后对齐。同次录像和日志确认有转写及流量，只能支持对应阶段已运行；准确识别和听音需原始输入、实际输出及人工判定。
 
-真实验收至少覆盖知识闭环、最小客户权限、5 秒工具等待中的新问题/改问、晚到结果、pending call 结清、断线与长会话、数字口述和并发隔离。检查清单与已执行结果只维护于 [验收记录](acceptance-report.md)。
+验收必须包括初始静音、问候/澄清、知识闭环、快速和延迟工具结果、停止后下一轮、连续至少两轮、不同采样率、短尾帧、慢网络、撤权、断线和长会话。协议/合成波形/浏览器自动化与真实 GPU/麦克风/扬声器分别记录，详见 [验收](acceptance-report.md)。
 
 ## 9. 现状与实施顺序
 
-唯一工作状态见 [任务板 §1–3](TASK_BOARD.md#1-当前结论与审计基线)。优先完成 D07 云端验收；新增优化不替代真实英文口述、权限和故障恢复验证，也不推翻已完成的编码里程碑。
+查询耗时按模型、工具、提交和浏览器分别记录；持久事件提交后立即唤醒 SSE、已加载 Turn 直接应用 final，减少轮询及消息重读等待。检索规划、证据/权限校验不为低延迟而跳过，详见 [接入 §4.1](integration.md#41-查询延迟与优化边界)。
+
+当前状态由 [任务板 §1–3](TASK_BOARD.md#1-当前结论与审计基线) 唯一维护。D19 同步修改本项目和用户确认同源的独立 speech；本项目发布 API/Web，当前确认的 speech 基线同步更新 WebSocket 文件并设置 Jinja。该要求针对本项目严格音频归属，不能泛化为原生对话/插话必需修改模型。先核对版本与静音/两轮工具事件，再做实际英文 ASR、CueKB 和听音复测，最后评估增强交互与性能。
 
 ## 10. 建议优化设计（尚未实施）
 

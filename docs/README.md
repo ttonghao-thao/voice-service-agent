@@ -16,6 +16,8 @@
 | 公网 Web 是否需要独立 Nginx、私网客户端怎样调用 API | [部署](deployment.md)「部署方式边界」；[接入](integration.md) §6 | `deploy/nginx.conf`、`deploy/compose.production.yaml`、`api/auth.py` |
 | 云端剩余工作怎么做 | [部署](deployment.md)「D07 分阶段执行设计」 | D07-A–F；验收 V01–V12 |
 | 哪些检查真实跑过、如何放行 | [验收](acceptance-report.md) §0、3–5 | §1–2 仅在追溯某次结果时读 |
+| 约 3 秒查询与分段耗时 | [接入](integration.md) §4.1；[部署](deployment.md) | Runtime timing hooks、Store/SSE、门户 final 渲染 |
+| 无声、48000 Hz、工具 ACK 与逐轮 response | [接入](integration.md) §3；[VoiceChat 补丁](../deploy/voicechat/README.md) | `voice/gateway.py`、`VoiceClient.ts`、独立 speech `audio_server.py` |
 | 本地验证命令 | [项目 README](../README.md) | 根目录运行；默认工作规则见 [AGENTS](../AGENTS.md) |
 
 代码路径未标完整前缀时，以 `apps/api/app/` 为基准。

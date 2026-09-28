@@ -11,17 +11,20 @@ API → VoiceChatAdapter / 后台客服 Agent / ToolRegistry → 独立 VoiceCha
 
 **本期：英文知识库客服，默认仅启用 `search_knowledge`。** 代码完成范围与待办只维护在 [任务板](docs/TASK_BOARD.md)，真实环境尚未验收；本地受控测试不代表实际语音和知识效果。已执行检查见 [验收记录](docs/acceptance-report.md)。
 
+约 3 秒查询的分段计时与交付优化见 [接入 §4.1](docs/integration.md#41-查询延迟与优化边界)；speech 运行文件、Jinja 配置与派生镜像步骤见 [更新清单](deploy/voicechat/README.md)。
+
 ## 按需阅读
 
 - 产品和架构：[最终设计](docs/architecture.md)。
 - 接入 HTML 客户端：[门户消息/语音契约](docs/portal-protocol.md)。
 - 对接 CueKB、VoiceChat、身份和第三方：[接入说明](docs/integration.md)。
 - 下一步和现状差距：[任务板](docs/TASK_BOARD.md)。
+- API/Web 与独立 VoiceChat 联动升级：[VoiceChat 修复补丁与测试](deploy/voicechat/README.md)。单独更新门户不能修复上游 response 生命周期。
 - 其余主题：[文档索引](docs/README.md)。Codex 从 [AGENTS.md](AGENTS.md) 按任务读取，无需全量加载。
 
 ## 本机验证
 
-项目只维护一套功能验证部署配置。编码机使用显式注入的夹具、契约和静态检查验证实现，不用第二套 env 或 Compose。实际启动只需在 `.env` 填写镜像、HTTPS origin、TLS 证书路径、数据库、文本模型、CueKB、VoiceChat 和 KB 范围；固定模式、容量与超时使用 Compose/代码默认值。Web 镜像内置 Nginx，浏览器直接访问公网 HTTPS `8087`；API 只在容器网络中供同源 `/api/` 使用。每个标签页点击开始通话时创建独立 conversation 和临时 call token，不加载或共享其他标签页历史。部署步骤见 [部署文档](docs/deployment.md)。
+项目只维护一套功能验证部署配置。编码机使用显式注入的夹具、契约和静态检查验证实现，不用第二套 env 或 Compose。实际启动只需在 `.env` 填写镜像、HTTPS origin、TLS 证书路径、数据库、文本模型、CueKB、VoiceChat 和 KB 范围；固定模式、容量使用 Compose/代码默认值，整轮业务预算由 `AGENT_DEADLINE_MS` 配置。Web 镜像内置 Nginx，浏览器直接访问公网 HTTPS `8087`；API 只在容器网络中供同源 `/api/` 使用。每个标签页点击开始通话时创建独立 conversation 和临时 call token，不加载或共享其他标签页历史。部署步骤见 [部署文档](docs/deployment.md)。
 
 ## 验证命令
 

@@ -23,6 +23,7 @@
 
 - 保留 SessionCoordinator → BusinessRuntime → ToolRegistry；供应商语音结构限于 `app/voice`，Agents SDK 限于 `app/agent_runtime`。VoiceChat、CueKB 独立部署。
 - 验证阶段每次开始通话都签发独立、短期使用的 customer call capability；没有启动级 tenant 或共享 customer。KB 范围仍由服务端固定，浏览器/模型不可覆盖，且不能获得管理权限。正式客户认证留待验证通过后设计。
+- 自然插话、停顿和让话由 VoiceChat 模型处理，不因普通 `speech_started` 自动取消业务任务；显式停止只清播放，明确取消/替换才使任务失效。
 - 播放停止、任务失效、上游取消分开；业务提交和语音写回检查 revision/epoch/turn/租约，旧 pending call 必须结清或关闭连接。
 - 编码阶段无 CueKB/VoiceChat 真实接口，按规范与受控夹具交付，不尝试真实调用。无 Docker 环境：只静态检查，不安装、拉取、构建或启动容器。真实验证归 D07 部署阶段。
 - real 失败不回退 mock；未执行的真实服务、浏览器、数据库及云端检查不得写 passed。中文/天气/股票不属本期，不引入训练、GPU 或新队列服务。

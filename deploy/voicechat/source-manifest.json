@@ -1,0 +1,18 @@
+{
+  "s2s/audio_server.py": {
+    "before_sha256": "db188cac479571928eb6d0e6b9b31de5b49af94d8e769960473438db497a7a20",
+    "after_sha256": "0047916176aa09a1b40b32d97f99e339edcce70e1cea80416a732f7bd51e4125"
+  },
+  "docs/voicechat-api.md": {
+    "before_sha256": "1fb58780cfc9dcc9e67e63c326dc541b15e5889260e3ca16759f3934544d7169",
+    "after_sha256": "f760e203e2521e5ca68ab4344480e5a7f62673d919b0a2ff52c4682d00c6dd23"
+  },
+  "s2s/tests/test_response_lifecycle.py": {
+    "before_sha256": null,
+    "after_sha256": "fa8544cf56d0f720b728228343bf5dcbd92d09691b5b1843d10445ec5fd0a904"
+  },
+  "s2s/tests/requirements.txt": {
+    "before_sha256": null,
+    "after_sha256": "095094833e146be9f5d5aea3b3d41ef662e3f269d5423172de266c71e154102b"
+  }
+}

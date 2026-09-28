@@ -286,3 +286,144 @@ def test_new_input_state_does_not_reject_authorized_tool_output(tmp_path):
             spoken = ws.receive_json()
             assert spoken["type"] == "portal.speech_text.delta"
             assert spoken["payload"]["text"] == "Authorized result"
+
+
+@pytest.mark.parametrize("closed_initial", [False, True])
+def test_initial_continuous_response_does_not_silently_swallow_customer_reply(tmp_path, closed_initial):
+    """Mirror VoiceChat's audio-before-ASR ordering and session-long response ID."""
+    import base64
+
+    app = create_app(
+        Settings(
+            _env_file=None,
+            auto_create_schema=True,
+            database_url=f"sqlite+aiosqlite:///{tmp_path}/continuous-response.db",
+        )
+    )
+
+    class Scripted(MockVoiceAdapter):
+        async def connect(self, summary):
+            await self.queue.put(VoiceEvent("audio.delta", {
+                "response_id": "initial-stream",
+                "audio": base64.b64encode(bytes(3840)).decode(),
+            }))
+            await self.queue.put(VoiceEvent("speech_text.done", {"response_id": "initial-stream", "text": ""}))
+            if closed_initial:
+                await self.queue.put(VoiceEvent("audio.done", {"response_id": "initial-stream"}))
+            await self.queue.put(VoiceEvent("input.state", {
+                "state": "speaking", "item_id": "user-1",
+            }))
+            await self.queue.put(VoiceEvent("speech_text.delta", {
+                "response_id": "new-reply" if closed_initial else "initial-stream",
+                "text": "An unverified spoken reply.",
+            }))
+
+    with TestClient(app) as client:
+        app.state.voice.provider_factory = Scripted
+        cid = client.post("/api/v1/conversations", json={}).json()["id"]
+        issued = client.post(f"/api/v1/conversations/{cid}/voice-sessions", json={}).json()
+        with client.websocket_connect(issued["ws_url"], headers={"Origin": "http://localhost:5173"}) as ws:
+            for _ in range(4):
+                event = ws.receive_json()
+                assert event["type"] not in ("portal.audio.delta", "portal.speech_text.delta")
+                if event["type"] == "portal.error":
+                    break
+            else:
+                pytest.fail("Incompatible or unbridged output must be surfaced")
+            expected = "VOICE_TOOL_REQUIRED" if closed_initial else "VOICE_PROTOCOL_ERROR"
+            assert event["payload"]["code"] == expected
+        assert client.get(f"/api/v1/conversations/{cid}/messages").json()["items"] == []
+
+
+@pytest.mark.parametrize("original_is_ack", [False, True])
+@pytest.mark.parametrize("stopped_original", [False, True])
+def test_fast_tool_result_during_ack_preserves_exactly_one_answer_permission(tmp_path, original_is_ack, stopped_original):
+    from app.voice.provider import BRIDGE_ACK
+
+    app = create_app(Settings(
+        _env_file=None, auto_create_schema=True,
+        database_url=f"sqlite+aiosqlite:///{tmp_path}/fast-result.db",
+    ))
+
+    class Scripted(MockVoiceAdapter):
+        async def connect(self, summary):
+            await self.queue.put(VoiceEvent("input.state", {"state": "speaking", "item_id": "input"}))
+            await self.queue.put(VoiceEvent("transcript.done", {
+                "item_id": "input", "text": "Find the integration sample",
+            }))
+            await self.queue.put(VoiceEvent("tool", {
+                "response_id": "tool-response", "call_id": "call", "name": "consult_service_agent",
+                "arguments": json.dumps({"user_request": "Find the integration sample"}),
+            }))
+
+        async def submit_tool_result(self, call_id, text):
+            # Deliberately produce the ACK after the fast business result was sent.
+            if stopped_original:
+                session = next(iter(app.state.voice.sessions.values()))
+                await app.state.voice.suppress_playback(session.conversation_id, session.epoch, "tool-response")
+            await self.queue.put(VoiceEvent("speech_text.done", {
+                "response_id": "tool-response",
+                "text": BRIDGE_ACK if original_is_ack else "The verified answer.",
+            }))
+            await self.queue.put(VoiceEvent("audio.done", {"response_id": "tool-response"}))
+            if original_is_ack:
+                await self.queue.put(VoiceEvent("speech_text.done", {
+                    "response_id": "answer", "text": "The verified answer.",
+                }))
+                await self.queue.put(VoiceEvent("audio.done", {"response_id": "answer"}))
+            # Neither original-response nor follow-up-response mode may leave
+            # a spare grant that would authorize an unrelated answer.
+            await self.queue.put(VoiceEvent("speech_text.delta", {
+                "response_id": "unrelated", "text": "An unbridged answer.",
+            }))
+
+    with TestClient(app) as client:
+        app.state.voice.provider_factory = Scripted
+        cid = client.post("/api/v1/conversations", json={}).json()["id"]
+        issued = client.post(f"/api/v1/conversations/{cid}/voice-sessions", json={}).json()
+        with client.websocket_connect(issued["ws_url"], headers={"Origin": "http://localhost:5173"}) as ws:
+            spoken = []
+            for _ in range(12):
+                event = ws.receive_json()
+                if event["type"] == "portal.speech_text.done":
+                    spoken.append(event["payload"]["text"])
+                if event["type"] == "portal.error":
+                    assert event["payload"]["code"] == "VOICE_TOOL_REQUIRED"
+                    break
+            else:
+                pytest.fail("Unrelated output must be rejected")
+            # The writer may be cancelled when the deliberate final failure arrives;
+            # use stored transcript evidence to verify accepted responses reliably.
+        records = client.get(f"/api/v1/conversations/{cid}/messages").json()["records"]
+        spoken = [r["payload"]["text"] for r in records if r["kind"] == "voicechat_transcript"]
+        assert ("The verified answer." in spoken) == (original_is_ack or not stopped_original)
+        assert (BRIDGE_ACK in spoken) == (original_is_ack and not stopped_original)
+
+
+
+def test_initial_greeting_overlapping_user_input_is_suppressed_without_false_lifecycle_error(tmp_path):
+    app = create_app(Settings(
+        _env_file=None, auto_create_schema=True,
+        database_url=f"sqlite+aiosqlite:///{tmp_path}/greeting-overlap.db",
+    ))
+
+    class Scripted(MockVoiceAdapter):
+        async def connect(self, summary):
+            for event in [
+                VoiceEvent("speech_text.delta", {"response_id": "greeting", "text": "Welcome"}),
+                VoiceEvent("input.state", {"state": "speaking", "item_id": "input"}),
+                VoiceEvent("speech_text.delta", {"response_id": "greeting", "text": " back."}),
+                VoiceEvent("speech_text.done", {"response_id": "greeting", "text": "Welcome back."}),
+                VoiceEvent("audio.done", {"response_id": "greeting"}),
+                VoiceEvent("transcript.done", {"item_id": "input", "text": "hello"}),
+            ]:
+                await self.queue.put(event)
+
+    with TestClient(app) as client:
+        app.state.voice.provider_factory = Scripted
+        cid = client.post("/api/v1/conversations", json={}).json()["id"]
+        issued = client.post(f"/api/v1/conversations/{cid}/voice-sessions", json={}).json()
+        with client.websocket_connect(issued["ws_url"], headers={"Origin": "http://localhost:5173"}) as ws:
+            assert ws.receive_json()["type"] == "portal.session.ready"
+            assert ws.receive_json()["type"] == "portal.input.state"
+            assert ws.receive_json()["type"] == "portal.transcript.done"

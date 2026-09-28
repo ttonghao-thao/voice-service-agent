@@ -21,7 +21,7 @@ from app.contracts import (
     printable_ascii,
     uid,
 )
-from app.voice.provider import BRIDGE_NAME, MockVoiceAdapter, NvidiaVoiceChatAdapter
+from app.voice.provider import BRIDGE_ACK, BRIDGE_NAME, MockVoiceAdapter, NvidiaVoiceChatAdapter
 
 logger = logging.getLogger(__name__)
 TRANSCRIPT_FINAL_TIMEOUT_SECONDS = 5
@@ -160,7 +160,11 @@ class VoiceGateway:
         unbound_inputs = deque()
         consumed_inputs = set()
         authorized_responses = set()
-        authorized_output_slots = 0
+        initial_responses = set()
+        initial_text_completed = set()
+        tool_responses = {}
+        authorized_followups = set()
+        ack_responses = set()
         seq, client_seq, started = 0, -1, time.monotonic()
         frames, last_input, last_ack, last_playback_stop = 0, started, 0.0, 0.0
         input_state = "quiet"
@@ -196,7 +200,6 @@ class VoiceGateway:
                         await ws.send_json(event)
 
         async def upstream_writer():
-            nonlocal authorized_output_slots
             while True:
                 await wake.wait()
                 wake.clear()
@@ -211,7 +214,7 @@ class VoiceGateway:
                                 await provider.submit_tool_result(call, text)
                                 pending[call] = "sent"
                                 if authorize_output:
-                                    authorized_output_slots += 1
+                                    authorized_followups.add(tool_responses.get(call, call))
                                 logger.info(
                                     "voice_tool_result_submitted conversation_id=%s turn_id=%s call_id=%s",
                                     session.conversation_id,
@@ -334,7 +337,7 @@ class VoiceGateway:
                 wake.set()
 
         async def receiver():
-            nonlocal input_state, authorized_output_slots
+            nonlocal input_state
             customer_input_seen = False
             async for event in provider.events():
                 if not await current():
@@ -358,6 +361,7 @@ class VoiceGateway:
                     if any(v in ("running", "ready") for v in pending.values()):
                         raise DomainError("VOICE_PROTOCOL_ERROR", "Parallel cloud tool calls are unsupported. Please ask again.", 502)
                     response_id = event.payload.get("response_id")
+                    tool_responses[call] = response_id or call
                     input_item_id = next(
                         (item for item in unbound_inputs if item not in consumed_inputs),
                         None,
@@ -448,15 +452,35 @@ class VoiceGateway:
                         future.set_result(event.payload["text"])
                     prune_inputs()
                 response_id = event.payload.get("response_id")
+                # Some VoiceChat builds keep their initial (often silent) audio
+                # response open for the entire connection. Never silently drop
+                # a later spoken answer under that permanently suppressed ID,
+                # or authorize the whole connection as though it were one turn.
+                if (
+                    response_id in initial_responses
+                    and response_id in initial_text_completed
+                    and customer_input_seen
+                    and event.kind.startswith("speech_text")
+                    and event.payload.get("text", "").strip()
+                ):
+                    logger.warning(
+                        "voice_response_lifecycle_mismatch conversation_id=%s response_id=%s",
+                        session.conversation_id,
+                        response_id,
+                    )
+                    raise DomainError(
+                        "VOICE_PROTOCOL_ERROR",
+                        "VoiceChat reused its initial audio response for a customer reply. "
+                        "Check the VoiceChat response lifecycle; use text for now.",
+                        502,
+                    )
                 if (
                     response_id
                     and event.kind.startswith(("speech_text", "audio"))
                     and response_id not in (session.suppressed_responses or set())
                 ):
-                    if response_id in authorized_responses and authorized_output_slots:
-                        authorized_output_slots -= 1
-                    elif response_id not in authorized_responses and authorized_output_slots:
-                        authorized_output_slots -= 1
+                    if response_id not in authorized_responses and authorized_followups:
+                        authorized_followups.pop()
                         authorized_responses.add(response_id)
                     if response_id not in authorized_responses and customer_input_seen:
                         logger.warning(
@@ -471,6 +495,7 @@ class VoiceGateway:
                             True,
                         )
                     if response_id not in authorized_responses:
+                        initial_responses.add(response_id)
                         session.suppressed_responses.add(response_id)
                         logger.info(
                             "voice_initial_response_suppressed conversation_id=%s response_id=%s",
@@ -500,14 +525,31 @@ class VoiceGateway:
                         raise DomainError("VOICE_PROTOCOL_ERROR", "Voice audio frame is not PCM16", 502)
                     response_id = event.payload["response_id"]
                     sent_samples[response_id] = sent_samples.get(response_id, 0) + len(audio) // 2
+                if event.kind == "speech_text.done":
+                    if response_id in initial_responses:
+                        initial_text_completed.add(response_id)
+                    if " ".join(event.payload["text"].split()) == BRIDGE_ACK:
+                        ack_responses.add(response_id)
+                    else:
+                        ack_responses.discard(response_id)
+                if event.kind == "audio.done":
+                    # A fast business result can arrive while the fixed tool ACK
+                    # is still playing. ACK frames must not spend the permission
+                    # reserved for the following answer. If the original response
+                    # itself contains the answer, retire that spare permission.
+                    if response_id not in ack_responses:
+                        authorized_followups.discard(response_id)
+                    ack_responses.discard(response_id)
+                    authorized_responses.discard(response_id)
+
                 if suppressed:
                     if event.kind == "audio.done":
+                        initial_responses.discard(response_id)
+                        initial_text_completed.discard(response_id)
                         session.suppressed_responses.discard(response_id)
                         session.suppress_next_response = False
                     continue
                 emit(event.kind, event.payload)
-                if event.kind == "audio.done":
-                    authorized_responses.discard(response_id)
 
         async def browser():
             nonlocal client_seq, frames, last_input, last_ack, last_playback_stop
