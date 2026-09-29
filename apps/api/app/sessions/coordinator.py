@@ -97,6 +97,7 @@ class SessionCoordinator:
         channel="text",
         expected_epoch=None,
         native_call_id=None,
+        input_item_id=None,
     ):
         async with self.lock(cid):
             await self.ensure_owner(principal, cid)
@@ -112,6 +113,7 @@ class SessionCoordinator:
                 channel,
                 expected_epoch,
                 native_call_id,
+                input_item_id,
             )
             if not created:
                 return turn, None

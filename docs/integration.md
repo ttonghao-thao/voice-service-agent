@@ -131,6 +131,8 @@ D19 上游补丁、适用源码 hash、CPU 测试与发布方式见 [VoiceChat �
 
 公开参考：[API](https://github.com/NVIDIA-NeMo/Speech/blob/nemotron-labs-voicechat/voicechat_realtime_instructions/api-reference.md)、[部署](https://github.com/NVIDIA-NeMo/Speech/blob/nemotron-labs-voicechat/voicechat_realtime_instructions/deploy.md)。原 adapter 文档基线为 NVIDIA revision `097dfe9e2f55baf653b83035868bdc89849f1b47`；实际服务以用户 speech 源码与发布 hash 为准，不能仅由公开文档推断私有镜像行为。
 
+2026-09-28 文献复核：[新论文 §7、附录 B](https://arxiv.org/html/2609.21967v1) 明确当前工具执行期间不支持 barge-in；持续收音、字幕或固定 ACK 不代表新音频参与响应生成。本机 backend 的工具期限还存在帧数/推理批次时间单位风险。详细证据、现有实现与待确认优化见 [Q05 分析](voicechat-research-review.md)，不据此修改当前代码或宣称增强能力通过。
+
 ## 4. 文本模型与业务 Agent
 
 当前 `AGENT_PROVIDER=openai` 使用 Responses API，明确配置模型/API key；`compatible` 配置独立 HTTP base URL 并使用 Chat Completions。这些是本仓库适配器行为，真实供应商必须另验工具调用、结构化输出、streaming 和错误语义。VoiceChat WS/WSS 地址不能代替文本模型 endpoint。

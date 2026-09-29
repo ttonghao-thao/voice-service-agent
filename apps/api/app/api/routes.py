@@ -123,6 +123,7 @@ def _record_for_principal(record, user, settings):
         "epoch": record.epoch,
         "source_id": record.source_id,
         "payload": payload,
+        "created_at": record.created_at.isoformat(),
     }
 
 
@@ -246,6 +247,7 @@ async def messages(
                     "request_revision": t.request_revision,
                     "parent_task_id": t.parent_task_id,
                     "native_call_id": t.native_call_id,
+                    "input_item_id": t.input_item_id,
                     "user_text": t.user_text,
                     "channel": t.channel,
                     # Once an answer exists, its normalized terminal state is the

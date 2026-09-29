@@ -18,6 +18,7 @@ import {
   Capabilities,
   Conversation,
   PortalEvent,
+  RecordItem,
   setCallAccessToken,
   streamEvents,
   Turn,
@@ -69,17 +70,26 @@ export default function App() {
     [sidebar, setSidebar] = useState(false),
     [sourcesOpen, setSourcesOpen] = useState(false),
     [before, setBefore] = useState<string | null>(null);
-  const [transcripts, setTranscripts] = useState<
-    Record<string, { kind: string; text: string; done: boolean }>
+  const [inputs, setInputs] = useState<
+    Record<string, { text: string; done: boolean }>
   >({});
+  const [spoken, setSpoken] = useState<
+    Record<string, { turnId: string; text: string; done: boolean }>
+  >({});
+  const [timeline, setTimeline] = useState<string[]>([]);
+  const [atBottom, setAtBottom] = useState(true);
+  const [finishedTurns, setFinishedTurns] = useState<Set<string>>(new Set());
   const epoch = useRef(0),
     requestRevision = useRef(0),
     active = useRef(""),
     voice = useRef<VoiceClient | null>(null),
     stopEvents = useRef<(() => void) | null>(null),
     lastEvent = useRef(new Set<string>()),
-    end = useRef<HTMLDivElement>(null);
+    end = useRef<HTMLDivElement>(null),
+    messages = useRef<HTMLDivElement>(null),
+    followBottom = useRef(true);
   const knownTurns = useRef(new Set<string>());
+  const revokedTurns = useRef(new Set<string>());
   const finalAnswers = useRef(
     new Map<string, { epoch: number; revision: number; answer: Answer }>(),
   );
@@ -87,6 +97,7 @@ export default function App() {
   const refresh = useCallback(async (id: string, older?: string) => {
     const data = await api<{
       items: Turn[];
+      records: RecordItem[];
       epoch: number;
       request_revision: number;
       next_before: string | null;
@@ -126,6 +137,67 @@ export default function App() {
           ]
         : data.items,
     );
+    const records = data.records || [];
+    setInputs((previous) => {
+      const next = { ...previous };
+      for (const record of records) {
+        if (record.kind !== "user_transcript" || !record.payload.text) continue;
+        const key = `${record.epoch}:${record.source_id}`;
+        next[key] = { text: record.payload.text, done: true };
+      }
+      return next;
+    });
+    setSpoken((previous) => {
+      const next = { ...previous };
+      const revoked = new Set(
+        data.items
+          .filter((turn) => turn.answer?.reason_code === "KB_ACCESS_REVOKED")
+          .map((turn) => turn.id),
+      );
+      for (const id of revoked) revokedTurns.current.add(id);
+      for (const [key, part] of Object.entries(next)) {
+        if (revoked.has(part.turnId)) delete next[key];
+      }
+      for (const record of records) {
+        if (
+          record.kind !== "voicechat_transcript" ||
+          !record.payload.turn_id ||
+          !record.payload.text
+        )
+          continue;
+        const key = `${record.epoch}:${record.source_id}`;
+        next[key] = {
+          turnId: record.payload.turn_id,
+          text: record.payload.text,
+          done: true,
+        };
+      }
+      return next;
+    });
+    const entries = [
+      ...data.items.map((turn) => ({
+        key:
+          turn.channel === "voice" && turn.input_item_id
+            ? `input:${turn.epoch}:${turn.input_item_id}`
+            : `turn:${turn.id}`,
+        time: Date.parse(turn.created_at || "") || 0,
+      })),
+      ...records
+        .filter((record) => record.kind === "user_transcript")
+        .map((record) => ({
+          key: `input:${record.epoch}:${record.source_id}`,
+          time: Date.parse(record.created_at || "") || 0,
+        })),
+    ].sort((a, b) => a.time - b.time);
+    setTimeline((previous) => {
+      const added = entries
+        .map((entry) => entry.key)
+        .filter(
+          (key, index, all) =>
+            all.indexOf(key) === index && !previous.includes(key),
+        );
+      return older ? [...added, ...previous] : [...previous, ...added];
+    });
     const answer = [...data.items].reverse().find((t) => t.answer)?.answer;
     if (answer && !older) setSelected(answer);
   }, []);
@@ -153,6 +225,16 @@ export default function App() {
         if (event.request_revision < requestRevision.current) return;
         setProgress("");
         const answer = event.payload as unknown as Answer;
+        if (answer.reason_code === "KB_ACCESS_REVOKED" && event.turn_id)
+          revokedTurns.current.add(event.turn_id);
+        if (answer.reason_code === "KB_ACCESS_REVOKED" && event.turn_id)
+          setSpoken((old) =>
+            Object.fromEntries(
+              Object.entries(old).filter(
+                ([, part]) => part.turnId !== event.turn_id,
+              ),
+            ),
+          );
         setSelected(answer);
         if (event.turn_id) {
           finalAnswers.current.set(event.turn_id, {
@@ -188,73 +270,71 @@ export default function App() {
       }
       if (event.type === "portal.playback.clear") {
         voice.current?.clearForEpoch(event.epoch);
-        setTranscripts({});
         setProgress("");
         void refresh(event.conversation_id).catch((e) => setError(e.message));
       }
       if (event.type === "portal.input.state") {
         setInputState(String(event.payload.state));
-        if (event.payload.state === "speaking") setTranscripts({});
-      }
-      if (event.type === "portal.audio.done") {
-        setTranscripts((old) =>
-          Object.fromEntries(
-            Object.entries(old).filter(
-              ([, item]) => item.kind !== "Spoken reply",
-            ),
-          ),
-        );
       }
       if (
-        event.type.includes("transcript.") ||
-        event.type.includes("speech_text.")
+        event.type === "portal.audio.done" &&
+        event.turn_id &&
+        event.payload.phase !== "status"
       ) {
-        const key = `${event.epoch}:${event.type.includes("speech_text") ? "voice" : "user"}:${event.payload.item_id || event.payload.response_id}`;
-        setTranscripts((old) => {
-          const next = { ...old };
-          if (event.type.endsWith(".done")) {
-            next[key] = {
-              kind: event.type.includes("speech_text")
-                ? "Spoken reply"
-                : "Your transcript",
-              text: String(event.payload.text),
-              done: true,
-            };
-          } else {
-            next[key] = {
-              kind: event.type.includes("speech_text")
-                ? "Spoken reply"
-                : "Your transcript",
-              text: (old[key]?.text || "") + String(event.payload.text),
-              done: false,
-            };
-          }
-          return next;
-        });
+        setFinishedTurns((old) => new Set(old).add(event.turn_id!));
+      }
+      if (event.type.startsWith("portal.transcript.")) {
+        const item = String(event.payload.item_id || "");
+        if (!item || !String(event.payload.text || "").trim()) return;
+        const key = `${event.epoch}:${item}`;
+        const done = event.type.endsWith(".done");
+        setInputs((old) => ({
+          ...old,
+          [key]: {
+            text: done
+              ? String(event.payload.text || "")
+              : old[key]?.done
+                ? old[key].text
+                : (old[key]?.text || "") + String(event.payload.text || ""),
+            done: done || !!old[key]?.done,
+          },
+        }));
+        setTimeline((old) =>
+          old.includes(`input:${key}`) ? old : [...old, `input:${key}`],
+        );
+      }
+      if (event.type.startsWith("portal.speech_text.")) {
+        if (event.request_revision < requestRevision.current) return;
+        if (event.payload.phase === "status") {
+          setProgress("Checking knowledge");
+          return;
+        }
+        if (
+          !event.turn_id ||
+          !event.payload.response_id ||
+          revokedTurns.current.has(event.turn_id)
+        )
+          return;
+        const key = `${event.epoch}:${event.payload.response_id}:${event.payload.segment_index || 0}`;
+        const done = event.type.endsWith(".done");
+        setSpoken((old) => ({
+          ...old,
+          [key]: {
+            turnId: event.turn_id!,
+            text: done
+              ? String(event.payload.text || "")
+              : old[key]?.done
+                ? old[key].text
+                : (old[key]?.text || "") + String(event.payload.text || ""),
+            done: done || !!old[key]?.done,
+          },
+        }));
+        if (!knownTurns.current.has(event.turn_id))
+          void refresh(event.conversation_id).catch((e) => setError(e.message));
       }
     },
     [refresh],
   );
-  useEffect(() => {
-    const voiceRequests = new Set(
-      turns
-        .filter((turn) => turn.channel === "voice")
-        .map((turn) => turn.user_text.trim()),
-    );
-    setTranscripts((old) => {
-      const next = Object.fromEntries(
-        Object.entries(old).filter(
-          ([, item]) =>
-            !(
-              item.kind === "Your transcript" &&
-              item.done &&
-              voiceRequests.has(item.text.trim())
-            ),
-        ),
-      );
-      return Object.keys(next).length === Object.keys(old).length ? old : next;
-    });
-  }, [turns]);
   useEffect(() => {
     voice.current = new VoiceClient(
       handleEvent,
@@ -297,8 +377,8 @@ export default function App() {
     };
   }, [cid, refresh, handleEvent]);
   useEffect(() => {
-    end.current?.scrollIntoView({ behavior: "smooth", block: "end" });
-  }, [turns, progress, transcripts]);
+    if (followBottom.current) end.current?.scrollIntoView({ block: "end" });
+  }, [turns, progress, inputs, spoken, timeline]);
   async function closeCurrentCall() {
     stopEvents.current?.();
     stopEvents.current = null;
@@ -324,11 +404,17 @@ export default function App() {
       requestRevision.current = 0;
       setTurns([]);
       setSelected(null);
-      setTranscripts({});
+      setInputs({});
+      setSpoken({});
+      setTimeline([]);
+      setFinishedTurns(new Set());
+      followBottom.current = true;
+      setAtBottom(true);
       setProgress("");
       setCallEnded(false);
       lastEvent.current.clear();
       knownTurns.current.clear();
+      revokedTurns.current.clear();
       finalAnswers.current.clear();
       setCid(c.id);
       setSidebar(false);
@@ -408,6 +494,14 @@ export default function App() {
       setError((e as Error).message);
     }
   }
+  const turnsByKey = new Map(
+    turns.map((turn) => [
+      turn.channel === "voice" && turn.input_item_id
+        ? `input:${turn.epoch}:${turn.input_item_id}`
+        : `turn:${turn.id}`,
+      turn,
+    ]),
+  );
   const nav = (
     <>
       <div className="brand">
@@ -634,7 +728,18 @@ export default function App() {
               </div>
               <span className="small muted">{stateLabels[voiceState]}</span>
             </div>
-            <div className="messages">
+            <div
+              className="messages"
+              ref={messages}
+              onScroll={() => {
+                const node = messages.current;
+                if (!node) return;
+                const bottom =
+                  node.scrollHeight - node.scrollTop - node.clientHeight < 60;
+                followBottom.current = bottom;
+                setAtBottom(bottom);
+              }}
+            >
               {before && (
                 <Button
                   type="link"
@@ -645,7 +750,7 @@ export default function App() {
                   View older messages
                 </Button>
               )}
-              {!turns.length && !Object.keys(transcripts).length ? (
+              {!timeline.length ? (
                 <div className="welcome">
                   <div className="welcome-icon">
                     <CustomerServiceOutlined />
@@ -689,93 +794,167 @@ export default function App() {
                   )}
                 </div>
               ) : null}
-              {turns.map((t) => (
-                <article className="turn" key={t.id}>
-                  <div className="user-message">
-                    <span className="message-label">
-                      You · {t.channel === "voice" ? "Voice request" : "Text"}
-                    </span>
-                    <p>{t.user_text}</p>
-                  </div>
-                  <div className="assistant-message">
-                    <div className="assistant-label">
-                      <span className="mini-brand">
-                        <CustomerServiceOutlined />
+              {timeline.map((key) => {
+                const t = turnsByKey.get(key);
+                const input = key.startsWith("input:")
+                  ? inputs[key.slice(6)]
+                  : null;
+                if (!t && !input) return null;
+                const speechParts = t
+                  ? Object.values(spoken).filter((part) => part.turnId === t.id)
+                  : [];
+                const speech = speechParts
+                  .map((part) => part.text)
+                  .filter(Boolean)
+                  .join(" ");
+                return (
+                  <article className="turn" key={key}>
+                    <div className="user-message">
+                      <span className="message-label">
+                        You · {t?.channel === "text" ? "Text" : "Voice request"}
                       </span>
-                      <strong>Answer</strong>
-                      <Tag
-                        color={
-                          visibleTurnStatus(t) === "answered"
-                            ? "green"
-                            : visibleTurnStatus(t) === "running"
-                              ? "processing"
-                              : "default"
-                        }
-                      >
-                        {statuses[visibleTurnStatus(t)] || visibleTurnStatus(t)}
-                      </Tag>
-                    </div>
-                    {t.answer ? (
-                      <>
-                        <p>{t.answer.display_text}</p>
-                        {(t.answer.citations.length > 0 ||
-                          t.answer.cards.length > 0) && (
-                          <button
-                            className="source-button"
-                            onClick={() => {
-                              setSelected(t.answer);
-                              setSourcesOpen(true);
-                            }}
-                          >
-                            <FileTextOutlined /> View sources <span>↗</span>
-                          </button>
-                        )}
-                      </>
-                    ) : visibleTurnStatus(t) === "running" ? (
-                      <div className="processing">
-                        <LoadingOutlined />{" "}
-                        {progress || "Processing your question"}
-                      </div>
-                    ) : (
-                      <p className="muted">
-                        This request has stopped. No further result will be
-                        submitted.
+                      <p aria-live={t ? undefined : "polite"}>
+                        {t?.user_text || input?.text || "…"}
                       </p>
+                      {!t && (
+                        <small className="input-status">
+                          {input?.done
+                            ? voiceState === "ready"
+                              ? "Waiting for request"
+                              : "Request not accepted"
+                            : voiceState === "ready"
+                              ? "Listening"
+                              : "Transcription interrupted"}
+                        </small>
+                      )}
+                    </div>
+                    {t && (
+                      <div className="assistant-message">
+                        <div className="assistant-label">
+                          <span className="mini-brand">
+                            <CustomerServiceOutlined />
+                          </span>
+                          <strong>Answer</strong>
+                          <Tag
+                            color={
+                              visibleTurnStatus(t) === "answered"
+                                ? "green"
+                                : visibleTurnStatus(t) === "running"
+                                  ? "processing"
+                                  : "default"
+                            }
+                          >
+                            {statuses[visibleTurnStatus(t)] ||
+                              visibleTurnStatus(t)}
+                          </Tag>
+                        </div>
+                        {t.channel === "voice" ? (
+                          <>
+                            {speech ? (
+                              <>
+                                <p aria-live="polite">{speech}</p>
+                                {voiceState !== "ready" &&
+                                  speechParts.some((part) => !part.done) && (
+                                    <small className="input-status">
+                                      Spoken reply interrupted
+                                    </small>
+                                  )}
+                              </>
+                            ) : t.answer ? (
+                              <p className="muted">
+                                {voiceState === "ready" &&
+                                !finishedTurns.has(t.id) &&
+                                t.answer.status !== "failed"
+                                  ? "Answer ready. Waiting for spoken reply."
+                                  : "Voice reply unavailable. The full answer is below."}
+                              </p>
+                            ) : visibleTurnStatus(t) === "running" ? (
+                              <div className="processing">
+                                <LoadingOutlined />{" "}
+                                {progress || "Processing your question"}
+                              </div>
+                            ) : (
+                              <p className="muted">
+                                This request has stopped. No further result will
+                                be submitted.
+                              </p>
+                            )}
+                            {t.answer && (
+                              <details className="full-answer">
+                                <summary>View full answer / Sources</summary>
+                                <p>{t.answer.display_text}</p>
+                                {t.answer.citations.length > 0 && (
+                                  <button
+                                    className="source-button"
+                                    onClick={() => {
+                                      setSelected(t.answer);
+                                      setSourcesOpen(true);
+                                    }}
+                                  >
+                                    <FileTextOutlined /> View sources{" "}
+                                    <span>↗</span>
+                                  </button>
+                                )}
+                              </details>
+                            )}
+                          </>
+                        ) : t.answer ? (
+                          <>
+                            <p>{t.answer.display_text}</p>
+                            {(t.answer.citations.length > 0 ||
+                              t.answer.cards.length > 0) && (
+                              <button
+                                className="source-button"
+                                onClick={() => {
+                                  setSelected(t.answer);
+                                  setSourcesOpen(true);
+                                }}
+                              >
+                                <FileTextOutlined /> View sources <span>↗</span>
+                              </button>
+                            )}
+                          </>
+                        ) : visibleTurnStatus(t) === "running" ? (
+                          <div className="processing">
+                            <LoadingOutlined />{" "}
+                            {progress || "Processing your question"}
+                          </div>
+                        ) : (
+                          <p className="muted">
+                            This request has stopped. No further result will be
+                            submitted.
+                          </p>
+                        )}
+                        {visibleTurnStatus(t) === "failed" && (
+                          <Button
+                            size="small"
+                            onClick={() => setDraft(t.user_text)}
+                          >
+                            Ask again
+                          </Button>
+                        )}
+                      </div>
                     )}
-                    {visibleTurnStatus(t) === "failed" && (
-                      <Button
-                        size="small"
-                        onClick={() => setDraft(t.user_text)}
-                      >
-                        Ask again
-                      </Button>
-                    )}
-                  </div>
-                </article>
-              ))}
-              {Object.entries(transcripts).length > 0 && (
-                <div className="live-captions" aria-live="polite">
-                  <strong>Live captions</strong>
-                  {Object.entries(transcripts).map(([key, transcript]) => (
-                    <p key={key}>
-                      <span>{transcript.kind}:</span> {transcript.text || "…"}
-                    </p>
-                  ))}
-                </div>
-              )}
-              {selected &&
-                (selected.citations.length > 0 ||
-                  selected.cards.length > 0) && (
-                  <button
-                    className="source-button voice-source-button"
-                    onClick={() => setSourcesOpen(true)}
-                  >
-                    <FileTextOutlined /> View verified answer sources{" "}
-                    <span>↗</span>
-                  </button>
-                )}
+                  </article>
+                );
+              })}
               <div ref={end} />
             </div>
+            {!atBottom && (
+              <button
+                className="latest-button"
+                onClick={() => {
+                  followBottom.current = true;
+                  setAtBottom(true);
+                  end.current?.scrollIntoView({
+                    behavior: "smooth",
+                    block: "end",
+                  });
+                }}
+              >
+                Latest messages ↓
+              </button>
+            )}
             <div className="composer">
               <div className="voice-controls">
                 <Button

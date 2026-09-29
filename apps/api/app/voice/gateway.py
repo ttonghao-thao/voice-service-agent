@@ -163,6 +163,13 @@ class VoiceGateway:
         initial_responses = set()
         initial_text_completed = set()
         tool_responses = {}
+        response_calls = {}
+        response_turns = {}
+        speech_segments = {}
+        speech_segment_counts = {}
+        ack_prefixes = {}
+        last_speech_done = {}
+        speech_new_delta = set()
         authorized_followups = set()
         ack_responses = set()
         seq, client_seq, started = 0, -1, time.monotonic()
@@ -175,7 +182,7 @@ class VoiceGateway:
                 session.conversation_id, session.epoch, tid, revision
             )
 
-        def emit(kind, payload):
+        def emit(kind, payload, turn_id=None):
             nonlocal seq
             seq += 1
             e = PortalEvent(
@@ -183,6 +190,7 @@ class VoiceGateway:
                 conversation_id=session.conversation_id,
                 epoch=session.epoch,
                 request_revision=session.request_revision,
+                turn_id=turn_id,
                 server_seq=seq,
                 payload=payload,
             ).model_dump(mode="json")
@@ -195,7 +203,7 @@ class VoiceGateway:
         async def writer():
             while True:
                 event = await outgoing.get()
-                if await current():
+                if await current(event.get("turn_id"), event.get("request_revision") if event.get("turn_id") else None):
                     async with asyncio.timeout(2):
                         await ws.send_json(event)
 
@@ -282,10 +290,12 @@ class VoiceGateway:
                     "voice",
                     session.epoch,
                     call_id,
+                    input_item_id,
                 )
                 tid = turn.id
                 revision = turn.request_revision
                 session.request_revision = revision
+                response_turns[tool_responses[call_id]] = (tid, revision)
                 bundle = await task if task else None
                 if not bundle or not await current(tid, revision):
                     return
@@ -362,6 +372,8 @@ class VoiceGateway:
                         raise DomainError("VOICE_PROTOCOL_ERROR", "Parallel cloud tool calls are unsupported. Please ask again.", 502)
                     response_id = event.payload.get("response_id")
                     tool_responses[call] = response_id or call
+                    if response_id:
+                        response_calls[response_id] = call
                     input_item_id = next(
                         (item for item in unbound_inputs if item not in consumed_inputs),
                         None,
@@ -452,6 +464,16 @@ class VoiceGateway:
                         future.set_result(event.payload["text"])
                     prune_inputs()
                 response_id = event.payload.get("response_id")
+                if event.kind == "speech_text.delta":
+                    speech_new_delta.add(response_id)
+                if event.kind == "speech_text.done":
+                    if (
+                        last_speech_done.get(response_id) == event.payload["text"]
+                        and response_id not in speech_new_delta
+                    ):
+                        continue
+                    last_speech_done[response_id] = event.payload["text"]
+                    speech_new_delta.discard(response_id)
                 # Some VoiceChat builds keep their initial (often silent) audio
                 # response open for the entire connection. Never silently drop
                 # a later spoken answer under that permanently suppressed ID,
@@ -480,8 +502,10 @@ class VoiceGateway:
                     and response_id not in (session.suppressed_responses or set())
                 ):
                     if response_id not in authorized_responses and authorized_followups:
-                        authorized_followups.pop()
+                        parent_response = authorized_followups.pop()
                         authorized_responses.add(response_id)
+                        if parent_response in response_turns:
+                            response_turns[response_id] = response_turns[parent_response]
                     if response_id not in authorized_responses and customer_input_seen:
                         logger.warning(
                             "voice_unbridged_response_rejected conversation_id=%s response_id=%s",
@@ -507,16 +531,71 @@ class VoiceGateway:
                 suppressed = bool(
                     response_id and response_id in (session.suppressed_responses or set())
                 )
-                if event.kind.endswith(".done") and "text" in event.payload and not suppressed:
+                turn_owner = response_turns.get(response_id)
+                if (
+                    turn_owner
+                    and event.kind.startswith(("speech_text", "audio"))
+                    and not await current(*turn_owner)
+                ):
+                    continue
+                if event.kind.startswith("speech_text") and not suppressed:
+                    # The configured ACK can finish after a fast tool result.
+                    # Hold only its exact prefix; release a divergent answer
+                    # immediately so normal speech still streams.
+                    if (
+                        event.kind == "speech_text.delta"
+                        and response_id in response_calls
+                        and pending.get(response_calls[response_id]) == "sent"
+                        and response_id not in speech_segments
+                    ):
+                        candidate = ack_prefixes.get(response_id, "") + event.payload["text"]
+                        if BRIDGE_ACK.startswith(candidate):
+                            ack_prefixes[response_id] = candidate
+                            continue
+                        if response_id in ack_prefixes:
+                            event.payload = {**event.payload, "text": candidate}
+                            ack_prefixes.pop(response_id, None)
+                    phase = speech_segments.setdefault(
+                        response_id,
+                        "status"
+                        if (
+                            response_id in response_calls
+                            and pending.get(response_calls[response_id]) != "sent"
+                        ) or (
+                            event.kind == "speech_text.done"
+                            and " ".join(event.payload["text"].split()) == BRIDGE_ACK
+                        )
+                        else "answer",
+                    )
+                    if event.kind == "speech_text.done":
+                        ack_prefixes.pop(response_id, None)
+                    event.payload = {
+                        **event.payload,
+                        "phase": phase,
+                        "segment_index": speech_segment_counts.get(response_id, 0),
+                    }
+                if (
+                    event.kind.endswith(".done")
+                    and "text" in event.payload
+                    and not suppressed
+                    and (event.kind != "speech_text.done" or (turn_owner and event.payload["phase"] == "answer"))
+                ):
                     kind = "voicechat_transcript" if event.kind.startswith("speech") else "user_transcript"
-                    source = event.payload.get("item_id") or event.payload["response_id"]
+                    source = (
+                        f"{response_id}:{event.payload['segment_index']}"
+                        if kind == "voicechat_transcript"
+                        else event.payload["item_id"]
+                    )
                     stored_payload = dict(event.payload)
                     if kind == "voicechat_transcript":
+                        stored_payload["turn_id"] = turn_owner[0]
                         stored_payload["_authorized_kb_ids"] = sorted(
                             session.principal.knowledge_base_ids
                         )
                     if not await self.store.record(
-                        session.conversation_id, session.epoch, kind, source, stored_payload
+                        session.conversation_id, session.epoch, kind, source, stored_payload,
+                        turn_owner[0] if kind == "voicechat_transcript" else None,
+                        turn_owner[1] if kind == "voicechat_transcript" else None,
                     ):
                         continue
                 if event.kind == "audio.delta":
@@ -526,6 +605,8 @@ class VoiceGateway:
                     response_id = event.payload["response_id"]
                     sent_samples[response_id] = sent_samples.get(response_id, 0) + len(audio) // 2
                 if event.kind == "speech_text.done":
+                    speech_segments.pop(response_id, None)
+                    speech_segment_counts[response_id] = speech_segment_counts.get(response_id, 0) + 1
                     if response_id in initial_responses:
                         initial_text_completed.add(response_id)
                     if " ".join(event.payload["text"].split()) == BRIDGE_ACK:
@@ -533,6 +614,10 @@ class VoiceGateway:
                     else:
                         ack_responses.discard(response_id)
                 if event.kind == "audio.done":
+                    event.payload = {
+                        **event.payload,
+                        "phase": "status" if response_id in ack_responses else "answer",
+                    }
                     # A fast business result can arrive while the fixed tool ACK
                     # is still playing. ACK frames must not spend the permission
                     # reserved for the following answer. If the original response
@@ -549,7 +634,9 @@ class VoiceGateway:
                         session.suppressed_responses.discard(response_id)
                         session.suppress_next_response = False
                     continue
-                emit(event.kind, event.payload)
+                if event.kind.startswith("speech_text") and event.payload["phase"] == "answer" and not turn_owner:
+                    continue
+                emit(event.kind, event.payload, turn_owner[0] if turn_owner else None)
 
         async def browser():
             nonlocal client_seq, frames, last_input, last_ack, last_playback_stop

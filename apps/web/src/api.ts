@@ -44,6 +44,8 @@ export interface Answer {
 }
 export interface Turn {
   id: string;
+  input_item_id?: string | null;
+  created_at?: string;
   user_text: string;
   channel: string;
   status: string;
@@ -59,7 +61,14 @@ export interface RecordItem {
   kind: string;
   epoch: number;
   source_id: string;
-  payload: { text?: string; response_id?: string; played_samples?: number };
+  created_at: string;
+  payload: {
+    text?: string;
+    response_id?: string;
+    turn_id?: string;
+    phase?: string;
+    played_samples?: number;
+  };
 }
 export interface Conversation {
   id: string;
@@ -108,7 +117,8 @@ function requestHeaders(init: RequestInit) {
   const headers = new Headers(init.headers);
   if (!headers.has("Content-Type") && init.body !== undefined)
     headers.set("Content-Type", "application/json");
-  if (callAccessToken) headers.set("Authorization", `Bearer ${callAccessToken}`);
+  if (callAccessToken)
+    headers.set("Authorization", `Bearer ${callAccessToken}`);
   return headers;
 }
 
@@ -168,14 +178,17 @@ export function streamEvents(
         while (!controller.signal.aborted) {
           const { value, done } = await reader.read();
           if (done) break;
-          buffer += decoder.decode(value, { stream: true }).replace(/\r\n/g, "\n");
+          buffer += decoder
+            .decode(value, { stream: true })
+            .replace(/\r\n/g, "\n");
           let boundary;
           while ((boundary = buffer.indexOf("\n\n")) >= 0) {
             const block = buffer.slice(0, boundary);
             buffer = buffer.slice(boundary + 2);
             let data = "";
             for (const line of block.split("\n")) {
-              if (line.startsWith("id:")) cursor = Number(line.slice(3).trim()) || cursor;
+              if (line.startsWith("id:"))
+                cursor = Number(line.slice(3).trim()) || cursor;
               if (line.startsWith("data:")) data += line.slice(5).trimStart();
             }
             if (data) onEvent(JSON.parse(data));
@@ -183,7 +196,9 @@ export function streamEvents(
         }
       } catch (error) {
         if (controller.signal.aborted) break;
-        onError(error instanceof Error ? error.message : "Event stream disconnected");
+        onError(
+          error instanceof Error ? error.message : "Event stream disconnected",
+        );
       }
       await pause();
     }

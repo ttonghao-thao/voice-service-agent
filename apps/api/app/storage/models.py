@@ -41,6 +41,7 @@ class Turn(Base):
     request_revision: Mapped[int] = mapped_column(Integer)
     parent_task_id: Mapped[str | None] = mapped_column(String(36))
     native_call_id: Mapped[str | None] = mapped_column(String(128))
+    input_item_id: Mapped[str | None] = mapped_column(String(128))
     idempotency_key: Mapped[str] = mapped_column(String(180))
     request_hash: Mapped[str] = mapped_column(String(64))
     user_text: Mapped[str] = mapped_column(Text)

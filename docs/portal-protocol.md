@@ -1,6 +1,6 @@
 # HTML 门户与消息/语音接口
 
-更新：2026-09-28。本文是当前门户 v1 契约，覆盖独立通话、输入绑定、逐轮音频和停止后继续播放。D19 不新增公开事件字段；浏览器内部 Worklet 的排空标记不暴露为新的服务端协议。D20 使持久事件提交后唤醒 SSE，并直接应用 final 更新已有 Turn；真实服务能力仍按验收记录放行。总架构见 [architecture.md](architecture.md)。
+更新：2026-09-29。§1–7 是当前本地实现契约；Q06 的真实服务与设备验收仍归 D07。D19 不新增公开事件字段；浏览器内部 Worklet 的排空标记不暴露为新的服务端协议。D20 使持久事件提交后唤醒 SSE，并直接应用 final 更新已有 Turn。总架构见 [architecture.md](architecture.md)。
 
 ## 1. 简单门户
 
@@ -8,7 +8,7 @@
 
 - 页面加载不创建 conversation 或读取历史；每个标签页点击 “Start call” 后创建全新的 conversation/call token，再申请语音 session。token 只在该标签页内存中保存，刷新即丢失。
 - 开始通话成功以 `Voice ready` 为准；不承诺自动语音欢迎，连接初始未桥接输出被抑制。用户主动点击后申请麦克风，ready 后连续发送音频，包括静音。门户显示浏览器实际选择的设备、采样率、声道及 echo cancellation/noise suppression/auto gain 设置；这些诊断值不等同于收音准确率。门户使用公网 HTTPS，使页面满足浏览器 secure context 前提；证书信任、实际麦克风授权、设备选择和英文识别质量仍须在 D07 实机确认。
-- `portal.transcript.delta/done` 与 `portal.speech_text.delta/done` 只作为当前输入/口述的临时 Live captions；用户完成 transcript 保留到同文本的持久 voice Turn 接管，口述字幕在音频结束后清理，新输入或播放清理时收敛，不把字幕另存为聊天历史。文字与语音请求都由持久业务 Turn 按一问一答展示最终答案和引用，不能过滤 voice Turn，也不用业务答案冒充实时口述。
+- `portal.transcript.delta/done` 以 `(epoch,item_id)` 更新右侧用户气泡；持久 Turn 的 `input_item_id` 使同一气泡原位接管，不按文本相等归并。`portal.speech_text.delta/done` 的答案阶段用 `turn_id`、`response_id`、`segment_index` 更新左侧口述正文，done 后保留。固定工具 ACK 只显示查询状态；业务完整答案和来源在语音 Turn 中展开，文字 Turn 直接显示业务答案。
 - 客户页面不展示工具配置、模型参数、内部运行日志或后台管理菜单。
 - 当前交互区分“停止播报”和“取消查询”：前者清除客户端缓冲并由服务端抑制当前 response，保留仍有效业务任务；后者使当前 revision 失效，存在无法安全结清的原生 call 时关闭旧语音连接。
 - 显示业务答案与实际语音字幕的区别；来源与版本可查看，工具密钥和内部地址不可出现在页面。
@@ -32,7 +32,7 @@
 | --- | --- |
 | GET `/capabilities` | 配置和适配器声明的能力；部署声明不等于自动实测 |
 | POST `/conversations` | 点击开始通话时请求 title、locale；返回 id、epoch、request_revision、locale、access_token；新会话仅接受 `en-US` |
-| GET `/conversations/{cid}/messages` | 当前用户的会话历史 |
+| GET `/conversations/{cid}/messages` | 当前用户的 Turn（含 `input_item_id`）及权限过滤后的转写 Record（含 `created_at`、口述 `turn_id`）；仅本次 capability 可读取 |
 | POST `/conversations/{cid}/voice-sessions` | 返回 voice_session_id、epoch、request_revision、ws_url（含一次性 ticket） |
 | DELETE `/conversations/{cid}/voice-sessions/{sid}` | 关闭语音，保留会话历史；当前同时触发硬中断 |
 | DELETE `/conversations/{cid}` | 结束本标签页通话、关闭语音并撤销 call token |
@@ -103,9 +103,9 @@ SSE 的持久 Event 表与 server_seq/cursor 保持不变。同进程提交后�
 | 事件 | 通道 | payload / 客户端行为 |
 | --- | --- | --- |
 | `portal.session.ready` | WS | 确认音频格式后开始采集发送 |
-| `portal.transcript.delta` / `done` | WS | item_id、text；更新当前用户 Live caption，业务历史由 Turn 提供 |
-| `portal.speech_text.delta` / `done` | WS | response_id、可选 item_id、text；更新当前实际口述 Live caption，不合并成历史答案 |
-| `portal.audio.delta` / `done` | WS | response_id、delta 的 audio；done 表示服务端发完，客户端仍须排空缓冲；过期 epoch 一律丢弃 |
+| `portal.transcript.delta` / `done` | WS | item_id、text；首个非空文本更新右侧气泡，done 定稿，Turn 以 `input_item_id` 接管 |
+| `portal.speech_text.delta` / `done` | WS | response_id、segment_index、phase、text；答案阶段事件带 `turn_id`，更新并保留左侧正文；状态阶段不进入正文 |
+| `portal.audio.delta` / `done` | WS | response_id、delta 的 audio；done 的 phase 区分状态提示和答案，表示服务端发完，客户端仍须排空缓冲；过期 epoch 一律丢弃 |
 | `portal.input.state` | WS | state=speaking/quiet；仅输入状态，不自动等于取消业务 |
 | `portal.tool.started` | SSE | 客户可理解的查询状态；不暴露私有工具参数 |
 | `portal.answer.final` | SSE | 已校验 AnswerBundle；展示答案、来源、必要卡片 |
@@ -153,3 +153,74 @@ Worklet 的内部 `done` ACK 表示播放队列排空，向服务端发送的仍
 ## 6. 接口验收
 
 必须验证：独立简单客户端可接入、门户不直连供应商、身份/票据/Origin、正确音频格式、序号和去重、硬打断竞态、SSE 恢复、旧连接隔离、字幕与答案分离、窄屏和设备释放。D19 另覆盖固定 ACK 与快速结果竞态、audio.done 后仍在缓冲时停止、停止后下一轮恢复、旧 PCM 拒绝及 44.1/48 kHz 重采样。真实语音结论记录于 [验收报告](acceptance-report.md)，不以合成音频替代。
+
+## 7. Q06：语音文字统一聊天展示
+
+本节保留 2026-09-29 的设计基线与实施验收要求。M1–M4 已本地实现，D07 真实验收待执行；进度见 [任务板](TASK_BOARD.md#3-待完成与建议顺序)。论文与离线容器优化仍由 [Q05](voicechat-research-review.md) 单独维护。
+
+### 7.1 已明确的展示目标与实施前差距
+
+以用户提供的 GPT 语音交互截图为布局参考：用户文字在右侧浅色圆角气泡，助手文字在左侧以无背景正文展示，连续问答按顺序保留。用户的短追问和助手的短回复也各自保留；不把所有转写累积到一个字幕框。截图不改变本期英文知识库客服范围，也不要求复制 GPT 的全部按钮和功能。
+
+| 内容 | 实施前 | Q06 目标与本地实现 |
+| --- | --- | --- |
+| 用户 ASR | delta/done 在独立 Live captions 区；持久 voice Turn 到达后显示右侧问题气泡 | 首个非空 delta 即创建右侧用户气泡；后续 delta 更新，done 用最终 ASR 定稿同一条消息 |
+| ASR 与后台查询 | Gateway 转发转写；原生工具与最终 ASR 就绪后桥接业务执行；不等待答案再转发 ASR | 明确输入展示和业务查询并行推进，用户气泡不依赖 Turn 创建、检索或答案完成 |
+| 临时消息接管 | 完成的用户字幕按相同文本匹配 voice Turn 后移除 | 以稳定身份关联同一输入与 Turn，原位接管，不重复创建、闪烁或丢失消息 |
+| 助手正文 | Turn 展示业务 `display_text`；实际口述在 Live captions，音频完成后清理 | 语音模式主正文流式展示 `portal.speech_text.*`，口述结束后保留，左侧无背景正文 |
+| 完整答案和来源 | 主答案及 Sources 展示业务结果 | 语音模式将业务完整答案及引用放入可展开区域；文字模式继续直接展示业务 `display_text` |
+| 后续发言、停止播放 | 新输入或播放清理会清理临时字幕 | 创建后续消息并保留已有正文；清理音频不删除已显示的文字 |
+
+当前右侧用户气泡和左侧无背景答案布局可复用。主要缺口是文字来源、出现时机、消息身份与保留规则，并非只改颜色或圆角。
+
+### 7.2 正确时序与消息更新
+
+1. 浏览器发送音频，经 VoiceGateway → NvidiaVoiceChatAdapter → 独立 VoiceChat；现有音频格式、采集、播放与授权边界不变。
+2. Adapter 返回用户 ASR delta 时，Gateway 即转发给浏览器，浏览器创建或更新当前用户气泡。若上游只提供 final，也须在收到 final 后立即展示，不能假造增量能力。
+3. 最终 ASR 到达时，绑定对应 input item，并将最终文本发给浏览器，原位替换临时识别内容。与此同时，当该输入的合法原生工具调用已到达时，桥接 SessionCoordinator → BusinessRuntime → ToolRegistry → CueKB。业务执行仍必须等待最终 ASR，工具参数不能替代用户实际问题。
+4. 此处“同步”指两条路径在同一阶段推进、互不等待业务答案，不指阻塞式调用，也不要求浏览器渲染 ACK 成为业务执行前提。ASR 发送应优先安排，但网络和浏览器调度不保证屏幕绘制一定早于 Coordinator 开始执行。若工具调用先到，等待对应 final ASR；若 final 先到，立即展示并等待合法工具调用。
+5. 服务端创建持久 Turn 后，以明确的输入关联将临时用户消息升级为该 Turn 的用户消息。持久结果较晚、SSE 重放或历史补取均不得再创建同一问题的第二个气泡。
+6. 业务答案提交后按现有 SSE 契约交付完整答案和来源，并经 Adapter 写回 VoiceChat。合法的实际口述 delta 更新关联的左侧助手正文，done 定稿；`audio.done` 和播放队列排空仅推进播放状态，不删除文字。
+7. 下一次输入创建新的用户消息；后续回复按明确关联追加或更新助手段落。ASR 完成但业务未成功受理时仍保留用户文字，展示可理解的失败/恢复状态，不能凭气泡存在声称业务已受理。
+
+这一时序修正“两个闭环串行完成后才返回用户文字”的误解：输入转写直接驱动展示，后台业务闭环独立推进，随后交付答案和口述。
+
+### 7.3 消息关联、持久化与恢复设计
+
+服务端负责建立输入、工具调用、业务 Turn 与口述 response 的关联；浏览器只消费应用契约，不自行解释 NVIDIA 工具协议。关联使用现有 `conversation_id`、epoch、input item、`call_id`、`turn_id`、`response_id` 以及应用新增的 `input_item_id`/`segment_index`；不要求供应商新增字段。
+
+- 用户临时消息使用当前通话、epoch 和 input item 的身份定位；Turn 到达后保持同一前端消息身份。禁止只用文本相等、数组位置或“最近一次输入”进行接管，避免同一句问题连续出现时误合并。
+- 工具等待 ACK 与最终回答可能分属不同 response，也可能沿用同一个 response。一个 Turn 允许多个口述片段；不能假设一个 response 就是一轮完整问答。等待 ACK 收敛为简短状态提示，最终口述作为助手正文；固定 ACK 只按本项目配置的精确短语和 response 阶段识别，不用任意口述文本推断阶段。
+- 复用现有 Turn、Record、持久事件和 `/messages` 读取链，通过 Alembic 0006 补齐输入关联字段；口述 Record 的应用关联写入 payload，保留原有授权过滤。
+- 实时 WS、持久 SSE 和历史快照通过各自序号及稳定消息身份去重；不能把两条传输的计数当作同一序列。历史快照不得覆盖更新的正文或终态，重复 done/final 不得重复追加。
+- 同一次仍有效通话的断线恢复可补取已持久消息，不自动重放音频。未定稿文字如因断线没有持久版本，应标明中断，不声称恢复完整。刷新、新标签页或新通话继续使用新的 capability，不引入跨标签页或账号历史共享。
+- 所有读取继续执行 owner、KB 权限和撤权过滤；口述文字也不得绕过来源权限。只接纳当前有效 epoch/连接和已授权输出；失效任务的晚到文字不能写入新消息或重新出现。
+
+### 7.4 正文、完整答案与中断边界
+
+语音模式的主正文来自已授权的 VoiceChat 口述转写，业务 `display_text` 保存在“View full answer / Sources”区域，避免两套答案在主时间线重复出现。文字模式仍直接展示业务答案。业务答案先完成而口述尚未到达时，可显示答案已就绪及展开入口，不提前把完整业务答案标成已口述。
+
+引用归属于经过业务校验的答案，不能仅因两段文字关联同一 Turn，就声称 VoiceChat 的改写已逐句通过证据校验。口述质量检查仍属 Q02/Q05。文本生成与实际播放也分开：到达的口述转写不证明客户已经听到；精确逐字播放高亮、已听边界不在本方案承诺内。
+
+Stop playback 保留已收到正文并更新播放状态；普通 `speech_started` 保持模型自然插话语义，不自动取消查询。明确取消/替换继续使业务 revision 失效，保留可见的既有文字并注明中断，拒绝后续旧输出。口述失败时仍可查看已验证的完整文字答案，并明确语音失败；不得伪造口述正文。
+
+新消息出现时，仅在用户位于列表底部时自动跟随；用户向上阅读时保留位置并提供返回最新消息入口。窄屏、长文本换行、滚动容器与底部通话控制区需一起验收，不新增客户可见的协议 ID、模型参数或日志。
+
+### 7.5 影响模块与验收条件
+
+已修改 `apps/web/src/App.tsx`、`style.css` 的统一消息渲染及状态归并，API 的 `voice/gateway.py` 输入/口述关联、`storage/` 的持久读取、API 事件与消息契约，以及对应后端和 `tests/e2e/portal.spec.ts` 回归。Alembic 0006 仅增 nullable 输入关联字段；保留 Coordinator → BusinessRuntime → ToolRegistry 及独立 VoiceChat/CueKB 部署边界。
+
+实施验收必须覆盖：
+
+1. 在业务受理/查询人为延迟时，ASR delta/final 直接出现在右侧气泡；done 修正同一消息，持久 Turn 到达后没有重复或消失。
+2. 连续两次相同问题、多个不同问题、工具先到/ASR 先到、WS/SSE 交错、重复事件和晚到历史均保持正确身份、顺序及终态。
+3. 实际口述逐步出现在左侧正文；口述完成、音频完成、停止播放和下一次输入后仍保留；完整业务答案与来源可展开，主正文不重复。
+4. 工具 ACK 与最终回答共用/分用 response、口述失败、断线、取消/替换和 epoch 轮换均不串轮，不接纳已失效输出，不把生成文字标为已听。
+5. 新通话/跨标签页隔离、KB 撤权、同通话恢复、文字模式、窄屏和向上阅读时的滚动行为不回退。
+6. 本地受控测试、类型检查和构建通过后，另在 D07 用真实英文语音、VoiceChat/CueKB、浏览器设备验证时序、连续问答及可读性。已有测试通过不能作为 Q06 已实施的证明。
+
+### 7.6 实施结果与边界
+
+Turn 通过 Alembic 0006 新增 nullable `input_item_id`，旧行不伪造关联。Gateway 在合法工具调用与最终 ASR 绑定后提交 Turn，把对应 response 的口述事件标记为 `phase=answer` 与 `turn_id`；同一 response 的多段口述用 `segment_index` 分开。固定 ACK 用已配置短语和响应阶段识别为 `phase=status`，不存成答案正文。`speech_text.done` 的受控 Record 保存 `turn_id`，按既有 owner、KB 范围与 revision/epoch 过滤；历史快照和 WS 各自按稳定身份归并。
+
+现有部署升级前的旧 Turn 没有可靠的输入/口述关联，页面保留完整业务答案的展开入口，不将旧 `display_text` 冒充实际口述。正在使用的标签页可通过同一 capability 补取已定稿文字；刷新后的新 capability 不访问旧通话。生成口述文字不表示已听到。受控回归与构建见 [验收记录](acceptance-report.md)，真实 VoiceChat/CueKB、浏览器设备和撤权现场复测仍归 D07。

@@ -110,6 +110,7 @@ class Store:
         channel,
         expected_epoch=None,
         native_call_id=None,
+        input_item_id=None,
     ):
         async with self.transaction() as db:
             c = await self.get(db, cid, principal, lock=True)
@@ -143,6 +144,7 @@ class Store:
                 request_revision=c.request_revision,
                 parent_task_id=parent_task_id,
                 native_call_id=native_call_id,
+                input_item_id=input_item_id,
                 idempotency_key=key,
                 request_hash=digest,
                 user_text=request,
@@ -270,10 +272,12 @@ class Store:
             )
             return c.request_revision
 
-    async def record(self, cid, epoch, kind, source_id, payload):
+    async def record(self, cid, epoch, kind, source_id, payload, turn_id=None, request_revision=None):
         async with self.transaction() as db:
             c = await self.get(db, cid, lock=True)
             if c.epoch != epoch:
+                return False
+            if turn_id and (c.current_turn != turn_id or c.request_revision != request_revision):
                 return False
             old = (
                 await db.execute(

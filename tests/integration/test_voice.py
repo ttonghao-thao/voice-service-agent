@@ -33,6 +33,9 @@ def test_native_bridge_dedup_tool_before_transcript_and_ticket(tmp_path):
             await self.queue.put(call)
             await self.queue.put(call)
             await self.queue.put(
+                VoiceEvent("transcript.delta", {"item_id": "input-1", "text": "Find the "})
+            )
+            await self.queue.put(
                 VoiceEvent(
                     "transcript.done",
                     {"item_id": "input-1", "text": "Find the integration sample"},
@@ -47,6 +50,12 @@ def test_native_bridge_dedup_tool_before_transcript_and_ticket(tmp_path):
                     {"response_id": "r1", "item_id": "spoken", "text": "Synthetic integration result returned."},
                 )
             )
+            await self.queue.put(
+                VoiceEvent(
+                    "speech_text.done",
+                    {"response_id": "r1", "item_id": "spoken", "text": "A second spoken sentence."},
+                )
+            )
 
     with TestClient(app) as client:
         app.state.voice.provider_factory = Scripted
@@ -55,8 +64,12 @@ def test_native_bridge_dedup_tool_before_transcript_and_ticket(tmp_path):
         with client.websocket_connect(issued["ws_url"], headers={"Origin": "http://localhost:5173"}) as ws:
             assert ws.receive_json()["type"] == "portal.session.ready"
             assert ws.receive_json()["type"] == "portal.input.state"
+            assert ws.receive_json()["type"] == "portal.transcript.delta"
             assert ws.receive_json()["type"] == "portal.transcript.done"
-            assert ws.receive_json()["type"] == "portal.speech_text.done"
+            first_speech = ws.receive_json()
+            second_speech = ws.receive_json()
+            assert first_speech["type"] == second_speech["type"] == "portal.speech_text.done"
+            assert [first_speech["payload"]["segment_index"], second_speech["payload"]["segment_index"]] == [0, 1]
             assert len(returns) == 1 and returns[0][0] == "same"
             assert "synthetic" in returns[0][1]["speech_text"].lower()
             with pytest.raises(WebSocketDisconnect):
@@ -64,7 +77,12 @@ def test_native_bridge_dedup_tool_before_transcript_and_ticket(tmp_path):
                     pass
         data = client.get(f"/api/v1/conversations/{cid}/messages").json()
         assert len(data["items"]) == 1
+        assert data["items"][0]["input_item_id"] == "input-1"
         assert len([r for r in data["records"] if r["kind"] == "user_transcript"]) == 1
+        spoken = [r for r in data["records"] if r["kind"] == "voicechat_transcript"]
+        assert len(spoken) == 2
+        assert all(r["payload"]["turn_id"] == data["items"][0]["id"] for r in spoken)
+        assert all(r["payload"]["phase"] == "answer" for r in spoken)
 
 
 def test_input_activity_never_cancels_without_explicit_control(tmp_path):
@@ -361,6 +379,10 @@ def test_fast_tool_result_during_ack_preserves_exactly_one_answer_permission(tmp
             if stopped_original:
                 session = next(iter(app.state.voice.sessions.values()))
                 await app.state.voice.suppress_playback(session.conversation_id, session.epoch, "tool-response")
+            await self.queue.put(VoiceEvent("speech_text.delta", {
+                "response_id": "tool-response",
+                "text": "Please wait " if original_is_ack else "The verified ",
+            }))
             await self.queue.put(VoiceEvent("speech_text.done", {
                 "response_id": "tool-response",
                 "text": BRIDGE_ACK if original_is_ack else "The verified answer.",
@@ -397,7 +419,7 @@ def test_fast_tool_result_during_ack_preserves_exactly_one_answer_permission(tmp
         records = client.get(f"/api/v1/conversations/{cid}/messages").json()["records"]
         spoken = [r["payload"]["text"] for r in records if r["kind"] == "voicechat_transcript"]
         assert ("The verified answer." in spoken) == (original_is_ack or not stopped_original)
-        assert (BRIDGE_ACK in spoken) == (original_is_ack and not stopped_original)
+        assert BRIDGE_ACK not in spoken
 
 
 

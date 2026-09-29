@@ -166,7 +166,7 @@ test("Voice turns render as paired chat instead of transcript history", async ({
   await expect(page.locator(".live-captions")).toHaveCount(0);
 });
 
-test("Completed voice transcript stays visible until its persisted turn takes over", async ({
+test("Voice transcript becomes one persistent chat message and retains spoken text", async ({
   page,
 }) => {
   await page.addInitScript(() => {
@@ -213,7 +213,7 @@ test("Completed voice transcript stays visible until its persisted turn takes ov
               epoch: 1,
               request_revision: 1,
               server_seq: 1,
-              turn_id: null,
+              turn_id: payload.turn_id || null,
               payload,
             }),
           }),
@@ -265,6 +265,7 @@ test("Completed voice transcript stays visible until its persisted turn takes ov
     },
   );
   let messageReads = 0;
+  let secondTurn = false;
   await page.route(
     "**/api/v1/conversations/caption-conversation/messages**",
     async (route) => {
@@ -274,12 +275,15 @@ test("Completed voice transcript stays visible until its persisted turn takes ov
           epoch: 1,
           request_revision: 1,
           next_before: null,
+          records: [],
           items:
             messageReads === 1
               ? []
               : [
                   {
                     id: "voice-turn",
+                    input_item_id: "input-1",
+                    created_at: "2026-09-29T00:00:00Z",
                     user_text: "Find the actual product guide",
                     channel: "voice",
                     status: "running",
@@ -291,6 +295,25 @@ test("Completed voice transcript stays visible until its persisted turn takes ov
                     delivery_status: "pending_validation",
                     output_suppressed: false,
                   },
+                  ...(secondTurn
+                    ? [
+                        {
+                          id: "voice-turn-2",
+                          input_item_id: "input-2",
+                          created_at: "2026-09-29T00:00:01Z",
+                          user_text: "Find the actual product guide",
+                          channel: "voice",
+                          status: "running",
+                          answer: null,
+                          epoch: 1,
+                          request_revision: 2,
+                          parent_task_id: "voice-turn",
+                          cancellation_reason: null,
+                          delivery_status: "pending_validation",
+                          output_suppressed: false,
+                        },
+                      ]
+                    : []),
                 ],
         },
       });
@@ -328,9 +351,10 @@ test("Completed voice transcript stays visible until its persisted turn takes ov
       text: "Find the actual product guide",
     });
   });
-  await expect(page.locator(".live-captions")).toContainText(
+  await expect(page.locator(".user-message")).toContainText(
     "Find the actual product guide",
   );
+  await expect(page.locator(".turn")).toHaveCount(1);
   await page.evaluate(() => {
     const socket = (
       window as typeof window & {
@@ -347,7 +371,99 @@ test("Completed voice transcript stays visible until its persisted turn takes ov
   await expect(page.locator(".turn")).toContainText(
     "Find the actual product guide",
   );
-  await expect(page.locator(".live-captions")).toHaveCount(0);
+  await expect(page.locator(".turn")).toHaveCount(1);
+  await page.evaluate(() => {
+    const socket = (
+      window as typeof window & {
+        __fakeVoiceSocket?: {
+          emit(type: string, payload: Record<string, unknown>): void;
+        };
+      }
+    ).__fakeVoiceSocket;
+    socket?.emit("portal.answer.final", {
+      turn_id: "voice-turn",
+      answer_id: "answer-1",
+      status: "answered",
+      display_text: "The verified full answer.",
+      speech_text: "The spoken answer.",
+      citations: [],
+      cards: [],
+      is_mock: false,
+      reason_code: null,
+    });
+    socket?.emit("portal.audio.done", {
+      response_id: "answer-1",
+      turn_id: "voice-turn",
+      phase: "answer",
+    });
+  });
+  await expect(page.locator(".assistant-message")).toContainText(
+    "Voice reply unavailable",
+  );
+  await expect(page.locator(".assistant-message details")).toContainText(
+    "The verified full answer.",
+  );
+  await page.evaluate(() => {
+    const socket = (
+      window as typeof window & {
+        __fakeVoiceSocket?: {
+          emit(type: string, payload: Record<string, unknown>): void;
+        };
+      }
+    ).__fakeVoiceSocket;
+    socket?.emit("portal.speech_text.delta", {
+      response_id: "answer-1",
+      turn_id: "voice-turn",
+      phase: "answer",
+      text: "The spoken ",
+    });
+    socket?.emit("portal.speech_text.done", {
+      response_id: "answer-1",
+      turn_id: "voice-turn",
+      phase: "answer",
+      text: "The spoken answer.",
+    });
+    socket?.emit("portal.audio.done", { response_id: "answer-1" });
+  });
+  await expect(page.locator(".assistant-message")).toContainText(
+    "The spoken answer.",
+  );
+  await page.evaluate(() => {
+    const socket = (
+      window as typeof window & {
+        __fakeVoiceSocket?: {
+          emit(type: string, payload: Record<string, unknown>): void;
+        };
+      }
+    ).__fakeVoiceSocket;
+    socket?.emit("portal.playback.clear", {});
+  });
+  await expect(page.locator(".assistant-message")).toContainText(
+    "The spoken answer.",
+  );
+  secondTurn = true;
+  await page.evaluate(() => {
+    const socket = (
+      window as typeof window & {
+        __fakeVoiceSocket?: {
+          emit(type: string, payload: Record<string, unknown>): void;
+        };
+      }
+    ).__fakeVoiceSocket;
+    socket?.emit("portal.transcript.done", {
+      item_id: "input-2",
+      text: "Find the actual product guide",
+    });
+    socket?.emit("portal.tool.started", {
+      message: "Processing",
+      user_text: "Find the actual product guide",
+    });
+  });
+  await expect(page.locator(".turn")).toHaveCount(2);
+  await expect(page.locator(".user-message")).toHaveCount(2);
+  await expect(page.locator(".assistant-message").first()).toContainText(
+    "The spoken answer.",
+  );
 });
 
 test("Final SSE renders without a history round trip and survives an older pending response", async ({

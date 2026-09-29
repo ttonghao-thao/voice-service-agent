@@ -15,11 +15,32 @@
 | M3、D08、D01–D06 何时验证 | §1 对应日期；不累加各次测试数作为当前总数 |
 | 真实服务是否通过 | §3：仍待验证；测试文件存在、配置 verified 或本地测试通过都不能替代真实记录 |
 | 下一阶段怎样执行 | [部署 D07-A–F](deployment.md#d07-分阶段执行设计)，场景标准见 §4，放行见 §5 |
-| 新增优化是否已实现 | [任务板 Q01–Q04](TASK_BOARD.md#3-待完成与建议顺序)：建议待排期，不属于当前实现 |
+| 新增优化是否已实现 | [任务板 Q01–Q06](TASK_BOARD.md#3-待完成与建议顺序)：Q06 本地编码完成、真实验收待 D07；Q01–Q05 仍按各自状态 |
 
 历史文档审计（2026-09-22）：9 份活动 Markdown 的 63 处本地链接及章节锚点、代码块闭合、`git diff --check` 与当时的仅文档修改检查通过。AGENTS 从 3688 减为 2912 UTF-8 字节（约 21%），这是当时入口大小变化，不是实际 token 节省测量。历史快照未修改；当前 D11 的验证另记于 §1。
 
 ## 1. 按日期记录的编码与部署前验证
+
+### 2026-09-29 Q06 语音文字统一聊天展示（本地编码与验证）
+
+- Turn 新增 nullable `input_item_id` 与 Alembic 0006；`/messages` 返回稳定输入关联和受限转写 Record 时间，口述 Record 保存 `turn_id`。Gateway 为合法口述附加 `phase`/`segment_index` 和 Turn 归属，固定工具 ACK 不写入答案正文；存储与发送前复核 epoch/revision。
+- Web 删除独立 Live captions，ASR 首个非空 delta 创建右侧气泡，final 和持久 Turn 原位接管；实际口述按 response/片段进入左侧并保留，完整业务答案/来源可展开。停止播放不删除正文，向上阅读时不强制滚到底部。
+- 验证：`PYTHONPATH=apps/api .venv/bin/python -m pytest -q` 102 passed；`ruff check apps/api tests scripts` 通过；Web `npm test` 12 passed；`npm run build` 类型检查和构建通过；Chromium `npm run test:e2e` 8 passed。独立 SQLite 执行 Alembic upgrade head 成功，协议 schema 已由 `scripts/export_contracts.py` 更新；`git diff --check` 通过。
+- 上述 Chromium 为本地 fixture/受控路由，SQLite 不是生产 PostgreSQL。真实英文 ASR 时序、实际口述/听音、CueKB/VoiceChat、撤权及窄屏设备仍归 D07-C/D；不能写为现场通过。
+
+### 2026-09-29 Q06 语音文字展示方案（仅文档，未实施）
+
+- 对照用户截图及当时源码审阅，将目标记录于 [门户方案 §7](portal-protocol.md#7-q06语音文字统一聊天展示)：ASR 即时右侧气泡、查询并行推进、实际口述左侧正文并保留、完整答案和引用展开、稳定关联与恢复。当时 M1–M5 尚未实施；后续编码与本地验证见上条。Q05 仍是独立待确认方案。
+- 本轮讨论此前执行了现有 Chromium 用例 `Voice turns render as paired chat instead of transcript history` 和 `Completed voice transcript stays visible until its persisted turn takes over`，2 项通过。它们使用受控路由/语音事件，只证明现有 Turn 展示及字幕接管，不证明 Q06 目标、真实麦克风或 VoiceChat/CueKB 已通过。
+- 文档验证：7 份相关 Markdown 的 91 处本地文件链接、Q06 章节锚点与代码围栏检查通过；`git diff --check` 通过，工作区变更仅涉及 Markdown。保留本轮已有 Q05 文档修改。
+- 本次落文不改代码、协议、配置、依赖或数据库，不重跑应用测试；真实设备、Docker/GPU、模型及声学验收未执行，D07 状态不变。
+
+### 2026-09-28 Q05 论文与容器设计审阅（仅文档）
+
+- 查阅 arXiv:2609.21967v1、HF 模型卡、NVIDIA 容器部署/转换/API 文档；核实公开 Speech 分支仍为 `097dfe9e2f55baf653b83035868bdc89849f1b47`，HF 当前仓库 revision 为 `443794ea956ef0065f001967ffd00e77f519cb39`。元数据不证明模型权重升级。
+- 复核本项目 HEAD `a0bc258` 的 D19/D20、Gateway/Runtime/配置，以及本机 speech 的 WebSocket、Triton backend、离线转换和启动路径。WebSocket 文件 hash 与交付 manifest after hash 一致；现场运行文件和 Model Repository 未检查。
+- 新增 [研究与优化设计](voicechat-research-review.md)，同步任务板、架构、接入和索引。明确工具等待 barge-in 限制、帧数期限风险、ACK 注入、口述验证、队列年龄、容量和轮换恢复；全部为待确认方案，不改变已确认实现。
+- 验证：六份相关文档 75 处本地文件链接和代码围栏检查通过；`git diff --check` 通过；最终状态仅 Markdown 文档变更。未修改代码、配置、依赖、权重或转换产物；未重跑应用测试，未运行 Docker/GPU/真实 VoiceChat/CueKB/浏览器或声学验收，D07 状态不变。
 
 ### 2026-09-28 D20 原生能力复核与查询交付延迟
 

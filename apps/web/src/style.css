@@ -164,32 +164,29 @@ a:focus-visible {
   color: #8a998b;
   margin-top: 4px;
 }
-.live-transcript {
-  margin: 10px 0;
-}
-.live-captions {
-  margin: 10px 0 18px;
-  padding: 10px 12px;
-  border-left: 2px solid #9db88c;
-  background: #f8faf6;
-  color: #65745c;
-  font-size: 11px;
-}
-.live-captions strong {
+.input-status {
   display: block;
-  margin-bottom: 5px;
-  color: #4f6647;
-}
-.live-captions p {
-  margin: 3px 0;
-  white-space: pre-wrap;
-  overflow-wrap: anywhere;
-}
-.live-captions p span {
+  margin-top: 5px;
   color: #87957d;
+  font-size: 10px;
 }
-.voice-source-button {
-  margin: 10px 0 16px;
+.full-answer {
+  margin: 8px 0 0 36px;
+  color: #64775c;
+  font-size: 12px;
+}
+.full-answer summary { cursor: pointer; }
+.full-answer p { white-space: pre-wrap; overflow-wrap: anywhere; line-height: 1.8; }
+.full-answer .source-button { margin-left: 0; }
+.latest-button {
+  align-self: center;
+  margin: 4px auto;
+  padding: 6px 12px;
+  border: 1px solid #dce5d3;
+  border-radius: 16px;
+  background: #fff;
+  color: #506149;
+  cursor: pointer;
 }
 .workspace {
   min-width: 0;

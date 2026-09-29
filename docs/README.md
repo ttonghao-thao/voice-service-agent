@@ -1,6 +1,6 @@
 # 文档导航与维护规则
 
-更新：2026-09-23。默认只加载一份主题文档的相关段落；不用顺序读完整套文档。
+更新：2026-09-29。默认只加载一份主题文档的相关段落；不用顺序读完整套文档。
 
 ## 按问题定位
 
@@ -18,6 +18,8 @@
 | 哪些检查真实跑过、如何放行 | [验收](acceptance-report.md) §0、3–5 | §1–2 仅在追溯某次结果时读 |
 | 约 3 秒查询与分段耗时 | [接入](integration.md) §4.1；[部署](deployment.md) | Runtime timing hooks、Store/SSE、门户 final 渲染 |
 | 无声、48000 Hz、工具 ACK 与逐轮 response | [接入](integration.md) §3；[VoiceChat 补丁](../deploy/voicechat/README.md) | `voice/gateway.py`、`VoiceClient.ts`、独立 speech `audio_server.py` |
+| 最新 VoiceChat 论文、离线容器及优化方案 | [论文与容器优化设计](voicechat-research-review.md) | Q05 设计待确认；已转换 Model Repository、工具等待限制与 D07 验收 |
+| 语音文字按 GPT 截图展示、ASR 即时气泡与口述保留 | [门户 Q06 契约](portal-protocol.md#7-q06语音文字统一聊天展示) | 本地编码完成；关联、恢复、验收边界与 D07 现场待测项 |
 | 本地验证命令 | [项目 README](../README.md) | 根目录运行；默认工作规则见 [AGENTS](../AGENTS.md) |
 
 代码路径未标完整前缀时，以 `apps/api/app/` 为基准。

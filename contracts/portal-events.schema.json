@@ -850,6 +850,15 @@
           ],
           "default": null,
           "title": "Item Id"
+        },
+        "phase": {
+          "default": "answer",
+          "enum": [
+            "status",
+            "answer"
+          ],
+          "title": "Phase",
+          "type": "string"
         }
       },
       "required": [
@@ -1113,6 +1122,21 @@
           ],
           "default": null,
           "title": "Item Id"
+        },
+        "segment_index": {
+          "default": 0,
+          "minimum": 0,
+          "title": "Segment Index",
+          "type": "integer"
+        },
+        "phase": {
+          "default": "answer",
+          "enum": [
+            "status",
+            "answer"
+          ],
+          "title": "Phase",
+          "type": "string"
         },
         "text": {
           "maxLength": 100000,
