@@ -1,6 +1,6 @@
 # 验收状态与真实服务门槛
 
-更新：2026-09-28。**D01–D06、D08–D10、D13–D20、E01–E03 已完成编码和本地自动化验证；D07 的真实服务端到端验收仍未完成**。当前交付包含 API 工具/口述授权、Web 播放状态修复，以及独立 speech/VoiceChat 的逐轮 response 修复补丁；当前确认的 speech 基线同步更新 WebSocket 文件并启用已有 Jinja 模板，推理/自然打断与离线模型转换不变；不是所有 VoiceChat 客户端都需要这份补丁。D20 另优化 SSE/答案渲染并增加阶段计时。设计已按当前职责、音频/事件流、生命周期、异常边界和发布流程整体重写，详细见 [架构](architecture.md)、[接入](integration.md)、[门户协议](portal-protocol.md) 和 [部署](deployment.md)。本期仅验收英文知识库客服；真实验证在云端 Docker 环境执行。缺口和实施顺序见 [任务板](TASK_BOARD.md)。
+更新：2026-10-03。**D01–D06、D08–D10、D13–D20、E01–E03 已完成编码和本地自动化验证；D07 的真实服务端到端验收仍未完成**。当前交付包含 API 工具/口述授权、Web 播放状态修复，以及独立 speech/VoiceChat 的逐轮 response 修复补丁；当前确认的 speech 基线同步更新 WebSocket 文件并启用已有 Jinja 模板，推理/自然打断与离线模型转换不变；不是所有 VoiceChat 客户端都需要这份补丁。D20 另优化 SSE/答案渲染并增加阶段计时。设计已按当前职责、音频/事件流、生命周期、异常边界和发布流程整体重写，详细见 [架构](architecture.md)、[接入](integration.md)、[门户协议](portal-protocol.md) 和 [部署](deployment.md)。本期仅验收英文知识库客服；真实验证在云端 Docker 环境执行。缺口和实施顺序见 [任务板](TASK_BOARD.md)。
 
 编码阶段约束（2026-09-16 确认）：CueKB/VoiceChat 无真实接口可调用，满足已确认接口规范和处理逻辑并通过相应契约/本地测试，即满足该阶段验收要求。Docker 环境不提供，仅在必要时静态检查镜像制作和启动代码，不搭建环境或执行镜像构建。以下真实服务与容器验收项留待后续部署阶段，不作为编码完成的阻塞项。
 
@@ -10,21 +10,32 @@
 
 | 要回答的问题 | 证据位置与边界 |
 | --- | --- |
-| 最近应用验证 | §1 的 2026-09-28 D20：102 项 pytest、12 项前端音频单测、前端构建、8 项 Chromium E2E、应用 Ruff、契约导出和差异检查；不代表真实模型/CueKB/VoiceChat、实际麦克风或 Docker 验收 |
+| 最近应用验证 | §1 的 2026-10-03 Q07：175 项 pytest、12 项前端音频单测、前端构建、12 项 Chromium E2E、SQLite 升降级/旧行测试、应用 Ruff、契约导出和差异检查；不代表真实模型/CueKB/VoiceChat、实际麦克风或 Docker 验收 |
 | 独立 VoiceChat 交付 | D19/D20：真实服务器模块的 12 项 CPU 协议测试、补丁基线/应用后 SHA-256 检查；交付见 [补丁说明](../deploy/voicechat/README.md)，云端镜像及 GPU 输出未验证 |
 | M3、D08、D01–D06 何时验证 | §1 对应日期；不累加各次测试数作为当前总数 |
 | 真实服务是否通过 | §3：仍待验证；测试文件存在、配置 verified 或本地测试通过都不能替代真实记录 |
 | 下一阶段怎样执行 | [部署 D07-A–F](deployment.md#d07-分阶段执行设计)，场景标准见 §4，放行见 §5 |
-| 新增优化是否已实现 | [任务板 Q01–Q07](TASK_BOARD.md#3-待完成与建议顺序)：Q06 本地编码完成、真实验收待 D07；Q07 设计交付未编码；Q01–Q05 仍按各自状态 |
+| 新增优化是否已实现 | [任务板 Q01–Q07](TASK_BOARD.md#3-待完成与建议顺序)：Q06 本地编码完成、真实验收待 D07；Q07 已编码并本地验证；Q01–Q05 仍按各自状态 |
 
 历史文档审计（2026-09-22）：9 份活动 Markdown 的 63 处本地链接及章节锚点、代码块闭合、`git diff --check` 与当时的仅文档修改检查通过。AGENTS 从 3688 减为 2912 UTF-8 字节（约 21%），这是当时入口大小变化，不是实际 token 节省测量。历史快照未修改；当前 D11 的验证另记于 §1。
 
 ## 1. 按日期记录的编码与部署前验证
 
+### 2026-10-03 Q07 外置 LLM 可选化（编码与本地验证）
+
+- 在 `codex/q07` 从 `f10b231` 开始实施 I1–I6。项目保持英文知识库客服与 Coordinator → BusinessRuntime → Registry → CueKB 边界；默认 `AGENT_PROVIDER=none`，启动冻结 direct/external、prompt/schema/serializer 和执行器。direct 不构造 AsyncOpenAI/Agent/Runner；openai/compatible 保留 Responses/Chat Completions 工具循环，不自动回退。模型连接项残留、非法 URL 或不完整 external 配置均启动拒绝。
+- direct 严格 Nano 参数、权威最终 ASR 与独立 query、过滤值来源确认、一次授权检索和有界证据投影已实现；wire 至多 5 hits、正文/context 6000 字符、完整 JSON 8192 bytes，保留来源、型号/版本、条件与反驳信息，非 ASCII hit 整体舍弃。持久证据与实际发送集合一致。
+- TurnExecution 的 ready/voice_completion 分离，证据先写 `awaiting_voice`/knowledge.ready，实际授权口述 Record 与 answer audio.done 后才生成 `voice_completed`/answer.final/history。固定 ACK 不算答案；完成信号去重并复查租约、revision/epoch 和工具权限。发送期 16 事件缓冲、2 秒发送上限、整轮预算、Stop/取消/超时/断线/正常 EOF/shutdown、无文字/超长口述及恢复已做受控验证。正常 EOF 先让有界单写入器完成交付事务，再清理任务，避免在 DB commit 中途重复取消连接。
+- Alembic 0007 增 execution_mode/knowledge_result，旧行 external/null，含 direct 行拒绝自动 downgrade；API 增 capabilities/knowledge.ready 与授权历史投影，direct 文字提交 409 且不改变当前通话。门户等待证据与口述分开、Sources consulted 标识上下文、禁用文字、停止保留文字、旧快照/晚到知识事件不倒退终态。
+- 唯一 env/Compose 流程保留；默认 none 与两份完整 external 示例、部署前组合校验、按预期 mode 核对 readiness、禁用工具期 native barge-in 能力声明已更新。VoiceChat 探针按已选 VoiceProfile 参数与 wire 发合成结果并记录 mode；评估报告分模式给出端到端首个答案音频 p50/p95，缺测不补造，新增 8 个英文 Q07 现场待测样本。
+- 参考核对：用户指定的 [模型卡](https://huggingface.co/nvidia/NVIDIA-NemotronLabs-VoiceChat-11B)、[官方 API](https://github.com/NVIDIA-NeMo/Speech/blob/nemotron-labs-voicechat/voicechat_realtime_instructions/api-reference.md)，以及官方 Speech 分支 `097dfe9e2f55baf653b83035868bdc89849f1b47` 的 `nemotron_voicechat_inference_wrapper.py`（工具返回 token 注入与两阶段推理）。仅用于确认集成边界；部署继续核对已有独立 speech 补丁/版本，不修改模型或 GPU 参数。
+- 实际检查：Python 3.12 按固定开发依赖安装；pytest **175 passed**（含 0006→0007 旧行升级、空库 downgrade/upgrade、direct 数据降级拒绝）；Ruff 通过；Web 音频单测 **12 passed**、TypeScript/Vite build 通过；Chromium **12 passed**（原有 8 项及 direct 4 项；真实浏览器使用显式 fixture/受控路由与合成麦克风）。协议契约已重新导出，`git diff --check` 与活动文档链接/锚点检查通过。
+- 未执行：真实 LLM/CueKB/VoiceChat、Docker 构建/运行、GPU 推理、PostgreSQL/Redis、实际麦克风/扬声器与云端发布。真实 Nano 参数遵循、证据推理、口述事实准确性、延迟分布及工具期间插话仍按 D07 分模式验收；本地 zero external-call 测试与 readiness 不替代现场网络审计和听音。已授权推送目标为 `codex/q07`；远端提交以 Git 记录为准。
+
 ### 2026-10-02 Q07 外置 LLM 可选化系统设计（仅文档）
 
 - 当前代码基线 `bbbd95e`，开始时工作区干净。核对 Settings/lifespan、SDK Runtime、Coordinator/Store、Registry/CueKB、VoiceGateway/provider、消息/SSE/口述记录、Web Q06 和部署脚本/readiness；以现有实际数据流确定方案，不把讨论中的简化路径视为现成能力。
-- 用户确认“外置 LLM 可选、全局启动加载、无配置由 Nano 理解证据并回答、配置后保持原流程”。已写入 AGENTS；[架构 §11](architecture.md#11-q07外置-llm-可选化实施规格尚未编码) 定义单开关矩阵和固定执行器、两阶段交付、生命周期/权限/迁移、文字入口与 I1–I6 按文件实施清单；接入 §8 固定参数/证据/wire 预算，门户 §8 固定事件/状态/展示，部署 Q07 固定模板/门禁/模式切换。
+- 用户确认“外置 LLM 可选、全局启动加载、无配置由 Nano 理解证据并回答、配置后保持原流程”。已写入 AGENTS；[架构 §11](architecture.md#11-q07外置-llm-可选化实施规格) 定义单开关矩阵和固定执行器、两阶段交付、生命周期/权限/迁移、文字入口与 I1–I6 按文件实施清单；接入 §8 固定参数/证据/wire 预算，门户 §8 固定事件/状态/展示，部署 Q07 固定模板/门禁/模式切换。
 - direct 不用检索成功代替回答成功，等待实际口述 response 完成；证据投影先于持久提交；zero external call、无自动回退、ACK/结果竞态、Stop/取消/断线/租约和撤权列入验收。direct 的独立文字问答暂不可用，语音/转写/历史继续提供；不假定 speech 存在未验证的文字输入协议。
 - 验证：本轮仅 8 份 Markdown 变更；118 处本地文件链接及章节锚点、代码围栏、Q07 JSON 示例和 `git diff --check` 检查通过。复核 0006 的实际 revision=`0006`，目标 0007 仅为设计；现有代码、配置、数据库、生成契约与依赖锁未修改，未提交或推送。
 - 未运行应用测试/构建/迁移，也未调用真实 LLM、CueKB、VoiceChat 或 Docker/GPU/浏览器。Nano 检索参数、证据理解、真实口述质量、端到端延迟及工具期间插话仍待按 D07 分模式验证。Q07 当前仅设计交付，I1–I6 均未编码。

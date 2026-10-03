@@ -17,6 +17,7 @@ import {
   api,
   Capabilities,
   Conversation,
+  KnowledgeResult,
   PortalEvent,
   RecordItem,
   setCallAccessToken,
@@ -45,7 +46,19 @@ const statuses: Record<string, string> = {
   superseded: "Superseded",
   expired: "Expired",
   running: "Searching",
+  awaiting_voice: "Preparing voice reply",
+  voice_completed: "Response completed",
 };
+
+function voiceDeliveryFailed(answer: Answer) {
+  return (
+    answer.answer_origin === "voicechat" &&
+    answer.status === "failed" &&
+    /^(VOICE_|AGENT_|FORBIDDEN$|KB_ACCESS_REVOKED$)/.test(
+      answer.reason_code || "",
+    )
+  );
+}
 
 function visibleTurnStatus(turn: Turn) {
   return turn.answer?.status || turn.status;
@@ -66,7 +79,9 @@ export default function App() {
     [volume, setVolume] = useState(0.8),
     [inputState, setInputState] = useState("quiet"),
     [microphone, setMicrophone] = useState<MicrophoneDiagnostics | null>(null);
-  const [selected, setSelected] = useState<Answer | null>(null),
+  const [selected, setSelected] = useState<Answer | KnowledgeResult | null>(
+      null,
+    ),
     [sidebar, setSidebar] = useState(false),
     [sourcesOpen, setSourcesOpen] = useState(false),
     [before, setBefore] = useState<string | null>(null);
@@ -93,6 +108,12 @@ export default function App() {
   const finalAnswers = useRef(
     new Map<string, { epoch: number; revision: number; answer: Answer }>(),
   );
+  const knowledgeResults = useRef(
+    new Map<
+      string,
+      { epoch: number; revision: number; knowledge: KnowledgeResult }
+    >(),
+  );
   const onError = useCallback((message: string) => setError(message), []);
   const refresh = useCallback(async (id: string, older?: string) => {
     const data = await api<{
@@ -116,27 +137,81 @@ export default function App() {
     setBefore(data.next_before);
     data.items = data.items.map((turn) => {
       knownTurns.current.add(turn.id);
+      if (
+        turn.knowledge_result?.reason_code === "KB_ACCESS_REVOKED" ||
+        turn.answer?.reason_code === "KB_ACCESS_REVOKED"
+      )
+        revokedTurns.current.add(turn.id);
+      if (revokedTurns.current.has(turn.id)) {
+        knowledgeResults.current.delete(turn.id);
+        finalAnswers.current.delete(turn.id);
+        return {
+          ...turn,
+          status: "failed",
+          knowledge_result: null,
+          answer: turn.answer
+            ? {
+                ...turn.answer,
+                display_text: "Knowledge access changed. Please ask again.",
+                speech_text: "",
+                citations: [],
+                reason_code: "KB_ACCESS_REVOKED",
+              }
+            : null,
+        };
+      }
+      const cached = knowledgeResults.current.get(turn.id);
+      if (
+        cached &&
+        cached.epoch === turn.epoch &&
+        cached.revision === turn.request_revision &&
+        !turn.knowledge_result
+      ) {
+        turn = {
+          ...turn,
+          knowledge_result: cached.knowledge,
+          status: ["running", "awaiting_voice"].includes(turn.status)
+            ? "awaiting_voice"
+            : turn.status,
+        };
+      }
       const final = finalAnswers.current.get(turn.id);
       return final &&
         final.epoch === turn.epoch &&
         final.revision === turn.request_revision &&
-        turn.status === "running"
+        ["running", "awaiting_voice"].includes(turn.status)
         ? {
             ...turn,
             status: final.answer.status,
             answer: final.answer,
-            delivery_status: "accepted",
+            delivery_status: voiceDeliveryFailed(final.answer)
+              ? "voice_failed"
+              : "accepted",
           }
         : turn;
     });
-    setTurns((previous) =>
-      older
+    setTurns((previous) => {
+      const monotonic = data.items.map((turn) => {
+        const prior = previous.find((p) => p.id === turn.id);
+        return prior &&
+          prior.epoch === turn.epoch &&
+          prior.request_revision === turn.request_revision &&
+          !["running", "awaiting_voice"].includes(prior.status) &&
+          ["running", "awaiting_voice"].includes(turn.status) &&
+          !revokedTurns.current.has(turn.id)
+          ? {
+              ...prior,
+              knowledge_result: prior.knowledge_result || turn.knowledge_result,
+            }
+          : turn;
+      });
+      return older
         ? [
-            ...data.items,
+            ...monotonic,
             ...previous.filter((t) => !data.items.some((x) => x.id === t.id)),
           ]
-        : data.items,
-    );
+        : monotonic;
+    });
     const records = data.records || [];
     setInputs((previous) => {
       const next = { ...previous };
@@ -151,7 +226,7 @@ export default function App() {
       const next = { ...previous };
       const revoked = new Set(
         data.items
-          .filter((turn) => turn.answer?.reason_code === "KB_ACCESS_REVOKED")
+          .filter((turn) => revokedTurns.current.has(turn.id))
           .map((turn) => turn.id),
       );
       for (const id of revoked) revokedTurns.current.add(id);
@@ -162,7 +237,8 @@ export default function App() {
         if (
           record.kind !== "voicechat_transcript" ||
           !record.payload.turn_id ||
-          !record.payload.text
+          !record.payload.text ||
+          revokedTurns.current.has(record.payload.turn_id)
         )
           continue;
         const key = `${record.epoch}:${record.source_id}`;
@@ -199,13 +275,20 @@ export default function App() {
       return older ? [...added, ...previous] : [...previous, ...added];
     });
     const answer = [...data.items].reverse().find((t) => t.answer)?.answer;
-    if (answer && !older) setSelected(answer);
+    if (!older)
+      setSelected(
+        answer ||
+          [...data.items].reverse().find((t) => t.knowledge_result)
+            ?.knowledge_result ||
+          null,
+      );
   }, []);
   const handleEvent = useCallback(
     (event: PortalEvent) => {
       if (
         event.conversation_id !== active.current ||
-        event.epoch < epoch.current
+        event.epoch < epoch.current ||
+        event.request_revision < requestRevision.current
       )
         return;
       if (lastEvent.current.has(event.event_id)) return;
@@ -221,10 +304,76 @@ export default function App() {
         setProgress(String(event.payload.message || "Searching"));
         void refresh(event.conversation_id).catch((e) => setError(e.message));
       }
+      if (event.type === "portal.knowledge.ready" && event.turn_id) {
+        if (event.request_revision < requestRevision.current) return;
+        const knowledge = event.payload as unknown as KnowledgeResult;
+        if (knowledge.reason_code === "KB_ACCESS_REVOKED") {
+          revokedTurns.current.add(event.turn_id);
+          finalAnswers.current.delete(event.turn_id);
+          setSpoken((old) =>
+            Object.fromEntries(
+              Object.entries(old).filter(([, p]) => p.turnId !== event.turn_id),
+            ),
+          );
+          setSelected(null);
+          setTurns((old) =>
+            old.map((t) =>
+              t.id === event.turn_id
+                ? {
+                    ...t,
+                    knowledge_result: null,
+                    answer: null,
+                    status: "failed",
+                  }
+                : t,
+            ),
+          );
+          return;
+        }
+        if (revokedTurns.current.has(event.turn_id)) return;
+        knowledgeResults.current.set(event.turn_id, {
+          epoch: event.epoch,
+          revision: event.request_revision,
+          knowledge,
+        });
+        if (knowledgeResults.current.size > 100)
+          knowledgeResults.current.delete(
+            knowledgeResults.current.keys().next().value!,
+          );
+        setTurns((old) =>
+          old.map((t) =>
+            t.id === event.turn_id &&
+            t.epoch === event.epoch &&
+            t.request_revision === event.request_revision
+              ? {
+                  ...t,
+                  knowledge_result:
+                    t.knowledge_result &&
+                    t.knowledge_result.result_id !== knowledge.result_id
+                      ? t.knowledge_result
+                      : knowledge,
+                  status: t.status === "running" ? "awaiting_voice" : t.status,
+                }
+              : t,
+          ),
+        );
+        if (!finalAnswers.current.has(event.turn_id)) {
+          setSelected(knowledge);
+          setProgress("Preparing voice reply");
+        }
+        if (!knownTurns.current.has(event.turn_id))
+          void refresh(event.conversation_id).catch((e) => setError(e.message));
+      }
       if (event.type === "portal.answer.final") {
         if (event.request_revision < requestRevision.current) return;
         setProgress("");
         const answer = event.payload as unknown as Answer;
+        if (
+          event.turn_id &&
+          revokedTurns.current.has(event.turn_id) &&
+          answer.reason_code !== "KB_ACCESS_REVOKED"
+        )
+          return;
         if (answer.reason_code === "KB_ACCESS_REVOKED" && event.turn_id)
           revokedTurns.current.add(event.turn_id);
         if (answer.reason_code === "KB_ACCESS_REVOKED" && event.turn_id)
@@ -251,12 +400,14 @@ export default function App() {
               turn.id === event.turn_id &&
               turn.epoch === event.epoch &&
               turn.request_revision === event.request_revision &&
-              turn.status === "running"
+              ["running", "awaiting_voice"].includes(turn.status)
                 ? {
                     ...turn,
                     answer,
                     status: answer.status,
-                    delivery_status: "accepted",
+                    delivery_status: voiceDeliveryFailed(answer)
+                      ? "voice_failed"
+                      : "accepted",
                   }
                 : turn,
             ),
@@ -416,6 +567,7 @@ export default function App() {
       knownTurns.current.clear();
       revokedTurns.current.clear();
       finalAnswers.current.clear();
+      knowledgeResults.current.clear();
       setCid(c.id);
       setSidebar(false);
       return c.id;
@@ -426,7 +578,7 @@ export default function App() {
   }
   async function send() {
     const text = draft.trim();
-    if (!text || sending) return;
+    if (!caps?.text_available || !text || sending) return;
     setSending(true);
     setError("");
     try {
@@ -536,7 +688,12 @@ export default function App() {
     <div className="evidence">
       <div className="evidence-heading">
         <FileTextOutlined />
-        <h3>Answer sources</h3>
+        <h3>
+          {selected &&
+          ("kind" in selected || selected.evidence_role === "retrieved_context")
+            ? "Sources consulted"
+            : "Answer sources"}
+        </h3>
         {selected && <span>{selected.citations.length} sources</span>}
       </div>
       {!selected ? (
@@ -550,8 +707,23 @@ export default function App() {
         </div>
       ) : (
         <>
-          <Tag color={selected.status === "answered" ? "green" : "orange"}>
-            {statuses[selected.status] || selected.status}
+          {("kind" in selected ||
+            selected.evidence_role === "retrieved_context") && (
+            <p className="muted">
+              Retrieved context supplied for the spoken reply; sources are not
+              individually verified citations.
+            </p>
+          )}
+          <Tag
+            color={
+              "status" in selected && selected.status === "answered"
+                ? "green"
+                : "orange"
+            }
+          >
+            {"status" in selected
+              ? statuses[selected.status] || selected.status
+              : "Preparing voice reply"}
           </Tag>
           {selected.is_mock && (
             <Tag color="orange">Synthetic integration data</Tag>
@@ -635,15 +807,16 @@ export default function App() {
               )}
             </article>
           ))}
-          {selected.cards.map((card, i) => (
+          {("cards" in selected ? selected.cards : []).map((card, i) => (
             <WeatherCard key={i} card={card} />
           ))}
-          {!selected.citations.length && !selected.cards.length && (
-            <p className="muted">
-              No evidence is available to show. Please clarify your question or
-              contact a representative.
-            </p>
-          )}
+          {!selected.citations.length &&
+            !("cards" in selected && selected.cards.length) && (
+              <p className="muted">
+                No evidence is available to show. Please clarify your question
+                or contact a representative.
+              </p>
+            )}
           <div className="evidence-note">
             <CheckCircleOutlined /> The server validates source access; the
             conclusion still needs business review.
@@ -803,10 +976,16 @@ export default function App() {
                 const speechParts = t
                   ? Object.values(spoken).filter((part) => part.turnId === t.id)
                   : [];
-                const speech = speechParts
-                  .map((part) => part.text)
-                  .filter(Boolean)
-                  .join(" ");
+                const speech =
+                  speechParts
+                    .map((part) => part.text)
+                    .filter(Boolean)
+                    .join(" ") ||
+                  (t?.execution_mode === "direct" &&
+                  t.answer?.answer_origin === "voicechat" &&
+                  t.delivery_status !== "voice_failed"
+                    ? t.answer.display_text
+                    : "");
                 return (
                   <article className="turn" key={key}>
                     <div className="user-message">
@@ -844,12 +1023,20 @@ export default function App() {
                                   : "default"
                             }
                           >
-                            {statuses[visibleTurnStatus(t)] ||
-                              visibleTurnStatus(t)}
+                            {t.delivery_status === "voice_failed"
+                              ? "Voice reply unavailable"
+                              : statuses[visibleTurnStatus(t)] ||
+                                visibleTurnStatus(t)}
                           </Tag>
                         </div>
                         {t.channel === "voice" ? (
                           <>
+                            {t.delivery_status === "voice_failed" && (
+                              <small className="input-status">
+                                Voice reply unavailable · Spoken reply
+                                interrupted
+                              </small>
+                            )}
                             {speech ? (
                               <>
                                 <p aria-live="polite">{speech}</p>
@@ -860,6 +1047,8 @@ export default function App() {
                                     </small>
                                   )}
                               </>
+                            ) : t.execution_mode === "direct" && t.answer ? (
+                              <p className="muted">{t.answer.display_text}</p>
                             ) : t.answer ? (
                               <p className="muted">
                                 {voiceState === "ready" &&
@@ -868,10 +1057,14 @@ export default function App() {
                                   ? "Answer ready. Waiting for spoken reply."
                                   : "Voice reply unavailable. The full answer is below."}
                               </p>
-                            ) : visibleTurnStatus(t) === "running" ? (
+                            ) : ["running", "awaiting_voice"].includes(
+                                visibleTurnStatus(t),
+                              ) ? (
                               <div className="processing">
                                 <LoadingOutlined />{" "}
-                                {progress || "Processing your question"}
+                                {visibleTurnStatus(t) === "awaiting_voice"
+                                  ? "Preparing voice reply"
+                                  : progress || "Processing your question"}
                               </div>
                             ) : (
                               <p className="muted">
@@ -879,7 +1072,23 @@ export default function App() {
                                 be submitted.
                               </p>
                             )}
-                            {t.answer && (
+                            {t.execution_mode === "direct" &&
+                            (t.knowledge_result || t.answer)?.citations
+                              .length ? (
+                              <button
+                                className="source-button"
+                                onClick={() => {
+                                  setSelected(
+                                    t.answer || t.knowledge_result || null,
+                                  );
+                                  setSourcesOpen(true);
+                                }}
+                              >
+                                <FileTextOutlined /> Sources consulted{" "}
+                                <span>↗</span>
+                              </button>
+                            ) : null}
+                            {t.answer && t.execution_mode !== "direct" && (
                               <details className="full-answer">
                                 <summary>View full answer / Sources</summary>
                                 <p>{t.answer.display_text}</p>
@@ -925,14 +1134,15 @@ export default function App() {
                             submitted.
                           </p>
                         )}
-                        {visibleTurnStatus(t) === "failed" && (
-                          <Button
-                            size="small"
-                            onClick={() => setDraft(t.user_text)}
-                          >
-                            Ask again
-                          </Button>
-                        )}
+                        {visibleTurnStatus(t) === "failed" &&
+                          caps?.text_available && (
+                            <Button
+                              size="small"
+                              onClick={() => setDraft(t.user_text)}
+                            >
+                              Ask again
+                            </Button>
+                          )}
                       </div>
                     )}
                   </article>
@@ -992,7 +1202,11 @@ export default function App() {
                 </Button>
                 <Button
                   danger
-                  disabled={!turns.some((turn) => turn.status === "running")}
+                  disabled={
+                    !turns.some((turn) =>
+                      ["running", "awaiting_voice"].includes(turn.status),
+                    )
+                  }
                   onClick={() => void cancelCurrent()}
                 >
                   Cancel search
@@ -1065,6 +1279,7 @@ export default function App() {
               )}
               <div className="text-composer">
                 <Input.TextArea
+                  disabled={!caps?.text_available}
                   value={draft}
                   onChange={(e) => setDraft(e.target.value)}
                   maxLength={2000}
@@ -1087,13 +1302,15 @@ export default function App() {
                   icon={<SendOutlined />}
                   aria-label="Send question"
                   loading={sending}
-                  disabled={!draft.trim()}
+                  disabled={!caps?.text_available || !draft.trim()}
                   onClick={() => void send()}
                 />
               </div>
               <div className="composer-foot">
                 <span>
-                  Sending a text question ends the current voice connection.
+                  {caps?.text_available
+                    ? "Sending a text question ends the current voice connection."
+                    : "Text input is unavailable in this deployment. Please use voice."}
                 </span>
                 <span>{draft.length} / 2000</span>
               </div>

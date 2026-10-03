@@ -7,13 +7,47 @@
           "title": "Answer Id",
           "type": "string"
         },
+        "answer_origin": {
+          "default": "business_runtime",
+          "enum": [
+            "business_runtime",
+            "voicechat"
+          ],
+          "title": "Answer Origin",
+          "type": "string"
+        },
+        "evidence_role": {
+          "default": "cited_sources",
+          "enum": [
+            "cited_sources",
+            "retrieved_context"
+          ],
+          "title": "Evidence Role",
+          "type": "string"
+        },
+        "authorized_kb_ids": {
+          "anyOf": [
+            {
+              "items": {
+                "type": "string"
+              },
+              "type": "array"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Authorized Kb Ids"
+        },
         "status": {
           "enum": [
             "answered",
             "needs_clarification",
             "insufficient_evidence",
             "failed",
-            "canceled"
+            "canceled",
+            "voice_completed"
           ],
           "title": "Status",
           "type": "string"
@@ -693,6 +727,197 @@
       "title": "InputStatePayload",
       "type": "object"
     },
+    "KnowledgeReadyEvent": {
+      "additionalProperties": false,
+      "properties": {
+        "event_id": {
+          "title": "Event Id",
+          "type": "string"
+        },
+        "conversation_id": {
+          "maxLength": 128,
+          "minLength": 1,
+          "title": "Conversation Id",
+          "type": "string"
+        },
+        "epoch": {
+          "minimum": 0,
+          "title": "Epoch",
+          "type": "integer"
+        },
+        "request_revision": {
+          "default": 0,
+          "minimum": 0,
+          "title": "Request Revision",
+          "type": "integer"
+        },
+        "turn_id": {
+          "maxLength": 128,
+          "minLength": 1,
+          "title": "Turn Id",
+          "type": "string"
+        },
+        "server_seq": {
+          "minimum": 0,
+          "title": "Server Seq",
+          "type": "integer"
+        },
+        "timestamp": {
+          "format": "date-time",
+          "title": "Timestamp",
+          "type": "string"
+        },
+        "type": {
+          "const": "portal.knowledge.ready",
+          "title": "Type",
+          "type": "string"
+        },
+        "payload": {
+          "$ref": "#/$defs/KnowledgeResultView"
+        }
+      },
+      "required": [
+        "conversation_id",
+        "epoch",
+        "turn_id",
+        "server_seq",
+        "type",
+        "payload"
+      ],
+      "title": "KnowledgeReadyEvent",
+      "type": "object"
+    },
+    "KnowledgeResultView": {
+      "additionalProperties": false,
+      "properties": {
+        "kind": {
+          "const": "knowledge",
+          "default": "knowledge",
+          "title": "Kind",
+          "type": "string"
+        },
+        "result_id": {
+          "title": "Result Id",
+          "type": "string"
+        },
+        "directive": {
+          "enum": [
+            "answer_from_evidence",
+            "ask_clarification",
+            "report_insufficient",
+            "report_failure"
+          ],
+          "title": "Directive",
+          "type": "string"
+        },
+        "retrieval_status": {
+          "anyOf": [
+            {
+              "enum": [
+                "ok",
+                "degraded",
+                "not_found",
+                "needs_clarification"
+              ],
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "title": "Retrieval Status"
+        },
+        "evidence_status": {
+          "anyOf": [
+            {
+              "enum": [
+                "unassessed",
+                "sufficient",
+                "insufficient",
+                "conflicting"
+              ],
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "title": "Evidence Status"
+        },
+        "citations": {
+          "items": {
+            "$ref": "#/$defs/Citation"
+          },
+          "title": "Citations",
+          "type": "array"
+        },
+        "degraded_reasons": {
+          "items": {
+            "type": "string"
+          },
+          "title": "Degraded Reasons",
+          "type": "array"
+        },
+        "scope_limited": {
+          "default": false,
+          "title": "Scope Limited",
+          "type": "boolean"
+        },
+        "application_limited": {
+          "default": false,
+          "title": "Application Limited",
+          "type": "boolean"
+        },
+        "hits_omitted": {
+          "default": 0,
+          "minimum": 0,
+          "title": "Hits Omitted",
+          "type": "integer"
+        },
+        "reason_code": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Reason Code"
+        },
+        "message": {
+          "default": "",
+          "maxLength": 500,
+          "title": "Message",
+          "type": "string"
+        },
+        "is_mock": {
+          "default": false,
+          "title": "Is Mock",
+          "type": "boolean"
+        },
+        "trace_id": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Trace Id"
+        }
+      },
+      "required": [
+        "directive",
+        "retrieval_status",
+        "evidence_status"
+      ],
+      "title": "KnowledgeResultView",
+      "type": "object"
+    },
     "PlaybackClearEvent": {
       "additionalProperties": false,
       "properties": {
@@ -1359,6 +1584,7 @@
       "portal.audio.done": "#/$defs/AudioDoneEvent",
       "portal.error": "#/$defs/ErrorEvent",
       "portal.input.state": "#/$defs/InputStateEvent",
+      "portal.knowledge.ready": "#/$defs/KnowledgeReadyEvent",
       "portal.playback.clear": "#/$defs/PlaybackClearEvent",
       "portal.session.ended": "#/$defs/SessionEndedEvent",
       "portal.session.ready": "#/$defs/SessionReadyEvent",
@@ -1394,6 +1620,9 @@
     },
     {
       "$ref": "#/$defs/AnswerFinalEvent"
+    },
+    {
+      "$ref": "#/$defs/KnowledgeReadyEvent"
     },
     {
       "$ref": "#/$defs/PlaybackClearEvent"

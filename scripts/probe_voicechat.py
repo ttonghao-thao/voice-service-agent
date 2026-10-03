@@ -14,8 +14,8 @@ import wave
 from pathlib import Path
 
 from app.config import Settings
-from app.contracts import BridgeArguments, now
-from app.voice.provider import BRIDGE_NAME, NvidiaVoiceChatAdapter
+from app.contracts import AnswerBundle, Citation, KnowledgeBundle, now
+from app.voice.provider import BRIDGE_NAME, NvidiaVoiceChatAdapter, VoiceProfile
 
 
 def read_wav(path):
@@ -42,11 +42,14 @@ async def send_realtime(provider, chunks, phase, report):
 
 async def probe(args):
     settings = Settings()
+    execution = settings.execution_profile()
+    voice_profile = VoiceProfile.build(execution)
     report = {
         "tested_at": now().isoformat(),
         "api_version": args.api_version,
         "image_digest": args.image_digest,
         "requested_mode": "real",
+        "execution_mode": execution.mode,
         "real_service_connected": False,
         "synthetic_tool_result": True,
         "status": "blocked",
@@ -67,7 +70,7 @@ async def probe(args):
     if not settings.voicechat_ws_url:
         report["reason"] = "VOICECHAT_WS_URL not configured"
     else:
-        provider = NvidiaVoiceChatAdapter(settings)
+        provider = NvidiaVoiceChatAdapter(settings, voice_profile)
         result_tasks = set()
         output_audio = bytearray()
         tool_seen = asyncio.Event()
@@ -90,17 +93,35 @@ async def probe(args):
             async def delayed_result(call_id):
                 nonlocal tool_result_sent_at
                 await asyncio.sleep(args.tool_delay_seconds)
-                await provider.submit_tool_result(
-                    call_id,
-                    json.dumps(
-                        {
-                            "status": "answered",
-                            "speech_text": "This synthetic result arrived after a delay. It is not real business information.",
-                            "is_mock": True,
-                        },
-                        ensure_ascii=True,
-                    ),
-                )
+                message = "This synthetic result arrived after a delay. It is not real business information."
+                if execution.mode == "direct":
+                    result = KnowledgeBundle(
+                        directive="answer_from_evidence",
+                        retrieval_status="ok",
+                        evidence_status="unassessed",
+                        authorized_kb_ids=[],
+                        tool_version=None,
+                        is_mock=True,
+                        citations=[
+                            Citation(
+                                citation_id="C1",
+                                document_id="synthetic",
+                                chunk_id="synthetic",
+                                version_id="synthetic",
+                                title="Interface probe",
+                                content=message,
+                                trace_id="synthetic",
+                                retrieval_id="synthetic",
+                                rank=1,
+                                is_mock=True,
+                            )
+                        ],
+                    )
+                else:
+                    result = AnswerBundle(
+                        status="answered", display_text=message, speech_text=message, is_mock=True
+                    )
+                await provider.submit_tool_result(call_id, voice_profile.prepare_reply(result).tool_output)
                 tool_result_sent_at = time.monotonic()
                 report["checks"]["native_tool_result_sent"] = "passed"
 
@@ -126,7 +147,7 @@ async def probe(args):
                             continue
                         if payload["name"] != BRIDGE_NAME:
                             raise ValueError("Unexpected tool")
-                        BridgeArguments.model_validate_json(payload["arguments"])
+                        voice_profile.arguments.model_validate_json(payload["arguments"])
                         seen_calls.add(payload["call_id"])
                         report["checks"]["native_tool_call_observed"] = "passed"
                         tool_seen.set()

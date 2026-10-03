@@ -1,4 +1,5 @@
 import asyncio
+import logging
 from contextlib import AsyncExitStack, asynccontextmanager
 
 import httpx
@@ -17,6 +18,7 @@ from app.sessions.coordinator import SessionCoordinator
 from app.storage.store import Store
 from app.tools.registry import ToolRegistry
 from app.voice.gateway import VoiceGateway
+from app.voice.provider import VoiceProfile
 
 
 def create_app(settings=None):
@@ -26,8 +28,16 @@ def create_app(settings=None):
 
     @asynccontextmanager
     async def lifespan(app):
+        profile = settings.execution_profile()
+        voice_profile = VoiceProfile.build(profile)
+        logging.getLogger(__name__).info(
+            "business_execution_configured mode=%s provider=%s text_available=%s",
+            profile.mode,
+            profile.agent_provider,
+            profile.text_available,
+        )
         if not injected_settings:
-            settings.validate_deployment()
+            settings.validate_deployment(profile)
         async with AsyncExitStack() as cleanup:
             store = Store(settings.database_url)
             auth = Auth(settings, store)
@@ -42,13 +52,16 @@ def create_app(settings=None):
                 await store.init_dev()
             await store.healthy()
             registry = ToolRegistry(settings, client, store)
-            runtime = BusinessRuntime(settings, registry)
-            if runtime.client:
-                cleanup.push_async_callback(runtime.client.close)
-            coordinator = SessionCoordinator(store, runtime, coordination, settings)
+            runtime = BusinessRuntime(settings, registry, profile)
+            cleanup.push_async_callback(runtime.close)
+            coordinator = SessionCoordinator(
+                store, runtime, coordination, settings, profile, voice_profile.prepare_reply
+            )
             cleanup.push_async_callback(coordinator.close)
-            voice = VoiceGateway(settings, coordinator, store)
+            voice = VoiceGateway(settings, coordinator, store, profile, voice_profile)
             coordinator.voice = voice
+            app.state.profile = profile
+            app.state.static_capabilities = capabilities(settings, profile)
             app.state.settings, app.state.store, app.state.client = settings, store, client
             app.state.auth, app.state.registry = auth, registry
             app.state.coordinator, app.state.coordination, app.state.voice = coordinator, coordination, voice
@@ -89,13 +102,17 @@ def create_app(settings=None):
         if request.method in ("POST", "PATCH", "DELETE", "PUT"):
             origin = request.headers.get("origin")
             if origin and origin != settings.public_origin:
-                return JSONResponse({"code": "FORBIDDEN", "message": "Request origin is not trusted"}, status_code=403)
+                return JSONResponse(
+                    {"code": "FORBIDDEN", "message": "Request origin is not trusted"}, status_code=403
+                )
         try:
             length = int(request.headers.get("content-length", "0") or 0)
         except ValueError:
             length = 16385
         if length > 16384:
-            return JSONResponse({"code": "REQUEST_TOO_LARGE", "message": "Request body is too large"}, status_code=413)
+            return JSONResponse(
+                {"code": "REQUEST_TOO_LARGE", "message": "Request body is too large"}, status_code=413
+            )
         if request.method in ("POST", "PATCH", "DELETE", "PUT"):
             chunks, size = [], 0
             async for chunk in request.stream():
@@ -118,7 +135,9 @@ def create_app(settings=None):
 
     @app.exception_handler(RequestValidationError)
     async def validation_error(request, exc):
-        return JSONResponse({"code": "INVALID_REQUEST", "message": "Request does not match the API contract"}, status_code=422)
+        return JSONResponse(
+            {"code": "INVALID_REQUEST", "message": "Request does not match the API contract"}, status_code=422
+        )
 
     @app.get("/health/live")
     async def live():
@@ -133,20 +152,25 @@ def create_app(settings=None):
                 raise ValueError("draining")
         except Exception:
             return JSONResponse({"status": "unavailable"}, status_code=503)
-        caps = capabilities(settings)
+        caps = request.app.state.static_capabilities
         return {
-            "status": "ready" if caps["text_configured"] else "degraded",
+            "status": "ready" if caps["text_available"] or caps["voice_available"] else "degraded",
+            "execution_mode": caps["execution_mode"],
+            "external_llm_enabled": caps["external_llm_enabled"],
+            "text_available": caps["text_available"],
             "text_configured": caps["text_configured"],
             "voice_configured": caps["voice_available"],
             "is_mock": caps["is_mock"],
-            "enabled_tools": caps["enabled_tools"],
+            "enabled_tools": sorted(settings.enabled_tool_names),
             "voice_capacity_available": len(request.app.state.voice.sessions) < settings.max_voice_sessions,
         }
 
     @app.exception_handler(Exception)
     async def unexpected_error(request, exc):
         return JSONResponse(
-            DomainError("INTERNAL_ERROR", "The service is temporarily unavailable. Please try again later.", 500, True).payload(),
+            DomainError(
+                "INTERNAL_ERROR", "The service is temporarily unavailable. Please try again later.", 500, True
+            ).payload(),
             status_code=500,
         )
 

@@ -9,6 +9,7 @@ async def app(tmp_path):
     settings = Settings(
         _env_file=None,
         auto_create_schema=True,
+        agent_provider="mock",
         database_url=f"sqlite+aiosqlite:///{tmp_path}/test.db",
         dev_admin=True,
     )

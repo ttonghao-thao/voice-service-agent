@@ -2,6 +2,13 @@ from dataclasses import dataclass, field
 from typing import Any
 
 from app.contracts import Citation, Principal, uid
+from app.tools.schemas import CueKBSearchInput
+
+
+@dataclass(frozen=True)
+class BusinessInput:
+    user_text: str
+    knowledge_query: CueKBSearchInput | None = None
 
 
 @dataclass

@@ -12,17 +12,24 @@ from urllib.error import URLError
 from urllib.request import urlopen
 
 
-def validate_ready(payload, expected_tools):
+def validate_ready(payload, expected_tools, expected_mode):
     if payload.get("status") != "ready":
         raise ValueError("API readiness is not ready")
     if payload.get("is_mock") is not False:
         raise ValueError("Deployment readiness reports a mock provider")
     if set(payload.get("enabled_tools", [])) != expected_tools:
         raise ValueError("API enabled tools do not match deployment configuration")
-    if payload.get("text_configured") is not True or payload.get("voice_configured") is not True:
-        raise ValueError("Text model and VoiceChat must both be configured")
+    if expected_mode not in ("direct", "external") or payload.get("execution_mode") != expected_mode:
+        raise ValueError("API execution mode does not match deployment configuration")
+    external = expected_mode == "external"
+    if payload.get("voice_configured") is not True or any(
+        payload.get(field) is not external
+        for field in ("text_configured", "text_available", "external_llm_enabled")
+    ):
+        raise ValueError("Required mode capabilities are missing or inconsistent")
     return {
         "status": payload["status"],
+        "execution_mode": expected_mode,
         "enabled_tools": sorted(expected_tools),
         "text_configured": payload.get("text_configured") is True,
         "voice_configured": payload.get("voice_configured") is True,
@@ -42,7 +49,10 @@ def main():
     except (OSError, URLError, ValueError) as exc:
         raise SystemExit("Deployment readiness endpoint is unavailable: " + str(exc)) from exc
     try:
-        check = validate_ready(payload, Settings().enabled_tool_names)
+        settings = Settings()
+        profile = settings.execution_profile()
+        settings.validate_deployment(profile)
+        check = validate_ready(payload, settings.enabled_tool_names, profile.mode)
     except ValueError as exc:
         raise SystemExit("Deployment readiness check failed: " + str(exc)) from exc
     print(

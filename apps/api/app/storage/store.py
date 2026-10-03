@@ -3,7 +3,14 @@ import hashlib
 from contextlib import asynccontextmanager, contextmanager
 from datetime import timedelta
 
-from app.contracts import DomainError, PortalEvent, now, portal_server_event_adapter, uid
+from app.contracts import (
+    ACTIVE_TURN_STATUSES,
+    DomainError,
+    PortalEvent,
+    now,
+    portal_server_event_adapter,
+    uid,
+)
 from app.storage.models import Base, Conversation, Event, Record, ToolConfig, Turn
 from sqlalchemy import delete, select, text
 from sqlalchemy.ext.asyncio import async_sessionmaker, create_async_engine
@@ -111,6 +118,7 @@ class Store:
         expected_epoch=None,
         native_call_id=None,
         input_item_id=None,
+        execution_mode="external",
     ):
         async with self.transaction() as db:
             c = await self.get(db, cid, principal, lock=True)
@@ -120,14 +128,18 @@ class Store:
             digest = hashlib.sha256(request.encode()).hexdigest()
             if existing:
                 if existing.request_hash != digest:
-                    raise DomainError("IDEMPOTENCY_CONFLICT", "The same request ID cannot be used for different content", 409)
+                    raise DomainError(
+                        "IDEMPOTENCY_CONFLICT",
+                        "The same request ID cannot be used for different content",
+                        409,
+                    )
                 return existing, c, False
             if expected_epoch is not None and c.epoch != expected_epoch:
                 raise DomainError("STALE_EPOCH", "This voice connection has expired", 409)
             parent_task_id = c.current_turn
             if parent_task_id:
                 previous = await db.get(Turn, parent_task_id)
-                if previous and previous.status == "running":
+                if previous and previous.status in ACTIVE_TURN_STATUSES:
                     previous.status = "superseded"
                     previous.cancellation_reason = "request_revised"
                     previous.delivery_status = "discarded"
@@ -149,6 +161,7 @@ class Store:
                 request_hash=digest,
                 user_text=request,
                 channel=channel,
+                execution_mode=execution_mode,
                 status="running",
                 delivery_status="pending_validation",
             )
@@ -184,6 +197,94 @@ class Store:
             await self.event(db, c, "portal.answer.final", t.answer, turn_id)
             return True
 
+    async def commit_knowledge(self, cid, epoch, revision, turn_id, knowledge):
+        async with self.transaction() as db:
+            c = await self.get(db, cid, lock=True)
+            t = await db.get(Turn, turn_id)
+            if (
+                not t
+                or c.epoch != epoch
+                or c.request_revision != revision
+                or c.current_turn != turn_id
+                or t.request_revision != revision
+                or t.status != "running"
+                or t.execution_mode != "direct"
+            ):
+                return False
+            t.knowledge_result = knowledge.model_dump(mode="json")
+            t.status, t.delivery_status = "awaiting_voice", "evidence_ready"
+            event = await self.event(
+                db, c, "portal.knowledge.ready", knowledge.public_view().model_dump(mode="json"), turn_id
+            )
+            await db.flush()
+            saved = await db.get(Event, event.event_id)
+            saved.payload = {**saved.payload, "_authorized_kb_ids": knowledge.authorized_kb_ids}
+            return True
+
+    async def tool_submitted(self, cid, epoch, revision, turn_id):
+        async with self.transaction() as db:
+            c = await self.get(db, cid, lock=True)
+            t = await db.get(Turn, turn_id)
+            if (
+                not t
+                or c.epoch != epoch
+                or c.request_revision != revision
+                or c.current_turn != turn_id
+                or t.status != "awaiting_voice"
+                or t.delivery_status != "evidence_ready"
+            ):
+                return False
+            t.delivery_status = "tool_submitted"
+            return True
+
+    async def voice_text(self, cid, epoch, revision, turn_id, response_id=None):
+        async with self.sessions() as db:
+            rows = (
+                await db.execute(
+                    select(Record).where(
+                        Record.conversation_id == cid,
+                        Record.epoch == epoch,
+                        Record.kind == "voicechat_transcript",
+                    )
+                )
+            ).scalars()
+            parts = [
+                r.payload
+                for r in rows
+                if r.payload.get("turn_id") == turn_id
+                and r.payload.get("request_revision") == revision
+                and r.payload.get("phase") == "answer"
+                and (response_id is None or r.payload.get("response_id") == response_id)
+            ]
+            return " ".join(
+                p["text"].strip()
+                for p in sorted(parts, key=lambda p: p["segment_index"])
+                if p["text"].strip()
+            )
+
+    async def finalize_voice(self, cid, epoch, revision, turn_id, bundle, history, voice_failed=False):
+        async with self.transaction() as db:
+            c = await self.get(db, cid, lock=True)
+            t = await db.get(Turn, turn_id)
+            if (
+                not t
+                or c.epoch != epoch
+                or c.request_revision != revision
+                or c.current_turn != turn_id
+                or t.request_revision != revision
+                or t.status != "awaiting_voice"
+            ):
+                return False
+            t.answer, t.status = bundle.model_dump(mode="json"), bundle.status
+            t.delivery_status = "voice_failed" if voice_failed else "accepted"
+            if voice_failed:
+                t.output_suppressed = True
+            if bundle.status in ("voice_completed", "needs_clarification", "insufficient_evidence"):
+                c.history = history[-24:]
+                c.summary = "\n".join(str(x.get("content", "")) for x in c.history[-6:])[-1500:]
+            await self.event(db, c, "portal.answer.final", t.answer, turn_id)
+            return True
+
     async def invalidate(self, principal, cid, expected_epoch):
         async with self.transaction() as db:
             c = await self.get(db, cid, principal, lock=True)
@@ -193,7 +294,7 @@ class Store:
                 return c.epoch, False
             if c.current_turn:
                 t = await db.get(Turn, c.current_turn)
-                if t and t.status == "running":
+                if t and t.status in ACTIVE_TURN_STATUSES:
                     t.status = "canceled"
                     t.cancellation_reason = "hard_interrupt"
                     t.delivery_status = "discarded"
@@ -201,7 +302,9 @@ class Store:
                     c.request_revision += 1
             c.epoch += 1
             c.current_turn, c.voice_session_id = None, None
-            c.summary = ("The previous answer was interrupted; the user may not have heard it all.\n" + c.summary)[:1500]
+            c.summary = (
+                "The previous answer was interrupted; the user may not have heard it all.\n" + c.summary
+            )[:1500]
             await self.event(db, c, "portal.playback.clear", {})
             return c.epoch, True
 
@@ -220,7 +323,7 @@ class Store:
             c = await self.get(db, cid, principal, lock=True)
             if c.current_turn:
                 t = await db.get(Turn, c.current_turn)
-                if t and t.status == "running":
+                if t and t.status in ACTIVE_TURN_STATUSES:
                     t.status = "canceled"
                     t.cancellation_reason = "voice_restarted"
                     t.delivery_status = "discarded"
@@ -242,7 +345,7 @@ class Store:
             if not c.current_turn:
                 return c.request_revision, False
             t = await db.get(Turn, c.current_turn)
-            if not t or t.status != "running":
+            if not t or t.status not in ACTIVE_TURN_STATUSES:
                 return c.request_revision, False
             t.status = "canceled"
             t.cancellation_reason = reason
@@ -262,7 +365,7 @@ class Store:
                 raise DomainError("STALE_REVISION", "Search revision mismatch", 409)
             if c.current_turn:
                 t = await db.get(Turn, c.current_turn)
-                if t:
+                if t and t.execution_mode != "direct":
                     t.output_suppressed = True
             await self.event(
                 db,

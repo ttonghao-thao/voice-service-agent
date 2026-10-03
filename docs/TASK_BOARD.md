@@ -1,29 +1,38 @@
 # 当前任务板
 
-更新：2026-10-02。目标设计见 [architecture.md](architecture.md)，状态证据见 [acceptance-report.md](acceptance-report.md)。本期范围已确定为英文知识库客服，默认只启用 `search_knowledge`。
+更新：2026-10-03。目标设计见 [architecture.md](architecture.md)，状态证据见 [acceptance-report.md](acceptance-report.md)。本期范围已确定为英文知识库客服，默认只启用 `search_knowledge`。
 
 ## 1. 当前结论与审计基线
 
-当前主链保持：门户 → SessionCoordinator → BusinessRuntime → ToolRegistry → CueKB；语音经 VoiceGateway/Adapter 桥接独立 VoiceChat。D01–D06、D08–D10、D13–D20、E01–E03 的编码与本地验证构成当前交付；D07 真实语音、知识、数据库和容器验收仍未完成。现行身份为每通话独立 capability，KB 范围由服务端确定，Web 标准 HTTPS 8087，API 不映射宿主端口。
+当前主链保持：门户 → SessionCoordinator → BusinessRuntime → ToolRegistry → CueKB；语音经 VoiceGateway/Adapter 桥接独立 VoiceChat。D01–D06、D08–D10、D13–D20、E01–E03、Q06/Q07 的编码与本地验证构成当前交付；D07 真实语音、知识、数据库和容器验收仍未完成。现行身份为每通话独立 capability，KB 范围由服务端确定，Web 标准 HTTPS 8087，API 不映射宿主端口。
 
 D19/D20 对照同次录像/日志、speech 源码与原生 HTML 确认：原生模型有自然插话和停顿能力，HTML 不依赖 response ID 播放。当前门户缺陷包含自身 Stop playback 状态及 ACK 授权竞态；严格旧音频拒绝还需要 WebSocket 有序归属，不能把缺失音频边界在 adapter 中凭字幕猜出。现有 speech 基线更新 WebSocket 层并使用已有 Jinja 开关，不改模型/离线转换，默认工具模板恢复原样。说明见 [speech 更新清单](../deploy/voicechat/README.md)。实际 ASR 不准仍须录音/GPU 对照。
 
-查询约 3 秒的分段占比尚无现场证据。本轮去除同进程 SSE 300 ms 轮询等待与 final 后已有气泡的额外 GET，补齐逐次模型、CueKB、Agent、提交耗时；保留模型检索规划和证据校验。详见 [查询延迟](integration.md#41-查询延迟与优化边界)。
+查询约 3 秒的分段占比尚无现场证据。D20 已去除同进程 SSE 300 ms 轮询等待与 final 后已有气泡的额外 GET，补齐逐次模型、CueKB、Agent、提交耗时；external 保留模型检索规划和证据校验；Q07 direct 则由 Nano 形成 query，后端只做授权检索。详见 [查询延迟](integration.md#41-查询延迟与优化边界)。
 
 D16–D18 的知识工具后置条件、最终 ASR 输入绑定、文字总预算和答案终态修复继续保留；设计已整体更新为当前流程，历史逐轮问题与验证只保存在 [验收记录](acceptance-report.md)。2026-09-22 的 `9b44859` 仅为历史文档审计基线。
 
 尚有独立边界：`parent_task_id` 不是子 Agent 调度，`accepted` 不代表已听到，引用存在不证明语义充分，原件查看尚未实现；这些属于 Q 系列建议，不把它们自动扩张为本次交付范围。
 
-## 本轮 Q07 外置 LLM 可选化设计（只改文档）
+## 本轮 Q07 编码实施（2026-10-03，用户已授权编码与推送）
 
-用户确认：外置 LLM 是启动时加载的全局可选配置；未配置由 VoiceChat 内部 Nano LLM 理解证据并回答，配置后维持现有外置模型流程；不按请求判定配置、不运行时自动切换。本轮不编码。
+按架构 §11 的 I1–I6 实施，保留已冻结需求和 D07 真实验收边界。
+
+1. I1/I2（完成）：启动固定模式、外置执行器拆分、直接检索及有界证据投影。
+2. I3（完成）：0007 迁移、证据/口述两阶段、取消/超时/恢复与交付竞态。
+3. I4（完成）：API/门户、授权投影、历史和严格契约。
+4. I5/I6（完成）：部署门禁、观测、回归、文档及推送核对。
+
+## Q07 设计交付记录（2026-10-02）
+
+用户确认：外置 LLM 是启动时加载的全局可选配置；未配置由 VoiceChat 内部 Nano LLM 理解证据并回答，配置后维持现有外置模型流程；不按请求判定配置、不运行时自动切换。2026-10-02 设计轮未编码；2026-10-03 已获授权并完成编码。
 
 1. M1（完成）：核对启动装配、配置/部署门禁、Runtime、工具、Coordinator、持久化、语音交付和 Q06 门户路径；代码基线 `bbbd95e`，开始时工作区干净。
 2. M2（完成）：冻结配置矩阵、启动策略、检索输入/证据回传、答案生命周期、文字入口及失败边界，写入现有主题文档。
 3. M3（完成）：形成按文件的 I1–I6 编码任务、Alembic 0007/协议升级和八组验收矩阵，使后续编码无需重定架构。
 4. M4（完成）：文档交叉检查、链接/锚点/围栏与仅 Markdown diff 检查，交付设计；证据见验收 Q07，不把设计当作功能已实现。
 
-后续编码按 [架构 §11](architecture.md#11-q07外置-llm-可选化实施规格尚未编码) 的 I1–I6 顺序执行；必须等用户另行授权编码。D07 真实验收不因设计完成而改变。
+编码实施按 [架构 §11](architecture.md#11-q07外置-llm-可选化实施规格) 的 I1–I6 完成，证据见本轮验收记录。D07 真实验收状态不变。
 
 ## 本轮 D20 实施计划
 
@@ -105,7 +114,7 @@ D19 里程碑：M1 附件/源码与调用链审计完成；M2 门户及网关修
 | P2 / Q04 | 鉴权原件查看，待业务与上游契约确认 | 版本固定、撤权复查、受控下载；未确认接口前不创建假入口 | [接入 §7](integration.md#7-q04原件查看的后续设计) |
 | 设计 / Q05 | 最新 VoiceChat 论文与离线容器优化方案，设计完成待确认、未实施 | 以已转换的 Triton Model Repository 为基线；复核工具等待、ASR、口述、容量与版本边界；确认后实施 | [研究与设计](voicechat-research-review.md) |
 | 本地完成 / Q06 | 语音文字统一聊天展示，M1–M4 已完成，D07 真实验收待执行 | ASR 右侧气泡，查询并行；实际口述左侧正文并保留；稳定消息关联、完整答案/来源展开及受控竞态回归 | [门户方案 §7](portal-protocol.md#7-q06语音文字统一聊天展示) |
-| 设计 / Q07 | 全局可选外置 LLM，设计交付、未编码，等待编码授权 | 启动时固定 direct/external；direct 零外置模型调用、证据交由 Nano；external 保持现有问答；状态/历史/部署/测试完整 | [架构 §11](architecture.md#11-q07外置-llm-可选化实施规格尚未编码)、[接入 §8](integration.md#8-q07双模式接入契约设计未实现)、[门户 §8](portal-protocol.md#8-q07直接检索模式的消息与状态设计未实现) |
+| 本地完成 / Q07 | 全局可选外置 LLM，编码及受控验证完成，真实验收待 D07 | 启动时固定 direct/external；direct 零外置模型调用、证据交由 Nano；external 保持现有问答；状态/历史/部署/测试完整 | [架构 §11](architecture.md#11-q07外置-llm-可选化实施规格)、[接入 §8](integration.md#8-q07双模式接入契约)、[门户 §8](portal-protocol.md#8-q07直接检索模式的消息与状态) |
 
 本次保留 Coordinator、revision/epoch、单写入器和 pending call 结清语义；不放宽知识授权、不以真实失败回退 mock、不新增 GPU 或队列服务。D07 的现场缺陷继续回到对应模块修复并用原样本复测。
 

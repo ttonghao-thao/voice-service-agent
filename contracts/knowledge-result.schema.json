@@ -219,67 +219,59 @@
   },
   "additionalProperties": false,
   "properties": {
-    "answer_id": {
-      "title": "Answer Id",
+    "kind": {
+      "const": "knowledge",
+      "default": "knowledge",
+      "title": "Kind",
       "type": "string"
     },
-    "answer_origin": {
-      "default": "business_runtime",
+    "result_id": {
+      "title": "Result Id",
+      "type": "string"
+    },
+    "directive": {
       "enum": [
-        "business_runtime",
-        "voicechat"
+        "answer_from_evidence",
+        "ask_clarification",
+        "report_insufficient",
+        "report_failure"
       ],
-      "title": "Answer Origin",
+      "title": "Directive",
       "type": "string"
     },
-    "evidence_role": {
-      "default": "cited_sources",
-      "enum": [
-        "cited_sources",
-        "retrieved_context"
-      ],
-      "title": "Evidence Role",
-      "type": "string"
-    },
-    "authorized_kb_ids": {
+    "retrieval_status": {
       "anyOf": [
         {
-          "items": {
-            "type": "string"
-          },
-          "type": "array"
+          "enum": [
+            "ok",
+            "degraded",
+            "not_found",
+            "needs_clarification"
+          ],
+          "type": "string"
         },
         {
           "type": "null"
         }
       ],
-      "default": null,
-      "title": "Authorized Kb Ids"
+      "title": "Retrieval Status"
     },
-    "status": {
-      "enum": [
-        "answered",
-        "needs_clarification",
-        "insufficient_evidence",
-        "failed",
-        "canceled",
-        "voice_completed"
+    "evidence_status": {
+      "anyOf": [
+        {
+          "enum": [
+            "unassessed",
+            "sufficient",
+            "insufficient",
+            "conflicting"
+          ],
+          "type": "string"
+        },
+        {
+          "type": "null"
+        }
       ],
-      "title": "Status",
-      "type": "string"
-    },
-    "display_text": {
-      "title": "Display Text",
-      "type": "string"
-    },
-    "speech_text": {
-      "title": "Speech Text",
-      "type": "string"
-    },
-    "speech_language": {
-      "default": "en-US",
-      "title": "Speech Language",
-      "type": "string"
+      "title": "Evidence Status"
     },
     "citations": {
       "items": {
@@ -288,13 +280,28 @@
       "title": "Citations",
       "type": "array"
     },
-    "cards": {
+    "degraded_reasons": {
       "items": {
-        "additionalProperties": true,
-        "type": "object"
+        "type": "string"
       },
-      "title": "Cards",
+      "title": "Degraded Reasons",
       "type": "array"
+    },
+    "scope_limited": {
+      "default": false,
+      "title": "Scope Limited",
+      "type": "boolean"
+    },
+    "application_limited": {
+      "default": false,
+      "title": "Application Limited",
+      "type": "boolean"
+    },
+    "hits_omitted": {
+      "default": 0,
+      "minimum": 0,
+      "title": "Hits Omitted",
+      "type": "integer"
     },
     "reason_code": {
       "anyOf": [
@@ -308,17 +315,35 @@
       "default": null,
       "title": "Reason Code"
     },
+    "message": {
+      "default": "",
+      "maxLength": 500,
+      "title": "Message",
+      "type": "string"
+    },
     "is_mock": {
       "default": false,
       "title": "Is Mock",
       "type": "boolean"
+    },
+    "trace_id": {
+      "anyOf": [
+        {
+          "type": "string"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null,
+      "title": "Trace Id"
     }
   },
   "required": [
-    "status",
-    "display_text",
-    "speech_text"
+    "directive",
+    "retrieval_status",
+    "evidence_status"
   ],
-  "title": "AnswerBundle",
+  "title": "KnowledgeResultView",
   "type": "object"
 }

@@ -34,6 +34,8 @@ export interface Citation {
 }
 export interface Answer {
   answer_id: string;
+  answer_origin?: "business_runtime" | "voicechat";
+  evidence_role?: "cited_sources" | "retrieved_context";
   status: string;
   display_text: string;
   speech_text: string;
@@ -42,12 +44,25 @@ export interface Answer {
   is_mock: boolean;
   reason_code: string | null;
 }
+export interface KnowledgeResult {
+  kind: "knowledge";
+  result_id: string;
+  directive: string;
+  retrieval_status: string | null;
+  evidence_status: string | null;
+  citations: Citation[];
+  is_mock: boolean;
+  reason_code: string | null;
+  message: string;
+}
 export interface Turn {
   id: string;
   input_item_id?: string | null;
   created_at?: string;
   user_text: string;
   channel: string;
+  execution_mode?: "direct" | "external";
+  knowledge_result?: KnowledgeResult | null;
   status: string;
   answer: Answer | null;
   epoch: number;
@@ -88,6 +103,9 @@ export interface PortalEvent {
   payload: Record<string, unknown>;
 }
 export interface Capabilities {
+  execution_mode: "direct" | "external";
+  external_llm_enabled: boolean;
+  text_available: boolean;
   is_mock: boolean;
   voice_available: boolean;
   text_configured: boolean;

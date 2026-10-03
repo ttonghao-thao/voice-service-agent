@@ -11,7 +11,7 @@ from starlette.websockets import WebSocketDisconnect
 def test_native_bridge_dedup_tool_before_transcript_and_ticket(tmp_path):
     app = create_app(
         Settings(
-            _env_file=None, auto_create_schema=True, database_url=f"sqlite+aiosqlite:///{tmp_path}/ws.db"
+            _env_file=None, agent_provider="mock", auto_create_schema=True, database_url=f"sqlite+aiosqlite:///{tmp_path}/ws.db"
         )
     )
     returns = []
@@ -88,7 +88,7 @@ def test_native_bridge_dedup_tool_before_transcript_and_ticket(tmp_path):
 def test_input_activity_never_cancels_without_explicit_control(tmp_path):
     app = create_app(
         Settings(
-            _env_file=None,
+            _env_file=None, agent_provider="mock",
             auto_create_schema=True,
             database_url=f"sqlite+aiosqlite:///{tmp_path}/input-state.db",
         )
@@ -117,7 +117,7 @@ def test_input_activity_never_cancels_without_explicit_control(tmp_path):
 def test_voice_response_after_user_speech_requires_business_bridge(tmp_path):
     app = create_app(
         Settings(
-            _env_file=None,
+            _env_file=None, agent_provider="mock",
             auto_create_schema=True,
             database_url=f"sqlite+aiosqlite:///{tmp_path}/required-bridge.db",
         )
@@ -144,6 +144,8 @@ def test_voice_response_after_user_speech_requires_business_bridge(tmp_path):
         ) as ws:
             assert ws.receive_json()["type"] == "portal.session.ready"
             error = ws.receive_json()
+            if error["type"] == "portal.input.state":
+                error = ws.receive_json()
             assert error["type"] == "portal.error"
             assert error["payload"]["code"] == "VOICE_TOOL_REQUIRED"
 
@@ -151,7 +153,7 @@ def test_voice_response_after_user_speech_requires_business_bridge(tmp_path):
 def test_tool_without_customer_input_is_settled_without_creating_turn(tmp_path):
     app = create_app(
         Settings(
-            _env_file=None,
+            _env_file=None, agent_provider="mock",
             auto_create_schema=True,
             database_url=f"sqlite+aiosqlite:///{tmp_path}/unbound-tool.db",
         )
@@ -195,7 +197,7 @@ def test_tool_without_customer_input_is_settled_without_creating_turn(tmp_path):
 def test_final_transcript_is_authoritative_for_voice_turn(tmp_path):
     app = create_app(
         Settings(
-            _env_file=None,
+            _env_file=None, agent_provider="mock",
             auto_create_schema=True,
             database_url=f"sqlite+aiosqlite:///{tmp_path}/authoritative-transcript.db",
         )
@@ -250,7 +252,7 @@ def test_final_transcript_is_authoritative_for_voice_turn(tmp_path):
 def test_new_input_state_does_not_reject_authorized_tool_output(tmp_path):
     app = create_app(
         Settings(
-            _env_file=None,
+            _env_file=None, agent_provider="mock",
             auto_create_schema=True,
             database_url=f"sqlite+aiosqlite:///{tmp_path}/authorized-output.db",
         )
@@ -313,7 +315,7 @@ def test_initial_continuous_response_does_not_silently_swallow_customer_reply(tm
 
     app = create_app(
         Settings(
-            _env_file=None,
+            _env_file=None, agent_provider="mock",
             auto_create_schema=True,
             database_url=f"sqlite+aiosqlite:///{tmp_path}/continuous-response.db",
         )
@@ -359,7 +361,7 @@ def test_fast_tool_result_during_ack_preserves_exactly_one_answer_permission(tmp
     from app.voice.provider import BRIDGE_ACK
 
     app = create_app(Settings(
-        _env_file=None, auto_create_schema=True,
+        _env_file=None, agent_provider="mock", auto_create_schema=True,
         database_url=f"sqlite+aiosqlite:///{tmp_path}/fast-result.db",
     ))
 
@@ -418,14 +420,14 @@ def test_fast_tool_result_during_ack_preserves_exactly_one_answer_permission(tmp
             # use stored transcript evidence to verify accepted responses reliably.
         records = client.get(f"/api/v1/conversations/{cid}/messages").json()["records"]
         spoken = [r["payload"]["text"] for r in records if r["kind"] == "voicechat_transcript"]
-        assert ("The verified answer." in spoken) == (original_is_ack or not stopped_original)
+        assert "The verified answer." in spoken  # Stop clears audio, retaining authorized spoken text.
         assert BRIDGE_ACK not in spoken
 
 
 
 def test_initial_greeting_overlapping_user_input_is_suppressed_without_false_lifecycle_error(tmp_path):
     app = create_app(Settings(
-        _env_file=None, auto_create_schema=True,
+        _env_file=None, agent_provider="mock", auto_create_schema=True,
         database_url=f"sqlite+aiosqlite:///{tmp_path}/greeting-overlap.db",
     ))
 

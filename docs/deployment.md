@@ -1,16 +1,16 @@
 # 部署与运行
 
-> 更新 2026-10-02：正文描述当前代码的运行方式，不代表真实服务已经验收；末节 Q07 是可选外置 LLM 的待编码部署规格。本期 Compose 使用每次通话独立的临时 capability、真实 CueKB、`search_knowledge` 和 NVIDIA VoiceChat，不需要天气代理配置。真实验收仍须按 [任务板](TASK_BOARD.md) D07 执行。最终系统边界见 [架构](architecture.md)。
+> 更新 2026-10-03：正文描述当前代码的运行方式，不代表真实服务已经验收；末节 Q07 是已实现的可选外置 LLM 部署规格。本期 Compose 使用每次通话独立的临时 capability、真实 CueKB、`search_knowledge` 和 NVIDIA VoiceChat，不需要天气代理配置。真实验收仍须按 [任务板](TASK_BOARD.md) D07 执行。最终系统边界见 [架构](architecture.md)。
 
 ## 部署方式边界
 
-本阶段只有一套功能验证部署配置：`.env.example` 是唯一模板，实际 `.env` 不提交；`deploy/compose.production.yaml` 是唯一 Compose 拓扑，无需逐项修改 Compose。PostgreSQL、Redis、迁移、API、Web 是当前业务链路的必要容器；VoiceChat、CueKB 仍独立部署。应用代码保留显式注入的 fixture 设置供自动化测试使用；正常 API 启动会执行严格部署校验，拒绝 fixture 身份、mock、自动建表，以及缺少真实文本模型、CueKB 或 NVIDIA VoiceChat WS/WSS 配置的部署。
+本阶段只有一套功能验证部署配置：`.env.example` 是唯一模板，实际 `.env` 不提交；`deploy/compose.production.yaml` 是唯一 Compose 拓扑，无需逐项修改 Compose。PostgreSQL、Redis、迁移、API、Web 是当前业务链路的必要容器；VoiceChat、CueKB 仍独立部署。应用代码保留显式注入的 fixture 设置供自动化测试使用；正常 API 启动会执行严格部署校验，拒绝 fixture 身份、mock、自动建表，以及缺少本模式所需真实服务配置的部署；direct 不要求外置文本模型，external 要求完整模型连接项，两者均要求真实 CueKB 与 NVIDIA VoiceChat。
 
 门户只用于受控测试，可从公网直接访问 `https://<域名>:8087`。Nginx 已打包在 Web 镜像中，直接终止 TLS 并提供静态门户，无需外层反向代理。它在容器内监听 `0.0.0.0:8087`，Compose 同端口公开映射；`PUBLIC_ORIGIN` 必须与浏览器实际使用的 HTTPS origin 完全一致。证书和私钥通过只读挂载提供，证书链、域名匹配、浏览器信任及麦克风授权必须在 D07 实机验证。
 
 API 容器内部监听 `0.0.0.0:8000`，不映射宿主端口。浏览器只从 Web 同源 `/api/` 调用，Web 容器内的 Nginx 将请求转到 Compose `app` 网络的 `api:8000`。PostgreSQL、Redis 也只在容器网络中；公网仅开放 Web 的 `8087`。独立 API 客户端与正式系统间鉴权不属于本期核心验证。
 
-编码机没有 Docker 或真实 CueKB/VoiceChat 接口；本地只运行契约、静态与夹具测试。镜像/容器、PostgreSQL/Redis、真实供应商和浏览器验收归 D07，不能以本地测试或 `/health/ready` 冒充通过。
+编码机没有 Docker 或真实 CueKB/VoiceChat 接口；本地只运行契约、静态与夹具测试。镜像/容器、PostgreSQL/Redis、真实供应商与实际设备浏览器验收归 D07，不能以本地测试或 `/health/ready` 冒充通过。
 
 ## 配置与独立测试通话
 
@@ -63,7 +63,7 @@ docker compose --env-file .env -f deploy/compose.production.yaml ps
 docker compose --env-file .env -f deploy/compose.production.yaml logs --tail=200 api web
 ```
 
-`AGENT_MODEL` 是 BusinessRuntime 后台文本 Agent 调用的模型标识，用于理解任务、选择 `search_knowledge` 并组织有依据的答案；它不是 VoiceChat 的实时语音模型。`AGENT_PROVIDER=openai` 时使用官方端点，无需 `AGENT_BASE_URL`；只有接 OpenAI-compatible 服务时才改为 `compatible` 并填写该 HTTP/HTTPS 基地址，两者不需要同时独立部署。`CUEKB_BASE_URL` 是独立 CueKB HTTP/HTTPS 基地址，应用附加 `/v1/search`；HTTP 仅用于已隔离、受控的内部网络。`VOICECHAT_WS_URL` 是 API 到独立语音服务的 WS/WSS endpoint，不由门户域名推断；WS 仅用于同主机或受控隔离内网，且对应端口不得公网暴露。浏览器公网入口仍强制 HTTPS/WSS。本期固定只开放 `search_knowledge`，无需天气配置。数据库/Redis 凭据使用 URL 安全字符，容器内连接串由 Compose 构造。
+默认 `AGENT_PROVIDER=none`，模型连接项全空，Nano 根据证据口述，独立文字入口禁用。external 模式中，`AGENT_MODEL` 是 BusinessRuntime 后台文本 Agent 调用的模型标识，用于理解任务、选择 `search_knowledge` 并组织有依据的答案；它不是 VoiceChat 的实时语音模型。`AGENT_PROVIDER=openai` 时使用官方端点，无需 `AGENT_BASE_URL`；只有接 OpenAI-compatible 服务时才改为 `compatible` 并填写该 HTTP/HTTPS 基地址，两者不需要同时独立部署。`CUEKB_BASE_URL` 是独立 CueKB HTTP/HTTPS 基地址，应用附加 `/v1/search`；HTTP 仅用于已隔离、受控的内部网络。`VOICECHAT_WS_URL` 是 API 到独立语音服务的 WS/WSS endpoint，不由门户域名推断；WS 仅用于同主机或受控隔离内网，且对应端口不得公网暴露。浏览器公网入口仍强制 HTTPS/WSS。本期固定只开放 `search_knowledge`，无需天气配置。数据库/Redis 凭据使用 URL 安全字符，容器内连接串由 Compose 构造。
 
 本期部署直接开放已配置的英文全双工链路，不再用人工填写的“已验证”布尔值阻止启动。部署后用固定 VoiceChat API 版本和镜像 digest 运行 `scripts/probe_voicechat.py --api-version ... --image-digest ... --wav ...`，人工复核输出音频，再通过门户验证实际录音→CueKB→口述。探针报告负责记录证据，运行配置只负责连接服务；真实失败不回退 mock。Web Nginx 直接终止 HTTPS，并处理 SSE buffering、WS upgrade、请求大小和安全头；不得记录凭据或语音票据。
 
@@ -94,7 +94,7 @@ Redis 持有每个 conversation 的独占租约，15 秒 TTL、4 秒续约。未
 2. 对将升级的副本调用管理员 `POST /api/v1/admin/drain`。readiness 返回不可用，拒绝新业务/语音；活跃业务在预算内结束，语音在应用会话上限内结束。
 3. 停止进程前给活跃会话留出窗口。SIGTERM 的 Uvicorn graceful timeout 为 20 秒，容器 stop grace 30 秒；到期关闭连接，客户端需重新开始，不自动重放录音。
 4. 单独执行 `alembic upgrade head`，再启动新副本。启动不替代迁移。
-5. 回滚按已记录的 API/Web/VoiceChat 组合执行；恢复已知整场 response 缺陷的旧 VoiceChat 时语音仍不能放行。数据库回滚与镜像回滚分开；当前迁移已包含 0005 每通话 capability；本次 D19 不新增数据库迁移。`downgrade` 会删除对应表/字段，不应作为无损回滚手段；需要破坏式数据库回滚时使用已验证备份恢复流程。
+5. 回滚按已记录的 API/Web/VoiceChat 组合执行；恢复已知整场 response 缺陷的旧 VoiceChat 时语音仍不能放行。数据库回滚与镜像回滚分开；当前迁移包含 0005 每通话 capability、0006 输入关联及 Q07 的 0007 双模式字段；存在 direct 轮次时 0007 downgrade 明确拒绝。`downgrade` 会删除对应表/字段，不应作为无损回滚手段；需要破坏式数据库回滚时使用已验证备份恢复流程。
 
 健康接口：`/health/live` 为应用存活；`/health/ready` 检查数据库、归属协调和 drain，分别返回文字配置、语音配置和本地容量。管理页健康端点探测只说明可达，不冒充真实推理/工具调用成功。
 
@@ -104,7 +104,7 @@ Redis 持有每个 conversation 的独占租约，15 秒 TTL、4 秒续约。未
 
 | 阶段 | 执行方案 | 退出条件与证据 |
 | --- | --- | --- |
-| D07-A 基线与环境 | 固定应用 commit、API/Web 镜像、VoiceChat API/digest、CueKB 服务版本、文本模型与脱敏配置摘要；准备验证 KB 和授权英文样本。按唯一流程独立构建镜像，执行迁移、健康和恢复预检，验证公网 HTTPS `8087`、证书链及目标浏览器麦克风权限 | 记录 API/Web 与 VoiceChat 的匹配版本、配置和迁移结果；`verify_deployment.py` 确认文字、语音和知识工具均已配置；readiness 只作为入口条件 |
+| D07-A 基线与环境 | 固定应用 commit、API/Web 镜像、VoiceChat API/digest、CueKB 服务版本、文本模型与脱敏配置摘要；准备验证 KB 和授权英文样本。按唯一流程独立构建镜像，执行迁移、健康和恢复预检，验证公网 HTTPS `8087`、证书链及目标浏览器麦克风权限 | 记录 API/Web 与 VoiceChat 的匹配版本、配置和迁移结果；`verify_deployment.py` 核对预期 execution_mode 及该模式所需服务、语音和知识工具配置；readiness 只作为入口条件 |
 | D07-B 真实文字与范围 | 用多个独立 call capability 验证相互隔离、KB 范围不可由请求覆盖、管理 API 被拒绝，再跑真实文本模型 → CueKB M3 的支持/澄清/冲突/故障场景 | V02–V04、V10 的文字部分具备 trace、引用版本、状态和权限证据；失败不得归类为空命中 |
 | D07-C 英文基础语音 | 在隔离的云端验收部署固定供应商版本，先确认静音不创建整场 response、每轮 done 与后续新 ID、ACK 不耗尽最终答案许可，再用授权录音执行协议探针并人工听音，随后验证门户 → VoiceChat → 本项目 → 真实 CueKB → 实际口述 | V01/V03/V07/V09 有录音授权、事件、实际回答和人工判定；探针的合成工具结果不充当知识闭环证据 |
 | D07-D 竞态与恢复 | 工具等待 5 秒时分别附和、新问、改问、取消、停止播报；在结果写回及播报边界断网；测试超过两分钟及多次轮换 | V05/V06/V08 留下旧 revision 拒绝、pending call 结清或关闭、新连接无旧音频的证据；增强能力不通过则只评估 basic |
@@ -117,11 +117,11 @@ Redis 持有每个 conversation 的独占租约，15 秒 TTL、4 秒续约。未
 
 若仅 enhanced 交互门槛失败，保留 basic 明确打断/重连能力；若权限、旧结果泄漏或实际口述事实错误等核心项失败，不放行语音。可继续提供已验收的文字服务，但不能把文字放行写成 D07 语音完成。
 
-## Q07：可选外置 LLM 的启动与发布（设计，未实现）
+## Q07：可选外置 LLM 的启动与发布
 
-当前脚本仍强制文本模型，本节是后续编码规格，不能据此直接删掉当前生产配置。唯一全局选择是 AGENT_PROVIDER，组合校验和装配见 [架构 §11.2](architecture.md#112-全局配置和启动装配)。不增加第二份 env/Compose、不热更新、不根据请求或健康探测切换。
+Q07 的启动矩阵和部署门禁已实现。唯一全局选择是 AGENT_PROVIDER，组合校验和装配见 [架构 §11.2](architecture.md#112-全局配置和启动装配)。不增加第二份 env/Compose、不热更新、不根据请求或健康探测切换。
 
-实施后的 `.env.example` 第 3 节默认提供：
+当前 `.env.example` 第 3 节默认提供：
 
 ```dotenv
 AGENT_PROVIDER=none

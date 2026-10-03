@@ -1,4 +1,5 @@
 import re
+from dataclasses import dataclass
 from pathlib import Path
 from typing import Literal
 from urllib.parse import urlparse
@@ -8,6 +9,17 @@ from pydantic import SecretStr, field_validator, model_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 ROOT = Path(__file__).resolve().parents[3]
+
+
+@dataclass(frozen=True)
+class ExecutionProfile:
+    mode: Literal["direct", "external"]
+    agent_provider: str
+    text_available: bool
+
+    @property
+    def external_llm_enabled(self):
+        return self.mode == "external" and self.agent_provider != "mock"
 
 
 class Settings(BaseSettings):
@@ -20,7 +32,7 @@ class Settings(BaseSettings):
     dev_user_id: str = "dev-operator"
     dev_admin: bool = False
     knowledge_base_ids: str = "00000000-0000-4000-8000-000000000001"
-    agent_provider: Literal["mock", "openai", "compatible"] = "mock"
+    agent_provider: Literal["none", "mock", "openai", "compatible"] = "none"
     agent_model: str = ""
     agent_base_url: str | None = None
     openai_api_key: SecretStr = SecretStr("")
@@ -47,6 +59,53 @@ class Settings(BaseSettings):
     retention_days: int = 30
     request_limit_per_minute: int = 60
     external_tracing_enabled: bool = False
+
+    @field_validator("agent_provider", mode="before")
+    @classmethod
+    def normalize_provider(cls, value):
+        return (value or "").strip() or "none"
+
+    @field_validator("agent_model", "agent_base_url", "openai_api_key", mode="before")
+    @classmethod
+    def normalize_model_values(cls, value):
+        if isinstance(value, SecretStr):
+            value = value.get_secret_value()
+        return value.strip() if isinstance(value, str) else value
+
+    def execution_profile(self):
+        model, key, url = self.agent_model, self.openai_api_key.get_secret_value(), self.agent_base_url
+        if self.agent_provider == "none":
+            if any((model, key, url)):
+                raise ValueError(
+                    "AGENT_PROVIDER=none requires empty AGENT_MODEL, OPENAI_API_KEY and AGENT_BASE_URL"
+                )
+            return ExecutionProfile("direct", "none", False)
+        if self.agent_provider == "mock":
+            return ExecutionProfile("external", "mock", True)
+        if not model or not key or (self.agent_provider == "compatible" and not url):
+            raise ValueError(
+                "External model requires AGENT_MODEL, OPENAI_API_KEY and compatible AGENT_BASE_URL"
+            )
+        if url:
+            parsed = urlparse(url)
+            if (
+                re.search(r"\s", url)
+                or "?" in url
+                or "#" in url
+                or parsed.scheme not in ("http", "https")
+                or not parsed.hostname
+                or parsed.username is not None
+                or parsed.password is not None
+                or parsed.query
+                or parsed.fragment
+                or (self.agent_provider == "compatible" and parsed.path.rstrip("/") != "/v1")
+            ):
+                raise ValueError("AGENT_BASE_URL must be an HTTP or HTTPS base URL; compatible requires /v1")
+            try:
+                _ = parsed.port
+            except ValueError as exc:
+                raise ValueError("AGENT_BASE_URL has an invalid port") from exc
+        return ExecutionProfile("external", self.agent_provider, True)
 
     @field_validator("agent_base_url", "redis_url", mode="before")
     @classmethod
@@ -83,7 +142,7 @@ class Settings(BaseSettings):
             raise ValueError("External tracing requires a reviewed redaction exporter; currently disabled")
         return self
 
-    def validate_deployment(self) -> None:
+    def validate_deployment(self, profile=None) -> None:
         """Fail closed for the single deployed configuration; injected test settings bypass this gate."""
         if self.auto_create_schema or self.auth_mode != "validation" or self.mock:
             raise ValueError(
@@ -91,10 +150,9 @@ class Settings(BaseSettings):
             )
         if not self.database_url.startswith("postgresql+asyncpg:") or not self.redis_url:
             raise ValueError("Deployment requires PostgreSQL and Redis")
-        if not self.agent_model or not self.openai_api_key.get_secret_value():
-            raise ValueError("Deployment requires a configured text model")
-        if self.agent_provider == "compatible" and not self.agent_base_url:
-            raise ValueError("Compatible text model requires AGENT_BASE_URL")
+        profile = profile or self.execution_profile()
+        if profile.mode == "direct" and "search_knowledge" not in self.enabled_tool_names:
+            raise ValueError("Direct deployment requires search_knowledge and real CueKB")
         if "search_knowledge" in self.enabled_tool_names and (
             self.cuekb_mode != "real" or not all((self.cuekb_base_url, self.cuekb_api_key.get_secret_value()))
         ):
@@ -123,13 +181,10 @@ class Settings(BaseSettings):
         if "search_knowledge" in self.enabled_tool_names:
             http_integrations.append(self.cuekb_base_url)
         if any(
-            url
-            and (urlparse(url).scheme not in ("http", "https") or not urlparse(url).hostname)
+            url and (urlparse(url).scheme not in ("http", "https") or not urlparse(url).hostname)
             for url in http_integrations
         ):
-            raise ValueError(
-                "AGENT_BASE_URL and CUEKB_BASE_URL require HTTP or HTTPS URLs with a host"
-            )
+            raise ValueError("AGENT_BASE_URL and CUEKB_BASE_URL require HTTP or HTTPS URLs with a host")
         if "weather" in self.enabled_tool_names and urlparse(self.weather_base_url).scheme != "https":
             raise ValueError("Weather integration requires HTTPS")
         voicechat_url = urlparse(self.voicechat_ws_url)

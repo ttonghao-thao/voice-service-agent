@@ -7,7 +7,11 @@ environment_file=${1:-"$project_dir/.env"}
 compose_file="$project_dir/deploy/compose.production.yaml"
 
 environment_value() {
-  sed -n "s/^$1=//p" "$environment_file" | tail -n 1
+  result=$(sed -n "s/^$1=//p" "$environment_file" | tail -n 1 | sed 's/^[[:space:]]*//;s/[[:space:]]*$//')
+  case "$result" in
+    *\"*|*\'*) echo "Quoted environment values are unsupported for $1." >&2; exit 1 ;;
+  esac
+  printf '%s' "$result"
 }
 
 require_values() {
@@ -36,14 +40,49 @@ export DEPLOY_ENV_FILE=$environment_file
 require_values \
   IMAGE_TAG POSTGRES_PASSWORD REDIS_PASSWORD KNOWLEDGE_BASE_IDS \
   WEB_TLS_CERT_FILE WEB_TLS_KEY_FILE \
-  PUBLIC_ORIGIN AGENT_PROVIDER AGENT_MODEL OPENAI_API_KEY \
+  PUBLIC_ORIGIN \
   CUEKB_BASE_URL CUEKB_API_KEY VOICECHAT_WS_URL VOICECHAT_API_KEY
 
-case "$(environment_value AGENT_PROVIDER)" in
-  openai) ;;
-  compatible) require_values AGENT_BASE_URL ;;
-  *) echo "AGENT_PROVIDER must be openai or compatible." >&2; exit 1 ;;
+model_provider=$(environment_value AGENT_PROVIDER)
+case "$model_provider" in
+  ''|none)
+    for key in AGENT_MODEL OPENAI_API_KEY AGENT_BASE_URL; do
+      if [ -n "$(environment_value "$key")" ]; then
+        echo "AGENT_PROVIDER=none requires empty $key." >&2; exit 1
+      fi
+    done ;;
+  openai) require_values AGENT_MODEL OPENAI_API_KEY ;;
+  compatible) require_values AGENT_MODEL OPENAI_API_KEY AGENT_BASE_URL ;;
+  *) echo "AGENT_PROVIDER must be none, openai or compatible." >&2; exit 1 ;;
 esac
+model_url=$(environment_value AGENT_BASE_URL)
+if [ -n "$model_url" ]; then
+  # Restrict to the same base-URL shape accepted by Settings. Never execute the env file.
+  if ! printf '%s' "$model_url" | grep -Eq '^https?://[^/?#@[:space:]]+(/[^?#[:space:]]*)?$'; then
+    echo "AGENT_BASE_URL requires an HTTP or HTTPS URL with a host and no userinfo/query/fragment." >&2; exit 1
+  fi
+  authority=${model_url#*://}
+  authority=${authority%%/*}
+  model_port=
+  case "$authority" in
+    \[*\]*)
+      if ! printf '%s' "$authority" | grep -Eq '^\[[0-9a-fA-F:.%]+\](:[0-9]*)?$'; then
+        echo "AGENT_BASE_URL has an invalid host or port." >&2; exit 1
+      fi
+      case "$authority" in *\]:*) model_port=${authority##*:} ;; esac ;;
+    *)
+      if ! printf '%s' "$authority" | grep -Eq '^[^:[]+(:[0-9]*)?$'; then
+        echo "AGENT_BASE_URL has an invalid host or port." >&2; exit 1
+      fi
+      case "$authority" in *:*) model_port=${authority##*:} ;; esac ;;
+  esac
+  if [ -n "$model_port" ] && ! awk -v port="$model_port" 'BEGIN { exit !(port >= 0 && port <= 65535) }'; then
+    echo "AGENT_BASE_URL has an invalid port." >&2; exit 1
+  fi
+  if [ "$model_provider" = compatible ] && ! printf '%s' "$model_url" | grep -Eq '^https?://[^/?#@[:space:]]+/v1/?$'; then
+    echo "Compatible AGENT_BASE_URL must end with /v1." >&2; exit 1
+  fi
+fi
 for key in WEB_TLS_CERT_FILE WEB_TLS_KEY_FILE; do
   path=$(environment_value "$key")
   case "$path" in

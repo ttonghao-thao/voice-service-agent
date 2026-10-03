@@ -1,6 +1,6 @@
 # 后端服务与工具接入
 
-更新：2026-10-02。按主题读取。架构决策见 [architecture.md](architecture.md)，当前差距见 [任务板](TASK_BOARD.md)。§1–7 描述当前实现；可选外置 LLM 的目标契约见 §8，尚未编码。
+更新：2026-10-03。按主题读取。架构决策见 [architecture.md](architecture.md)，当前差距见 [任务板](TASK_BOARD.md)。§1–7 保留共用接入与 external 路径；Q07 已实现的双模式契约见 §8，真实服务仍待验收。
 
 ## 1. 运行依赖与配置状态
 
@@ -193,9 +193,9 @@ Runtime、ToolRegistry、CueKB adapter 与 VoiceGateway 记录脱敏阶段日志
 
 实施顺序：确认业务需要与上游契约 → 设计本项目只读接口与错误映射 → Adapter/鉴权/门户入口 → 导出契约和受控测试 → 云端权限/版本验证。测试覆盖越权、撤权、旧版本缺失、上游失败及恶意 URL；未知契约前保持现有证据片段展示。
 
-## 8. Q07：双模式接入契约（设计，未实现）
+## 8. Q07：双模式接入契约
 
-本节与 [架构 §11](architecture.md#11-q07外置-llm-可选化实施规格尚未编码) 是 Q07 后续编码规格；优先于本文件中将外置 LLM 视为必需依赖的目标描述。§2 的 CueKB HTTP 契约、鉴权与证据语义不变。当前版本仍只有 external 流程，不能直接删除模型配置运行。
+本节与 [架构 §11](architecture.md#11-q07外置-llm-可选化实施规格) 描述已实现的 Q07；优先于本文件中 external 路径的必需模型约束。§2 的 CueKB HTTP 契约、鉴权与证据语义不变。direct 使用 none 且模型连接项全空；既有显式 openai/compatible 配置仍使用 external。
 
 ### 8.1 模式提示词与 bridge 参数
 

@@ -4,6 +4,8 @@ import logging
 import httpx
 import pytest
 from app.agent_runtime.context import RunContext
+from app.agent_runtime.runtime import BusinessRuntime
+from app.config import Settings
 from app.contracts import AgentAnswer, Principal
 from openai import AsyncOpenAI
 
@@ -48,7 +50,7 @@ async def test_actual_sdk_runner_executes_registered_tool_and_validates_output(a
     )
     turn, _, _ = await app.state.store.begin_turn(p, conversation, "sdk", "Find the integration sample", "voice", 0)
     ctx = RunContext(p, conversation, turn.id, turn.epoch, request_revision=turn.request_revision)
-    caplog.set_level("INFO", logger="app.agent_runtime.runtime")
+    caplog.set_level("INFO", logger="app.agent_runtime.external")
     requests = []
 
     def handler(request):
@@ -111,11 +113,10 @@ async def test_actual_sdk_runner_executes_registered_tool_and_validates_output(a
             )
         return httpx.Response(200, json=response)
 
-    runtime = app.state.coordinator.runtime
-    app.state.settings.agent_provider = "openai"
-    app.state.settings.agent_model = "contract-fixture"
+    runtime = BusinessRuntime(Settings(_env_file=None, agent_provider="openai", agent_model="contract-fixture", openai_api_key="synthetic-test-key"), app.state.registry)
+    await runtime.client.close()
     async with httpx.AsyncClient(transport=httpx.MockTransport(handler)) as http:
-        runtime.client = AsyncOpenAI(api_key="synthetic-test-key", http_client=http, max_retries=0)
+        runtime.executor.client = AsyncOpenAI(api_key="synthetic-test-key", http_client=http, max_retries=0)
         progress = []
 
         async def report(message):
@@ -206,7 +207,7 @@ async def test_compatible_chat_completions_runs_required_tool_loop(
         turn.epoch,
         request_revision=turn.request_revision,
     )
-    caplog.set_level("INFO", logger="app.agent_runtime.runtime")
+    caplog.set_level("INFO", logger="app.agent_runtime.external")
     requests = []
 
     def handler(request):
@@ -283,15 +284,14 @@ async def test_compatible_chat_completions_runs_required_tool_loop(
             },
         )
 
-    runtime = app.state.coordinator.runtime
-    app.state.settings.agent_provider = "compatible"
-    app.state.settings.agent_model = "contract-fixture"
+    runtime = BusinessRuntime(Settings(_env_file=None, agent_provider="compatible", agent_model="contract-fixture", openai_api_key="synthetic-test-key", agent_base_url="http://compatible.test/v1"), app.state.registry)
+    await runtime.client.close()
 
     async def report_progress(_):
         return None
 
     async with httpx.AsyncClient(transport=httpx.MockTransport(handler)) as http:
-        runtime.client = AsyncOpenAI(
+        runtime.executor.client = AsyncOpenAI(
             api_key="synthetic-test-key",
             base_url="http://compatible.test/v1",
             http_client=http,

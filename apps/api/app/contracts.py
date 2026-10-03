@@ -49,6 +49,19 @@ class BridgeArguments(StrictModel):
     user_request: str = Field(min_length=1, max_length=2000)
 
 
+class NanoBridgeArguments(BridgeArguments):
+    query: str = Field(min_length=1, max_length=2000)
+    product_model: str | None = Field(default=None, min_length=1, max_length=120)
+    software_version: str | None = Field(default=None, min_length=1, max_length=120)
+
+    @field_validator("user_request", "query", "product_model", "software_version")
+    @classmethod
+    def ascii_strings(cls, value):
+        if value is not None and not printable_ascii(value):
+            raise ValueError("Voice arguments require printable ASCII")
+        return value
+
+
 class ConversationInput(StrictModel):
     title: str = Field(default="New conversation", min_length=1, max_length=100)
     locale: Literal["en-US"] = "en-US"
@@ -86,9 +99,7 @@ class Citation(StrictModel):
     trace_id: str
     retrieval_id: str
     retrieval_status: Literal["ok", "degraded", "not_found", "needs_clarification"] = "ok"
-    evidence_status: Literal["unassessed", "sufficient", "insufficient", "conflicting"] = (
-        "unassessed"
-    )
+    evidence_status: Literal["unassessed", "sufficient", "insufficient", "conflicting"] = "unassessed"
     degraded_reasons: tuple[str, ...] = ()
     scope_limited: bool = False
     content_revisions: dict[str, int] = Field(default_factory=dict)
@@ -112,7 +123,12 @@ class AgentAnswer(StrictModel):
 
 class AnswerBundle(StrictModel):
     answer_id: str = Field(default_factory=uid)
-    status: Literal["answered", "needs_clarification", "insufficient_evidence", "failed", "canceled"]
+    answer_origin: Literal["business_runtime", "voicechat"] = "business_runtime"
+    evidence_role: Literal["cited_sources", "retrieved_context"] = "cited_sources"
+    authorized_kb_ids: list[str] | None = None
+    status: Literal[
+        "answered", "needs_clarification", "insufficient_evidence", "failed", "canceled", "voice_completed"
+    ]
     display_text: str
     speech_text: str
     speech_language: str = "en-US"
@@ -120,6 +136,36 @@ class AnswerBundle(StrictModel):
     cards: list[dict[str, Any]] = Field(default_factory=list)
     reason_code: str | None = None
     is_mock: bool = False
+
+
+class KnowledgeResultView(StrictModel):
+    kind: Literal["knowledge"] = "knowledge"
+    result_id: str = Field(default_factory=uid)
+    directive: Literal["answer_from_evidence", "ask_clarification", "report_insufficient", "report_failure"]
+    retrieval_status: Literal["ok", "degraded", "not_found", "needs_clarification"] | None
+    evidence_status: Literal["unassessed", "sufficient", "insufficient", "conflicting"] | None
+    citations: list[Citation] = Field(default_factory=list)
+    degraded_reasons: list[str] = Field(default_factory=list)
+    scope_limited: bool = False
+    application_limited: bool = False
+    hits_omitted: int = Field(default=0, ge=0)
+    reason_code: str | None = None
+    message: str = Field(default="", max_length=500)
+    is_mock: bool = False
+    trace_id: str | None = None
+
+
+class KnowledgeBundle(KnowledgeResultView):
+    authorized_kb_ids: list[str]
+    tool_version: int | None
+
+    def public_view(self):
+        return KnowledgeResultView.model_validate(
+            self.model_dump(exclude={"authorized_kb_ids", "tool_version"})
+        )
+
+
+ACTIVE_TURN_STATUSES = frozenset({"running", "awaiting_voice"})
 
 
 class PortalEvent(StrictModel):
@@ -252,6 +298,12 @@ class AnswerFinalEvent(_ServerEventBase):
     payload: AnswerBundle
 
 
+class KnowledgeReadyEvent(_ServerEventBase):
+    turn_id: str = Field(min_length=1, max_length=128)
+    type: Literal["portal.knowledge.ready"]
+    payload: KnowledgeResultView
+
+
 class PlaybackClearEvent(_ServerEventBase):
     type: Literal["portal.playback.clear"]
     payload: PlaybackClearPayload
@@ -276,6 +328,7 @@ PortalServerEvent = Annotated[
     | InputStateEvent
     | ToolStartedEvent
     | AnswerFinalEvent
+    | KnowledgeReadyEvent
     | PlaybackClearEvent
     | SessionEndedEvent
     | ErrorEvent,
@@ -342,11 +395,7 @@ class PortalSessionClose(_ClientEventBase):
 
 
 PortalClientEvent = Annotated[
-    PortalAudioAppend
-    | PortalPlaybackAck
-    | PortalPlaybackStop
-    | PortalInterrupt
-    | PortalSessionClose,
+    PortalAudioAppend | PortalPlaybackAck | PortalPlaybackStop | PortalInterrupt | PortalSessionClose,
     Field(discriminator="type"),
 ]
 portal_client_event_adapter = TypeAdapter(PortalClientEvent)

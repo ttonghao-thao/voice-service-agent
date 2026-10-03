@@ -157,7 +157,7 @@ async def test_new_text_cancels_old_and_preserves_only_committed_history(app, co
     entered = asyncio.Event()
 
     async def controlled(request, *args):
-        if request == "slow":
+        if request.user_text == "slow":
             entered.set()
             await asyncio.Event().wait()
         return await original(request, *args)
@@ -205,7 +205,7 @@ async def test_stop_playback_keeps_query_running_and_revision_current(app, conve
         assert current.current_turn == turn.id and saved.status == "running"
         assert saved.output_suppressed is True
     release.set()
-    assert (await task).status == "insufficient_evidence"
+    assert (await task).result.status == "insufficient_evidence"
 
 
 async def test_cancel_query_invalidates_revision_without_reusing_native_call(app, conversation):
@@ -248,7 +248,7 @@ async def test_tool_revocation_and_admin_permissions(client, app, conversation):
     ).status_code == 200
     _, task = await app.state.coordinator.submit(dev_user(), conversation, "disabled", "联调示例")
     answer = await task
-    assert not answer.citations
+    assert not answer.result.citations
     app.state.settings.dev_admin = False
     assert (await client.get("/api/v1/admin/tools")).status_code == 403
 
@@ -457,7 +457,7 @@ async def test_total_deadline_also_covers_runtime_preparation(app, conversation)
     app.state.coordinator.runtime.run = delayed_runtime
     _, task = await app.state.coordinator.submit(dev_user(), conversation, "deadline", "联调示例")
     result = await task
-    assert result.status == "failed" and result.reason_code == "AGENT_TIMEOUT"
+    assert result.result.status == "failed" and result.result.reason_code == "AGENT_TIMEOUT"
 
 
 async def test_event_wakeup_is_scoped_post_commit_and_rollback_safe(app, conversation):

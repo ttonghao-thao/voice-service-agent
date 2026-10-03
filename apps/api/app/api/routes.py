@@ -10,6 +10,7 @@ from app.contracts import (
     ConversationInput,
     DomainError,
     InterruptInput,
+    KnowledgeBundle,
     MessageInput,
     Principal,
     StopPlaybackInput,
@@ -46,6 +47,18 @@ def _answer_for_principal(answer, user, settings):
         return answer
     current = set(user.knowledge_base_ids)
     configured = _configured_kbs(settings)
+    scope = answer.get("authorized_kb_ids")
+    answer = {k: v for k, v in answer.items() if k != "authorized_kb_ids"}
+    if answer.get("answer_origin") == "voicechat" and (scope is None or not set(scope).issubset(current)):
+        return {
+            **answer,
+            "status": "failed",
+            "display_text": "Knowledge access changed. Please ask again.",
+            "speech_text": "",
+            "citations": [],
+            "cards": [],
+            "reason_code": "KB_ACCESS_REVOKED",
+        }
     citations = []
     for citation in answer.get("citations", []):
         scope = citation.get("authorized_kb_ids")
@@ -94,12 +107,55 @@ def _answer_for_principal(answer, user, settings):
     visible = {**answer, "citations": citations}
     # Repair rows written before D18, when a model-provided `failed` status could
     # be persisted together with a successful answer and verified sources.
-    if visible.get("status") == "failed" and visible.get("reason_code") is None:
+    if (
+        visible.get("answer_origin", "business_runtime") == "business_runtime"
+        and visible.get("status") == "failed"
+        and visible.get("reason_code") is None
+    ):
         visible["status"] = "answered" if citations or visible.get("cards") else "insufficient_evidence"
+    visible.setdefault("answer_origin", "business_runtime")
+    visible.setdefault("evidence_role", "cited_sources")
+    visible.pop("authorized_kb_ids", None)
     return visible
 
 
+def _knowledge_for_principal(knowledge, user, settings):
+    if not knowledge:
+        return None
+    bundle = KnowledgeBundle.model_validate(knowledge)
+    if not set(bundle.authorized_kb_ids).issubset(user.knowledge_base_ids):
+        bundle = bundle.model_copy(
+            update={
+                "directive": "report_failure",
+                "reason_code": "KB_ACCESS_REVOKED",
+                "retrieval_status": None,
+                "evidence_status": None,
+                "citations": [],
+                "degraded_reasons": [],
+                "trace_id": None,
+                "scope_limited": False,
+                "application_limited": False,
+                "hits_omitted": 0,
+                "message": "Knowledge access changed. Please ask again.",
+            }
+        )
+    return bundle.public_view().model_dump(mode="json")
+
+
 def _event_for_principal(payload, user, settings):
+    if payload.get("type") == "portal.knowledge.ready":
+        knowledge = payload.get("payload", {})
+        scope = payload.get("_authorized_kb_ids", [])
+        return {
+            k: v
+            for k, v in {
+                **payload,
+                "payload": _knowledge_for_principal(
+                    {**knowledge, "authorized_kb_ids": scope, "tool_version": None}, user, settings
+                ),
+            }.items()
+            if k != "_authorized_kb_ids"
+        }
     if payload.get("type") != "portal.answer.final":
         return payload
     return {
@@ -127,12 +183,16 @@ def _record_for_principal(record, user, settings):
     }
 
 
-def capabilities(s):
+def capabilities(s, profile=None):
+    profile = profile or s.execution_profile()
     voice_configured = bool(
         s.voice_provider == "mock"
         or (s.voice_provider == "nvidia" and s.voicechat_ws_url and s.voicechat_api_key.get_secret_value())
     )
     return {
+        "execution_mode": profile.mode,
+        "external_llm_enabled": profile.external_llm_enabled,
+        "text_available": profile.text_available,
         "provider": s.voice_provider,
         "is_mock": s.mock,
         "agent_provider": s.agent_provider,
@@ -140,13 +200,12 @@ def capabilities(s):
         "weather_mode": s.weather_mode,
         "enabled_tools": sorted(s.enabled_tool_names),
         "voice_available": voice_configured,
-        "text_configured": s.agent_provider == "mock"
-        or bool(s.agent_model and s.openai_api_key.get_secret_value()),
+        "text_configured": profile.text_available,
         "streaming_audio": s.voice_provider in ("mock", "nvidia"),
         "native_full_duplex": voice_configured,
         "function_result_return": voice_configured,
         "native_cancel_response": False,
-        "native_tool_phase_barge_in": voice_configured,
+        "native_tool_phase_barge_in": False,
         "dynamic_instructions": False,
         "arbitrary_text_to_speech": False,
         "required_voice_languages": ["en-US"],
@@ -167,7 +226,8 @@ async def get_capabilities(request: Request):
         knowledge_base_ids=auth.knowledge_base_ids(),
     )
     return {
-        **capabilities(request.app.state.settings),
+        **request.app.state.static_capabilities,
+        "enabled_tools": sorted(request.app.state.settings.enabled_tool_names),
         "available_tools": sorted(await request.app.state.registry.allowed(user)),
     }
 
@@ -240,6 +300,7 @@ async def messages(
         items = []
         for t in reversed(turns):
             answer = _answer_for_principal(t.answer, user, request.app.state.settings)
+            knowledge = _knowledge_for_principal(t.knowledge_result, user, request.app.state.settings)
             items.append(
                 {
                     "id": t.id,
@@ -250,6 +311,8 @@ async def messages(
                     "input_item_id": t.input_item_id,
                     "user_text": t.user_text,
                     "channel": t.channel,
+                    "execution_mode": t.execution_mode or "external",
+                    "knowledge_result": knowledge,
                     # Once an answer exists, its normalized terminal state is the
                     # customer-visible state. This also repairs pre-D18 rows.
                     "status": answer["status"] if answer else t.status,
@@ -268,8 +331,7 @@ async def messages(
             "records": [
                 visible
                 for r in reversed(records)
-                if (visible := _record_for_principal(r, user, request.app.state.settings))
-                is not None
+                if (visible := _record_for_principal(r, user, request.app.state.settings)) is not None
             ],
             "next_before": turns[-1].id if len(turns) == limit else None,
         }
@@ -311,13 +373,13 @@ async def events(
         raise DomainError("INVALID_CURSOR", "Invalid event cursor", 422) from exc
 
     async def generate():
-        nonlocal cursor
+        nonlocal cursor, user
         with store.listen(cid) as changed:
             checked = 0
             while not await request.is_disconnected():
                 if checked % 100 == 0:
                     try:
-                        await principal(request)
+                        user = await principal(request)
                     except DomainError:
                         return
                 checked += 1
@@ -339,9 +401,7 @@ async def events(
                     )
                 for e in rows:
                     cursor = e.server_seq
-                    safe_payload = _event_for_principal(
-                        e.payload, user, request.app.state.settings
-                    )
+                    safe_payload = _event_for_principal(e.payload, user, request.app.state.settings)
                     yield f"id: {cursor}\ndata: {json.dumps(safe_payload, ensure_ascii=False)}\n\n"
                 if not rows and checked % 30 == 0:
                     yield ": keepalive\n\n"
@@ -515,9 +575,14 @@ async def test_tool(name: str, request: Request, user: User):
             headers={"Authorization": "Bearer " + getattr(s, spec.secret_ref).get_secret_value()},
         )
         response.raise_for_status()
-        return {"status": "reachable", "message": "Health endpoint is reachable; business search has not been accepted"}
+        return {
+            "status": "reachable",
+            "message": "Health endpoint is reachable; business search has not been accepted",
+        }
     except Exception as exc:
-        raise DomainError("TOOL_UNAVAILABLE", "Health endpoint is unreachable; check service configuration", 503, True) from exc
+        raise DomainError(
+            "TOOL_UNAVAILABLE", "Health endpoint is unreachable; check service configuration", 503, True
+        ) from exc
 
 
 @router.get("/admin/services")
@@ -527,7 +592,9 @@ async def services(request: Request, user: User):
     voice = "configured" if s.voice_provider == "nvidia" and s.voicechat_ws_url else s.voice_provider
     return {
         "voice_health": voice,
-        "text_model": "mock"
+        "text_model": "disabled"
+        if request.app.state.profile.mode == "direct"
+        else "mock"
         if s.agent_provider == "mock"
         else ("configured" if s.agent_model and s.openai_api_key.get_secret_value() else "unconfigured"),
         "text_note": "Configuration status does not verify real inference",

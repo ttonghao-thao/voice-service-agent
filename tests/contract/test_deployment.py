@@ -71,6 +71,7 @@ def test_cloud_environment_template_cannot_enable_development_fallbacks():
         "KNOWLEDGE_BASE_IDS",
         "AGENT_PROVIDER",
         "AGENT_MODEL",
+        "AGENT_BASE_URL",
         "AGENT_DEADLINE_MS",
         "OPENAI_API_KEY",
         "CUEKB_BASE_URL",
@@ -80,7 +81,8 @@ def test_cloud_environment_template_cannot_enable_development_fallbacks():
     }
     assert "APP_ENV" not in values
     assert "AUTH_MODE" not in values
-    assert values["AGENT_PROVIDER"] == "openai"
+    assert values["AGENT_PROVIDER"] == "none"
+    assert values["AGENT_MODEL"] == values["OPENAI_API_KEY"] == values["AGENT_BASE_URL"] == ""
     assert values["AGENT_DEADLINE_MS"] == "30000"
     assert "CUEKB_MODE" not in values
     assert "ENABLED_TOOLS" not in values
@@ -96,7 +98,6 @@ def test_cloud_environment_template_cannot_enable_development_fallbacks():
     for key in (
         "POSTGRES_PASSWORD",
         "REDIS_PASSWORD",
-        "OPENAI_API_KEY",
         "CUEKB_API_KEY",
         "VOICECHAT_API_KEY",
     ):
@@ -185,6 +186,9 @@ def test_deployment_readiness_verifier_requires_real_matching_configuration():
 
     assert validate_ready(
         {
+            "execution_mode": "external",
+            "external_llm_enabled": True,
+            "text_available": True,
             "status": "ready",
             "is_mock": False,
             "enabled_tools": ["search_knowledge"],
@@ -192,4 +196,5 @@ def test_deployment_readiness_verifier_requires_real_matching_configuration():
             "voice_configured": True,
         },
         {"search_knowledge"},
+        "external",
     )["enabled_tools"] == ["search_knowledge"]

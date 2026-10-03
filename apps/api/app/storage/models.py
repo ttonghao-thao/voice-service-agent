@@ -50,6 +50,8 @@ class Turn(Base):
     cancellation_reason: Mapped[str | None] = mapped_column(String(64))
     delivery_status: Mapped[str] = mapped_column(String(32), default="pending_validation")
     output_suppressed: Mapped[bool] = mapped_column(Boolean, default=False)
+    execution_mode: Mapped[str] = mapped_column(String(16), default="external", server_default="external")
+    knowledge_result: Mapped[dict | None] = mapped_column(JSON)
     answer: Mapped[dict | None] = mapped_column(JSON)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=now)
 
