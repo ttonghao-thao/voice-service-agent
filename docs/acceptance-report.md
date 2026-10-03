@@ -10,7 +10,7 @@
 
 | 要回答的问题 | 证据位置与边界 |
 | --- | --- |
-| 最近应用验证 | §1 的 2026-10-03 Q07：175 项 pytest、12 项前端音频单测、前端构建、12 项 Chromium E2E、SQLite 升降级/旧行测试、应用 Ruff、契约导出和差异检查；不代表真实模型/CueKB/VoiceChat、实际麦克风或 Docker 验收 |
+| 最近应用验证 | §1 的 2026-10-03 独立 API 模拟全流程：216 项 pytest passed、3 项按模式 skipped；独立网络专项 39 passed/3 skipped；同版 Chromium 原有 12 项回归及新增 8 项网络测试、12 项音频单测和前端构建通过。真实供应商/GPU、PostgreSQL/Redis、设备和 Docker 仍未验收 |
 | 独立 VoiceChat 交付 | D19/D20：真实服务器模块的 12 项 CPU 协议测试、补丁基线/应用后 SHA-256 检查；交付见 [补丁说明](../deploy/voicechat/README.md)，云端镜像及 GPU 输出未验证 |
 | M3、D08、D01–D06 何时验证 | §1 对应日期；不累加各次测试数作为当前总数 |
 | 真实服务是否通过 | §3：仍待验证；测试文件存在、配置 verified 或本地测试通过都不能替代真实记录 |
@@ -20,6 +20,17 @@
 历史文档审计（2026-09-22）：9 份活动 Markdown 的 63 处本地链接及章节锚点、代码块闭合、`git diff --check` 与当时的仅文档修改检查通过。AGENTS 从 3688 减为 2912 UTF-8 字节（约 21%），这是当时入口大小变化，不是实际 token 节省测量。历史快照未修改；当前 D11 的验证另记于 §1。
 
 ## 1. 按日期记录的编码与部署前验证
+
+### 2026-10-03 独立 API 模拟全流程
+
+- 用户确认 [CueKB](https://github.com/ttonghao-thao/CueKB) 与 [VoiceChat Speech](https://github.com/NVIDIA-NeMo/Speech/tree/nemotron-labs-voicechat) 是独立部署服务，本项目通过 API 交互，本轮仅模拟独立服务 API。未将任一项目嵌入本项目，也未启动其真实服务或 GPU 模型。
+- 新增 `tests/support/simulated_services.py` 与 `network_stack.py`：CueKB `/v1/search` HTTP、VoiceChat `/v1/realtime` WS、compatible LLM `/v1/chat/completions` HTTP 分别运行于独立 loopback 进程；本项目 API 也独立运行，使用原有生产 adapter/Agents SDK。CueKB 模拟端独立检查冻结的请求字段、UUID、范围、过滤与预算，不复用客户端请求模型。独立临时 SQLite 通过 Alembic 0007 升级；测试 factory 显式注入设置，不增加生产环境或 Compose 配置。
+- 网络专项 **39 passed / 3 skipped**（42 个参数化用例，direct 21 项通过，external 18 项通过/3 项跳过）：健康/能力、通话 capability、PCM 输入→ASR→bridge→授权检索→证据/答案→模拟口述/PCM 输出→历史与 live SSE/游标重放；无命中、401/403/429/5xx 重试、响应契约错误、degraded 原因保留；direct 禁文字和零外置模型请求、external 文字流式 SDK 两次调用及幂等；重复 native call、停止后连续两轮、取消慢请求与迟到结果抑制、未桥接口述拒绝、单次 ticket、通话结束撤销 token、并发隔离、重连的 epoch/已完成历史、错误音频格式握手，以及 SIGKILL 后 pending Turn 过期恢复并重新通话。3 项跳过均为 direct 专属的口述完成等待失败测试；external 在业务答案提交后不采用同一等待机制。
+- Chromium 网络专项 **8 passed**（每种模式 4 项）：门户不拦截业务 HTTP/SSE/WS 路由，浏览器通过 Vite 代理访问实际本地 API；合成麦克风产生 PCM、真实 AudioWorklet 播放合成正弦 PCM，AnalyserNode 验证非零输出和 Stop 后静音；验证转写/口述气泡、模式状态、来源 Drawer、窄屏、结束通话后 token 撤销/刷新无共享历史、无证据、取消，以及 external 实际流式文字路径。
+- 完整回归中发现故障关闭/取消后偶发 SQLite `database is locked`。`Store.transaction` 现在在持有写锁期间等待 commit/rollback 与 session close 完成，再传播取消；增加提交/回滚退出阶段两次取消的回归，检查下一写入不能抢先进入、最终提交/回滚结果正确。修复后完整后端 **216 passed / 3 skipped**（1 条既有 Starlette/AnyIO 弃用警告）、Ruff、Web 音频单测 **12 passed**、TypeScript/Vite 构建通过。
+- 同版既有 Chromium 回归 **12 passed**；该启动方式跳过 4 个未配置独立模拟服务的专项测试，其 direct/external 参数化执行已在上述专用入口得到 **8 passed**。本轮共验证 20 项浏览器用例执行，不累加历史版本测试数。
+- 一键复现：`.venv/bin/python scripts/test_simulated_flow.py`；支持 `--network-only`、`--browser-only`、`--mode direct|external`。入口已完整执行通过，机器可读 `artifacts/simulation/result.json` 从本次 pytest/Playwright JUnit 汇总计数，附网络及各模式 JUnit、截图、模拟服务/API/Vite 日志。服务仅绑定 loopback，浏览器占用 `8000/5173`，测试完成自动清理进程/临时 DB；生成产物按原规则忽略，不提交 token、录音或 DB。
+- 未验证：独立 CueKB 的真实检索/ACL、Nano 的识别/推理/口述事实质量、GPU、实际麦克风/扬声器、人类听音、PostgreSQL/Redis、Docker/Nginx、公网 TLS/云端部署、真实延迟及负载。合成字幕与正弦音频不证明真实语言或声学效果；D07 状态不变。
 
 ### 2026-10-03 Q07 外置 LLM 可选化（编码与本地验证）
 

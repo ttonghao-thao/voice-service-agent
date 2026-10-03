@@ -1,5 +1,6 @@
 import asyncio
 import hashlib
+import sys
 from contextlib import asynccontextmanager, contextmanager
 from datetime import timedelta
 
@@ -35,13 +36,38 @@ class Store:
     @asynccontextmanager
     async def transaction(self):
         async with self.write_lock:
-            async with self.sessions.begin() as db:
+            manager = self.sessions.begin()
+            db = await manager.__aenter__()
+            try:
                 yield db
+            except BaseException:
+                await self._finish_transaction(manager.__aexit__(*sys.exc_info()))
+                raise
+            else:
+                canceled = await self._finish_transaction(manager.__aexit__(None, None, None))
             # Wake readers only after commit. The durable Event table remains
             # authoritative; other workers still discover changes by polling.
             for cid in db.info.get("event_conversations", ()):
                 for listener in self.event_listeners.get(cid, ()):
                     listener.set()
+            if canceled:
+                raise canceled
+
+    @staticmethod
+    async def _finish_transaction(exit_operation):
+        # AsyncSession's context exit shields cleanup but can return on caller
+        # cancellation while its commit/rollback is still running. Keep the
+        # writer lock until cleanup finishes, including repeated cancellation.
+        task = asyncio.create_task(exit_operation)
+        canceled = None
+        while True:
+            try:
+                await asyncio.shield(task)
+                return canceled
+            except asyncio.CancelledError as exc:
+                if task.cancelled():
+                    raise
+                canceled = exc
 
     @contextmanager
     def listen(self, cid):

@@ -55,7 +55,17 @@ npx playwright install chromium
 npm run test:e2e
 ```
 
-测试产物写入被忽略的 artifacts/test-results 等目录。真实语音探测：
+测试产物写入被忽略的 artifacts/test-results 等目录。
+
+独立服务 API 的完整模拟流程可一键运行（需已安装上述 Python/Web 依赖与 Chromium）：
+
+```sh
+.venv/bin/python scripts/test_simulated_flow.py
+```
+
+脚本分别启动本项目 API、CueKB HTTP、VoiceChat WebSocket 与可选 compatible LLM HTTP 模拟进程；生产 adapter 实际访问 loopback API，数据库经 Alembic 升级，浏览器业务路由不做拦截。按 direct/external 验证语音、证据/答案、SSE/历史、并发隔离、停止、取消、故障与进程重启恢复。浏览器使用合成麦克风及 PCM 音频，输出报告、JUnit、截图和服务日志至 `artifacts/simulation/`，完成后清理进程和临时 DB。可用 `--network-only`、`--browser-only`、`--mode direct|external` 选择范围；浏览器阶段占用本机 `8000` 与 `5173`。这验证 API 交互与本项目处理逻辑，不验证独立项目的真实识别、知识检索质量或 GPU 推理。
+
+真实语音探测（连接实际 VoiceChat）：
 
 ```sh
 PYTHONPATH=apps/api python scripts/probe_voicechat.py \
