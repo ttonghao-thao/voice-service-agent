@@ -1,6 +1,6 @@
 # 部署与运行
 
-> 2026-09-28：本文描述当前代码的运行方式，不代表真实服务已经验收。本期 Compose 使用每次通话独立的临时 capability、真实 CueKB、`search_knowledge` 和 NVIDIA VoiceChat，不需要天气代理配置。真实验收仍须按 [任务板](TASK_BOARD.md) D07 执行。最终系统边界见 [架构](architecture.md)。
+> 更新 2026-10-02：正文描述当前代码的运行方式，不代表真实服务已经验收；末节 Q07 是可选外置 LLM 的待编码部署规格。本期 Compose 使用每次通话独立的临时 capability、真实 CueKB、`search_knowledge` 和 NVIDIA VoiceChat，不需要天气代理配置。真实验收仍须按 [任务板](TASK_BOARD.md) D07 执行。最终系统边界见 [架构](architecture.md)。
 
 ## 部署方式边界
 
@@ -116,3 +116,31 @@ Redis 持有每个 conversation 的独占租约，15 秒 TTL、4 秒续约。未
 每阶段保存：执行时间、操作者、应用/供应商版本、case/V ID、输入来源、预期/实际结果、失败原因、脱敏 trace 和受控证据位置。录音/票据/真实配置不提交仓库；仓库验收记录只写结论与受控证据引用。未执行标未执行；不适用须按本期范围解释，不能用来跳过基础语音的安全与恢复项。
 
 若仅 enhanced 交互门槛失败，保留 basic 明确打断/重连能力；若权限、旧结果泄漏或实际口述事实错误等核心项失败，不放行语音。可继续提供已验收的文字服务，但不能把文字放行写成 D07 语音完成。
+
+## Q07：可选外置 LLM 的启动与发布（设计，未实现）
+
+当前脚本仍强制文本模型，本节是后续编码规格，不能据此直接删掉当前生产配置。唯一全局选择是 AGENT_PROVIDER，组合校验和装配见 [架构 §11.2](architecture.md#112-全局配置和启动装配)。不增加第二份 env/Compose、不热更新、不根据请求或健康探测切换。
+
+实施后的 `.env.example` 第 3 节默认提供：
+
+```dotenv
+AGENT_PROVIDER=none
+AGENT_MODEL=
+OPENAI_API_KEY=
+AGENT_BASE_URL=
+AGENT_DEADLINE_MS=30000
+```
+
+缺省 provider 且其余模型连接项全部空也表示 direct。保留注释中的两份完整 external 示例：openai + 实际 MODEL/KEY + 空 BASE_URL；compatible + 实际 MODEL/KEY + HTTP/HTTPS `/v1` 基地址。provider=none 时残留 model/key/base URL 必须清空，否则启动报错，不静默忽略凭据。原显式 openai/compatible 配置继续是 external，不因升级被关闭。只有样例增加 AGENT_BASE_URL 的空实值行，因此同步 test_deployment.py 的键集合断言；其余部署项仍按原模板真实填写。
+
+scripts/deploy-cloud.sh 必须在 Compose 启动前按同一矩阵校验：共同必需项不再含 AGENT_MODEL/OPENAI_API_KEY；provider 缺省/空按 none；none 要求三项均空；openai 要求 MODEL/KEY，BASE_URL 可空或为合法 HTTP/HTTPS 基地址（默认示例留空）；compatible 要求三项齐全；mock/其他值拒绝。所有值采用去首尾空白规则，不能出现脚本放行/API 拒绝的常见组合。脚本不联网检查模型可用性、不修改环境文件、不回退模式；保留 TLS、origin、本地镜像、PG/Redis、迁移和单 Compose 流程。shell env 读取仍不 source/执行用户文件；对不支持的带引号值明确报错，模板使用既有未加引号格式。
+
+生产 Settings.validate_deployment 的文本门禁改为已解析 external 才检查必需模型配置；direct 要求 real CueKB、NVIDIA VoiceChat，数据库/Redis/TLS/无 mock 的门禁保持。Settings.mock 不因 provider=none 报 mock，显式 fixture mock 仍拒绝。direct 不创建或探测外置客户端；external 初始化失败则启动失败，网络运行失败按原错误终止本轮。
+
+`/health/ready` 增 execution_mode、external_llm_enabled、text_available，同时保留 status/text_configured/voice_configured/is_mock/enabled_tools/capacity 字段。direct 正常为 ready/direct/false/false，text_configured=false、voice_configured=true；external real 正常为 ready/external/true/true，两个 configured=true。正常 ready 只表明当前模式所需配置与本地基础设施就绪，仍不证明 VoiceChat/CueKB 连通、Nano 口述或模型推理通过。draining 或 DB/Redis 故障保持 503；必需配置错误在监听前失败。
+
+`verify_deployment.py` 从本次部署 Settings 启动解析得到预期 mode，传入 validate_ready(payload, expected_tools, expected_mode)：同时要求报告 mode 与预期一致、is_mock=false、voice_configured=true、工具集合匹配；direct 要求 external_llm_enabled=false/text_available=false/text_configured=false，external 三者为 true。禁止只要接口声称 ready 就接受；报告记录 mode 和未验证边界。测试显式覆盖 none 正常、残缺 external、误报 mode、缺字段、fixture 和两个 provider。
+
+修改模式的操作流程：同一环境配置更新 → 构建/提供匹配 API/Web 镜像 → drain 全部旧副本并结束旧通话 → 执行 Alembic 0007 → 用同一配置重建全部 API/Web → 逐副本核对 readiness 的 mode → 新通话验证。env 改变不能只 restart 旧容器期待 env_file 重新加载；按既有 compose up 重建配置。speech 仍使用既有镜像/模型仓库及补丁，Q07 不需要重新转换权重或修改它的 GPU 参数。旧通话不跨模式续接。
+
+D07-B/C/D 必须分别报告 direct 和 external。direct 接受“没有外置模型服务和 Key”的部署，并通过网络审计/计数证明本项目零外置生成请求；这不代表 CueKB 内部 embedding/rerank 无模型。external 按现有工具规划和有据答案验收。两个模式共同验证英文口述、授权、旧结果隔离、停止与恢复，工具期间自然插话保持单独限制说明。与用户约定阈值前不写延迟 SLA，报告相同样本的 p50/p95 与失败率。

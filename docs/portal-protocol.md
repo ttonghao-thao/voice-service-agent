@@ -1,6 +1,6 @@
 # HTML 门户与消息/语音接口
 
-更新：2026-09-29。§1–7 是当前本地实现契约；Q06 的真实服务与设备验收仍归 D07。D19 不新增公开事件字段；浏览器内部 Worklet 的排空标记不暴露为新的服务端协议。D20 使持久事件提交后唤醒 SSE，并直接应用 final 更新已有 Turn。总架构见 [architecture.md](architecture.md)。
+更新：2026-10-02。§1–7 是当前本地实现契约；Q06 的真实服务与设备验收仍归 D07。§8 是 Q07 待编码增量，不能当作当前 API 已支持。D19 不新增公开事件字段；浏览器内部 Worklet 的排空标记不暴露为新的服务端协议。D20 使持久事件提交后唤醒 SSE，并直接应用 final 更新已有 Turn。总架构见 [architecture.md](architecture.md)。
 
 ## 1. 简单门户
 
@@ -224,3 +224,55 @@ Stop playback 保留已收到正文并更新播放状态；普通 `speech_starte
 Turn 通过 Alembic 0006 新增 nullable `input_item_id`，旧行不伪造关联。Gateway 在合法工具调用与最终 ASR 绑定后提交 Turn，把对应 response 的口述事件标记为 `phase=answer` 与 `turn_id`；同一 response 的多段口述用 `segment_index` 分开。固定 ACK 用已配置短语和响应阶段识别为 `phase=status`，不存成答案正文。`speech_text.done` 的受控 Record 保存 `turn_id`，按既有 owner、KB 范围与 revision/epoch 过滤；历史快照和 WS 各自按稳定身份归并。
 
 现有部署升级前的旧 Turn 没有可靠的输入/口述关联，页面保留完整业务答案的展开入口，不将旧 `display_text` 冒充实际口述。正在使用的标签页可通过同一 capability 补取已定稿文字；刷新后的新 capability 不访问旧通话。生成口述文字不表示已听到。受控回归与构建见 [验收记录](acceptance-report.md)，真实 VoiceChat/CueKB、浏览器设备和撤权现场复测仍归 D07。
+
+## 8. Q07：直接检索模式的消息与状态（设计，未实现）
+
+本节是 [架构 Q07](architecture.md#11-q07外置-llm-可选化实施规格尚未编码) 的客户端契约增量。外置模型模式继续 §7 的完整答案与实际口述展示；direct 的完整正文来自 Nano，不能在检索结束时伪造业务答案。
+
+### 8.1 能力、HTTP 与持久事件
+
+`GET /api/v1/capabilities` 新增 `execution_mode: direct|external`、`external_llm_enabled: bool`、`text_available: bool`；direct 为 direct/false/false，external real 为 external/true/true。显式 mock fixture 映射 external/false/true 并保持 is_mock=true。现有 text_configured direct=false，其他字段保持原义，native_tool_phase_barge_in 对当前 speech 基线固定 false。
+
+`GET /conversations/{cid}/messages` 的每条 Turn 新增 execution_mode 与 knowledge_result。前者旧行默认为 external，后者旧行 null。knowledge_result 为接入 §8 KnowledgeBundle 去掉 authorized_kb_ids/tool_version 的公开严格投影（定义 KnowledgeResultView，禁止序列化后临时漏删内部字段）。citations 继续执行 owner/KB 撤权过滤。相同投影用于新增事件：
+
+| 事件 | 传输/负载 | 作用 |
+| --- | --- | --- |
+| portal.knowledge.ready | 持久 SSE；payload=KnowledgeResultView，turn_id 必需 | 证据已提交且等待 Nano；不表示有最终答案 |
+| portal.speech_text.delta/done | 现有 WS；phase、turn_id、response_id、segment_index 不变 | Nano 实际口述正文；done Record 可用于恢复 |
+| portal.answer.final | 持久 SSE；payload=扩展后的 AnswerBundle | external 仍提交模型业务答案；direct 在 response 完成后提交实际口述聚合和最终状态 |
+
+KnowledgeReadyEvent 加入 portal_server_event_adapter 判别 union 及导出 schema，`scripts/export_contracts.py` 增 KnowledgeResultView schema 输出；AnswerBundle 扩展字段/voice_completed 一并导出。不要向浏览器发送 NVIDIA function_call_output 或 provider 原始参数。WS 序号与 SSE server_seq 仍分开，不能跨通道数值比较。
+
+`POST /conversations/{cid}/messages` direct 返回 409/TEXT_INPUT_UNAVAILABLE，必须验证会话归属，但不创建 Turn、不 increment revision、不结束当前语音；external 返回原 202。音频、call capability、ticket、SSE 重连接口不变。禁止在消息 body、工具参数或 URL query 接收模式覆盖。
+
+### 8.2 UI 和历史还原规则
+
+| 状态/资料 | direct 展示 | external 展示 |
+| --- | --- | --- |
+| running | Searching | 原有 Searching |
+| awaiting_voice | Preparing voice reply；来源可展开 | 不产生此状态 |
+| 有实际 speech_text | 左侧正文按片段流式更新并保留 | 原 Q06 行为 |
+| voice_completed | Response completed，不显示 Verified/Answered 认证 | 不产生此状态 |
+| failed 且 delivery_status=voice_failed | Voice reply unavailable；保留已收到片段、可用来源及中断标识 | 已验证业务答案仍可展开 |
+| direct answer.citations / knowledge_result.citations | Sources consulted，说明是检索上下文，不暗示逐条引用已验证 | 原业务答案 Sources |
+| direct 完整正文 | 已有实际口述；不再另放一份 View full answer 重复正文 | 原 View full answer / Sources |
+
+direct 未完成时 answer=null，不能显示“完整答案已就绪”。若没有任何口述且生成失败，显示固定失败说明；不能把证据 source_text 拼接成假答案。已收到部分转写因超时/断线未完成时保留当前页面文字并标 Spoken reply interrupted，不能变为完整 history；刷新只恢复已存 done Record，不伪造丢失 delta。
+
+direct 最终 AnswerBundle.display_text/speech_text 均来自按序拼接的完整实际口述（总计 ≤8000 字符），或服务失败的固定说明；answer_origin=voicechat 表示来源，不意味着使用外置模型验证。恢复时如果 Record 被 100 条读取上限截掉，可用成功 direct AnswerBundle.display_text 还原正文，因为该模式明确记录的是实际转写；external 的业务 display_text 不能这样冒充口述。失败固定说明不得标为实际口述。
+
+前端 selected 来源状态改为同时能承载 Answer 的 citations 和 KnowledgeResultView 的 citations，不为打开 Sources 伪造 Answer。根据 evidence_role 改文案，客户界面不显示 mode、provider、Nano 参数或日志字段。
+
+保持稳定 user input_item_id → Turn 接管，以及 turn/response/segment 的语音归并。新增证据事件只更新资料和 awaiting_voice，不创建第二条助手正文；answer.final 对已有口述只更新终态和兜底快照，不重复追加文字。未知 Turn 先补取 messages，等待期间按 turn_id 缓存最新资料；重放去重用 event_id/server_seq，沿用 finalAnswers 终态缓存并新增知识结果缓存。
+
+状态单调规则：running → awaiting_voice → 终态；晚到 running/awaiting_voice 快照或 knowledge.ready 不能覆盖已收到的 answer.final/取消/过期。相同 revision 先到 final 后到 knowledge 时，仅在尚未撤权且 result_id 一致的条件下补齐来源，不倒退状态。来自更旧 epoch/revision 的实时新事件忽略；已经显示的历史终态按原授权规则保留。KB_ACCESS_REVOKED 优先清理 sources、direct answer、对应 spoken 缓存，后续任何晚到快照不能恢复被撤销正文。
+
+取消按钮在 running/awaiting_voice 均可用，Stop playback 继续只清音频、不删文字或取消任务。活动生成状态不等于已听：生成完成/播放 ACK/播放停止保持独立。
+
+文字输入框和发送按钮 direct 禁用，并展示 `Text input is unavailable in this deployment. Please use voice.`；capabilities 未加载时也不能先开放输入。所有 direct 语音异常提示删除“use text”的不可用建议，改为重启通话或联系人工。external 的文字切换及提示保持原行为。
+
+### 8.3 受控验收
+
+新增 E2E 覆盖 direct 的 ASR→Searching→knowledge.ready/Preparing voice reply→实际口述→Response completed，且没有外置完整答案面板；另测未命中、工具失败、无口述/部分口述、Stop、awaiting_voice 取消、禁用文字输入。external 跑现有 Q06 用例证明行为保留。
+
+API/存储测试覆盖知识证据与口述两阶段、同一 Turn 的 WS/SSE 乱序、旧快照、重复相同问题、历史分页/Record 上限、撤权与新标签页隔离。新增 strict schema 的合法/非法负载契约测试；UI 不得凭 citations 非空把 voice_completed 改成 answered。真实设备 ASR、口述正确性和听音继续留 D07，fixture 只验证协议和状态机。

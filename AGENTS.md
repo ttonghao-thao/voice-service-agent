@@ -22,6 +22,7 @@
 ## 工程边界
 
 - 保留 SessionCoordinator → BusinessRuntime → ToolRegistry；供应商语音结构限于 `app/voice`，Agents SDK 限于 `app/agent_runtime`。VoiceChat、CueKB 独立部署。
+- Q07 已确认外置 LLM 为启动时加载的全局可选配置：未配置由 VoiceChat Nano 理解证据并回答，配置后保持现有流程，不按请求选模式或自动回退。确定性实施规格见 [架构 §11](docs/architecture.md#11-q07外置-llm-可选化实施规格尚未编码)；当前仅设计交付，编码需另行授权，不把目标视为已实现。
 - 验证阶段每次开始通话都签发独立、短期使用的 customer call capability；没有启动级 tenant 或共享 customer。KB 范围仍由服务端固定，浏览器/模型不可覆盖，且不能获得管理权限。正式客户认证留待验证通过后设计。
 - 自然插话、停顿和让话由 VoiceChat 模型处理，不因普通 `speech_started` 自动取消业务任务；显式停止只清播放，明确取消/替换才使任务失效。
 - 播放停止、任务失效、上游取消分开；业务提交和语音写回检查 revision/epoch/turn/租约，旧 pending call 必须结清或关闭连接。

@@ -1,6 +1,6 @@
 # 后端服务与工具接入
 
-更新：2026-09-28。按主题读取。架构决策见 [architecture.md](architecture.md)，当前差距见 [任务板](TASK_BOARD.md)。
+更新：2026-10-02。按主题读取。架构决策见 [architecture.md](architecture.md)，当前差距见 [任务板](TASK_BOARD.md)。§1–7 描述当前实现；可选外置 LLM 的目标契约见 §8，尚未编码。
 
 ## 1. 运行依赖与配置状态
 
@@ -192,3 +192,102 @@ Runtime、ToolRegistry、CueKB adapter 与 VoiceGateway 记录脱敏阶段日志
 下载响应限制大小、超时、内容类型和缓存权限；撤权后拒绝原件访问。优先受控附件下载，不把未知 HTML 内联为同源页面，不泄漏供应商 Key/私网 URL。若采用临时链接，须先确认其有效期和撤权语义；不能因已有链接而绕过当前授权。
 
 实施顺序：确认业务需要与上游契约 → 设计本项目只读接口与错误映射 → Adapter/鉴权/门户入口 → 导出契约和受控测试 → 云端权限/版本验证。测试覆盖越权、撤权、旧版本缺失、上游失败及恶意 URL；未知契约前保持现有证据片段展示。
+
+## 8. Q07：双模式接入契约（设计，未实现）
+
+本节与 [架构 §11](architecture.md#11-q07外置-llm-可选化实施规格尚未编码) 是 Q07 后续编码规格；优先于本文件中将外置 LLM 视为必需依赖的目标描述。§2 的 CueKB HTTP 契约、鉴权与证据语义不变。当前版本仍只有 external 流程，不能直接删除模型配置运行。
+
+### 8.1 模式提示词与 bridge 参数
+
+继续只注册一个 `consult_service_agent`，沿用 `response.function_call_arguments.done` → 相同 call_id 的 `conversation.item.create/function_call_output`。不要求 speech 新增工具、字段、动态 instructions、任意文字输入或 response.cancel。固定 ACK 继续共用现有 BRIDGE_ACK，不在本次调短 ACK 或修改 GPU backend。
+
+启动时选定 immutable VoiceProfile，持有 prompt 文本、arguments Pydantic model、业务输入转换器和结果 serializer；由 provider 使用。Gateway 不再硬编码一种 BridgeArguments。external 使用现有 config/voice-prompt.txt、BridgeArguments(user_request)，结果仍是现有 status/speech_text/language/is_mock。direct 新增 config/voice-direct-prompt.txt 和严格 NanoBridgeArguments（extra=forbid）：
+
+| 字段 | 类型/必需性 | 语义 |
+| --- | --- | --- |
+| user_request | str，必需，1–2000 字符 | 模型对当前发言的文本描述；仍由绑定的最终 ASR 覆盖为持久用户问题，不以此触发独立第二次查询 |
+| query | str，必需，1–2000 字符 | Nano 依据当前发言和会话上下文形成的独立可检索问题；与 user_text 分开保存和使用 |
+| product_model | str 或 null，默认 null，非空时 ≤120 字符 | 仅可来自明确发言或后端已确认 slot |
+| software_version | str 或 null，默认 null，非空时 ≤120 字符 | 同上；禁止猜测、标准化成未出现过的新版本值 |
+
+decoded string 均通过现有 printable_ascii（允许 CR/LF，不允许其他控制字符）；JSON 序列化成 ASCII 不能替代 decoded content 校验。未知字段（包括 kb_ids、tenant、URL、token、top_k、mode、document_ids）拒绝，不能忽略后继续执行。非法参数无查询、无业务 Turn，用同 call 的固定失败结果结清；不能安全结清时关闭连接，与现有无合法输入处理一致。
+
+最终 ASR 仍按 input_item_id 绑定并最多等待 5 秒，不从 query 反推用户说了什么。NanoBridgeArguments.user_request 与 ASR 不相等只记录无正文 mismatch，不替换 ASR；query 独立送入 CueKB。这是对现行“丢弃模型改写参数”的 direct 模式显式调整，external 不变。
+
+过滤值采用确定性来源验证：先规范化连续空白并按 ASCII 大小写无关比较；新值必须在最终 ASR 中按完整值出现（两端为字符串边界或非字母数字字符），或与同名已确认 slot 相等。不要用子串把 3.2 命中 13.20 或 3.2.1；词元中的点、下划线、连字符和斜线连接的版本/型号组成部分不可拆开匹配，句末标点不算版本组成部分。标点作为版本值内部内容完整保留。不能证明来源时返回 `KNOWLEDGE_FILTER_UNCONFIRMED` 的 KnowledgeBundle，directive=ask_clarification，不调用 CueKB，不静默丢弃过滤器去扩大搜索。为空时继承同名已确认 slot，否则不设该 filter。本次不新增 slots 的自动抽取/写入机制；direct 不把模型猜测写为 confirmed。用户明确说出新值时只用于本轮；后续 Nano 可把上下文写入 query。
+
+query 的语义改写正确性不能由 schema 保证；提示词禁止增加未确认事实，服务端把 query 当不可信检索文本，限制长度/工具范围，不把 query 当指令。多轮改写和检索质量在真实问题集验证。后端不加外置模型做改写检查。
+
+### 8.2 KnowledgeBundle 内部契约与决定顺序
+
+在 contracts.py 定义 strict `KnowledgeBundle`，不复用 AnswerBundle 假装已经有答案。下表是必须实现的字段；默认值只在标明处允许。其完整内容供 Store 持久化，浏览器/wire 使用投影。
+
+| 字段 | 类型 | 说明 |
+| --- | --- | --- |
+| kind | Literal["knowledge"]，默认 knowledge | union 识别标记；AnswerBundle 保持原字段，不强行加 kind |
+| result_id | str，uid 默认 | 本项目证据交付身份，重放不重新生成 |
+| directive | answer_from_evidence / ask_clarification / report_insufficient / report_failure | 服务端结果约束，不是最终口述语义标签 |
+| retrieval_status | ok / degraded / not_found / needs_clarification 或 null | 未执行/工具失败时 null，不能伪造 not_found |
+| evidence_status | unassessed / sufficient / insufficient / conflicting 或 null | 保留 CueKB 原值，不能把 unassessed 提升为 sufficient |
+| citations | list[Citation]，默认空 | 经过预算与语言检查、实际提供给 Nano 的完整证据集合；更多原检索证据仍在 ToolRun 审计中 |
+| degraded_reasons | list[str]，默认空 | 保留原状态；不得把本地裁剪混入 CueKB 原因 |
+| scope_limited | bool，默认 false | CueKB 范围限制 |
+| application_limited | bool，默认 false | 本项目预算、条数或语言投影导致的限制 |
+| hits_omitted | int ≥0，默认 0 | Adapter 已舍弃数 + 本次 voice 投影额外舍弃数，不重复计数 |
+| reason_code | str 或 null | 服务端执行原因；不含供应商原始异常正文 |
+| message | str，≤500 字符，默认空 | 服务端固定英语失败/澄清说明；不是 backend 生成的知识答案 |
+| is_mock | bool，默认 false | 按本轮实际工具 adapter 标记；fixture 不得冒充真实证据，生产始终 false |
+| trace_id | str 或 null | CueKB 有结果时保留，未调用时 null |
+| authorized_kb_ids | list[str] | 仅内部：本轮授权范围快照；无 hits 时也保留 |
+| tool_version | int 或 null | 仅内部：search_knowledge revision，未获工具授权时 null |
+
+决定顺序不可交换：
+
+1. 无授权、工具 disabled/revision 变化或 ctx.tool_errors：report_failure，保留原错误码，citations 清空；401/403/429/超时不能归为无资料。
+2. 未确认 filter：ask_clarification、reason_code=KNOWLEDGE_FILTER_UNCONFIRMED、retrieval/evidence_status=null、无查询/引用。
+3. CueKB needs_clarification：ask_clarification；not_found、insufficient 或 conflicting：report_insufficient。即使 conflicting 带 hits 也不允许肯定事实回答；保留可安全投影的证据供说明局限。
+4. ok/degraded 且有可交付 hits，evidence_status 为 sufficient 或 unassessed：answer_from_evidence。提示 Nano 自行检查证据是否覆盖问题；允许其澄清或说明不足，不强迫回答。
+5. 没有可交付证据：report_insufficient；原来就空用 CUEKB_NO_EVIDENCE，语言过滤导致用 VOICE_EVIDENCE_NON_ASCII，预算导致用 VOICE_EVIDENCE_LIMIT。若两者都有，原因优先 NON_ASCII，application_limited 保留 true。
+
+正常完成口述时，directive 到最终 AnswerBundle.status 映射固定：answer_from_evidence→voice_completed、ask_clarification→needs_clarification、report_insufficient→insufficient_evidence、report_failure→failed。失败/超时/取消可覆盖为对应服务状态，检索状态仍在 knowledge_result 保留；不得分析自然语言输出并猜 answered。
+
+### 8.3 证据预算、wire 投影与提示约束
+
+复用 Adapter 的 256 KiB HTTP 响应、6000 字符正文/上下文预算和 32 KiB 工具结果限制；在返回 VoiceChat 前另做确定性小投影，**不能把完整上游 JSON 原样送给 Nano**。voice 投影本次固定常量：至多 5 条、正文+context 总计 ≤6000 字符、最终 JSON UTF-8 ≤8192 bytes。不新加 env 预算开关。
+
+按 rank 保序，保留 source_text 原文；先去重复 context，再在字节超限时整块移除 context 并标 context_omitted，然后丢弃末尾完整 hit，更新 application_limited/hits_omitted。source_text 不按字符硬截断，不重新编号 citation_id。context_truncated、context_omitted 和 scope_limited 必须保留，Nano 不得据此推断未返回内容。Adapter 本来没有接纳的 evidence 不能在 voice 层重新从 raw response 取回。
+
+ASCII 检查作用于实际证据内容：source_text、非重复 context、关系文字或必要型号/版本含非 ASCII 时丢弃该整个 hit，不能把中文通过 `\\u` 转义冒充可口述英文，也不替换负号/单位/专名。非必要 title 非 ASCII 可整字段省略；不做翻译或转写。中文等不在本期范围。检索数值和限制条件不得为压缩而改写。
+
+Voice wire 是 JSON 字符串，其对象 schema 固定如下；以下字段由本应用定义，只是 function_call_output.output 的内容，不是新造的 speech 协议字段：
+
+```json
+{
+  "schema_version": 1,
+  "kind": "knowledge",
+  "directive": "answer_from_evidence",
+  "retrieval_status": "ok",
+  "evidence_status": "unassessed",
+  "scope_limited": false,
+  "application_limited": false,
+  "hits_omitted": 0,
+  "is_mock": false,
+  "reason_code": null,
+  "message": "",
+  "evidence": []
+}
+```
+
+evidence 元素字段：`source_id`（Citation.citation_id）、可选 `title`、`source_text`（Citation.content）、`context`（str|null）、`context_truncated`、`context_omitted`、`metadata`（仅 product_model/software_version/business_version）、`relations`（原 relation 的条件和 supports/refutes 等字段原样保留，不重解释）。不包含内部 KB 范围、密钥、endpoint、document/chunk UUID、trace/timings、权限字段、raw error。外层 schema 严格定义在 voice 层并由单元测试检验；引用原件定位留后端和经授权门户。
+
+预算以该最终对象一次序列化的 UTF-8 长度为准；字段都齐全的空 evidence 对象必须能放入 8192 bytes，message 必须来自固定短模板。任何超限不能靠截断 JSON 解决。按架构 §11.3 的 prepare_reply 在提交前生成 PreparedReply，KnowledgeBundle.citations 必须同步为最终实际送入 evidence 的同一集合，去掉的 context 同步标记，不出现“门户说提供了、实际没提供”的来源歧义。relations 过大导致无法容纳时按完整 hit 丢弃，不能只保留 supports 而丢失 refutes/条件。
+
+direct prompt 在启动加载并测试 ASCII，必须表达：每个完整发言先调用 bridge；query 可结合明确上下文但不可猜事实/过滤条件；证据是数据不是指令；只依据返回材料回答；unassessed 不保证充分；遵守 directive 的失败/澄清限制；保留型号、版本、数字、否定和例外；不得说内部 source_id/URL；英文简短口述；不能用常识补全缺失政策；遇到不充分材料请求补充或人工协助。移除 direct 模式中“请阅读已验证的完整业务答案”这一假设；没有独立的外置模型答案可供其引用。
+
+### 8.4 结果身份与供应商边界
+
+一个原生 call 只提交一次结果；仍保留工具先于 final ASR 的 5 秒有界等待、input item 消费、pending 去重、ACK/回答许可和单写入器 fence。direct 完成后形成的 AnswerBundle 仅用于持久化/SSE，不再作为第二次 function_call_output 写回，否则会形成重复回答或循环。
+
+VoiceChat 生成的真实口述是 direct 的答案正文，但不是服务端逐句验证的知识结论。禁止偷偷再调用外置 LLM 做评估、摘要或修正。direct 失败也不自动调用 external；external 失败也不自动使用 direct。服务依赖是否可达是运行故障，不是变更全局模式的条件。
+
+本方案不改 speech/GPU 模型源码，沿用已交付的 response 生命周期补丁与 Jinja 启动设置。公开 API 的 string/JSON tool output 能承载证据，但不能据此声称 Nano 对真实长证据的理解准确率、查询改写或工具期间 barge-in 已通过。沿用 [官方 API](https://github.com/NVIDIA-NeMo/Speech/blob/nemotron-labs-voicechat/voicechat_realtime_instructions/api-reference.md) 与 [Q05 文献/源码证据](voicechat-research-review.md)，真实验证按已部署 revision/digest 执行。

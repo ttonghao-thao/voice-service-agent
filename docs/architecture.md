@@ -1,6 +1,6 @@
 # 语音客服 Agent：架构与演进设计
 
-更新：2026-09-28。本文定义当前产品、模块职责、语音与业务状态及故障边界。实现状态见 [任务板](TASK_BOARD.md)，验证证据见 [验收记录](acceptance-report.md)。当前设计包含 D19 的 WebSocket 输出/播放修复、D20 的原生能力边界和查询交付优化；真实识别、GPU 推理与听音仍待部署复测。§10 保留尚未实施的建议，不与现有能力混写。
+更新：2026-10-02。本文定义当前产品、模块职责、语音与业务状态及故障边界。实现状态见 [任务板](TASK_BOARD.md)，验证证据见 [验收记录](acceptance-report.md)。当前设计包含 D19 的 WebSocket 输出/播放修复、D20 的原生能力边界和查询交付优化；真实识别、GPU 推理与听音仍待部署复测。§10 保留其他建议，§11 为 Q07 已确认需求的待编码规格，不与现有能力混写。
 
 ## 1. 产品定位与范围
 
@@ -13,6 +13,8 @@
 本项目不训练模型、不管理 GPU 调度。独立 `speech` 源码中的 WebSocket 协议修复随独立 VoiceChat 镜像交付；它不成为本项目的 Python 依赖或新服务。修改前后供应商代码版本必须进入发布基线。
 
 ## 2. 总体架构
+
+本节及 §4 描述当前已实现的外置 LLM 流程。2026-10-02 已确认外置 LLM 可选化需求；目标架构和可直接执行的编码规格以 [§11](#11-q07外置-llm-可选化实施规格尚未编码) 为准。尚未编码，不能按目标配置运行当前版本。
 
 ```mermaid
 flowchart TB
@@ -205,3 +207,166 @@ API 脱敏阶段日志关联 conversation、call、Turn 与 response；供应商
 ### 10.5 Q06：语音文字统一聊天展示
 
 2026-09-29 的[门户 Q06 契约 §7](portal-protocol.md#7-q06语音文字统一聊天展示)已完成本地编码：ASR 立即进入右侧用户气泡，与后台查询并行推进；实际口述进入左侧无背景正文，音频结束后保留。临时输入与持久 Turn 以 `input_item_id` 原位接管，完整业务答案和引用单独展开。沿用当前模块、通话隔离和取消边界；真实 VoiceChat/CueKB、设备体验和撤权现场复测仍待 D07。
+
+## 11. Q07：外置 LLM 可选化实施规格（尚未编码）
+
+### 11.1 需求、优先级与设计结论
+
+日期：2026-10-02；审计代码 `bbbd95e`。用户已确认需求，本节是后续编码的确定性规格；本轮只编辑 Markdown。实施者先核对增量差异，按 §11.9 执行，不重新选择模式开关、模型职责或交付状态。
+
+- 未配置外置 LLM：VoiceChat 内部 Nano LLM 负责检索问题形成、证据理解、澄清和最终回答；应用后端只执行确定性的控制、授权、检索及证据整理，不调用任何外置生成模型。
+- 配置外置 LLM：保留当前模型规划 → CueKB → 模型生成结构化答案 → 校验提交 → VoiceChat 口述的流程，包括文字入口。
+- 全局模式在 API lifespan 启动时解析、校验和装配一次。一个进程只能使用一种模式；无按请求配置判断、后台自动探测选路、热切换、自动降级或基于问题复杂度的混合路由。
+- 保留 VoiceGateway → SessionCoordinator → BusinessRuntime → ToolRegistry → CueKB，以及独立 speech/VoiceChat 服务。BusinessRuntime 是业务执行边界，不等于必须调用外置 LLM。
+- 本需求明确替代 §4.2、接入 §4.1、Q05 中“始终保留外置模型检索规划”的目标约束；这些段落仍准确描述当前实现和未来 external 模式。权限、取消、英文本期范围及协议边界不变。
+
+逻辑路径如下（文字箭头只表示依赖，不规定线程）：
+
+```text
+启动：Settings → 校验 AGENT_PROVIDER → 固定 ExecutionProfile → 注入 Runtime / Coordinator / Gateway
+
+external：VoiceChat → bridge → Coordinator → BusinessRuntime（外置 LLM → Registry → CueKB → 外置 LLM）
+          → 校验后的 AnswerBundle 提交 → 同 call 工具写回 → VoiceChat 口述
+
+direct：  VoiceChat / Nano → bridge（检索问题）→ Coordinator → BusinessRuntime（Registry → CueKB）
+          → KnowledgeBundle 证据提交 → 同 call 工具写回 → Nano 理解并口述
+          → 已授权转写与 response 完成 → Coordinator 提交最终口述记录
+```
+
+### 11.2 全局配置和启动装配
+
+唯一开关沿用 `AGENT_PROVIDER`，扩展枚举为 `none | openai | compatible | mock`，默认从 `mock` 改为 `none`。不新增 ENABLE_LLM、自动模式或第二份部署配置。空白 provider 归一化为 `none`；其他非法值失败。模型名、Key、可选 URL 去掉首尾空白后判空。URL 均要求 host，拒绝 userinfo/query/fragment 和非 HTTP(S) 协议；compatible 示例以 /v1 结束，不把 /chat/completions 当 base URL。openai 的自定义 base URL 保留现有兼容能力，不强制其路径为 /v1。
+
+| 启动输入 | 固定模式 | 启动行为 |
+| --- | --- | --- |
+| provider 缺省/空/none，AGENT_MODEL、OPENAI_API_KEY、AGENT_BASE_URL 全空 | direct | 不要求模型凭据，不构造 AsyncOpenAI 或 SDK Agent/Runner，不探测模型服务 |
+| provider=openai，MODEL/KEY 非空 | external | 现有 Responses 路径；BASE_URL 可空，非空则校验为合法 HTTP/HTTPS 基地址并按现有 client 传入；缺 MODEL/KEY 失败 |
+| provider=compatible，MODEL/KEY/BASE_URL 非空 | external | 现有 Chat Completions 路径；base URL 为含 host 的 HTTP/HTTPS `/v1` 基地址；缺项或格式错误失败 |
+| provider=none/缺省，但任一模型连接项非空 | 无 | 配置冲突，启动失败，明确提示设置 provider 或清空残留项；不得猜测用户意图 |
+| provider=mock | fixture | 仅显式注入测试 Settings 时可用，生产继续拒绝；不会因缺配置自动进入 mock |
+
+已有生产 `.env` 显式设置 openai/compatible，可继续使用原流程。新模板默认 none、模型参数留空，给两种 external 模式完整注释示例。`AGENT_DEADLINE_MS` 和 `MAX_AGENT_RUNS` 保留名称，成为全局业务执行预算/容量，不因 direct 模式失效。
+
+在 `config.py` 定义不可变 `ExecutionProfile`（frozen dataclass 即可，非插件框架），字段至少为 `mode: direct|external`、`agent_provider`、`text_available`。业务模式解析和组合校验即使注入测试 Settings 也执行；只有生产基础设施/real provider 门禁由测试注入绕过。fixture profile 映射 external 的测试执行器，并显式报告 is_mock。
+
+在 `agent_runtime/runtime.py` 保留 `BusinessRuntime` 外观，构造时绑定实际 `run`、`failure`、`close` 实现；现有 SDK 实现移至同目录 `external.py` 的 ExternalLLMExecutor，direct 实现放 `direct.py` 的 DirectKnowledgeExecutor。不得复制 Registry/Adapter、授权逻辑或检索结果映射。external 的 provider/model/client/model class/prompt 都在构造时固定，删除每次 run 对 provider 的选路。direct 不初始化外置客户端；依赖包暂时保留，支持同一镜像运行两种模式。
+
+`main.py` 在数据库/服务接受请求前构建一个 profile，传给 Runtime、Coordinator、Gateway 及 capabilities 生成器；退出调用统一 runtime.close()。`voice/provider.py` 的模式提示词、bridge schema 和结果序列化策略也在启动时选定并加载。每次连接只拼接经授权的会话摘要，不重新读取 prompt 文件或环境变量。request 路径调用已绑定策略，不写 `if settings.agent_provider ...`；权限、channel、输入类型、状态和 deadline 的每次校验仍然必要，不属于重新选择全局模式。
+
+多副本由同一次发布提供相同 `.env`，启动日志/readiness 暴露非敏感 mode/provider；部署核对所有副本一致。变更模式需要 drain、结束旧通话并重建/重启 API，不能让同一场实时通话跨模式迁移；无需新增配置中心。
+
+### 11.3 Runtime 输入、结果及模式职责
+
+内部增加 `BusinessInput`，包含 `user_text`（最终 ASR 或原文字）、`knowledge_query: CueKBSearchInput | None`。它不含 NVIDIA event、凭据、KB 列表或 endpoint。`RunContext` 保留原有权限、工具版本、证据和 revision/epoch；provider 协议到 BusinessInput 的转换只在 voice 层。
+
+- external：沿用 BridgeArguments(user_request)，最终 ASR 是 user_text，knowledge_query=None；历史和已确认 slots 继续交给现有 Agent。输出仍为 AnswerBundle；两次典型模型调用、必需知识工具和最终校验不变。
+- direct：使用接入 §8 定义的 NanoBridgeArguments；最终 ASR 仍是用户消息的权威文本，独立 query 可做上下文补全，但不是转写。只调用一次 `registry.invoke("search_knowledge", ...)`，不在 backend 写自然语言意图分类器或字符串检索规划器，不增加自动二次检索循环。Nano 根据结果回答、澄清或请用户补充后进入新轮。
+- 两种实现共用工具准备（allowed_tools/tool_versions）及最终工具版本/权限复查。direct 也必须经过 Registry 的 deadline、当前任务检查和 ToolRun 审计，不能直接调用 CueKB HTTP client。
+- 当前所有完整发言均须走合法 bridge 的策略保留；不新增问候/常识免工具路由。direct 不额外引入意图枚举。无法解释的问题允许 Nano 在一次检索后澄清，质量归 D07；不以关键词猜意图跳过权限路径。
+
+新增严格内部/持久模型 `KnowledgeBundle`，独立于 AnswerBundle，字段与 wire 投影见接入 §8。Runtime 返回 `AnswerBundle | KnowledgeBundle`；这是明确的结果类型处理，不是读取配置选模式。正常 direct 检索、未命中、上游错误均返回 KnowledgeBundle；通用运行异常可返回现有失败 AnswerBundle，由已绑定 direct serializer 转成固定失败工具结果。
+
+证据投影必须在持久提交之前完成。VoiceProfile 在 voice/provider.py 提供纯函数 `prepare_reply(result) -> PreparedReply(result, tool_output)`：direct 校验/裁剪候选 KnowledgeBundle，返回实际待发送集合和一次编码好的 JSON 字符串；external 保持现有四字段回传与 ASCII 失败保护，不改业务 bundle。Coordinator 通过启动注入的函数调用它，只持久化 prepared.result，ready 交付 PreparedReply；Gateway 单写入器原样发送 tool_output，不再二次裁剪/序列化。PreparedReply 是内部 dataclass，不导出 API，tool_output 对业务层是不透明字符串，NVIDIA 事件封装仍只在 Adapter。禁止先提交全证据、后在 Gateway 删除其中一部分而不更新持久结果。
+
+### 11.4 两阶段交付与任务生命周期
+
+当前 execute() 在 Runtime 返回后立即提交答案并释放 task；direct 不能照搬，因为证据不是最终回答。采用同一个 Coordinator 执行 task 分两阶段，不增加队列服务/子 Agent。
+
+新增内部 `TurnExecution`：`task`（完整业务执行）、`ready`（可写回原生工具的 Future）、`voice_completion`（direct 等待最终口述的 Future）。这些 Future 只用于活跃进程协调，持久真相仍是 Turn/Event/Record。`tasks[cid]`/`all_tasks` 继续跟踪完整 task，direct 等待 Nano 时仍占业务容量。`submit()` 返回 `(turn, ready_future)`；文字 route 仍忽略第二项，Gateway 等 ready 而非等待整个 direct task，避免“工具结果等待回答、回答等待工具结果”的死锁。重复 idempotency key 沿用 `(existing_turn, None)`，不得重发已发送的原生结果。
+
+external 的执行顺序不变：run → validate → Store.commit/portal.answer.final → resolve ready → task 完成。新增 Future 只改变内部交接，不提前交付未校验答案。
+
+direct 的精确时序：
+
+1. final ASR 与合法工具绑定；创建 Turn，status=running，execution_mode=direct；task/ready/voice_completion 必须先注册，再允许向 Gateway 暴露结果。
+2. Runtime 执行检索并返回 KnowledgeBundle；复查 lease、epoch/revision、工具版本和权限。
+3. 先调用已绑定 prepare_reply，再单事务 `Store.commit_knowledge` 写入投影后的 `Turn.knowledge_result`，status=awaiting_voice，delivery_status=evidence_ready；发持久 `portal.knowledge.ready`。不写 `Turn.answer`，不发 `portal.answer.final`，不把证据文本塞进 assistant history。
+4. 事务提交后 resolve ready。Gateway 单写入器再次 fence，经相同 call_id 发送结果；成功后 CAS 更新 delivery_status=tool_submitted，不得覆盖已产生的终态。重用现有固定 ACK 和至多一个后续答案 response 授权。
+5. 接受属于该 Turn、已写回工具结果之后、phase=answer 的 `speech_text.done`，按 `(response_id, segment_index)` 去重持久化 Record；delta 只用于实时展示。固定 ACK 不计入答案。多片段按 segment_index 拼接；聚合上限 8000 字符，超限报 VOICE_ANSWER_TOO_LARGE、终止该轮并关闭连接，不静默裁剪成完整答案。
+6. 匹配的 `audio.done` 且 phase=answer、至少一个非空已定稿口述片段到达时，Gateway 调用 `coordinator.complete_voice(...)` 仅提交完成信号，不同步等待 task 完成；从持久 Record 重读已接受片段，不能信任客户端传入文本。只有 speech_text.done 不能声称 response 音频已结束；只有 audio.done 而无文字，返回 VOICE_ANSWER_MISSING。
+7. task 被完成信号唤醒，再查 lease、Turn、epoch/revision、工具版本和当前授权；同一事务写最终 AnswerBundle、Turn 终态、经授权 history 和 `portal.answer.final`。最终文本来自实际口述，不运行第二次模型或语义分类器。完成 Future/计时器/映射并释放容量。
+
+完成信号以 turn/revision/epoch/response 绑定，幂等、只能完成一次；早到信号由已注册 Future 接收，不丢失。ACK 的 audio.done、重复 done、其他 response、旧连接输出均不能完成 task。audio.done 表示生成端音频结束，不代表用户已听到。
+
+Coordinator 的接口固定为 `complete_voice(cid, epoch, revision, turn_id, response_id) -> bool` 与 `fail_voice(cid, epoch, revision, turn_id, reason_code) -> bool`，仅校验绑定并完成相应 Future，不等待完整 task。execute 中从该 Turn 的已授权 done Record 聚合文本，复查后调用 `Store.finalize_voice(cid, epoch, revision, turn_id, bundle, history) -> bool`；重复信号返回 false。`Store.commit_knowledge(cid, epoch, revision, turn_id, knowledge) -> bool` 只接受 running，finalize_voice 只接受 awaiting_voice；通用执行异常发生于证据提交前时沿用 Store.commit 的 failed 分支，不伪造 knowledge.ready。
+
+写回期间标记 pending=sending，provider send 设 2 秒上限，成功后再置 sent 和放行结果后的回答。若上游极快输出早于 send await 返回，receiver 把该 call 的待归类输出暂存至多 16 个事件，send 成功后按原序处理；失败或超限关闭连接并 fail_voice，不能在 sending 阶段把新答案误当 ACK 丢弃，也不能提前给未成功写回的 call 永久授权。原固定 ACK 可按已有精确规则继续处理。该缓冲仅解决写回竞态，不替代现有音频背压队列。
+
+### 11.5 状态、取消、超时和历史
+
+| 路径/条件 | Turn.status | 交付与处理 |
+| --- | --- | --- |
+| external 正常 | running → 现有终态 | 继续使用当前 AnswerBundle/accepted 语义 |
+| direct 正常 | running → awaiting_voice → voice_completed | 只表示口述生成完成，不表示逐句事实验证通过 |
+| direct 明确未命中/证据不足/澄清 | running → awaiting_voice → insufficient_evidence / needs_clarification | 状态来自服务端检索事实和 directive，不从口述文字猜测 |
+| direct CueKB/工具失败 | running → awaiting_voice → failed | 允许 Nano 口述失败提示，不能变成无资料/成功；reason_code 保留工具错误 |
+| 执行异常/生成超时/断线 | running 或 awaiting_voice → failed | 固定可理解提示，delivery_status=voice_failed（若已进入语音阶段）；保留已接受的证据/片段，非完整回答 |
+| 明确取消/替换/lease 恢复 | running 或 awaiting_voice → canceled/superseded/expired | revision/epoch fence，关闭尚未结清或仍在生成答案的旧连接 |
+
+`voice_completed` 是新增 AnswerBundle.status，AgentAnswer 枚举不扩展，外置模型不能输出它。AnswerBundle 新增 `answer_origin: business_runtime|voicechat`（旧行默认 business_runtime）和 `evidence_role: cited_sources|retrieved_context`（旧行默认 cited_sources）；二者是来源/用途标识，不是事实正确性认证。direct 成功使用 voicechat/retrieved_context，citations 放提供给 Nano 的证据集合，不能宣称 Nano 逐条引用过。具体终态映射见接入 §8。
+
+统一定义活动状态集合 `{running, awaiting_voice}`，替换 Store.begin_turn/invalidate/rotate_voice/cancel_task、Coordinator.recover/ensure_owner、管理员 drain 相关判断及前端取消按钮中只认 running 的地方。`Store.commit` 保持 external 行为；新增 `commit_knowledge` 和 `finalize_voice` 以 CAS 接受指定前置状态，不粗暴放宽旧 commit 的条件。Store.current 仍检查当前轮和 revision/epoch，输出还需已授权 response/模式生命周期检查，不能仅靠 status。
+
+- direct 总预算从 execute 开始计时，继续使用 `AGENT_DEADLINE_MS`（默认 30000），覆盖检索、证据提交、写回和等待 Nano 完整 response；不得在阶段切换时重置。工具仍受 5 秒独立上限。external 的现有预算范围不变。无新增可调超时参数，后续有真实证据再调整。
+- 超时先 fence 当前 direct 输出、移除 response 许可、关闭连接，再在仍持有 lease 时提交失败；不要因为标成 failed 但 current_turn 未改变而继续接纳晚到音频。底层 speech 自己的工具期限不由该 env 控制。
+- 显式 Stop playback 仅清播放，direct task、证据和生成终态仍继续。把“未授权/失效输出抑制”与“仅播放抑制”分开；后者不阻止已授权 done Record 和生命周期完成信号。现有 external 业务结果提交顺序不变。明确取消与 Stop 必须走不同方法。
+- 普通 speech_started 不改变 task；下一次合法 bridge 受理新 Turn 时才按现有替换策略使旧 task 失效。若旧 call 尚 pending，关闭连接而不是把旧结果交给新 call；若存在未结束的旧答案 response 且无法确定供应商归属，同样关闭恢复，不能猜测。
+- transport 错误、WebSocket 正常结束、会话过期、shutdown 在 finally 中通知等待者、清理 Futures/任务；仍有 lease 且可写 DB 时记 failed，失去 lease 时停止写入，由现有恢复路径转 expired。未 resolve 的 ready 必须完成为失败或 cancel，不能悬挂；调用者取消 ready 等待不得取消整个执行 task，Gateway 使用 shield 等待并由 Coordinator 显式取消。无持久重试、后台重放语音或重发 tool result。
+- Gateway watchdog 的正常轮换条件除 pending call 外必须检查 direct 活动执行：awaiting_voice 仍在生成，不可因 pending=sent 就主动轮换。现有 max session +30 秒硬期限保留，触发时完成 VOICE_SESSION_EXPIRED 失败清理。正常 drain 等完整 task 结束，不能只等检索完成。
+- direct history 仅在完整终态生成后写入 user_text + 实际口述，附该次证据授权范围和 turn_id；不把检索 JSON、ACK、部分口述、失败或 canceled 片段作为已完成 assistant history。可进入 history 的 direct 终态为 voice_completed/needs_clarification/insufficient_evidence；历史仍限 24 条，摘要沿用最近 6 条/1500 字符。重连摘要从授权 history 派生，保持 en-US/ASCII 门禁。
+- 若 Nano 生成的是澄清语句而检索 directive=answer_from_evidence，仍记 voice_completed，不伪造语义分类。用户可见主正文为真实问句。省去外置模型意味着服务端无法额外证明语义充分性，这是模式定义，不用隐蔽模型检查抵消需求。
+
+### 11.6 数据库、权限和兼容性
+
+Alembic 新增 `0007_optional_external_llm.py`，revision=`0007`、down_revision=`0006`（当前 0006 文件名为 0006_voice_input_item.py）：Turn 增 `execution_mode` String(16) 非空、server_default=external；增 `knowledge_result` nullable JSON。旧行保持 external/null，不生成虚假检索或口述数据。新增状态仍用现有 String 列，无原生 enum 迁移；AnswerBundle 扩展字段位于 JSON，不回填旧 answer。迁移需验证现存行和升级可读性。
+
+KnowledgeBundle 顶层保留 `authorized_kb_ids` 与 `tool_version` 作为内部字段；浏览器响应及 VoiceChat 投影移除这些字段。服务端发证据/答案/转写、读取 messages、重放 SSE、构造 history、重连摘要都执行原 owner/KB 范围复查；撤权时整份证据和衍生口述隐藏，不只删 citations。direct 引用集合代表检索上下文，不能交给旧 `_answer_for_principal` 的失败状态修复逻辑误改为 answered。
+
+`/messages` 新增 execution_mode、knowledge_result 的授权后投影；旧行的默认值由读边界补齐。新增 `portal.knowledge.ready` 必须经过 `_event_for_principal`，不能沿用目前只过滤 answer.final 的代码。撤权投影使用 directive=report_failure、reason_code=KB_ACCESS_REVOKED、空 citations/检索详情；关联口述记录也隐藏。history/KnowledgeBundle 字段不能由浏览器覆盖。
+
+目前没有运行时客户授权编辑流程；仍以每通话 capability 和服务端范围为基础。不要承诺新增身份系统。新模型调用前后、结果提交/写回前必须保持现有工具配置 revision 检查；direct 在 Nano 完成时再检查一次，工具关闭后的晚到答案不继续交付。
+
+API/Web 必须同版本发布；当前客户端不认识 knowledge.ready/voice_completed，不能让旧 Web 搭配新 direct API。回滚前 drain 并完成数据库备份；旧 API 无法可靠处理 direct 历史，不承诺旧二进制无条件兼容新增行。降级迁移遇到 direct 行时明确拒绝自动 drop，不删除已有证据；回滚采用已备份版本恢复或支持 Q07 schema 的修复版本。无业务数据的隔离迁移测试允许 downgrade。
+
+### 11.7 文字入口、启动健康和能力边界
+
+- direct：保留通话创建、音频、转写、SSE、历史和来源展示；独立 `POST /conversations/{cid}/messages` 返回 409 `TEXT_INPUT_UNAVAILABLE`。先执行身份/会话归属检查，再在创建 Turn、变更 revision、关闭语音之前拒绝。不能把文字转成假音频，或假定 speech 支持任意文字会话输入。
+- external：原文字接口、返回结构、切换文字时结束语音等行为不变。
+- 文字处理器在启动注入支持/拒绝两种实现；前端依据冻结能力禁用文字输入，显示 `Text input is unavailable in this deployment. Please use voice.`。语音不可用时 direct 提示重试/人工联系，不再引导使用不可用的文字入口。
+- capabilities 新增 execution_mode、external_llm_enabled、text_available；保留 text_configured，明确 direct 为 false。readiness 不再以 text_configured 为唯一 ready 条件；按已选模式要求其必需依赖配置、DB/Redis/未 drain，生产 direct 也须 VoiceChat 和 real CueKB 配齐。模式决定的静态部分启动缓存，工具开关/用户权限/容量仍按现状动态计算。
+- `/admin/services` direct 的 text_model=disabled，不能显示 unconfigured 故障；日志标识 mode、provider，不输出 Key。`verify_deployment.py` 必须按预期 mode 校验，否则“漏配模型导致错误 direct”可能被放行。
+- 当前 capabilities 的 native_tool_phase_barge_in=voice_configured 与 Q05 证据不符，本次在两种模式统一改为 false（当前基线未支持），不改变 native_full_duplex 的普通对话含义。减少模型调用不等于修复工具期间自然插话。
+
+### 11.8 观测与放行要求
+
+启动记录 `business_execution_configured mode/provider/text_available` 一次。每轮现有日志增加 mode；direct 不出现外置 `agent_model_call_finished`，pipeline 的 model_calls=0。保留 CueKB/tool 的包含关系；新增 evidence_committed、voice_tool_result_submitted、voice_answer_first_audio、voice_answer_completed/failed 的无正文时间点。direct 的 execute 总耗时包括 Nano 等待，external 仍截至业务答案提交，指标必须注明定义，不能直接混算。
+
+端到端对比统一按“同一问题说完 → 首个有效答案音频”，排除 ACK；记录 mode、应用/VoiceChat 版本、样本数、失败/超时/缺测及 p50/p95。现有场景增加多轮代词/型号版本、非 ASCII 证据、未命中、冲突/裁剪和停止/取消；不宣称零外置调用必然达到某个毫秒 SLA。
+
+### 11.9 按文件实施顺序和交付门槛
+
+以下 I1–I6 均为待编码，严格递进，保持单一分支中的连贯变更；不需要用户重新选择技术方案。遇到源码相较 `bbbd95e` 已变，只对照增量，不重复实现已完成部分。
+
+| 里程碑 | 精确影响面 | 交付与必要验证 |
+| --- | --- | --- |
+| I1 启动模式 | config.py、main.py、agent_runtime/runtime.py/external.py/direct.py、tests/conftest.py、test_protocol.py/test_sdk.py | profile/客户端只构造一次；external 保持受控 SDK 测试；direct 构造和多次 run 均零外置调用；测试不再启动后修改 provider 选路 |
+| I2 检索与工具回传 | contracts.py、agent_runtime/context.py/direct.py、voice/provider.py、config/voice-direct-prompt.txt、registry.py/adapters.py 的复用点、test_tools.py/test_english_scope.py/test_voice.py | 严格 Nano 参数、完整 final ASR、一次授权检索、wire 预算/ASCII/失败矩阵；外置 bridge 和提示词行为不回退 |
+| I3 两阶段生命周期 | sessions/coordinator.py、storage/models.py/store.py、voice/gateway.py、Alembic 0007、test_sessions.py/test_coordination.py/test_voice.py | ready/completion 无死锁；awaiting_voice 活动状态、完成/超时/取消/ACK/重复/Stop/恢复/租约所有路径可终结，释放容量；DB 迁移与旧行可读 |
+| I4 API/门户契约 | contracts.py、api/routes.py、apps/web/src/api.ts/App.tsx、必要 style.css、scripts/export_contracts.py、契约产物、tests/e2e/portal.spec.ts | knowledge.ready 与最终转写区分、文字入口门禁、授权/SSE 重放/旧快照不倒退、两种模式展示和来源语义；无重复答案 |
+| I5 部署与观测 | .env.example、scripts/deploy-cloud.sh/verify_deployment.py、main.py readiness、test_deployment.py、相关主题文档 | none 默认示例、两种外置示例、组合校验一致、预期模式匹配；单 Compose 不新增服务；静态脚本和环境键集合契约 |
+| I6 完整回归/交付 | tests/fixtures/voice-evaluation-cases.jsonl、必要探针/评分报告字段、任务板/验收文档 | 本地后端/前端/契约/迁移/受控 E2E 完成；D07 分模式记录真实结果，未运行项保持未验证 |
+
+测试矩阵（必须覆盖，不以函数调用次数的镜像测试代替行为测试）：
+
+1. 缺省/none 空配置成功；残留或不完整 external 失败；非法 provider/URL 失败；显式 mock 只限测试；现有生产配置 external 不变。
+2. 多请求复用同一已装配执行器，启动后改变环境不会切模式；direct 将 AsyncOpenAI/Runner 替身设为一旦调用即失败仍完成受控闭环；真实模式失败不调用另一模式或 mock。
+3. external 正常至少一个必需工具，错误优先级/引用复核/文字入口回归；direct 一次工具、原问题和改写 query 分离、未知参数拒绝、KB/Key 不可注入、上下文过滤规则符合接入 §8。
+4. direct 检索成功只产生 knowledge.ready 和 awaiting_voice，answer=None；最终受控口述才产生 answer.final/history；ACK、空 done、重复 done、错误 response、工具写回失败不能伪造完成。
+5. 工具结果与 ACK 竞态、工具先于 ASR/ASR 先于工具、共享/新 response、多个 segment、无音频或无转写、8000 字符边界、写回前后取消、超时/正常断线/shutdown 均无孤儿 task/Future 和旧结果泄漏。
+6. Stop 不取消生成，取消按钮覆盖 awaiting_voice；lease/restart/new owner 回收活动状态；KB 撤权和工具关闭覆盖证据、字幕、答案、SSE、历史及摘要。
+7. direct/external `/messages`、SSE、实时 WS 交错，旧快照不覆盖终态；新标签页隔离、两个相同问题、语音中断、窄屏及现有 Q06 测试不回退。
+8. 生产 readiness/脚本按模式通过或拒绝；直接模式 text=false 不是 degraded；readiness 成功仍不是供应商连通/听音验收。
+
+编码阶段执行根目录 `PYTHONPATH=apps/api .venv/bin/python -m pytest -q`、`.venv/bin/ruff check apps/api tests scripts`、`npm test --prefix apps/web`、`npm run build --prefix apps/web`；E2E 在 apps/web 执行 `npm run test:e2e`。协议修改后执行 `PYTHONPATH=apps/api .venv/bin/python scripts/export_contracts.py` 并检查产物 diff；独立临时 SQLite 跑升级及带旧行迁移，PostgreSQL/Redis/Docker/真实模型留 D07。依赖缺失如实记录，不自行安装 Docker。
+
+编码完成需要文档中“设计/未实现”转为已实现并记录实际证据；本轮仅设计不执行上述应用测试。真实 Nano 参数遵循率、证据推理/口述质量、speech 工具期限和全双工限制未由此方案证明，属于明确的验收风险，不是留给实施者重选架构的空白。
