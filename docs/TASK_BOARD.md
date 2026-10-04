@@ -1,6 +1,6 @@
 # 当前任务板
 
-更新：2026-10-04。代码基线：`codex/q1003` / `a508980`，已推送到同名远端分支。架构见 [architecture.md](architecture.md)，实施细节见 [Q07](qa-routing-design.md)，执行证据见 [验收](acceptance-report.md)。任务状态只在本文件维护，历史过程保留在验收记录。
+更新：2026-10-04。代码基线：`codex/q1003` / `2ea8cfe`（SIM/CTX1/EVAL1/REL1），已推送到同名远端分支并核对 SHA。架构见 [architecture.md](architecture.md)，实施细节见 [Q07](qa-routing-design.md)，执行证据见 [验收](acceptance-report.md)。任务状态只在本文件维护，历史过程保留在验收记录。
 
 ## 1. 当前结论与审计基线
 
@@ -29,7 +29,7 @@ D2 不能撤回已播内容，也不能证明完整语义或实际音频正确�
 | ID | 状态 | 完成条件 |
 | --- | --- | --- |
 | REL1 | 完成 | 实际构建 API/Web；修复非 root 文件读取和代理健康探针；16 项隔离 Compose 检查通过，迁移 0008、PG/Redis、HTTPS/API/SSE/capability 与只读运行；不调用真实供应商 |
-| REL2 | 发布中 | 提交现有 SIM/CTX1/EVAL1 和本轮改动，推送 codex/q1003 并核对远端 SHA |
+| REL2 | 完成 | 应用提交 2ea8cfe 已推送 codex/q1003，远端 SHA 核对一致；同步发布任务板及验收记录 |
 
 ### Live 设计借鉴：本轮两个 P0
 

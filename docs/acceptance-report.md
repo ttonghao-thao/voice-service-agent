@@ -34,9 +34,11 @@
 - 本轮重跑部署/迁移测试 **6 passed**，Ruff、部署脚本语法及 git diff --check 通过；最新应用 207 Python / 12 Node / 10 Chromium 为 CTX1/EVAL1 的既有通过记录，应用源码摘要未变，未将本轮 6 项重复测试累加。Web 的 TypeScript/Vite 构建亦在 Docker 构建中实际执行。
 - 本地证据：artifacts/docker-review/{api-build.log,web-build.log,compose.log,compose-summary.json,python.xml,document-check.json}；status=passed，四个长期服务 healthy，测试项目/网络/数据卷已删除，端口释放；14 份活动 Markdown 的 169 处本地链接/锚点、4 段 JSON 和围栏检查通过。真实知识闭环、GPU、公网证书与麦克风、实际听音、历史生产 PG 数据迁移/锁与恢复、Redis 故障及容量/性能未执行，D07/Q07-E 不因此放行。
 
+- 发布：应用提交 `2ea8cfe` 已推送 `codex/q1003`，远端 SHA 与本地应用提交一致；本轮 SIM、CTX1/EVAL1、Docker 修复和对应文档均包含在该提交中。
+
 ### 2026-10-04 CTX1 / EVAL1：两个 P0 编码与验证
 
-- 基线 `codex/q1003` / `a508980`，保留此前未提交的文档和独立 API 模拟改动。本轮仍在工作区，未新增提交/推送；真实 CueKB 与 VoiceChat 保持独立部署，未改其代码或调用真实接口。
+- 基线 `codex/q1003` / `a508980`，保留此前未提交的文档和独立 API 模拟改动。本节记录完成时仍在工作区，未新增提交/推送；后续发布见本日 Docker 记录。真实 CueKB 与 VoiceChat 保持独立部署，未改其代码或调用真实接口。
 - CTX1：`task_context.py` 统一最终用户输入、来源条件、跨轮纠正与有界授权历史；原始请求和检索完整请求分开。一般回复标记未验证，型号更改清旧版本，旧/猜测参数或撤回条件先澄清；比较查询不强制继承单设备过滤。重连保留条件来源并说明可能没有听完，已取消/过期任务不自动恢复为回指目标。
 - Alembic 0008 增加 Conversation.context_state / Turn.task_context；测试验证历史 0006→0008、0008↔0007、降到 0006 后再升级及 Alembic check。原 slots/summary 保留，但旧 slots 不伪造确认来源。内部快照不成为浏览器/模型可设置的配置，公共门户 schema 未改变。
 - EVAL1：新增固定十组连续序列、实际 HTTP/WS 网络 Runner 和评分器完整性/版本检查。报告 **10/10 序列、17/17 工具步骤**；上下文 **8/8**、纠正 **3/3**、控制 **4/4**、旧输出隔离 **2/2**，这两个隔离场景的泄漏数为 **0**。未观测的真实口述事实与权限指标为 null，不填成通过。内容摘要在同一版本组，覆盖完整。
