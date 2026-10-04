@@ -1,6 +1,6 @@
 # 部署与运行
 
-> 2026-09-28：本文描述当前代码的运行方式，不代表真实服务已经验收。本期 Compose 使用每次通话独立的临时 capability、真实 CueKB、`search_knowledge` 和 NVIDIA VoiceChat，不需要天气代理配置。真实验收仍须按 [任务板](TASK_BOARD.md) D07 执行。最终系统边界见 [架构](architecture.md)。
+> 2026-10-04：本文描述 Q07 基础实现的运行方式，不代表真实服务已经验收。本期 Compose 使用每次通话独立的临时 capability、真实 CueKB、`search_knowledge` 和 NVIDIA VoiceChat，不需要天气代理配置。真实验收仍须按 [任务板](TASK_BOARD.md) D07 执行。最终系统边界见 [架构](architecture.md)。
 
 ## 部署方式边界
 
@@ -10,15 +10,42 @@
 
 API 容器内部监听 `0.0.0.0:8000`，不映射宿主端口。浏览器只从 Web 同源 `/api/` 调用，Web 容器内的 Nginx 将请求转到 Compose `app` 网络的 `api:8000`。PostgreSQL、Redis 也只在容器网络中；公网仅开放 Web 的 `8087`。独立 API 客户端与正式系统间鉴权不属于本期核心验证。
 
-编码机没有 Docker 或真实 CueKB/VoiceChat 接口；本地只运行契约、静态与夹具测试。镜像/容器、PostgreSQL/Redis、真实供应商和浏览器验收归 D07，不能以本地测试或 `/health/ready` 冒充通过。
+早期编码环境没有 Docker，仅运行契约、静态与夹具测试。当前用户要求的 Docker 检查可在已有 Docker 的环境中执行隔离构建与 Compose 验证；真实 CueKB/VoiceChat、GPU、公网浏览器及听音仍归 D07，不能以容器启动或 `/health/ready` 冒充通过。隔离检查的外部服务地址和凭据均为测试值，不调用真实供应商。
 
 ## 配置与独立测试通话
-
-Q07 增加可选 `QA_EXECUTION_MODE=dual_tools`，只影响新建会话，默认仍为 legacy。新模式仅注册 lookup_knowledge / reason_over_knowledge，默认允许一般模型回答；严格知识部署设置 `QA_ANSWER_POLICY=knowledge_required`，直查也走外置知识执行。先执行 Alembic 0007，再用匹配 API/Web 版本完成 Q07-E 的双工具、一般回答、证据续答及混合会话真实验收后启用；本地夹具不代表 GPU 放行。工具和 instructions 在 session 建立时注册，不发送 tool_choice。回滚 mode 只用于新会话，活动会话先结束或 drain；新增迁移的数据不自动删除，旧二进制回滚另测。可选变量示例见 `.env.example`，D1/D3 未实现。
 
 复制 `.env.example` 为 `.env`；模板中的 `voice.example.com`、`cuekb.example.com`、证书路径、镜像标签和 KB UUID 仅演示填写格式。替换示例值和所有 `REPLACE_` 值，并将 `WEB_TLS_CERT_FILE`、`WEB_TLS_KEY_FILE` 指向部署机上的可读绝对路径。Compose 固定 `AUTH_MODE=validation`、`CUEKB_MODE=real`、`ENABLED_TOOLS=search_knowledge`、`VOICE_PROVIDER=nvidia`；容量、语言和检索条数沿用代码默认值；整轮业务预算由 `AGENT_DEADLINE_MS` 显式配置，默认 30000 毫秒。不需要 tenant、账号 JSON、密码哈希、Cookie 密钥、能力开关、服务 revision、健康地址、OIDC、`APP_ENV` 或第二份 env 文件。
 
 门户首次加载不创建身份或读取历史。测试人员在当前标签页点击 “Start call” 时，API 创建新的 conversation、随机 owner 和高熵 `call_access_token`；token 只保存在该标签页 JavaScript 内存中，HTTPS/SSE 请求以 Bearer 发送，WSS 使用与该 owner/conversation/epoch 绑定的一次性 ticket。其它标签页不会得到该 token，不能读取或控制本次通话；结束通话撤销 token。`KNOWLEDGE_BASE_IDS` 仍由服务端配置并对所有测试通话统一生效，浏览器和模型不能扩大范围，管理 API 仍拒绝匿名 call capability。这不是正式客户认证方案。
+
+## 问答模式与预算（Q07）
+
+以下是当前 Settings 已实现的参数，在同一 `.env` 中配置；模板的 Q07 示例为注释。正常 API 启动仍要求真实文本模型/CueKB/VoiceChat、PG/Redis，不因直查零外置调用而省略部署依赖。后台 ENABLED_TOOLS 固定 search_knowledge；不要改成 lookup_knowledge 或 reason_over_knowledge。
+
+| 参数 | 默认 / 允许范围 | 已实现含义 |
+| --- | --- | --- |
+| QA_EXECUTION_MODE | legacy / dual_tools | 新建 Conversation 时固定模式；legacy 单 bridge，新模式默认仅两个原生工具 |
+| QA_ANSWER_POLICY | 未填时：legacy 为 knowledge_required，dual_tools 为 general_qa | general_qa 允许输入绑定的一般回答；knowledge_required 拒绝无工具实质性回答并让 lookup 走外置执行；legacy + general_qa 启动配置无效 |
+| QA_TOOLSET_VERSION | qa-tools-v2 | 会话快照的工具集版本标签；变更注册/schema/prompt 时随匹配发布更新，不是模型版本或行为验证标志 |
+| QA_EXTERNAL_FALLBACK_ENABLED | true | lookup 证据不适合 D2 时允许内部升级一次；false 则明确失败，不绕过权限或编造 |
+| QA_DIRECT_MAX_HITS | 3；1–3 | D2 证据项上限，超限升级/失败，不裸截关键条件 |
+| QA_DIRECT_EVIDENCE_MAX_BYTES | 6000；1024–6000 | 完整 evidence-v1 包 UTF-8 字节上限；非 ASCII 或超限退出 D2 |
+| QA_MAX_RETRIEVAL_CALLS | 2；1–2 | 原生知识执行的同轮逻辑检索上限，直查与升级共享 |
+| QA_PROVIDER_ANSWER_TIMEOUT_MS | 10000；100–30000 | D2 原生续答上限，取剩余总预算较小值；一般回答仅从已开始响应后计结束期限 |
+| AGENT_DEADLINE_MS | 30000 | 整个知识 Turn 总预算；直查、升级、检索、外置模型和 D2 回收不重置期限 |
+
+新模式在受控真实验收部署中使用：
+
+```dotenv
+QA_EXECUTION_MODE=dual_tools
+QA_ANSWER_POLICY=general_qa
+```
+
+若场景要求知识受控回答，将 QA_ANSWER_POLICY 改为 knowledge_required。该策略不保证 VoiceChat 对批准文本逐字朗读；D2 在一般模式中的校验发生在口述后，无法撤回已播内容。
+
+实施顺序：备份 → API/Web 匹配发布及 Alembic upgrade head（当前 0008）→ 固定 VoiceChat 模型/镜像/模板/补丁 → 在验收部署配置新模式并创建新通话 → 完成 Q07-E 后放行。0008 增加内部会话来源条件及任务快照；旧 slots 保留但不伪造确认来源。已有 Conversation 的模式/策略不随环境变量改变；原生 tools/instructions 在 voice session 建立时冻结，不发送 WS tool_choice。
+
+回退 QA_EXECUTION_MODE=legacy 用于新会话，需同时清除 general_qa 策略或设为 knowledge_required；活动会话先结束或 drain。新增记录保留，旧二进制与数据库回滚分别验证。QA_DIRECT_COMPOSITION、QA_MAX_ROUTE_ESCALATIONS、QA_ACK_POLICY 未加入 Settings，不能通过填写它们启用 D1/D3、动态 ACK 或额外升级。新增工具需可信代码注册及独立权限/行为验收；当前只有两个原生知识工具。
 
 ## 镜像构建与部署
 
@@ -38,6 +65,17 @@ release_tag=$(git rev-parse --short=12 HEAD)
 docker build -f deploy/Dockerfile.api -t "voice-service-agent-api:$release_tag" .
 docker build -f deploy/Dockerfile.web -t "voice-service-agent-web:$release_tag" .
 ```
+
+构建使用 BuildKit。在需要代理 CA 的云环境中，将含系统根证书和代理 CA 的可信 bundle 作为临时 secret 传入两次构建：
+
+```sh
+docker build --secret id=proxy_ca,src=/etc/ssl/certs/ca-certificates.crt \
+  -f deploy/Dockerfile.api -t "voice-service-agent-api:$release_tag" .
+docker build --secret id=proxy_ca,src=/etc/ssl/certs/ca-certificates.crt \
+  -f deploy/Dockerfile.web -t "voice-service-agent-web:$release_tag" .
+```
+
+该 secret 只在依赖安装的 RUN 中可见；pip 使用 PIP_CERT，npm 使用 NODE_EXTRA_CA_CERTS 且保持 strict-ssl=true，不写入镜像。没有自定义代理 CA 时省略 --secret；不要关闭 TLS 校验。API 构建还会规范应用源码、配置和迁移文件的读取/目录访问权限，防止构建机的 600/700 权限导致镜像内 UID 10001 无法启动；这些文件保持 root 所有，服务用户没有写权限。
 
 API 镜像只使用 Python 基础镜像自带的 `pip`，按 `requirements.txt` 中的精确版本安装生产依赖。仓库不使用额外的 Python 包管理器或独立锁文件；`requirements-dev.txt` 引用相同生产依赖并追加测试/Lint 工具。修改依赖时直接更新这两份 requirements，并在全新 Python 3.12 虚拟环境中完成安装和回归：
 
@@ -59,6 +97,8 @@ chmod 600 .env
 ```
 
 脚本检查必需值、HTTPS 公网入口、TLS 文件、本地镜像和 Compose 配置，等待 PostgreSQL/Redis 健康，用 API 镜像执行 Alembic，再启动 API、核验容器内 `/health/ready`，最后启动 Web。配置错误会在 API 启动时失败；镜像不会由部署脚本构建或自动拉取。readiness 只证明容器和启用工具的配置就绪，不能证明 CueKB、VoiceChat、文字答案或英语口述质量。当前依赖镜像固定为 `postgres:17.6-alpine` 和 `redis:7-alpine` 对应 digest；已有 PostgreSQL 数据卷在更换镜像前须备份并验证目标版本兼容，不把切换标签视为无风险降级。
+
+Web 的容器内健康探针用 wget -Y off 直接访问 127.0.0.1，避免继承代理导致误报不健康。探针对本机 IP 不核对证书；正式 HTTPS 客户端仍须验证证书链与域名，不能沿用该探针作为 TLS 验收证据。
 
 ```sh
 docker compose --env-file .env -f deploy/compose.production.yaml ps
@@ -96,19 +136,19 @@ Redis 持有每个 conversation 的独占租约，15 秒 TTL、4 秒续约。未
 2. 对将升级的副本调用管理员 `POST /api/v1/admin/drain`。readiness 返回不可用，拒绝新业务/语音；活跃业务在预算内结束，语音在应用会话上限内结束。
 3. 停止进程前给活跃会话留出窗口。SIGTERM 的 Uvicorn graceful timeout 为 20 秒，容器 stop grace 30 秒；到期关闭连接，客户端需重新开始，不自动重放录音。
 4. 单独执行 `alembic upgrade head`，再启动新副本。启动不替代迁移。
-5. 回滚按已记录的 API/Web/VoiceChat 组合执行；恢复已知整场 response 缺陷的旧 VoiceChat 时语音仍不能放行。数据库回滚与镜像回滚分开；当前迁移已包含 0005 每通话 capability；本次 D19 不新增数据库迁移。`downgrade` 会删除对应表/字段，不应作为无损回滚手段；需要破坏式数据库回滚时使用已验证备份恢复流程。
+5. 回滚按已记录的 API/Web/VoiceChat 组合执行；恢复已知整场 response 缺陷的旧 VoiceChat 时语音仍不能放行。数据库回滚与镜像回滚分开；当前迁移到 0008：0005 为每通话 capability，0006 为输入关联，0007 为问答策略/执行字段、Utterance 和 DeliveryAttempt，0008 为来源上下文和任务快照。旧数据迁移默认 legacy/knowledge_required，历史 nullable 字段不伪造已验证关联，旧 slots 不伪造确认来源。`downgrade` 会删除对应表/字段，不应作为无损回滚手段；需要破坏式数据库回滚时使用已验证备份恢复流程。
 
 健康接口：`/health/live` 为应用存活；`/health/ready` 检查数据库、归属协调和 drain，分别返回文字配置、语音配置和本地容量。管理页健康端点探测只说明可达，不冒充真实推理/工具调用成功。
 
 ## D07 分阶段执行设计
 
-状态：真实端到端仍待执行。现场日志/录像已确认存在收发流量和用户转写，但没有形成放行证据；D19 修复后必须复测。以下工作在后续具备真实服务的云端 Docker 验收环境执行，不是本次文档整理或编码阶段的运行指令。沿用上述构建、Compose 与回滚流程，不新增部署系统。各场景的唯一验收定义见 [V01–V12](acceptance-report.md#4-最终方案验收清单)。
+状态：真实端到端仍待执行。现场日志/录像已确认存在收发流量和用户转写，但没有形成放行证据；D19 修复后必须复测。以下工作在后续具备真实服务的云端 Docker 验收环境执行，不是本次文档整理或编码阶段的运行指令。沿用上述构建、Compose 与回滚流程，不新增部署系统。通用场景见 [V01–V12](acceptance-report.md#4-最终方案验收清单)，双工具补充见 [Q07-T01–T27](qa-routing-design.md#14-验收矩阵)，两者都须按适用范围记录。
 
 | 阶段 | 执行方案 | 退出条件与证据 |
 | --- | --- | --- |
 | D07-A 基线与环境 | 固定应用 commit、API/Web 镜像、VoiceChat API/digest、CueKB 服务版本、文本模型与脱敏配置摘要；准备验证 KB 和授权英文样本。按唯一流程独立构建镜像，执行迁移、健康和恢复预检，验证公网 HTTPS `8087`、证书链及目标浏览器麦克风权限 | 记录 API/Web 与 VoiceChat 的匹配版本、配置和迁移结果；`verify_deployment.py` 确认文字、语音和知识工具均已配置；readiness 只作为入口条件 |
 | D07-B 真实文字与范围 | 用多个独立 call capability 验证相互隔离、KB 范围不可由请求覆盖、管理 API 被拒绝，再跑真实文本模型 → CueKB M3 的支持/澄清/冲突/故障场景 | V02–V04、V10 的文字部分具备 trace、引用版本、状态和权限证据；失败不得归类为空命中 |
-| D07-C 英文基础语音 | 在隔离的云端验收部署固定供应商版本，先确认静音不创建整场 response、每轮 done 与后续新 ID、ACK 不耗尽最终答案许可，再用授权录音执行协议探针并人工听音，随后验证门户 → VoiceChat → 本项目 → 真实 CueKB → 实际口述 | V01/V03/V07/V09 有录音授权、事件、实际回答和人工判定；探针的合成工具结果不充当知识闭环证据 |
+| D07-C 英文基础语音 | 先记录 QA 模式/策略/工具快照；dual_tools 同时执行 Q07-E 的三路径/混合会话与证据续答矩阵。在隔离的云端验收部署固定供应商版本，先确认静音不创建整场 response、每轮 done 与后续新 ID、ACK 不耗尽最终答案许可，再用授权录音执行协议探针并人工听音，随后验证门户 → VoiceChat → 本项目 → 真实 CueKB → 实际口述 | V01/V03/V07/V09 有录音授权、事件、实际回答和人工判定；探针的合成工具结果不充当知识闭环证据 |
 | D07-D 竞态与恢复 | 工具等待 5 秒时分别附和、新问、改问、取消、停止播报；在结果写回及播报边界断网；测试超过两分钟及多次轮换 | V05/V06/V08 留下旧 revision 拒绝、pending call 结清或关闭、新连接无旧音频的证据；增强能力不通过则只评估 basic |
 | D07-E 故障与容量 | 从单副本开始，测真实 PG 事务/迁移、Redis 租约丢失、进程退出、drain 和备份恢复；逐档增加会话与任务并发。多副本仅在验证粘性路由后测试 | V11/V12 与延迟分解、错误率、资源峰值；先测基线再冻结阈值，以独立样本复测，不能把副本预算当全局预算 |
 | D07-F 放行 | 汇总版本与所有适用 V 项，核对缺测/失败/不适用；按已验证版本设置能力声明，保留回滚版本与操作记录 | 基础语音必需项均有证据，增强声明另有 V05 门槛；失败修复后复测，剩余边界明确记录 |

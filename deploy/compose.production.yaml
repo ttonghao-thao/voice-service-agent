@@ -105,7 +105,7 @@ services:
     depends_on:
       api: {condition: service_healthy}
     healthcheck:
-      test: ["CMD-SHELL", "wget --no-check-certificate -q -O /dev/null https://127.0.0.1:8087/health/live"]
+      test: ["CMD-SHELL", "wget -Y off --no-check-certificate -q -O /dev/null https://127.0.0.1:8087/health/live"]
       interval: 10s
       timeout: 3s
       retries: 6

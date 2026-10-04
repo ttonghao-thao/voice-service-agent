@@ -8,6 +8,7 @@ import yaml
 from app.config import ROOT
 from app.contracts import DomainError, StrictModel
 from app.storage.models import ToolRun
+from app.task_context import affirmative, resolved_request
 from app.tools.adapters import CueKBAdapter, WeatherAdapter
 from pydantic import Field, ValidationError
 
@@ -101,6 +102,19 @@ class ToolRegistry:
                 raise DomainError("FORBIDDEN", "Tool configuration changed. Please ask again.", 403)
             adapter = self.adapters[spec.adapter_id]
             args = adapter.input_model.model_validate(arguments)
+            if name == "search_knowledge" and ctx.task_context:
+                arguments = args.model_dump()
+                for field in ("product_model", "software_version"):
+                    proposed, confirmed = arguments.get(field), ctx.slots.get(field)
+                    background = ctx.task_context.get("background_conditions", {}).get(field, {}).get("value")
+                    if proposed and ((confirmed and proposed.casefold() != confirmed.casefold()) or
+                                     (not confirmed and proposed != background
+                                      and not affirmative(proposed, ctx.task_context["original_request"]))):
+                        raise DomainError("CONTEXT_ARGUMENT_CONFLICT", "Knowledge filters contradict user context", 422)
+                    arguments[field] = confirmed or proposed
+                arguments["query"] = resolved_request(arguments.get("query", ""),
+                    {"conditions": ctx.task_context["conditions"]})
+                args = adapter.input_model.model_validate(arguments)
             if name == "search_knowledge" and ctx.retrieval_limit is not None:
                 if ctx.retrieval_calls >= ctx.retrieval_limit:
                     raise DomainError("RETRIEVAL_LIMIT", "The knowledge retrieval budget was exhausted", 409)

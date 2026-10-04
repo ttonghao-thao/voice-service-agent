@@ -21,15 +21,22 @@ def test_upgrade_preserves_legacy_policy_and_downgrade_preserves_history(tmp_pat
                    "event_seq, history, slots, summary, tool_config_version, created_at, updated_at) "
                    "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
                    ("old-call", "operator", "Existing call", "en-US", 0, 0, 0,
-                    "[]", "{}", "Existing history", "1", "2026-10-03", "2026-10-03"))
+                    "[]", '{"product_model":"AX100"}', "Existing history", "1", "2026-10-03", "2026-10-03"))
     alembic("upgrade", "head")
     with sqlite3.connect(database) as db:
         assert db.execute("SELECT qa_execution_mode, answer_policy, qa_toolset_version FROM conversations").fetchone() == (
             "legacy", "knowledge_required", "legacy")
-        assert db.execute("SELECT version_num FROM alembic_version").fetchone() == ("0007",)
+        assert db.execute("SELECT version_num FROM alembic_version").fetchone() == ("0008",)
+        assert db.execute("SELECT context_state FROM conversations").fetchone() == ("{}",)
+        assert db.execute("SELECT slots FROM conversations").fetchone() == ('{"product_model":"AX100"}',)
         tables = {row[0] for row in db.execute("SELECT name FROM sqlite_master WHERE type='table'")}
         assert {"utterances", "delivery_attempts"} <= tables
     alembic("check")
+    alembic("downgrade", "0007")
+    with sqlite3.connect(database) as db:
+        assert db.execute("SELECT summary FROM conversations").fetchone() == ("Existing history",)
+        assert "context_state" not in {row[1] for row in db.execute("PRAGMA table_info(conversations)")}
+    alembic("upgrade", "head")
     alembic("downgrade", "0006")
     with sqlite3.connect(database) as db:
         assert db.execute("SELECT summary FROM conversations").fetchone() == ("Existing history",)

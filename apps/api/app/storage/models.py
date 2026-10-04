@@ -24,6 +24,7 @@ class Conversation(Base):
     event_seq: Mapped[int] = mapped_column(Integer, default=0)
     history: Mapped[list] = mapped_column(JSON, default=list)
     slots: Mapped[dict] = mapped_column(JSON, default=dict)
+    context_state: Mapped[dict] = mapped_column(JSON, default=dict, server_default="{}")
     summary: Mapped[str] = mapped_column(Text, default="")
     tool_config_version: Mapped[str] = mapped_column(String(32), default="1")
     qa_execution_mode: Mapped[str] = mapped_column(String(20), default="legacy")
@@ -61,6 +62,7 @@ class Turn(Base):
     delivery_status: Mapped[str] = mapped_column(String(32), default="pending_validation")
     output_suppressed: Mapped[bool] = mapped_column(Boolean, default=False)
     answer: Mapped[dict | None] = mapped_column(JSON)
+    task_context: Mapped[dict | None] = mapped_column(JSON)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=now)
 
 

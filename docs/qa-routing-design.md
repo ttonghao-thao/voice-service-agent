@@ -1,12 +1,12 @@
 # Q07：实时语音问答、即时回应与分级知识路由
 
-日期：2026-10-04。版本：**Q07 修订 4，原生双工具基础实现**。状态：Q07-A–D 的基础应用流程已编码并通过本地验证；Q07-E 真实服务验收未执行。验证证据见 [验收记录](acceptance-report.md#2026-10-04-q07-原生双工具基础实现本地编码与验证)。
+日期：2026-10-04。版本：**Q07 修订 5，实施状态与文档同步**。状态：Q07-A–D 的基础应用流程已编码并通过本地验证；Q07-E 真实服务验收未执行。验证证据见 [验收记录](acceptance-report.md#2026-10-04-q07-原生双工具基础实现本地编码与验证)。
 
-应用基线：`codex/q1003` / `bbbd95e9c5d32788d4300cb88dedcc086fb2cc52`。这是架构下的专项演进设计；实施状态由 [任务板](TASK_BOARD.md) 维护。本文包含当前实现与后续能力建议，以下实施说明明确区分二者。
+设计前基线：`bbbd95e9c5d32788d4300cb88dedcc086fb2cc52`；基础实现：`codex/q1003` / `a508980`。本文是架构下的专项设计，§0、§3.2、§11 说明当前实现；标为后续/未实现的能力不能据此宣称可用。状态由 [任务板](TASK_BOARD.md) 唯一维护。
 
 ## 0. 本轮编码范围与扩展契约
 
-用户已授权开始编码，并明确本期只注册 lookup_knowledge / reason_over_knowledge，机制须支持后续增加工具。当前实现：
+本期新模式仅注册 lookup_knowledge / reason_over_knowledge，机制支持后续增加工具。当前实现：
 
 - `ToolDispatcher.register(NativeTool(...))` 注册可信执行函数、严格参数模型、权限 scope 与后端工具依赖；无动态 import 或模型控制的接口地址。默认知识工具工厂仅注册两个工具，Gateway 按会话工具快照接入任意已注册名称。未来工具可使用自己的参数模型，executor 从 `ctx.tool_arguments` 获取通过校验的参数；若包含 `user_request`，服务端仍以最终 ASR 覆盖。executor 负责新增业务的对象权限和结果校验，后端调用仍经受信 Registry。未新增天气、交易或控制能力。
 - `QA_EXECUTION_MODE` 默认 legacy；新建 dual_tools 会话默认 general_qa，可配置 knowledge_required。模式/策略/工具版本写入 Conversation，工具名称与定义在语音 session 建立时快照。旧会话不因配置变更切换模式。
@@ -99,25 +99,21 @@ flowchart TD
 
 策略由部署配置和服务器创建的会话快照确定，浏览器/模型不能自行覆盖。同一通话不动态切换策略。现有通话 capability 继续限制数据访问。
 
-### 3.2 建议配置
+### 3.2 当前配置与后续建议
 
-| 参数 | 目标或兼容值 | 含义 |
+当前已实现：QA_EXECUTION_MODE、QA_ANSWER_POLICY、QA_TOOLSET_VERSION、QA_EXTERNAL_FALLBACK_ENABLED、QA_DIRECT_MAX_HITS、QA_DIRECT_EVIDENCE_MAX_BYTES、QA_MAX_RETRIEVAL_CALLS、QA_PROVIDER_ANSWER_TIMEOUT_MS。精确默认值、范围、迁移及回退组合统一见 [部署参数表](deployment.md#问答模式与预算q07)，`.env.example` 为可选注释，不复制另一套配置。
+
+| 后续建议参数 | 设计目标 | 当前状态 |
 | --- | --- | --- |
-| `QA_EXECUTION_MODE` | 部署兼容默认 legacy；目标 dual_tools | 注册单桥接或双工具；会话建立时固定 |
-| `QA_ANSWER_POLICY` | legacy 为 knowledge_required；目标 general_qa | 是否允许一般模型回答 |
-| `QA_TOOLSET_VERSION` | qa-tools-v2 | 固定工具描述、schema、prompt 与调度映射版本 |
-| `QA_DIRECT_COMPOSITION` | 目标 nano_grounded；可选 extractive / nano_draft | 本轮直查目标由 Nano 合成；其他等级见 §6.3 |
-| `QA_EXTERNAL_FALLBACK_ENABLED` | true | 直查证据需要推理时，服务端是否可升级一次；不是鉴权失败兜底 |
-| `QA_DIRECT_MAX_HITS` | 3 | 返回给 Nano 的证据数量上限 |
-| `QA_DIRECT_EVIDENCE_MAX_BYTES` | 6000 | 起始工程上限，须按实际 Provider 能力收紧 |
-| `QA_MAX_ROUTE_ESCALATIONS` | 1 | 单轮 direct → reasoned 最大次数 |
-| `QA_MAX_RETRIEVAL_CALLS` | 2 | 逻辑检索总次数；传输重试仍计入同一时间预算 |
-| `QA_PROVIDER_ANSWER_TIMEOUT_MS` | 10000 | D2 返回证据后的答案等待上限，取剩余总预算与生成期限的较小值 |
-| `QA_ACK_POLICY` | native_neutral | 只使用已验证的原生 ACK，动态调度另验 |
+| QA_DIRECT_COMPOSITION | nano_grounded / extractive / nano_draft | 未加入 Settings；本轮固定 Nano D2，D1/D3 未实现 |
+| QA_MAX_ROUTE_ESCALATIONS | 1 | 未加入 Settings；执行流程固定最多一次内部升级 |
+| QA_ACK_POLICY | native_neutral / 后续动态策略 | 未加入 Settings；新模式仅使用固定原生中性 ACK |
 
-当前已加入 Settings 的参数和未实现的建议开关见 §0；`.env.example` 仅提供可选配置注释。双工具上线需要两个执行器都具备真实依赖：任一不可用不能继续对模型宣传可调用。未配置外置 LLM 的部署可以明确只暴露直查工具，但那是后续降级能力组合；本轮默认双工具注册缺外置依赖时拒绝创建新语音 session。
+默认部署为 legacy，未填策略时 knowledge_required；dual_tools 未填策略时 general_qa。显式 legacy + general_qa 无效。配置变化不修改已有 Conversation；工具集/定义在语音 session 固定，变更须匹配版本并重建会话。
 
-本 Provider 无需新增 `VOICE_TOOL_SELECTION` 配置开关；原生可选调用由模型、工具定义和最终提示词共同实现。两个工具在 session 建立时注册；不在每个音频帧重复发送 schema。若供应商需要重建模型上下文，由其适配器处理；工具集变化需更新版本并按支持的方式重建/更新会话。以后接入其他 Provider 时，分别实现其协议配置，不将 NVIDIA 的行为映射当作所有供应商通用字段。
+正常部署与双工具创建仍要求真实外置模型及授权 CueKB 依赖；只暴露直查、不配置外置模型是后续组合，尚未实现。运行失败不能回退 Nano 编造事实。
+
+本 Provider 不需要 VOICE_TOOL_SELECTION 或 WS tool_choice；工具和 instructions 在 session 建立时发送。更换 Provider 时各自核对协议和行为，不将 NVIDIA 的字段与能力推断为通用。
 
 ## 4. 双工具契约与模型选路
 
@@ -201,6 +197,8 @@ flowchart TD
 
 直查 query 初版直接使用最终输入加已确认槽位，不另外要求 Nano 生成一份检索 query。后续若确有召回收益再增加有约束改写字段。复杂工具同样使用完整最终输入，保留条件，不把 Nano 生成的执行计划替代用户问题。
 
+CTX1 已将一般对话中的明确条件、知识历史和纠正来源统一为内部任务快照。query 使用独立 resolved_request，原始最终输入不变；型号更改清除旧版本，已撤回/冲突参数先澄清。规则、预算及十组连续评测见 [上下文与评测](task-context-evaluation.md)。
+
 最终 ASR 本身不另外启动查询；原生工具与 ASR 绑定后只执行一次。保留现有工具先到时的有界等待。没有工具调用的一般回答通过 `utterance_id/response_id` 记录与关联，不为了持久化而调用知识工具。
 
 文字入口没有可独立调用的 Nano 分类 API：第一阶段保留现有外置文本问答路径。若未来 Provider 支持文字作为同一 Realtime 会话输入，可复用其选工具行为，须先验证；不要为声称“统一路由”单独再部署 Nano。
@@ -226,7 +224,7 @@ EvidenceGate 只检查工具结果：是否授权、对象/版本是否明确、
 5. 若 Provider 支持独立调度 ACK，初始可用 250 ms 延迟候选值；答案先就绪则原子取消未发送 ACK。该值仅为实验配置，不是已验证 SLA。
 6. 已经开始的 ACK 不与答案混音；本地播放器保持顺序、允许显式停止。原生 ACK 无法按请求取消时，声明能力限制，不在客户端同时再播一个 ACK。
 
-现有 ACK 文本为 `Please wait while I check the knowledge base.`，对 general/social 不适合。编码时先改为中性短句，并同步 `BRIDGE_ACK`、供应商配置及 ACK 识别测试。动态多模板只有在响应归属明确、所有模板可辨识时开放。仅依靠字幕字符串事后匹配不能保证提前到达的 PCM 是无事实内容，仍须依赖已验证的供应商响应边界。
+legacy 保留 BRIDGE_ACK：`Please wait while I check the knowledge base.`；新模式已使用 QA_ACK：`Please wait while I check that.`，并同步配置与识别测试。上面的延迟候选、答案先就绪取消 ACK 和动态多模板是后续能力，当前仅固定原生 ACK。仅凭字幕事后匹配不能保证提前到达的 PCM 无事实内容，仍须依赖已验证的供应商响应边界。
 
 双工具原生选择模式下，未调用工具的问候无需工具 ACK。实际调用工具时，若供应商强制生成 ACK，服务端无法追溯取消已播部分；动态缩短或省略仍需验证供应商能力。初版只为两个知识工具配置中性短 ACK，不在前端同时再播一条等待提示。
 
@@ -243,7 +241,7 @@ EvidenceGate 只检查工具结果：是否授权、对象/版本是否明确、
 
 第一阶段仍只允许一个活动知识 Turn。相同 input 的重复调用不替换；已确认属于新的完整 input 的知识工具调用按现有单任务语义替换旧任务并推进 revision；没有工具调用的问候/一般回应不替换业务。明确按钮/文字取消走既有接口，speech_started 本身不取消。模型不确定新问题对象时应先澄清，不调用工具猜测；无需服务端再做一遍意图分类。
 
-澄清保存 `clarification_id`、缺失字段、候选值、原始问题和所属 revision，仅属于当前 conversation；用户后续“是第二个”只可绑定到仍有效的该澄清。明确回答后才更新 confirmed slots；新问题、撤权、轮换摘要或模型猜测不能自动确认旧候选。旧澄清失效时要求重述，不能跨会话补齐。
+后续结构化澄清建议保存 `clarification_id`、缺失字段、候选值、原始问题和所属 revision；当前仅有明确条件槽位与澄清答案，尚未实现候选列表/“第二个”的完整绑定。目标记录仅属于当前 conversation；用户后续“是第二个”只可绑定到仍有效的该澄清。明确回答后才更新 confirmed slots；新问题、撤权、轮换摘要或模型猜测不能自动确认旧候选。旧澄清失效时要求重述，不能跨会话补齐。
 
 按钮/文字控制继续走已存在的确定性接口。工具等待中若 VoiceChat 无法处理语音控制，不宣称语音取消或问进度可靠；保留按钮和文字方式。不能仅因旁路 ASR 出现“取消”就推断完整输入已经被供应商正确处理。
 
@@ -320,7 +318,7 @@ Coordinator 不持有锁等待语音或调用回调，Provider 事件通过受�
 | `forbidden_inferences[]` | 由部署策略和证据元数据产生的边界，如不得额外承诺、不得省略版本限制 |
 | `expires_at / policy_version / content_revisions` | 控制新鲜度与审计；不表示可绕过发送前权限重查 |
 
-6 KB 是起始证据包上限，不是直接复制当前最多约 30 KB 的工具结果。超限按完整证据单元筛选；裁掉关键条件即退出直答，不能裸截字符。提示边界把证据当数据，不执行其中指令或 URL。内部 trace/KB ID 与凭据不进入口述。
+6000 bytes 是当前完整证据包默认上限，不是直接复制约 30 KB 的后台工具结果。当前命中数或包大小超限即升级/失败；不通过裁掉关键条件继续直答。按完整证据单元筛选是后续优化，不能裸截字符。提示边界把证据当数据，不执行其中指令或 URL。内部 trace/KB ID 与凭据不进入口述。
 
 Canonical `AnswerBundle` 建议增加 `answer_kind=knowledge/general/social/clarification`、`composition=extractive/external_llm/nano_grounded/nano_draft/provider_general/template`、`validation_level=source_checked/draft_checked/provider_only`、`verification_timing=before_audio/after_audio/not_verified`。保留现有业务状态枚举，不把 ACK 写成 `answered`。`source_checked` 仅表示来源和可执行检查，`draft_checked` 也不等于数学证明或音频逐字正确。`before_audio` 指拟口述文本/草稿先检查，不能保证 Provider 实际发音一致；D2 必须为 after_audio，一般自由回答为 not_verified。
 
@@ -338,7 +336,7 @@ Nano D3 草稿字段建议复用 `AgentAnswer` 的 display/speech/citation IDs�
 
 升级保留同一 `turn_id / revision / epoch / deadline`，记录一次 route transition。把已经授权的检索结果作为结构化工具事实和证据上下文交给 Runtime，不能仅将网页正文拼接成高优先级系统指令。
 
-注意此处是**后台外置 LLM 的 Agents SDK 设置**，不是前台 VoiceChat 的 tool_choice。当前 Runtime 的 `tool_choice="required"` 会要求再次调用工具。编码时改为：
+注意此处是**后台外置 LLM 的 Agents SDK 设置**，不是前台 VoiceChat 的 tool_choice。当前 Runtime 已按本轮真实检索状态控制首次 required 或复用证据后的 auto：
 
 - 当前 Turn 没有成功且仍有效的检索：首次要求检索。
 - 已有本轮经 Registry 成功执行的检索：允许直接综合，或由模型在剩余预算内补一次新检索。
@@ -346,15 +344,15 @@ Nano D3 草稿字段建议复用 `AgentAnswer` 的 display/speech/citation IDs�
 
 `ctx.invoked / evidence / retrievals / tool_versions` 必须来源于本轮真实工具执行。不同查询追加证据要避免 citation ID 冲突；重用同 query/slot/scope/content revision 的成功结果仅限同一 Turn。首版不新增跨用户/跨会话查询缓存。
 
-证据校验需显式区分“全部检索历史”与“本次答案采用的有效证据集合”。当前 `validate()` 对 `ctx.retrievals` 中任意不足/冲突都会拒绝肯定答案；编码时不能仅追加一批成功证据就期待旧逻辑自动变为成功。若补检索确实解决了版本/条件问题，记录哪些检索被哪条已验证条件替代，保留原审计记录，再校验有效集合；模型一句“冲突已解决”无效。未能确定性解决的冲突保持无依据。权限/契约/工具失败不得通过从有效集合中删除错误记录来掩盖。
+证据校验需显式区分“全部检索历史”与“本次答案采用的有效证据集合”。当前 `validate()` 对 `ctx.retrievals` 中任意不足/冲突仍拒绝肯定答案；本期未实现确定性的检索替代映射，追加成功结果不能自动消除既有冲突。后续实现时，补检索解决了版本/条件问题才可记录哪些检索被哪条已验证条件替代，保留审计记录并校验有效集合；模型一句“冲突已解决”无效。未能确定性解决的冲突保持无依据，不能删除权限/契约/工具错误来掩盖失败。
 
 升级后不得反复返回 direct；最多一次升级、总共两次逻辑检索。若仍不足，结束为澄清或无依据。对于长问题本来就需多轮的场景，可独立调整规则/预算版本，不能隐式突破限制。
 
 ## 8. 无工具回答与输出许可
 
-目标 general_qa 模式下，Nano 可以直接生成问候、澄清和一般答案，不必先调用一个社会交互工具，也不要求服务端模板代答。知识策略和工具选择说明进入 Provider prompt；没有工具记录的回答标为模型一般回答，不附加伪造的知识引用。
+已实现的 dual_tools/general_qa 模式允许 Nano 直接生成问候、澄清和一般答案，不先调用社会交互工具或由服务端模板代答。知识策略和工具选择说明进入 Provider prompt；没有工具记录的回答标为模型一般回答，不附加知识引用。
 
-当前 Gateway 在用户发言后拒绝未经 bridge 授权的实质性回答（`VOICE_TOOL_REQUIRED`），因此双工具模式必须新增输入绑定的 `ConversationResponseGrant`，不能只删除这条错误检查。
+legacy/knowledge_required 继续拒绝未满足工具许可的实质性输出（VOICE_TOOL_REQUIRED）。dual_tools/general_qa 已新增输入绑定的一般回答许可；本节的 ConversationResponseGrant / EvidenceGrant / AnswerGrant 是逻辑角色名称，当前通过 Gateway 的响应映射、抑制集合及 Coordinator 续答等待实现，不是同名独立类。
 
 - grant 由服务器按会话策略和 Provider 的明确 input/response 关联创建，绑定 owner、conversation、输入、epoch 和响应；不是 Nano 可自行提供的字段。
 - 与原工具结果产生的 EvidenceGrant/AnswerGrant 分开。没有工具调用可用该 grant 输出一般回答；一旦本轮进入工具等待，更新响应用途为 ACK/工具续答，不能把一般回答许可当作结果已验证。
@@ -362,7 +360,7 @@ Nano D3 草稿字段建议复用 `AgentAnswer` 的 display/speech/citation IDs�
 - 输入/响应关联可来自供应商已验证的事件，不要求每次等最终 ASR 才允许自然语音接话；只有工具执行必须继续等待权威最终输入。无法可靠关联的 Provider 不开启该模式。
 - 结束、失权、旧 epoch、失效 revision 或响应终态撤销许可。系统初始自行欢迎语是否允许需单独会话策略；不把“允许一般回答”扩大为整场无限输出。
 
-一般回答通过 Provider 结束事件形成持久化记录，使用 `provider_only / not_verified`；缺字幕或断线记录缺测。其关联/超时复用 Presentation 生命周期，但不借用知识链的 EvidenceGrant。流式口述事后识别成企业事实，不能宣称先前音频已经被阻止；这类漏调用应纳入模型选路评估。
+一般回答通过 Provider 结束事件形成持久记录，使用 provider_only / not_verified。当前有输入/响应绑定及已开始响应的结束期限，尚未实现统一 Presentation 生命周期；缺字幕/断线等完整缺测报告仍待补齐。一般许可不借用知识链的 EvidenceGrant；事后发现企业事实不能宣称先前音频已被阻止，这类漏调用须纳入模型评估。
 
 **Tool Policy 只能拦截已发生的工具调用，不能单独拦截漏调用。** 原生选路层负责选择，工具网关负责 schema/权限/参数/预算/审计，输出授权层负责响应归属及严格模式的证据门控。general_qa 的 ConversationResponseGrant 不判断每句话在语义上是否属于企业事实，不能当作漏调用防线。必须保证实时账户/设备数据不被凭空播报的部署，应在会话建立时选择 knowledge_required，拒绝无证据事实输出；不声称仅凭提示词就能兼得完全自由直答与零漏调用。未来如需同一会话按请求切换严格要求，须另行设计可靠的策略绑定和播前控制，不在本轮隐式新增语义分类器。
 
@@ -374,13 +372,15 @@ Nano D3 草稿字段建议复用 `AgentAnswer` 的 display/speech/citation IDs�
 
 ### 9.1 三层状态分离
 
+下表是逻辑状态目标，不是当前数据库枚举。Utterance 当前无独立状态列，Presentation 仍是后续模型；已实现字段与签名见 §11。
+
 | 对象 | 状态 |
 | --- | --- |
 | Utterance | `received → bound → routed → handled`，或 `rejected` |
 | Knowledge Turn（内部执行阶段） | `routing → retrieving → validating → completed`；可经 `escalating → reasoning`；另有 `clarifying / failed / canceled / superseded` |
 | Presentation | `planned → authorized → write_started → written → playback_started → playback_estimated_done`；另有 `suppressed / failed / unknown` |
 
-现有 Turn.status 与 AnswerBundle.status 不直接替换为以上内部阶段；新增 `execution_phase` 表达执行进度，复用原终态，避免旧前端和历史查询失效。ACK 是独立 Presentation，不能推进 Knowledge Turn 到 completed。
+Turn.status 与 AnswerBundle.status 保留现有终态；当前 execution_phase 使用 executing、awaiting_provider_answer、completed，不承诺上表所有阶段均已落库。ACK 作为独立输出用途管理，不代表已有 Presentation 表，也不能将知识任务推进 completed。
 
 D2 额外有 `evidence_ready → awaiting_provider_answer → validating → committed/failed`；D3 额外有 `awaiting_draft → draft_validated → committed → speech_authorized`。证据就绪和候选草稿都不得先作为 final 发布。D3 draft 失败后只可升级一次或失败；其生成响应音频没有客户播放许可。
 
@@ -396,9 +396,9 @@ D2 额外有 `evidence_ready → awaiting_provider_answer → validating → com
 
 ### 9.3 Utterance 与 Turn 的兼容
 
-新增 Utterance 是为社交/控制不误取消业务，不另建任务调度系统。所有用户输入可保留当前统一时间线：业务输入由同一 utterance ID 关联 Turn 接管；社交与控制以 Record 留痕。现有消息 API 增量投影这些记录，不让客户端靠相同文本合并气泡。
+Utterance 已保存一般输入/回答及可选 Turn 关联，不另建任务调度。业务输入由 Turn.input_item_id 和 Utterance.turn_id 关联；前端仍以 input_item_id/response_id 和 Record 合并，不按 Utterance.id 或相同文本接管。已有按钮控制沿既有接口执行，未增加从自然语言猜测控制的事件或工具。
 
-原生选择模式下，最终 ASR 已到但没有工具事件是合法的一般回答候选，不能到时就自动补启动外置查询。watchdog 监测整轮响应是否结束/失败，而非强制等一个工具调用。legacy/strict 模式继续按各自约束处理。任何模式都不用定时赛跑启动两份答案。
+原生选择模式下，最终 ASR 已到但没有工具事件是合法的一般回答候选，不能到时就自动补启动外置查询。当前 watchdog 监测已开始的一般响应是否缺结束边界；尚未开始响应不属于该独立期限，不强制等工具或自动补检索。legacy/strict 模式继续按各自约束处理。任何模式都不用定时赛跑启动两份答案。
 
 ## 10. 供应商能力矩阵与发布门槛
 
@@ -408,82 +408,74 @@ D2 额外有 `evidence_ready → awaiting_provider_answer → validating → com
 | --- | --- | --- |
 | `native_tool_ack` | 已有代码与历史研究依据，现场仍须核对 | 基础即时接话 |
 | `tool_result_continuation` | 当前业务链使用，真实正确口述待验收 | D1 / 外置路径 |
-| `multiple_tool_selection` | 当前只配置一个 bridge，双工具未验证 | Nano 识别两个名称/schema 并选择正确工具 |
+| `multiple_tool_selection` | dual_tools 已注册两个工具，本地适配/分派通过；真实模型选择质量未验收 | Nano 识别两个名称/schema 并选择正确工具 |
 | `native_optional_tool_selection` | 官方说明与模板已确认原生能力；本项目双工具/提示词组合质量待现场验收 | 一般问答不调工具、知识问题按描述选择工具；不发送 tool_choice |
 | `input_bound_conversation_response` | 已实现单个可关联输入的有序响应许可，本地夹具通过；现场待验收 | 无工具分支正常输出，仍隔离旧响应；歧义失败关闭 |
 | `response_identity_and_end` | 有本地 speech 补丁，实际镜像待确认 | 所有音频抑制与授权 |
 | `conversation_during_tool_wait` | 当前研究基线不支持自由持续对话 | 增强等待交互，不作为基础上线承诺 |
 | `context_only_injection` / `independent_response_create` | 未验证 | 任意异步完成播报、独立 repeat |
-| `bounded_evidence_continuation` | 现有工具续答可作基础，证据包合成行为待验证 | Nano D2，不能只以 ACK/口述短句测试代替 |
+| `bounded_evidence_continuation` | EvidenceReady 与答案回收本地通过；真实 GPU 证据合成待验证 | Nano D2，不能只以 ACK/口述短句测试代替 |
 | `draft_before_audio` / `approved_answer_presentation` | 未验证 | Nano D3 草稿校验流程 |
 | `deterministic_speech` | 未验证 | 要求逐字口述的受控场景 |
 
-第一阶段可编码双工具分派、Nano 证据合成 D2、无工具回答许可、共用验证、记录与夹具；真实开启依赖双工具选择、不调用工具直接回答、原工具续答和输出归属验证。D3、动态 ACK、等待中自由交谈分别设门槛，互不冒充。更换 GPT/Qwen 等 Provider 时复用相同测试，不因兼容 OpenAI 事件名字就视为兼容行为。
+第一阶段双工具分派、D2 证据续答/回收、无工具许可、共用验证、记录与夹具已完成基础实现；真实开启依赖双工具选择、不调用工具直接回答、原工具续答和输出归属验证。D3、动态 ACK、等待中自由交谈分别设门槛，互不冒充。更换 GPT/Qwen 等 Provider 时复用相同测试，不因兼容 OpenAI 事件名字就视为兼容行为。
 
 ### 10.1 原生工具选择的验证方式
 
 固定上游分支 commit、权重 revision、现场镜像 digest、WebSocket 补丁及实际 Jinja 文件，检查最终渲染提示词只包含当前授权工具和一致的选择规则。已核对的官方 API 只需 tools/instructions，不测试或发送不存在的 tool_choice 开关；session.updated 回显不能证明模型遵守选择规则。
 
-本项目当前 `config/voice-prompt.txt` 明确要求所有完整发言（包括问候）先走 consult_service_agent；`deploy/voicechat/README.md` 的 `USE_JINJA_TEMPLATE_PROMPT=1` 用于避免另一模板追加与该旧策略冲突的指令。双工具实施必须修改应用提示词并核对最终模板，不能仅换工具名，也不能机械地关闭 Jinja 开关。现有开关控制提示词构造，不是原生工具能力的启停开关。此轮只记录目标，不修改实际提示词或部署配置。
+legacy 使用 config/voice-prompt.txt，每个完整发言先走 consult_service_agent；dual_tools 已使用 config/voice-qa-prompt.txt，允许一般问答/原生双工具，并按 knowledge_required 追加限制。speech 仍保留 USE_JINJA_TEMPLATE_PROMPT=1，必须现场核对最终工具/选择规则，不能机械地关闭开关。开关控制提示词构造，不是原生工具能力启停。应用提示词已编码，上游模板/推理本期未改；本次整理仅修改文档。
 
 再用固定工具描述/schema 与录音样本观察三条路径：问候/一般知识不调用工具；明确单项查询选择 lookup；跨版本比较选择 reason。还应覆盖缺参数澄清、未知工具、两个工具同时出现、结果返回后继续回答。记录模型版本、模板、实际工具事件与响应关联，不能只看最终字幕。
 
 增加连续混合会话样本：一般概念 → 必须检索的产品问题 → 闲聊 → 再次检索；必须分别记录漏调用、误调用、错工具、参数错误和错误口述。若部署达不到验收阈值，保持新模式未就绪并修正工具说明、提示词或部署组合；不要将质量失败解释为缺少 tool_choice，也不为此默认新增通用 LLM Router。后台 Agents SDK 的 required 是外置知识执行器的独立约束。
 
-### 10.2 当前代码必须同步变化的位置
+### 10.2 已实现的同步位置
 
-1. Provider 的 tools 从单一 consult_service_agent 改为两个独立名称/schema，仍保持每会话版本固定。
-2. Gateway 中 `payload.name == BRIDGE_NAME` 与 BridgeArguments 单工具解析改为静态注册映射。
-3. 当前“未桥接一律 VOICE_TOOL_REQUIRED”的放行条件改为区分 ConversationResponseGrant、EvidenceGrant、AnswerGrant；不是删除所有检查。
-4. Prompt 和 speech 模板去掉每句话强制原工具的冲突指令，并验证双工具名称能正确生成/解析。
-5. Backend Runtime 的 required 约束只针对知识工具执行，不为前台一般回答虚构检索记录。
-6. 原有只接受固定 bridge/强制拒绝直接回答的测试保留为 legacy 测试；双工具模式新增独立期望，不能直接删断言让测试通过。
+Provider 按快照使用单 bridge 或双工具/各自提示词；Gateway 以静态注册/schema 解析替代单名字判断，并区分一般回应、ACK、证据续答/外置答案的许可。外置 SDK 的检索后置条件保持；legacy 严格拒绝测试保留，新模式新增独立预期。详细模块见下节，真实模板/模型行为仍待 Q07-E。
 
 ## 11. 数据模型与接口改动清单
 
-### 11.1 持久化
+### 11.1 当前持久化（Alembic 0008）
 
-新增 Alembic 迁移，版本号实施时按当时 HEAD 分配（当前最新 0006）。建议：
-
-| 表/对象 | 增量 |
+| 表/对象 | 已实现增量 |
 | --- | --- |
-| Conversation | `answer_policy / policy_version / provider_capability_version`；创建时快照，知识权限仍每次实时复核 |
-| Utterance（新） | owner 所属 conversation、epoch、input ID、最终输入、来源、处理类别、关联 Turn；语音输入唯一约束 |
-| Turn | nullable `utterance_id / selected_tool / effective_executor / execution_phase / escalation_reason / toolset_version / composition` |
-| Answer JSON | answer_kind、composition、validation_level，旧数据读为 legacy/unknown，不能回填成已验证 |
-| DeliveryAttempt（Q01 共用） | turn 可空、utterance、kind、epoch/revision、native call、response、状态、发送时间与播放回执 |
+| Conversation | qa_execution_mode / answer_policy / qa_toolset_version；创建时快照，旧行迁移为 legacy / knowledge_required / legacy；0008 增加有来源的 context_state |
+| Utterance | conversation、epoch、input_item_id、user_text、可空 turn_id、kind、answer；conversation/epoch/input_item_id 唯一 |
+| Turn | 可空 selected_tool / effective_executor / execution_phase / escalation_reason / toolset_version / evidence；input_item_id 由 0006 提供；0008 增加内部 task_context |
+| Answer JSON | 可选 answer_kind / composition / validation_level / verification_timing；旧数据不伪造已查证或已听到 |
+| DeliveryAttempt | id、conversation、epoch/revision、可空 turn_id/response_id、native_call_id、kind、status、sent_at、played_samples |
 
-DeliveryAttempt 以服务端 `delivery_id` 唯一，`(conversation, epoch, native_call, kind, attempt)` 防重复。外部写入与 DB 无共同事务：write_started 后崩溃记 unknown，重启不盲重发。口述完成依然只是客户端估计，不记录为用户确实听见。
+DeliveryAttempt 当前覆盖工具结果写回；以 conversation/epoch/native_call_id/kind 唯一，不含独立 attempt 计数或 utterance 外键。write_started 后崩溃恢复为 unknown，未写准备记录丢弃，不盲重发。转写、答案和交付记录沿用 retention，播放 samples 仅为估计。
 
-转写与答案留存沿用现有 retention；日志不复制全文，不记录原始音频或凭据。审批、交易和跨会话长期记忆不在本阶段。
+后续建议的 policy_version/provider_capability_version、Turn.utterance_id/composition 列、统一 Presentation 模型及所有一般回应的交付台账尚未实现。当前 composition 在 Answer JSON，输入由 Utterance.turn_id 与 Turn.input_item_id 关联。
 
-### 11.2 模块划分
+### 11.2 当前模块划分
 
-| 位置（均为拟实施） | 改动 |
+| 位置 | 当前基础实现 / 后续边界 |
 | --- | --- |
-| `agent_runtime/dispatch.py` | ToolDispatcher、ExecutionDecision、工具注册映射和参数校验；不做语义分类 |
-| `agent_runtime/direct.py` | 直查执行器、EvidenceReady、可选原文抽取器 |
-| `agent_runtime/evidence.py` | EvidenceGate、共用答案验证与证据复用条件 |
-| `agent_runtime/runtime.py` | legacy/直查/复杂编排；已有本轮检索时不强制重复搜索 |
-| `sessions/coordinator.py` | 先分离控制/社交；业务 Turn 创建和唯一提交；剩余预算与路由升级 |
-| `storage/models.py`、`store.py` | Utterance、路由记录、交付状态及历史投影；迁移 |
-| `voice/provider.py` 及同域适配模块 | Provider capabilities、legacy 单工具/新双工具集、可选 D3；供应商协议不外溢 |
-| `voice/gateway.py` | ACK/草稿/final 的分离授权，输入绑定、控制不取消、交付记录 |
-| `contracts.py`、`api/routes.py` | 新增可选元数据、Utterance/Presentation 投影，保持现有请求可用 |
-| `apps/web/src/App.tsx`、`audio/VoiceClient.ts` | ACK 作为状态、答案来源标识、按 ID 合并；保留实际口述与 canonical 文本区别 |
-| 配置/提示词/导出契约 | 只在编码阶段更新；英文约束、单桥接与非事实 ACK 语义同步 |
+| agent_runtime/dispatch.py | NativeTool、ToolDispatcher、ExecutionDecision；可信注册、schema/权限/依赖过滤及静态分派 |
+| agent_runtime/direct.py | DirectKnowledgeExecutor、EvidenceReady；仅经 Registry 检索，一次升级；无 D1 抽取器 |
+| agent_runtime/evidence.py | EvidenceGate，有限的引用/数字/常用单位/部分条件检查；不证明语义充分 |
+| agent_runtime/runtime.py | 外置执行、strict 重定向、真实检索复用、共享期限与预算；无独立分类模型 |
+| sessions/coordinator.py | Turn 创建和唯一提交、EvidenceReady 持久准备与有界续答回收、取消/超时 fence |
+| storage/models.py / store.py | 会话/执行字段、Utterance、DeliveryAttempt、未知恢复与留存；Alembic 0007 |
+| voice/provider.py / gateway.py | 模式提示词与工具快照、输入绑定、一般回答/ACK/答案许可、单写入器和交付记录；无 D3 草稿呈现 |
+| contracts.py / api/routes.py | 可选输入/答案来源字段，messages 的 Turn 执行信息/Record，capabilities 的模式和 native_tools |
+| apps/web/src/App.tsx / audio/VoiceClient.ts | 按输入/response 合并、一般来源提示、实际口述保留、按 response 清播放 |
+| config/voice-qa-prompt.txt / contracts | 新模式提示词、KnowledgeArguments 及已导出的答案/门户 schema |
 
-新内部接口边界：`ToolDispatcher.resolve(tool_name, arguments, session)` 只查静态注册并做校验；`DirectKnowledgeExecutor.run(ctx, decision, deadline)` 仅经 Registry 检索；`EvidenceGate.evaluate(...)` 返回枚举结果与原因；`AnswerValidator.validate(...)` 不自行提交；Coordinator 负责提交。
+实际签名：ToolDispatcher.resolve(name, arguments_json, registered_names)；DirectKnowledgeExecutor.run(request, ctx, history, progress=None)；EvidenceGate.evaluate(result, ctx)。共享结果校验在 BusinessRuntime.validate，Coordinator 持有提交权；当前无独立 AnswerValidator 类。
 
-API 继续使用 `/api/v1`。现有 `portal.answer.final` 保留；新增事件如 `portal.response.progress` 必须纳入服务端事件联合类型与客户端版本支持。建议 payload 为 `{utterance_id, turn_id?, presentation_id?, stage, message}`，stage 只用 `received/searching/reasoning/clarifying`，不直接暴露内部模型选择。旧客户端会严格拒绝未知事件时，通过握手 capability 决定仅发已有事件，不能假设会忽略。
+API 保持 /api/v1 与现有 portal.*。portal.speech_text 可选 input_item_id/answer_kind；AnswerBundle 可选来源/检查元数据；一般回答通过 Record 展示，不投影成假知识 Turn。portal.answer.final 仍为持久 canonical 业务终态，D2 待原生答案回收后发布。未新增 portal.response.progress、独立 Utterance/Presentation 查询或工具配置的客户接口；如以后增加事件须纳入版本/客户端兼容。
 
-SSE 传持久任务进度和 canonical answer；WSS 传实时语音/实际口述。事件只由一处发布权威记录，另一通道按 event ID 引用或投影，客户端不能因两个通道收到同一动作重复建气泡。
+SSE 传持久进度和 canonical answer；WSS 传实时字幕/音频。两者的序号独立，历史投影按稳定身份去重，不因双通道重复创建气泡。
 
 ## 12. 超时、容量与失败行为
 
 保留现有 `AGENT_DEADLINE_MS=30000` 作为初始业务总上限，不把它当正常响应目标。以单调时钟传剩余预算，direct 检索、升级、LLM 和补检索共享期限；升级不重新获得 30 秒。沿用知识工具 5 秒上限，并取 `min(tool_limit, remaining_budget)`。
 
-语音另需原生工具窗口：从 call 到达起记录 `native_deadline`，有效计算期限为业务期限与 `native_deadline - presentation_reserve` 的较早者。当前供应商等待窗口不是已验证墙钟时间，不能凭文档近似设定；D07 测出并统一后启用升级语音路径。窗口不足时提前结束并结清，不能在供应商已经 reset 后写成功结果。
+应用已实现共享业务期限及有界 D2 回收。后续 native_deadline/presentation_reserve 需要真实测定供应商等待窗口后再增加，当前无独立该字段或已验证的 GPU 墙钟期限；D07 必须对齐应用预算与供应商 reset。不能在已失效原生 call 上写成功结果。
 
 新路由总计最多一次升级、两次逻辑检索；LLM SDK 循环仍有 max_turns，不能用工具次数限制替代总时限。双工具注册不改变现有并发容量限制；若以后区分 direct 和 reasoned 配额，先测共享数据库、CueKB 和 GPU 瓶颈。
 
@@ -492,7 +484,7 @@ SSE 传持久任务进度和 canonical answer；WSS 传实时语音/实际口述
 | 未知工具名/非法参数/双工具不支持 | 明确工具不可执行或配置错误 | 不猜测工具名、不同时跑两条链；不将该部署标记为双工具已就绪 |
 | 无授权 | 知识访问不可用 | 不升级绕过、不返回缓存答案 |
 | 直查证据不完整 | 澄清或继续核对 | 在剩余预算内升级一次 |
-| 外置 LLM 未配置/不可用 | 无法完成复杂分析 | 不能退回 Nano 编造；仍满足已启用直查条件的独立请求可工作 |
+| 外置 LLM 未配置/不可用 | 配置不全拒绝部署/双工具创建；运行失败明确报错 | 不回退 Nano 编造；无外置依赖的独立直查组合尚未实现 |
 | Nano D3 草稿失败 | 升级或明确失败 | 不播放未批准草稿 |
 | Nano D2 已开始口述但检查失败 | 标记该段未通过，提供重试/纠正入口 | 切断剩余音频，不暗中把已播内容视为已校验 |
 | VoiceChat 失败 | 已验证文字答案仍可展示 | 语音失败记录独立；不回退 mock |
@@ -500,6 +492,8 @@ SSE 传持久任务进度和 canonical answer；WSS 传实时语音/实际口述
 | UI 断线/服务重启 | 历史中区分已生成与播放未知 | 不自动重播，不恢复模型隐藏状态 |
 
 ## 13. 测量与路由质量
+
+本节是完整测量目标，尚未实现统一指标/报表或 route_decision_ms 等全部字段。当前已有 Turn 的路由/执行字段和脱敏模型/工具/提交计时；未进行真实时延或路由质量测量，剩余观测归 Q03/Q07-E。
 
 同一 utterance/turn 记录：最终输入、路由结束、工具发起、检索结束、升级、答案提交、ACK 首声、有效答案首声及停止播放的阶段时间。日志只保留 ID/枚举/时长等必要元数据；测试证据中的授权样本另受控保存。
 
@@ -560,7 +554,7 @@ SSE 传持久任务进度和 canonical answer；WSS 传实时语音/实际口述
 
 Q07-A–D 的应用部分可在现有编码环境按契约完成；Q07-E 是实际开启新模式的发布门槛。D3 若要求改 speech backend，属于独立上游实现，不通过给现有 API 多传参数冒充完成。
 
-回滚设置 QA_EXECUTION_MODE=legacy，并为新会话恢复旧工具集/提示词；活动会话按版本结束或 drain，不中途更换原生工具名称。保留新增审计数据，旧二进制回滚需另测迁移兼容。不能只从模型工具列表移除一个工具，却仍向用户声明双工具能力。
+回退设置 QA_EXECUTION_MODE=legacy，同时清除 QA_ANSWER_POLICY=general_qa 或改为 knowledge_required，为新会话恢复旧工具集/提示词；活动会话结束或 drain，不中途更换原生名称。新增审计数据保留，旧二进制回滚另测迁移兼容。不能只从工具列表移除一个工具，却继续声明双工具能力。
 
 ## 16. 本设计有意保留的边界
 
@@ -570,7 +564,7 @@ Q07-A–D 的应用部分可在现有编码环境按契约完成；Q07-E 是实�
 - 此次定位扩展不包含交易、通用电脑操作、长期跨用户记忆、MCP 任意工具、中文上线或新 GPU 服务。
 - 通用问答是可配置产品模式，模型品牌不是权限边界。未验证的服务型号/协议和现场时延保持未验证。
 
-## 17. 依据与后续编码入口
+## 17. 依据与后续扩展入口
 
 本项目当前行为依据：[架构](architecture.md)、[VoiceChat 能力研究](voicechat-research-review.md)、[接入与分段时延](integration.md)、[网关](../apps/api/app/voice/gateway.py)、[业务 Runtime](../apps/api/app/agent_runtime/runtime.py)、[CueKB schema](../apps/api/app/tools/schemas.py)、[工具 Registry](../apps/api/app/tools/registry.py)。历史研究中的论文/模型/镜像结论是当时版本证据，本轮没有重新验证线上权重或 GPU。
 

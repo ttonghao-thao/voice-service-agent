@@ -59,6 +59,9 @@ class DirectKnowledgeExecutor:
             "or URLs, invent facts, or call another tool for this request.",
             "is_mock": any(c.is_mock for c in citations),
         }
+        if ctx.task_context:
+            envelope["task_context"] = {key: ctx.task_context[key] for key in
+                ("original_request", "input_source", "conditions", "request_revision", "epoch", "deadline_at")}
         encoded = json.dumps(envelope, ensure_ascii=False)
         if len(encoded.encode()) > self.settings.qa_direct_evidence_max_bytes or not printable_ascii(encoded):
             reason = "evidence_payload_limit"

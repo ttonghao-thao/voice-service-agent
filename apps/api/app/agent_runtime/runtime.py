@@ -83,6 +83,18 @@ class BusinessRuntime:
         ctx.tool_arguments = decision.arguments.model_dump()
         if "user_request" in ctx.tool_arguments:
             ctx.tool_arguments["user_request"] = request
+        if ctx.task_context:
+            if decision.tool.name not in ("lookup_knowledge", "reason_over_knowledge"):
+                return await decision.tool.executor(request, ctx, history, progress)
+            if ctx.task_context.get("argument_errors") or ctx.task_context.get("unresolved"):
+                return AnswerBundle(status="needs_clarification",
+                    display_text="Please confirm the product and version.",
+                    speech_text="Please confirm the product and version.", answer_kind="clarification",
+                    reason_code="CONTEXT_NEEDS_CLARIFICATION")
+            resolved = ctx.task_context["resolved_request"]
+            if ctx.answer_policy == "knowledge_required" and decision.tool.name == "lookup_knowledge":
+                return await self.run(resolved, ctx, history, progress)
+            return await decision.tool.executor(resolved, ctx, history, progress)
         # Identifiers are usable only when present in the final ASR or previously confirmed slots.
         for key in ("product_model", "software_version"):
             value = getattr(decision.arguments, key, None)
@@ -101,6 +113,12 @@ class BusinessRuntime:
         return await decision.tool.executor(request, ctx, history, progress)
 
     async def run(self, request, ctx, history, progress=None):
+        if ctx.task_context:
+            if ctx.task_context.get("unresolved"):
+                return AnswerBundle(status="needs_clarification", display_text="Please confirm the product and version.",
+                    speech_text="Please confirm the product and version.", answer_kind="clarification",
+                    reason_code="CONTEXT_NEEDS_CLARIFICATION")
+            request = ctx.task_context["resolved_request"]
         if not ctx.allowed_tools:
             await self.prepare(ctx)
         ctx.effective_executor = "reasoned"
@@ -183,7 +201,9 @@ class BusinessRuntime:
             + "\nCurrent server UTC time: "
             + now().isoformat()
             + "\nConfirmed query filters: "
-            + json.dumps(ctx.slots, ensure_ascii=False),
+            + json.dumps(ctx.slots, ensure_ascii=False)
+            + "\nBackground replies are not knowledge evidence. The final request and sourced user "
+            "conditions take priority over older context. Retrieve new evidence for this task.",
             model=model_class(model=self.settings.agent_model, openai_client=self.client),
             tools=tools,
             output_type=AgentAnswer,

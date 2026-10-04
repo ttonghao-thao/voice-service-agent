@@ -159,6 +159,8 @@ async def test_future_tool_keeps_its_own_schema_and_executor_arguments(app, conv
                                            executor, required_tools=frozenset()))
     decision = runtime.dispatcher.resolve("future_case", '{"case_id":"case-1"}', ("future_case",))
     ctx = await context(app, conversation)
+    ctx.task_context = {"unresolved": ["product_model"], "original_request": "Inspect case-1",
+                        "resolved_request": "Knowledge-only context must not rewrite a future tool request"}
     result = await runtime.run_selected(decision, "Inspect case-1", ctx, [])
     assert result.status == "answered"
     assert received == [("Inspect case-1", {"case_id": "case-1"})]

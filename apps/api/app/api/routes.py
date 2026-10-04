@@ -5,6 +5,7 @@ import secrets
 from ipaddress import ip_address
 from typing import Annotated
 
+import anyio
 from app.api.auth import principal
 from app.contracts import (
     ConversationInput,
@@ -328,28 +329,33 @@ async def events(
         with store.listen(cid) as changed:
             checked = 0
             while not await request.is_disconnected():
-                if checked % 100 == 0:
-                    try:
-                        await principal(request)
-                    except DomainError:
-                        return
-                checked += 1
                 # Clear before reading: a commit during the read must not be lost.
                 changed.clear()
-                async with store.sessions() as db:
-                    await store.get(db, cid, user)
-                    rows = (
-                        (
-                            await db.execute(
-                                select(Event)
-                                .where(Event.conversation_id == cid, Event.server_seq > cursor)
-                                .order_by(Event.server_seq)
-                                .limit(100)
+                # A streaming disconnect uses repeated AnyIO cancellation. Finish
+                # this short read and close its connection before honoring it;
+                # cancellation inside the driver can leave rollback/close broken.
+                # Never shield network writes or the wait for subsequent events.
+                with anyio.CancelScope(shield=True):
+                    if checked % 100 == 0:
+                        try:
+                            await principal(request)
+                        except DomainError:
+                            return
+                    checked += 1
+                    async with store.sessions() as db:
+                        await store.get(db, cid, user)
+                        rows = (
+                            (
+                                await db.execute(
+                                    select(Event)
+                                    .where(Event.conversation_id == cid, Event.server_seq > cursor)
+                                    .order_by(Event.server_seq)
+                                    .limit(100)
+                                )
                             )
+                            .scalars()
+                            .all()
                         )
-                        .scalars()
-                        .all()
-                    )
                 for e in rows:
                     cursor = e.server_seq
                     safe_payload = _event_for_principal(

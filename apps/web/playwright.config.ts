@@ -8,6 +8,7 @@ export default defineConfig({
     headless: true,
     viewport: { width: 1440, height: 1000 },
     screenshot: "only-on-failure",
+    launchOptions: { executablePath: process.env.PLAYWRIGHT_CHROMIUM_EXECUTABLE },
   },
   timeout: 30000,
 });

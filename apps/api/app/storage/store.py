@@ -5,6 +5,7 @@ from datetime import timedelta
 
 from app.contracts import DomainError, PortalEvent, now, portal_server_event_adapter, uid
 from app.storage.models import Base, Conversation, DeliveryAttempt, Event, Record, ToolConfig, Turn, Utterance
+from app.task_context import bind_arguments, observe, snapshot, task_status, values
 from sqlalchemy import delete, select, text
 from sqlalchemy.ext.asyncio import async_sessionmaker, create_async_engine
 
@@ -112,6 +113,8 @@ class Store:
         native_call_id=None,
         input_item_id=None,
         selected_tool=None,
+        context_arguments=None,
+        deadline_at=None,
     ):
         async with self.transaction() as db:
             c = await self.get(db, cid, principal, lock=True)
@@ -133,6 +136,7 @@ class Store:
                     previous.cancellation_reason = "request_revised"
                     previous.delivery_status = "discarded"
                     previous.output_suppressed = True
+                    c.context_state = task_status(c.context_state, previous.id, "superseded", "request_revised")
             if channel == "text":
                 c.epoch += 1
                 c.voice_session_id = None
@@ -156,6 +160,24 @@ class Store:
                 status="running",
                 delivery_status="pending_validation",
             )
+            source = {"input_item_id": input_item_id or "text:" + t.id, "epoch": c.epoch,
+                      "request_revision": c.request_revision, "channel": channel}
+            state = observe(c.context_state, request, source)
+            entry = next(x for x in state["inputs"] if
+                         x["source"]["epoch"] == c.epoch and x["source"]["input_item_id"] == source["input_item_id"])
+            source = entry["source"]  # Preserve the revision at which final ASR was actually received.
+            state, errors = bind_arguments(state, context_arguments or {}, request, source)
+            t.task_context = snapshot(state, request, source, turn_id=t.id, revision=t.request_revision,
+                epoch=t.epoch, kb_ids=principal.knowledge_base_ids, deadline_at=deadline_at,
+                parent_task_id=parent_task_id)
+            t.task_context["argument_errors"] = errors
+            entry = next(x for x in state["inputs"] if x["source"] == source)
+            entry["kind"] = "knowledge"
+            entry["turn_id"], entry["task_status"] = t.id, "running"
+            entry["authorized_kb_ids"] = list(principal.knowledge_base_ids)
+            c.context_state = state
+            c.slots = {**{k: v for k, v in c.slots.items() if k not in ("product_model", "software_version")},
+                       **values(state)}
             db.add(t)
             if selected_tool and input_item_id:
                 utterance = await self._utterance(db, cid, c.epoch, input_item_id)
@@ -184,11 +206,14 @@ class Store:
             t.status, t.answer = bundle.status, bundle.model_dump(mode="json")
             t.execution_phase = "completed"
             t.delivery_status = "accepted"
+            c.context_state = task_status(c.context_state, t.id, bundle.status)
             # Commit only validated user/assistant history, never partial SDK tool messages.
             if bundle.status in ("answered", "needs_clarification", "insufficient_evidence"):
                 c.history = history[-24:]
                 if slots is not None:
-                    c.slots = slots
+                    # A slow answer cannot overwrite conditions from a newer final user input.
+                    c.slots = {**{k: v for k, v in slots.items() if k not in ("product_model", "software_version")},
+                               **values(c.context_state)}
                 c.summary = "\n".join(str(x.get("content", "")) for x in c.history[-6:])[-1500:]
             await self.event(db, c, "portal.answer.final", t.answer, turn_id)
             return True
@@ -209,9 +234,31 @@ class Store:
                 return False
             item = await self._utterance(db, cid, epoch, input_item_id)
             if text is not None:
+                if item.user_text is not None and item.user_text != text:
+                    raise DomainError("VOICE_PROTOCOL_ERROR", "Final input text cannot be replaced", 502)
                 item.user_text = text
+                source = {"input_item_id": input_item_id, "epoch": epoch,
+                          "request_revision": c.request_revision, "channel": "voice"}
+                c.context_state = observe(c.context_state, text, source)
+                c.slots = {**{k: v for k, v in c.slots.items() if k not in ("product_model", "software_version")},
+                           **values(c.context_state)}
             if answer is not None and not item.turn_id:
                 item.answer = answer.model_dump(mode="json")
+                state = dict(c.context_state)
+                inputs = [dict(x) for x in state.get("inputs", [])]
+                for entry in inputs:
+                    if entry["source"]["epoch"] == epoch and entry["source"]["input_item_id"] == input_item_id:
+                        entry["assistant_text"] = answer.display_text[:500]
+                c.context_state = {**state, "inputs": inputs}
+            return True
+
+    async def task_snapshot(self, ctx):
+        async with self.transaction() as db:
+            c = await self.get(db, ctx.conversation_id, lock=True)
+            if c.epoch != ctx.epoch or c.current_turn != ctx.turn_id or c.request_revision != ctx.request_revision:
+                return False
+            t = await db.get(Turn, ctx.turn_id)
+            t.task_context = ctx.task_context
             return True
 
     async def execution(self, ctx, evidence=None):
@@ -272,6 +319,7 @@ class Store:
                     t.cancellation_reason = "hard_interrupt"
                     t.delivery_status = "discarded"
                     t.output_suppressed = True
+                    c.context_state = task_status(c.context_state, t.id, "canceled", "hard_interrupt")
                     c.request_revision += 1
             c.epoch += 1
             c.current_turn, c.voice_session_id = None, None
@@ -299,6 +347,7 @@ class Store:
                     t.cancellation_reason = "voice_restarted"
                     t.delivery_status = "discarded"
                     t.output_suppressed = True
+                    c.context_state = task_status(c.context_state, t.id, "canceled", "voice_restarted")
                     c.request_revision += 1
                     c.current_turn = None
             c.epoch += 1
@@ -324,6 +373,7 @@ class Store:
             t.output_suppressed = True
             c.current_turn = None
             c.request_revision += 1
+            c.context_state = task_status(c.context_state, t.id, "canceled", reason)
             await self.event(db, c, "portal.playback.clear", {"message": "Current search canceled"})
             return c.request_revision, True
 

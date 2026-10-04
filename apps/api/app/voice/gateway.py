@@ -115,9 +115,8 @@ class VoiceGateway:
                 sid, ticket = uid(), secrets.token_urlsafe(32)
                 c.voice_session_id = sid
                 visible_history = self.coordinator.authorized_history(c.history, principal)
-                summary = "\n".join(
-                    str(item.get("content", "")) for item in visible_history[-6:]
-                )[-1500:]
+                from app.task_context import reconnect_summary
+                summary = reconnect_summary(c.context_state, visible_history)
                 session = VoiceSession(
                     sid,
                     principal,
@@ -625,6 +624,16 @@ class VoiceGateway:
                         "Check the VoiceChat response lifecycle; use text for now.",
                         502,
                     )
+                known_owner = response_turns.get(response_id)
+                if (known_owner and event.kind.startswith(("speech_text", "audio"))
+                    and not await current(*known_owner)):
+                    # A late frame with an already-bound identity must never
+                    # consume the continuation permission of the new task.
+                    continue
+                for parent in list(authorized_followups):
+                    owner = response_turns.get(parent)
+                    if owner and not await current(*owner):
+                        authorized_followups.discard(parent)
                 if (
                     response_id
                     and event.kind.startswith(("speech_text", "audio"))
@@ -754,6 +763,13 @@ class VoiceGateway:
                         continue
                     if kind == "voicechat_transcript":
                         response_texts.setdefault(response_id, []).append(event.payload["text"])
+                if (event.kind == "speech_text.done" and suppressed and turn_owner
+                    and turn_owner[0] in evidence_turns
+                    and " ".join(event.payload["text"].split()) != ack_text):
+                    # Playback suppression is not task cancellation. Retain the
+                    # current task's text for evidence checks without forwarding
+                    # speech or recording it as a presented response.
+                    response_texts.setdefault(response_id, []).append(event.payload["text"])
                 if event.kind == "audio.delta":
                     audio = base64.b64decode(event.payload["audio"], validate=True)
                     if len(audio) % 2 or len(audio) > 48000:

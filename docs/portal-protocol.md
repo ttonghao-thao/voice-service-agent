@@ -1,6 +1,6 @@
 # HTML 门户与消息/语音接口
 
-更新：2026-09-29。§1–7 是当前本地实现契约；Q06 的真实服务与设备验收仍归 D07。D19 不新增公开事件字段；浏览器内部 Worklet 的排空标记不暴露为新的服务端协议。D20 使持久事件提交后唤醒 SSE，并直接应用 final 更新已有 Turn。总架构见 [architecture.md](architecture.md)。
+更新：2026-10-04。本文包含 Q06 统一聊天与 Q07 可配置问答的当前本地契约；真实语音、选路和设备验收仍归 D07/Q07-E。Q07 新增可选输入/答案来源元数据，音频格式与 v1 外壳不变；Worklet 排空标记不暴露为新服务端事件。总架构见 [architecture.md](architecture.md)。
 
 ## 1. 简单门户
 
@@ -8,7 +8,7 @@
 
 - 页面加载不创建 conversation 或读取历史；每个标签页点击 “Start call” 后创建全新的 conversation/call token，再申请语音 session。token 只在该标签页内存中保存，刷新即丢失。
 - 开始通话成功以 `Voice ready` 为准；不承诺自动语音欢迎，连接初始未桥接输出被抑制。用户主动点击后申请麦克风，ready 后连续发送音频，包括静音。门户显示浏览器实际选择的设备、采样率、声道及 echo cancellation/noise suppression/auto gain 设置；这些诊断值不等同于收音准确率。门户使用公网 HTTPS，使页面满足浏览器 secure context 前提；证书信任、实际麦克风授权、设备选择和英文识别质量仍须在 D07 实机确认。
-- `portal.transcript.delta/done` 以 `(epoch,item_id)` 更新右侧用户气泡；持久 Turn 的 `input_item_id` 使同一气泡原位接管，不按文本相等归并。`portal.speech_text.delta/done` 的答案阶段用 `turn_id`、`response_id`、`segment_index` 更新左侧口述正文，done 后保留。固定工具 ACK 只显示查询状态；业务完整答案和来源在语音 Turn 中展开，文字 Turn 直接显示业务答案。
+- `portal.transcript.delta/done` 以 `(epoch,item_id)` 更新右侧用户气泡；持久 Turn 的 `input_item_id` 使同一气泡原位接管，不按文本相等归并。`portal.speech_text.delta/done` 的答案阶段用 `turn_id`、`response_id`、`segment_index` 更新左侧口述正文，done 后保留。固定工具 ACK 只显示状态；知识完整答案和来源在语音 Turn 中展开，文字 Turn 直接显示业务答案。dual_tools/general_qa 无工具回答以 input_item_id 关联普通助手正文，标明 Model general answer / No company sources were checked，不创建假知识 Turn；开始一般回答时清理上一轮来源面板。
 - 客户页面不展示工具配置、模型参数、内部运行日志或后台管理菜单。
 - 当前交互区分“停止播报”和“取消查询”：前者清除客户端缓冲并由服务端抑制当前 response，保留仍有效业务任务；后者使当前 revision 失效，存在无法安全结清的原生 call 时关闭旧语音连接。
 - 显示业务答案与实际语音字幕的区别；来源与版本可查看，工具密钥和内部地址不可出现在页面。
@@ -30,9 +30,9 @@
 
 | 方法和路径 | 用途/关键返回 |
 | --- | --- |
-| GET `/capabilities` | 配置和适配器声明的能力；部署声明不等于自动实测 |
+| GET `/capabilities` | 部署模式/策略/工具版本、后台 available_tools 与原生 native_tools；不是已有会话快照或实测结论 |
 | POST `/conversations` | 点击开始通话时请求 title、locale；返回 id、epoch、request_revision、locale、access_token；新会话仅接受 `en-US` |
-| GET `/conversations/{cid}/messages` | 当前用户的 Turn（含 `input_item_id`）及权限过滤后的转写 Record（含 `created_at`、口述 `turn_id`）；仅本次 capability 可读取 |
+| GET `/conversations/{cid}/messages` | 当前 capability 的 Turn（含 input_item_id、selected_tool、effective_executor、escalation_reason、execution_phase）及权限过滤后的 Record（含 created_at、口述 turn_id/input_item_id/answer_kind）；仅本次 capability 可读取 |
 | POST `/conversations/{cid}/voice-sessions` | 返回 voice_session_id、epoch、request_revision、ws_url（含一次性 ticket） |
 | DELETE `/conversations/{cid}/voice-sessions/{sid}` | 关闭语音，保留会话历史；当前同时触发硬中断 |
 | DELETE `/conversations/{cid}` | 结束本标签页通话、关闭语音并撤销 call token |
@@ -104,12 +104,12 @@ SSE 的持久 Event 表与 server_seq/cursor 保持不变。同进程提交后�
 | --- | --- | --- |
 | `portal.session.ready` | WS | 确认音频格式后开始采集发送 |
 | `portal.transcript.delta` / `done` | WS | item_id、text；首个非空文本更新右侧气泡，done 定稿，Turn 以 `input_item_id` 接管 |
-| `portal.speech_text.delta` / `done` | WS | response_id、segment_index、phase、text；答案阶段事件带 `turn_id`，更新并保留左侧正文；状态阶段不进入正文 |
+| `portal.speech_text.delta` / `done` | WS | response_id、segment_index、phase、text，Q07 可选 input_item_id/answer_kind；知识回答关联 turn_id，一般回答 turn_id 可空；状态阶段不进正文 |
 | `portal.audio.delta` / `done` | WS | response_id、delta 的 audio；done 的 phase 区分状态提示和答案，表示服务端发完，客户端仍须排空缓冲；过期 epoch 一律丢弃 |
 | `portal.input.state` | WS | state=speaking/quiet；仅输入状态，不自动等于取消业务 |
 | `portal.tool.started` | SSE | 客户可理解的查询状态；不暴露私有工具参数 |
-| `portal.answer.final` | SSE | 已校验 AnswerBundle；展示答案、来源、必要卡片 |
-| `portal.playback.clear` | SSE / WS | SSE 处理 epoch 失效；WS 同 epoch 停止当前播放。晚到旧 epoch clear 不能清掉新连接 |
+| `portal.answer.final` | SSE | canonical AnswerBundle 及终态；D2 在续答结束/事后检查后才提交，一般无工具回答不伪造该知识事件 |
+| `portal.playback.clear` | SSE / WS | epoch 失效或同 epoch 清播放；有 response_id 时只抑制该响应，不能停止其他当前合法回答；旧 epoch clear 不影响新连接 |
 | `portal.session.ended` | SSE/连接生命周期 | 显示结束并释放设备；也须处理 WS close，不能只依赖单个消息 |
 | `portal.error` | WS；HTTP 使用错误响应 | code、message、retryable、trace_id；按错误恢复，不无限重试 |
 
@@ -121,7 +121,7 @@ SSE 的持久 Event 表与 server_seq/cursor 保持不变。同进程提交后�
 
 建立 conversation/capability → 签发票据 → 连接 WS → VoiceChat 握手 → portal ready 后，采集与播放并行运行。用户 input item 的开始、临时转写和最终转写是同一输入；原生工具只能消费尚未绑定的 input item，网关等待完成态 ASR 后进入 Runtime。工具参数不能替代最终转写，无输入的工具不能创建业务 Turn。
 
-已接受业务答案走 SSE；合法工具 response 可播放固定等待 ACK，工具结果写回后最多放行一个后续回答。ACK 正在播报时结果提前到达，不能消耗最终答案许可；供应商沿用原 response 返回最终答案时须回收多余许可。新的输入活动不取消仍有效的已授权回答，未桥接直接输出仍失败关闭。供应商完整时序见 [接入 §3](integration.md#3-voicechat-接入与能力门槛)。
+外置业务答案提交后走 SSE；D2 先回填 EvidenceReady，待原生字幕/audio.done 和检查完成后提交 canonical final。一般无工具回答以输入/有序 response 许可走 WS 并持久 Record。合法工具 response 可播放固定 ACK，工具结果写回后最多放行一个后续回答。ACK 正在播报时结果提前到达，不能消耗最终答案许可；供应商沿用原 response 返回最终答案时须回收多余许可。新的输入活动不取消仍有效的已授权回答，legacy/knowledge_required 未经工具授权的实质性输出失败关闭；general_qa 仅允许已绑定当前输入的一般回答。供应商完整时序见 [接入 §3](integration.md#3-voicechat-接入与能力门槛)。
 
 浏览器按下面的状态转换控制播放：
 
@@ -144,10 +144,10 @@ Worklet 的内部 `done` ACK 表示播放队列排空，向服务端发送的仍
 
 - v1 固定当前音频格式与已定义必需字段；未来二进制音频/不同格式需要明确协商或新版本，不能暗改现有字段含义。
 - 兼容性新增先由 capability 声明并提供降级；未知服务端非关键展示事件可忽略，未知客户端控制事件拒绝；格式/鉴权错误不得继续播放。
-- 当前已有典型错误：AUTH_REQUIRED、FORBIDDEN、VOICE_UNAVAILABLE、VOICE_CAPACITY_EXCEEDED、VOICE_PROTOCOL_ERROR、VOICE_TOOL_REQUIRED、VOICE_SESSION_ROTATION_REQUIRED、VOICE_SESSION_EXPIRED、AUDIO_BACKPRESSURE。`VOICE_TOOL_REQUIRED` 表示用户完整发言后 VoiceChat 试图绕过 `consult_service_agent` 直接回答；该输出被拒绝，不能作为客服答案播放。
+- 当前已有典型错误：AUTH_REQUIRED、FORBIDDEN、VOICE_UNAVAILABLE、VOICE_CAPACITY_EXCEEDED、VOICE_PROTOCOL_ERROR、VOICE_TOOL_REQUIRED、VOICE_SESSION_ROTATION_REQUIRED、VOICE_SESSION_EXPIRED、AUDIO_BACKPRESSURE。`VOICE_TOOL_REQUIRED` 表示 legacy/knowledge_required 下未满足工具输出许可；general_qa 的合法无工具回应不触发该错误。Q07 的 VOICE_TOOL_UNKNOWN/VOICE_TOOL_ARGUMENTS/VOICE_ANSWER_TIMEOUT 及证据检查失败由相应路径处理，不自动补查或假造成功。
 - 工具错误在业务层映射为稳定的失败/无依据/澄清状态；不能把 401/403/429/5xx 都显示为“没有知识”。
 - `failed` 是服务端运行/工具异常状态，不能由模型覆盖成功检索结果；已有正文与已校验 citations 的答案必须在 Answer、Turn 和来源面板显示同一终态。读取历史矛盾记录时以规范化后的 Answer 终态为准。
-- `AGENT_DEADLINE_MS` 是首次模型调用、CueKB 检索和最终模型回答的完整业务 Turn 总预算，不是单个请求超时；验证部署默认并在 `.env.example` 显式填写 `30000` 毫秒，真实延迟分布仍在 D07 测量后冻结。
+- `AGENT_DEADLINE_MS` 是知识 Turn 的直查、升级、外置模型、检索及答案回收总预算；D2 回收另取 QA_PROVIDER_ANSWER_TIMEOUT_MS 与剩余预算较小值，不是单个请求超时；验证部署默认并在 `.env.example` 显式填写 `30000` 毫秒，真实延迟分布仍在 D07 测量后冻结。
 - 不把服务商 error 原文、密钥或内部堆栈直接转发客户。完整错误集合随实现和契约同步维护。
 
 ## 6. 接口验收
@@ -160,7 +160,7 @@ Worklet 的内部 `done` ACK 表示播放队列排空，向服务端发送的仍
 
 ### 7.1 已明确的展示目标与实施前差距
 
-以用户提供的 GPT 语音交互截图为布局参考：用户文字在右侧浅色圆角气泡，助手文字在左侧以无背景正文展示，连续问答按顺序保留。用户的短追问和助手的短回复也各自保留；不把所有转写累积到一个字幕框。截图不改变本期英文知识库客服范围，也不要求复制 GPT 的全部按钮和功能。
+以用户提供的 GPT 语音交互截图为布局参考：用户文字在右侧浅色圆角气泡，助手文字在左侧以无背景正文展示，连续问答按顺序保留。用户的短追问和助手的短回复也各自保留；不把所有转写累积到一个字幕框。截图用于消息布局；当前交互仍为英文，Q07 已增加一般问答分支，不要求复制 GPT 的全部按钮和功能。
 
 | 内容 | 实施前 | Q06 目标与本地实现 |
 | --- | --- | --- |
@@ -200,9 +200,9 @@ Worklet 的内部 `done` ACK 表示播放队列排空，向服务端发送的仍
 
 语音模式的主正文来自已授权的 VoiceChat 口述转写，业务 `display_text` 保存在“View full answer / Sources”区域，避免两套答案在主时间线重复出现。文字模式仍直接展示业务答案。业务答案先完成而口述尚未到达时，可显示答案已就绪及展开入口，不提前把完整业务答案标成已口述。
 
-引用归属于经过业务校验的答案，不能仅因两段文字关联同一 Turn，就声称 VoiceChat 的改写已逐句通过证据校验。口述质量检查仍属 Q02/Q05。文本生成与实际播放也分开：到达的口述转写不证明客户已经听到；精确逐字播放高亮、已听边界不在本方案承诺内。
+引用归属于经过业务校验的答案，不能仅因两段文字关联同一 Turn，就声称 VoiceChat 的改写已逐句通过证据校验。Q07 D2 有口述结束后的有限数字/单位/条件检查；完整语义和实际音频质量仍属后续 Q02/Q05 验证。文本生成与实际播放也分开：到达的口述转写不证明客户已经听到；精确逐字播放高亮、已听边界不在本方案承诺内。
 
-Stop playback 保留已收到正文并更新播放状态；普通 `speech_started` 保持模型自然插话语义，不自动取消查询。明确取消/替换继续使业务 revision 失效，保留可见的既有文字并注明中断，拒绝后续旧输出。口述失败时仍可查看已验证的完整文字答案，并明确语音失败；不得伪造口述正文。
+Stop playback 保留已收到正文并更新播放状态；普通 `speech_started` 保持模型自然插话语义，不自动取消查询。明确取消/替换继续使业务 revision 失效，保留可见的既有文字并注明中断，拒绝后续旧输出。若已有通过校验的外置文字答案，口述失败时仍可查看并明确语音失败；D2 未通过时不能把准备好的证据冒充成功答案，不得伪造口述正文。
 
 新消息出现时，仅在用户位于列表底部时自动跟随；用户向上阅读时保留位置并提供返回最新消息入口。窄屏、长文本换行、滚动容器与底部通话控制区需一起验收，不新增客户可见的协议 ID、模型参数或日志。
 
@@ -217,10 +217,25 @@ Stop playback 保留已收到正文并更新播放状态；普通 `speech_starte
 3. 实际口述逐步出现在左侧正文；口述完成、音频完成、停止播放和下一次输入后仍保留；完整业务答案与来源可展开，主正文不重复。
 4. 工具 ACK 与最终回答共用/分用 response、口述失败、断线、取消/替换和 epoch 轮换均不串轮，不接纳已失效输出，不把生成文字标为已听。
 5. 新通话/跨标签页隔离、KB 撤权、同通话恢复、文字模式、窄屏和向上阅读时的滚动行为不回退。
-6. 本地受控测试、类型检查和构建通过后，另在 D07 用真实英文语音、VoiceChat/CueKB、浏览器设备验证时序、连续问答及可读性。已有测试通过不能作为 Q06 已实施的证明。
+6. 本地受控测试、类型检查和构建通过后，另在 D07 用真实英文语音、VoiceChat/CueKB、浏览器设备验证时序、连续问答及可读性。本地测试通过不能作为 Q06/Q07 真实服务验收的证明。
 
 ### 7.6 实施结果与边界
 
 Turn 通过 Alembic 0006 新增 nullable `input_item_id`，旧行不伪造关联。Gateway 在合法工具调用与最终 ASR 绑定后提交 Turn，把对应 response 的口述事件标记为 `phase=answer` 与 `turn_id`；同一 response 的多段口述用 `segment_index` 分开。固定 ACK 用已配置短语和响应阶段识别为 `phase=status`，不存成答案正文。`speech_text.done` 的受控 Record 保存 `turn_id`，按既有 owner、KB 范围与 revision/epoch 过滤；历史快照和 WS 各自按稳定身份归并。
 
 现有部署升级前的旧 Turn 没有可靠的输入/口述关联，页面保留完整业务答案的展开入口，不将旧 `display_text` 冒充实际口述。正在使用的标签页可通过同一 capability 补取已定稿文字；刷新后的新 capability 不访问旧通话。生成口述文字不表示已听到。受控回归与构建见 [验收记录](acceptance-report.md)，真实 VoiceChat/CueKB、浏览器设备和撤权现场复测仍归 D07。
+
+## 8. Q07：一般问答、证据续答与来源标识
+
+Conversation 的模式/策略由服务端设置并快照，创建请求不接受模型、工具或策略覆盖字段。消息 UI 只呈现回答来源与状态，不暴露工具选路实现或要求用户选择检索执行器。
+
+| 类型 | 数据与界面行为 | 检查边界 |
+| --- | --- | --- |
+| 一般模型回答 | Utterance + 实际口述 Record，按 input_item_id/response_id 定位；不出现在 /messages.items 的假 Turn 中，不显示企业 citations | answer_kind=general，composition=provider_general，validation_level=provider_only，verification_timing=not_verified |
+| Nano D2 知识回答 | EvidenceReady 是内部准备状态，不是 final；任务 awaiting_provider_answer；字幕/音频流出，完成后检查并提交终态，失败保留可见文字并标记失败/清剩余播放 | answer_kind=knowledge，composition=nano_grounded，source_checked / after_audio；不等于全部断言或音频正确 |
+| 外置知识回答 | 校验后提交完整文字与来源，并给 VoiceChat 拟口述文本；门户保留实际口述与 canonical 文本的区别 | external_llm / source_checked / before_audio 针对业务文本，不保证逐字朗读 |
+| 旧数据 | 缺可选来源字段按 legacy/unknown 或已有信息呈现，不伪造输入关联/已查证/已听到 | 向后兼容，不回填成功证据 |
+
+AnswerBundle 新增的 answer_kind/composition/validation_level/verification_timing 为可选元数据，定义以生成 schema 为准。Utterance 和 DeliveryAttempt 当前是内部表，不新增其独立 HTTP 查询或统一 Presentation API。一般回答从已开始的 response 起有有界结束等待；尚无输出不自动启动检索。D2 失败的 response clear 可经持久 SSE 或 WS 到达，客户端按 ID 去重/抑制，下一条合法回答仍可播放。
+
+本地新增测试覆盖一般回答零知识 Turn、严格拒绝无工具、D2 续答提交/失败、部分数字/单位/条件、超时/取消及旧 clear 不停止下一条回答。真实选择质量、漏调用、字幕/实际音频一致性仍待 [Q07 验收矩阵](qa-routing-design.md#14-验收矩阵)。

@@ -30,3 +30,4 @@ class RunContext:
     escalation_reason: str | None = None
     answer_policy: str | None = None
     tool_arguments: dict[str, Any] = field(default_factory=dict)
+    task_context: dict[str, Any] = field(default_factory=dict)

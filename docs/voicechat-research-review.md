@@ -2,6 +2,8 @@
 
 日期：2026-09-28。状态：**设计待确认，未实施**。本轮只做文献、协议、源码分析及文档整理；不运行 GPU、Docker、真实 VoiceChat/CueKB，不重新转换模型，不修改应用或独立 speech 代码。
 
+2026-10-04 维护说明：本文保留上述日期的研究/源码基线和独立优化建议。当前应用已增加 Q07 原生双工具、D2 证据续答及交付记录；本文当时的单 bridge、口述和交付现状不能替代最新实施状态。当前实现见 [架构](architecture.md)、[Q07 §0](qa-routing-design.md#0-本轮编码范围与扩展契约)，剩余任务见 [任务板](TASK_BOARD.md)。本文未重新核验模型权重、镜像或现场服务。
+
 ## 1. 结论与证据基线
 
 继续采用用户已经准备好的 NVIDIA VoiceChat 容器及 Triton Model Repository。保留 `VoiceGateway → SessionCoordinator → BusinessRuntime → ToolRegistry → CueKB` 的业务边界。优化重点是工具等待状态、结果口述可靠性和可测量的实时性能，不是更换语音模型或重建推理栈。

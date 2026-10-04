@@ -1,14 +1,14 @@
 # 后端服务与工具接入
 
-更新：2026-09-28。按主题读取。架构决策见 [architecture.md](architecture.md)，当前差距见 [任务板](TASK_BOARD.md)。
+更新：2026-10-04。按主题读取。架构决策见 [architecture.md](architecture.md)，当前差距见 [任务板](TASK_BOARD.md)。
 
 ## 1. 运行依赖与配置状态
 
 | 依赖 | 最终职责 | 当前实现状态 |
 | --- | --- | --- |
-| VoiceChat | 独立实时语音服务，原生工具调用 | NVIDIA adapter 与 speech 逐轮协议同步修复；真实复测待 D07 |
+| VoiceChat | 独立实时语音服务，原生选择工具或直接回答 | legacy/dual_tools 与有序响应许可本地完成，真实选择/续答/音频待 D07/Q07-E |
 | CueKB | 知识检索与版本来源 | 专用 adapter、契约和受控测试已实现；真实服务/ACL 待 D07 |
-| 文本模型 | BusinessRuntime 的推理与业务回答 | 已有 openai / compatible adapter；真实模型未验收 |
+| 文本模型 | legacy、reasoned、直查升级和严格知识路径 | openai / compatible 已实现；合格 D2 直查零外置调用，部署仍要求真实文本模型 |
 | 第三方工具 | 本期不启用 | 天气代理代码仍保留，生产默认无需天气配置 |
 | 通话 capability | 每次测试通话的独立 owner/token 与服务端 KB 范围 | 标签页内存 token 已实现；正式客户身份服务暂缓 |
 
@@ -68,7 +68,7 @@ CueKB M3 已提供有界章节、相邻块及表头上下文，但预算耗尽�
 
 not_found 表示本次未命中，不能推导事实不存在；degraded 有 hits 时保留原因并判断可用性；401/403 为授权或配置问题，422 为契约问题，429 为负载限制，5xx/超时为服务故障。禁止统一降为“查无资料”。返回答案、读历史证据和原件时都需覆盖撤权策略。
 
-CueKB 上游 HTTP 响应上限为 256 KiB，内部工具输出上限为 32 KiB，模型证据正文加上下文预算为 6000 字符；三者是不同边界，超过内部预算时显式舍弃上下文或命中。知识工具预算仍为 5 秒，业务整轮预算默认 30 秒，均不能证明真实端到端时延已达标。
+CueKB 上游 HTTP 响应上限为 256 KiB，内部工具输出上限为 32 KiB，外置模型证据正文加上下文预算为 6000 字符；Q07 D2 的 evidence-v1 包另限默认 6000 bytes / 3 项（包括问题、身份与条件字段）。这些是不同边界，超过内部预算时显式舍弃上下文或命中。知识工具预算仍为 5 秒，业务整轮预算默认 30 秒，均不能证明真实端到端时延已达标。
 
 ## 3. VoiceChat 接入与能力门槛
 
@@ -76,7 +76,7 @@ CueKB 上游 HTTP 响应上限为 256 KiB，内部工具输出上限为 32 KiB�
 
 API 通过 `VOICECHAT_WS_URL` 连接独立服务的 `/v1/realtime`。受控同主机/隔离网络可用 WS，其它非受控链路使用 WSS；浏览器始终访问本项目同源 HTTPS/WSS。VoiceChat 端口与公网门户端口不能混为一谈。
 
-握手固定为 `session.created → session.update → session.updated`，首次配置注册 `consult_service_agent(user_request)`。Adapter 验证输入/输出为 `audio/pcm`、24000 Hz；不发送未证实的 `response.cancel`、`tool_choice`、动态 TTS 或后台推送字段。
+握手固定为 `session.created → session.update → session.updated`。legacy 注册 `consult_service_agent(user_request)`；dual_tools 按当前授权注册快照，仅有 `lookup_knowledge` / `reason_over_knowledge` 两个默认工具。Adapter 用 flat name/description/parameters/ack_messages 定义及 instructions，验证 `audio/pcm`、24000 Hz；不发送 `tool_choice`、未证实的 response.cancel、动态 TTS 或后台推送字段。工具定义不是每个音频帧重复发送。
 
 | 阶段 | 采样和行为 |
 | --- | --- |
@@ -91,13 +91,21 @@ API 通过 `VOICECHAT_WS_URL` 连接独立服务的 `/v1/realtime`。受控同�
 
 ### 3.2 工具路由与最终用户输入
 
-VoiceChat 对每个完整客户发言调用统一业务 bridge，包括问候、闲聊、听不清和知识问题。工具描述与 `config/voice-prompt.txt` 保持这个范围；只允许 `BridgeArguments`，KB/凭据/主机不能进入模型可控参数。
+分析对象是 VoiceChat-11B 模型、nemotron-labs-voicechat 推理框架及实时 WebSocket 的完整栈。模型通过 AVAILABLE_TOOLS 与最终提示词选择工具/直接回答；运行层解析 TOOLCALL，并通过原生事件交给本项目执行，不需要 WS tool_choice 参数。
 
-网关按 `speech_started` 的 item_id 收集输入，工具消费尚未绑定的 input item；工具参数做 schema 校验，最终 ASR 文本才作为业务请求和持久用户气泡。最终 ASR 最多等待 5 秒；无有效输入的原生调用只返回失败以结清，不创建业务 Turn。ASR 完成事件不能再触发重复查询。
+| 会话 | 提示词与参数 | 选择规则 |
+| --- | --- | --- |
+| legacy | config/voice-prompt.txt、BridgeArguments | 所有完整输入先调用 consult_service_agent |
+| dual_tools / general_qa | config/voice-qa-prompt.txt、KnowledgeArguments | 一般问答可不调用；企业产品资料或明确查 KB 选 lookup/reason；无实时业务能力时如实说明 |
+| dual_tools / knowledge_required | 同上，加严格知识指令 | 不从记忆给实质性答案；lookup 服务端改走外置执行 |
 
-独立 speech 在同一模型批次中先发 ASR，再发工具，再发 ACK/回答音频，以便网关先绑定输入并授权。原生 `response.function_call_arguments.done` 的 call_id 用于 `conversation.item.create/function_call_output` 回传；arguments 若由模型给出 JSON 字符串，服务端先解析对象再编码一次，不能双重 JSON 编码。
+两个知识工具参数是 user_request、product_model、software_version，后两项为必填 nullable 字段；不知道用 null，不猜测。schema 见 [voice-knowledge-arguments](../contracts/voice-knowledge-arguments.schema.json)，KB/身份/endpoint/凭据/预算不进入模型可控参数。
 
-供应商最终渲染的工具模板不得追加“常识无需工具直接回答”等与应用规则冲突的路由。本项目工具描述覆盖每个完整输入；speech 使用现有 `USE_JINJA_TEMPLATE_PROMPT=1` 分支，保留 AVAILABLE_TOOLS、TOOLCALL、TOOL_RESPONSE 和独立 ACK 元数据。默认模板保持原样，不再为本项目改写。该环境变量在 Python 导入时读取，须随容器/进程启动生效。仅加强前置提示词不能抵消后置冲突模板，也不能替代网关后置条件。
+Gateway 按 input item 绑定 native call，并最多等待 5 秒最终 ASR；最终 ASR 覆盖 user_request，是业务输入和用户气泡依据。型号/版本须在最终输入或本会话已确认条件中，否则澄清。无输入不建 Turn，ASR 完成不重复启动查询。ToolDispatcher 按会话快照里的名称和 schema 分派，不进行第二次语义分类。
+
+同一推理批次需按 ASR → 工具 → ACK/回答输出。原生 response.function_call_arguments.done 的 call_id 用于 conversation.item.create / function_call_output 回填；解析 arguments 对象再编码一次，避免双重编码。客户端应用负责工具执行；VoiceChat runtime 负责原生脚本解析和结果上下文注入。
+
+speech 保留现有 USE_JINJA_TEMPLATE_PROMPT=1 分支、AVAILABLE_TOOLS/TOOLCALL/TOOL_RESPONSE 及 ACK 元数据。这个开关控制模板构造，不是工具选择的 auto 开关。按所选模式核对最终渲染工具和指令：legacy 不能追加绕过 bridge 的规则，dual_tools 不能残留每句强制 consult_service_agent；不机械地关闭 Jinja 或改成通用 vLLM 配置。模型漏调用/错工具/错参数仍须真实验收。
 
 ### 3.3 Response、ACK 与输出授权
 
@@ -107,13 +115,15 @@ speech 输出 FIFO 中每条事件在生成时固定 response/item，单发送�
 
 网关授权规则：
 
-1. 初始未桥接输出被抑制；用户输入后未桥接的直接答案以 `VOICE_TOOL_REQUIRED` 关闭。
-2. 已绑定合法工具的 response 可承载固定 ACK；有效工具结果提交后最多再授权一个新 response。
-3. 若工具结果在 ACK 未播完时已返回，固定 ACK 不消耗后续答案的许可。固定 ACK 文本由 adapter 统一提供并按规范化空白精确识别。
-4. 若最终答案沿用工具 response，则该 response 完成时回收未使用的后续许可；若用新 response，则首次输出时消费许可。之后无关回答不能继承授权。
-5. 新 speech_started 不撤销有效回答；取消/revision/epoch/租约检查独立执行。初始被抑制 ID 的文字已完成、audio.done 未到，用户输入后又携带非空口述时记录 `voice_response_lifecycle_mismatch` 并显式报错，不能把整场连接放行。
+1. 初始无输入输出被抑制；legacy/knowledge_required 中未经工具授权的实质性回答返回 VOICE_TOOL_REQUIRED。
+2. general_qa 无工具回答须绑定一个明确的当前输入和有序 response 生命周期；保存 Utterance/字幕，不创建知识 Turn。歧义或 ID 复用失败关闭，不能永久授权整场输出。
+3. 合法工具响应承载固定 ACK；写回结果前记录 DeliveryAttempt 并安装受限续答许可，避免供应商即时回应竞态。结果最多授权随后一个回答；同 response 回答结束也回收多余许可。
+4. D2 回填 EvidenceReady 后保持知识任务待原生答案，聚合字幕、audio.done 后校验并唯一提交；不再写第二份工具结果或播报第二次答案。失败/超时清除该 response 剩余播放，其他合法 response 不受该 clear 影响。
+5. 新 speech_started 不直接取消有效任务；revision/epoch/租约/权限与工具版本仍复核。无工具旧响应不能借新输入获得许可。
 
-固定 ACK 不是证据答案，供应商写回成功不是客户已听到。业务答案、实际口述字幕和播放 ACK 分别记录。
+legacy ACK 为 Please wait while I check the knowledge base.；新模式为 Please wait while I check that.，按配置短语和阶段识别为状态提示，不当答案正文。prepared/write_started/sent 与播放 samples 独立记录；崩溃后未确认写回记 unknown、不重发，sent 或字幕到达都不证明已听到。
+
+QA_PROVIDER_ANSWER_TIMEOUT_MS 默认 10000：D2 续答取它与业务剩余预算的较小值；一般无工具响应从已开始输出后计算期限，缺结束边界记失败。尚未开始的无工具回答不属于此独立超时，不自动补启动检索。
 
 ### 3.4 语言、版本和能力验证
 
@@ -139,17 +149,17 @@ D19 上游补丁、适用源码 hash、CPU 测试与发布方式见 [VoiceChat �
 
 Runtime 复用授权工具和证据校验，输出 display_text、短 speech_text、引用和业务状态；SDK 的工具循环与耗时受整轮 deadline 约束。复杂知识子 agent 若启用，权限/预算继承并缩小，独立临时上下文，只返回候选结果。
 
-本期只有 `search_knowledge`，因此 Runtime 对 Responses API 与 compatible Chat Completions 都设置必需工具选择并关闭并行工具调用，同时在模型输出后再次校验已发生授权的 `search_knowledge` 调用。模型未调用工具时返回 `AGENT_REQUIRED_TOOL_NOT_CALLED`；adapter 的授权、契约、限流、超时或上游错误优先于模型声称的 `insufficient_evidence`，只有真实检索结果才能形成未命中/证据不足状态。
+后台默认只有 `search_knowledge`。Runtime 对 Responses API 和 compatible Chat Completions 在本轮没有真实授权检索时要求首次调用，并关闭并行工具调用；直查升级若已有本轮有效证据，则允许直接综合或在剩余预算内补一次检索。输出后仍校验实际授权检索后置条件。SDK 的 required/auto 是外置知识执行设置，与前台 VoiceChat WS 无关。模型未调用工具时返回 `AGENT_REQUIRED_TOOL_NOT_CALLED`；adapter 的授权、契约、限流、超时或上游错误优先于模型声称的 `insufficient_evidence`，只有真实检索结果才能形成未命中/证据不足状态。
 
 Runtime、ToolRegistry、CueKB adapter 与 VoiceGateway 记录脱敏阶段日志，包含 conversation/turn/tool、调用状态、耗时、trace 及 endpoint 的 scheme/host/port/path；不记录问题正文、API key、URL userinfo、供应商原始错误或工具结果正文。管理员的 `search_knowledge` 连通性探测使用 CueKB `/v1/ready`，业务检索仍使用 `/v1/search`。
 
 ### 4.1 查询延迟与优化边界
 
-现场反馈约 3 秒，尚无对应 turn 的完整分段日志，不能认定“CueKB 查询用了 3 秒”。默认按提交文字到完整答案分析：HTTP/鉴权/建 Turn → 模型生成检索参数 → CueKB 检索 → 模型生成结构化答案 → 证据/权限复核与提交 → SSE → 渲染。至少两次串行模型请求（与 [SDK agent loop](https://developers.openai.com/api/docs/guides/agents/running-agents) 一致）；额外工具轮次、上游排队/网络、有限重试会增加耗时。语音还包含说话结束判定、最终 ASR、原生工具提取、结果注入/TTS 和播放缓冲；ACK 不计作最终答案。
+现场反馈约 3 秒，尚无对应 turn 的完整分段日志，不能认定“CueKB 查询用了 3 秒”。默认按提交文字到完整答案分析：HTTP/鉴权/建 Turn → 模型生成检索参数 → CueKB 检索 → 模型生成结构化答案 → 证据/权限复核与提交 → SSE → 渲染。通常含检索规划和最终回答两次串行模型请求（与 [SDK agent loop](https://developers.openai.com/api/docs/guides/agents/running-agents) 一致）；额外工具轮次、上游排队/网络、有限重试会增加耗时。语音还包含说话结束判定、最终 ASR、原生工具提取、结果注入/TTS 和播放缓冲；ACK 不计作最终答案。
 
 原页面固定 300 ms 数据库轮询，并在 final 事件后再 GET messages 才显示聊天答案。现在事务提交后唤醒同进程 SSE，通知只作为加速，持久化 Event/server_seq 仍是事实来源；回滚不通知，跨进程或漏通知保留 300 ms 补查，重连按 cursor 补读。页面对已加载 Turn 直接应用鉴权过滤后的 final，未知 Turn 才补取；晚到的 running 快照不能覆盖已收到的 final，新 epoch/revision 不能被旧请求覆盖。
 
-这消除了同进程 0–300 ms 的轮询等待和已有气泡的一次 HTTP 往返，但不承诺总耗时从 3 秒降到某个数。保持模型规划和工具链，避免直接检索原句导致上下文改写、型号/版本过滤退化；不以提前显示未验证模型流取代事实校验。
+这消除了同进程 0–300 ms 的轮询等待和已有气泡的一次 HTTP 往返，但不承诺总耗时从 3 秒降到某个数。legacy、文字和复杂路径保留模型规划；Q07 直查使用最终输入和已确认条件，经 EvidenceGate 决定 Nano 续答或升级，不先请求外置分类模型。直查的质量、升级率及实际时延仍需同样本实测，不能因少了调用就宣称整体效果已优化。
 
 每个 `conversation_id/turn_id` 关联以下无正文日志：
 
@@ -165,9 +175,20 @@ Runtime、ToolRegistry、CueKB adapter 与 VoiceGateway 记录脱敏阶段日志
 
 ## 5. 第三方扩展（D06）
 
+工具分为两个层次：
+
+| 层次 | 注册与授权 | 当前名称 |
+| --- | --- | --- |
+| VoiceChat 可见业务工具 | agent_runtime/dispatch.py 的 NativeTool；自己的严格 schema、可信 executor、permission_scope、required_tools；会话定义快照 | dual_tools 默认仅 lookup_knowledge / reason_over_knowledge；legacy 单 bridge |
+| 后台工具能力 | tools/registry.py 的 ToolSpec/adapter；部署白名单、管理员启停、身份范围和版本校验 | 默认 search_knowledge，通过 CueKB /v1/search 执行 |
+
+新增原生工具在可信服务端初始化阶段调用 runtime.dispatcher.register(NativeTool(...))；executor 从 ctx.tool_arguments 获取经 schema 校验的参数，user_request 若存在仍以最终 ASR 覆盖。原生定义可以使用自己的参数模型，不必包含知识型号字段；新增业务需自行实现对象权限和结果校验，后端服务调用保持 Registry 边界。注册支持扩展，不意味着本期已启用额外工具或有动态插件加载。
+
+可见工具必须同时满足身份 scope 与 required_tools 后端依赖。工具名称/定义在语音 session 固定，启停/变更后仍需版本与输出复核，新增定义在重建会话后生效。官方约 5 工具建议用于质量评估；超过仅告警，不能推断并行可靠，实际支持的调用组合另验。
+
 沿用 ToolSpec + trusted adapter + ToolRegistry：受信任代码定义参数/返回类型、调用实现、固定 endpoint/凭据引用、权限、预算、版本及错误映射。工具启停/修订后旧 run 不得继续使用失效工具。
 
-当前可用工具集合为部署启用 `ENABLED_TOOLS` ∩ 管理员当前启用 ∩ 用户授权；必需依赖只检查部署启用项。未配置天气/股票时不得暴露或调用，也不影响 CueKB-only 启动。部署白名单不能由管理员 API 重新开启；管理员只能在白名单内临时启停，运行中的旧任务会因版本或可用性变化被拒绝。`/capabilities` 返回部署集合和当前身份的 `available_tools`，`/health/ready` 返回非敏感部署集合。
+当前可用工具集合为部署启用 `ENABLED_TOOLS` ∩ 管理员当前启用 ∩ 用户授权；必需依赖只检查部署启用项。未配置天气/股票时不得暴露或调用，也不影响 CueKB-only 启动。部署白名单不能由管理员 API 重新开启；管理员只能在白名单内临时启停，运行中的旧任务会因版本或可用性变化被拒绝。`/capabilities` 返回非敏感的 enabled_tools、customer 范围的 available_tools 与 native_tools，以及部署默认模式/策略/工具版本；它不是某个已有会话快照，也不是行为实测。`/health/ready` 返回配置和容量状态。
 
 本期默认 `ENABLED_TOOLS=search_knowledge`。已有天气示例契约仍见 [weather-openapi.yaml](../contracts/weather-openapi.yaml)，但天气不属于本期产品范围，现存代码/schema 仅保留供后续需求评估，不对客户开放。
 

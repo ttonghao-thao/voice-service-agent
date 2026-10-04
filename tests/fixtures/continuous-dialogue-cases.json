@@ -1,0 +1,17 @@
+{
+  "schema_version": "continuous-dialogue-v1",
+  "language": "en-US",
+  "source": "Authored synthetic sequences; no real voice or model decisions",
+  "cases": [
+    {"case_id": "C01", "scenario": "general_to_lookup", "tool_steps": {"background": null, "question": "lookup_knowledge"}, "required_metrics": ["tool_selection_correct", "context_correct"]},
+    {"case_id": "C02", "scenario": "general_to_reasoned", "tool_steps": {"background": null, "question": "reason_over_knowledge"}, "required_metrics": ["tool_selection_correct", "context_correct"]},
+    {"case_id": "C03", "scenario": "correction_late_reply", "tool_steps": {"first": "lookup_knowledge", "correction": "lookup_knowledge"}, "required_metrics": ["tool_selection_correct", "context_correct", "correction_correct", "stale_output_isolated"]},
+    {"case_id": "C04", "scenario": "correction_stale_arguments", "tool_steps": {"background": null, "correction": "lookup_knowledge"}, "required_metrics": ["tool_selection_correct", "context_correct", "correction_correct"]},
+    {"case_id": "C05", "scenario": "ack_does_not_cancel", "tool_steps": {"question": "lookup_knowledge"}, "required_metrics": ["tool_selection_correct", "control_correct"]},
+    {"case_id": "C06", "scenario": "explicit_cancel", "tool_steps": {"question": "lookup_knowledge"}, "required_metrics": ["tool_selection_correct", "control_correct", "stale_output_isolated"]},
+    {"case_id": "C07", "scenario": "stop_preserves_task", "tool_steps": {"question": "lookup_knowledge"}, "required_metrics": ["tool_selection_correct", "control_correct", "context_correct"]},
+    {"case_id": "C08", "scenario": "reconnect_conditions", "tool_steps": {"background": null, "question": "lookup_knowledge"}, "required_metrics": ["tool_selection_correct", "context_correct", "control_correct"]},
+    {"case_id": "C09", "scenario": "unverified_general_reply", "tool_steps": {"background": null, "question": "reason_over_knowledge"}, "required_metrics": ["tool_selection_correct", "context_correct"]},
+    {"case_id": "C10", "scenario": "ambiguous_correction", "tool_steps": {"background": null, "correction": "lookup_knowledge"}, "required_metrics": ["tool_selection_correct", "context_correct", "correction_correct"]}
+  ]
+}

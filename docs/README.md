@@ -1,6 +1,6 @@
 # 文档导航与维护规则
 
-更新：2026-09-29。默认只加载一份主题文档的相关段落；不用顺序读完整套文档。
+更新：2026-10-04。当前基线为 Q07 原生双工具基础实现；默认 legacy，可选 dual_tools。默认只加载一份主题文档的相关段落；不用顺序读完整套文档。
 
 ## 按问题定位
 
@@ -10,7 +10,9 @@
 | 系统职责与调用流程 | [架构](architecture.md) §2、4 | `apps/api/app/{api,voice,sessions,agent_runtime,tools}` |
 | 改问、取消、过期结果 | [架构](architecture.md) §5–6 | `sessions/coordinator.py`、`storage/store.py`、`voice/gateway.py` |
 | 建议优化如何实施 | [架构](architecture.md) §10 | Q01–Q03；原件查看 Q04 见接入 §7 |
-| 通用问答定位、即时接话、简单直查与复杂推理 | [Q07 详细设计](qa-routing-design.md) | 原生双工具基础流程已编码，本地验证中；扩展注册、接口、状态机和真实验收门槛 |
+| 通用问答定位、即时接话、简单直查与复杂推理 | [Q07 详细设计](qa-routing-design.md#0-本轮编码范围与扩展契约) | 基础流程已编码并本地验证；先读实施范围，再查设计章节，D1/D3 等仍为后续能力 |
+| 两个原生工具和后台 search_knowledge 的区别、新增工具 | [接入 §5](integration.md#5-第三方扩展d06) | `agent_runtime/dispatch.py` 的 NativeTool 与 `tools/registry.py` 的不同职责 |
+| legacy / dual_tools、一般或严格回答、预算 | [部署：Q07 配置](deployment.md#问答模式与预算q07) | `config.py`、会话快照及 Alembic 0008；不是浏览器请求参数 |
 | 门户、音频、消息格式 | [门户契约](portal-protocol.md) §3–5 | `contracts.py`、`api/routes.py`、`apps/web/src/audio/VoiceClient.ts` |
 | CueKB / VoiceChat / 文本模型 / 身份 | [接入](integration.md) §2 / §3 / §4 / §6 | `tools/adapters.py`、`voice/provider.py`、`agent_runtime/runtime.py`、`api/auth.py` |
 | 镜像、URL、迁移与恢复 | [部署](deployment.md) 对应标题 | `deploy/`、`scripts/deploy-cloud.sh`、`apps/api/migrations/` |
@@ -22,6 +24,8 @@
 | 最新 VoiceChat 论文、离线容器及优化方案 | [论文与容器优化设计](voicechat-research-review.md) | Q05 设计待确认；已转换 Model Repository、工具等待限制与 D07 验收 |
 | 语音文字按 GPT 截图展示、ASR 即时气泡与口述保留 | [门户 Q06 契约](portal-protocol.md#7-q06语音文字统一聊天展示) | 本地编码完成；关联、恢复、验收边界与 D07 现场待测项 |
 | 本地验证命令 | [项目 README](../README.md) | 根目录运行；默认工作规则见 [AGENTS](../AGENTS.md) |
+| 独立服务 API 怎样模拟、全流程覆盖与复现 | [模拟测试](simulated-full-flow.md) | 独立 HTTP/WS 监听、本项目真实适配器、隔离迁移与浏览器；结果见验收 §1 |
+| 一般背景怎样用于知识查询、型号纠正和连续评测 | [上下文与评测](task-context-evaluation.md) | CTX1 / EVAL1、内部来源快照、Alembic 0008、十组连续网络场景和报告完整性 |
 
 代码路径未标完整前缀时，以 `apps/api/app/` 为基准。
 

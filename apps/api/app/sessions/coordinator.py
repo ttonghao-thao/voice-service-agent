@@ -2,12 +2,14 @@ import asyncio
 import logging
 import time
 import weakref
+from datetime import timedelta
 
 from app.agent_runtime.context import RunContext
 from app.agent_runtime.direct import EvidenceReady
 from app.agent_runtime.evidence import EvidenceGate
-from app.contracts import AnswerBundle, DomainError
+from app.contracts import AnswerBundle, DomainError, now
 from app.storage.models import Conversation, DeliveryAttempt, Turn
+from app.task_context import combined_history, task_status, values
 from sqlalchemy import select
 
 logger = logging.getLogger(__name__)
@@ -67,6 +69,7 @@ class SessionCoordinator:
                         t.cancellation_reason = "service_restarted"
                         t.delivery_status = "discarded"
                         t.output_suppressed = True
+                        c.context_state = task_status(c.context_state, t.id, "expired", "service_restarted")
                         c.request_revision += 1
                     c.epoch += 1
                     c.current_turn, c.voice_session_id = None, None
@@ -96,6 +99,7 @@ class SessionCoordinator:
                         t.cancellation_reason = "gateway_lease_replaced"
                         t.delivery_status = "discarded"
                         t.output_suppressed = True
+                        c.context_state = task_status(c.context_state, t.id, "expired", "gateway_lease_replaced")
                         c.request_revision += 1
                 c.epoch += 1
                 c.current_turn, c.voice_session_id = None, None
@@ -121,6 +125,7 @@ class SessionCoordinator:
                 raise DomainError("SERVICE_DRAINING", "Service is under maintenance. Please try again later.", 503, True)
             if len(self.all_tasks) >= self.settings.max_agent_runs:
                 raise DomainError("AGENT_CAPACITY_EXCEEDED", "Search service is busy. Please try again later.", 429, True)
+            deadline = time.monotonic() + self.settings.agent_deadline_ms / 1000
             turn, conversation, created = await self.store.begin_turn(
                 principal,
                 cid,
@@ -131,6 +136,8 @@ class SessionCoordinator:
                 native_call_id,
                 input_item_id,
                 decision.tool.name if decision else None,
+                decision.arguments.model_dump() if decision else None,
+                (now() + timedelta(milliseconds=self.settings.agent_deadline_ms)).isoformat(),
             )
             if not created:
                 return turn, None
@@ -146,11 +153,18 @@ class SessionCoordinator:
                 turn.epoch,
                 request_revision=turn.request_revision,
                 locale=conversation.locale,
-                slots=dict(conversation.slots),
-                deadline=time.monotonic() + self.settings.agent_deadline_ms / 1000,
+                slots={**{k: v for k, v in conversation.slots.items() if k not in ("product_model", "software_version")},
+                       **values(turn.task_context)},
+                deadline=deadline,
                 retrieval_limit=self.settings.qa_max_retrieval_calls if decision else None,
                 answer_policy=conversation.answer_policy,
+                task_context=dict(turn.task_context or {}),
             )
+            visible_history = self.authorized_history(conversation.history, principal)
+            ctx.task_context["history"] = combined_history(
+                conversation.context_state, visible_history, ctx.task_context.get("input_source"))
+            if not await self.store.task_snapshot(ctx):
+                return turn, None
             task = asyncio.create_task(
                 self.execute(ctx, request, conversation.history, channel, decision)
             )
@@ -184,10 +198,10 @@ class SessionCoordinator:
             visible_history = self.authorized_history(history, ctx.principal)
             runtime_history = [
                 {"role": item["role"], "content": item["content"]}
-                for item in visible_history
+                for item in ctx.task_context.get("history", visible_history)
             ]
             try:
-                async with asyncio.timeout(self.settings.agent_deadline_ms / 1000):
+                async with asyncio.timeout_at(ctx.deadline or started + self.settings.agent_deadline_ms / 1000):
                     if decision:
                         bundle = await self.runtime.run_selected(
                             decision, request, ctx, runtime_history, progress if channel == "text" else None)
@@ -217,11 +231,13 @@ class SessionCoordinator:
                 {kb for citation in bundle.citations for kb in citation.authorized_kb_ids}
             )
             new_history = visible_history + [
-                {"role": "user", "content": request},
+                {"role": "user", "content": request,
+                 "context_sequence": ctx.task_context.get("input_source", {}).get("sequence", -1)},
                 {
                     "role": "assistant",
                     "content": bundle.display_text,
                     "authorized_kb_ids": answer_scope,
+                    "context_sequence": ctx.task_context.get("input_source", {}).get("sequence", -1),
                 },
             ]
             commit_started = time.monotonic()
@@ -292,9 +308,11 @@ class SessionCoordinator:
                 validation_level="source_checked", verification_timing="after_audio",
                 is_mock=any(c.is_mock for c in ready.citations),
             )
-            new_history = history + [{"role": "user", "content": request},
+            new_history = history + [{"role": "user", "content": request,
+                "context_sequence": ctx.task_context.get("input_source", {}).get("sequence", -1)},
                 {"role": "assistant", "content": bundle.display_text,
-                 "authorized_kb_ids": sorted(ctx.principal.knowledge_base_ids)}]
+                 "authorized_kb_ids": sorted(ctx.principal.knowledge_base_ids),
+                 "context_sequence": ctx.task_context.get("input_source", {}).get("sequence", -1)}]
             async with self.lock(ctx.conversation_id):
                 await self.coordination.check(ctx.conversation_id)
                 committed = await self.store.commit(ctx.conversation_id, ctx.epoch, ctx.request_revision,

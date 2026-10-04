@@ -2,7 +2,7 @@
 
 更新：2026-10-04。**D01–D06、D08–D10、D13–D20、E01–E03、Q06 和 Q07 基础流程已完成编码和本地自动化验证；D07/Q07-E 的真实服务端到端验收仍未完成**。默认 legacy 仍为英文知识库客服；Q07 新增可选原生双工具问答、一般回答、直查证据续答和可扩展注册，详细范围见 [Q07 §0](qa-routing-design.md#0-本轮编码范围与扩展契约)。既有独立 speech/VoiceChat 的逐轮 response 修复补丁继续保留，本轮未改上游推理/模型或镜像。设计见 [架构](architecture.md)、[接入](integration.md)、[门户协议](portal-protocol.md) 和 [部署](deployment.md)，缺口和实施顺序见 [任务板](TASK_BOARD.md)。
 
-编码阶段约束（2026-09-16 确认）：CueKB/VoiceChat 无真实接口可调用，满足已确认接口规范和处理逻辑并通过相应契约/本地测试，即满足该阶段验收要求。Docker 环境不提供，仅在必要时静态检查镜像制作和启动代码，不搭建环境或执行镜像构建。以下真实服务与容器验收项留待后续部署阶段，不作为编码完成的阻塞项。
+早期编码阶段约束（2026-09-16 确认）：CueKB/VoiceChat 无真实接口可调用，按已确认规范与受控夹具交付；当时没有 Docker，仅静态检查镜像和启动代码。2026-10-04 用户明确要求检查 Docker build/Compose，当前已有 Docker，因此执行下述隔离容器检查。真实供应商、GPU、生产恢复和实际听音仍留待 D07/Q07-E。
 
 ## 0. 当前审计与证据索引
 
@@ -10,16 +10,61 @@
 
 | 要回答的问题 | 证据位置与边界 |
 | --- | --- |
-| 最近应用验证 | §1 的 2026-10-04 Q07：125 项 pytest、12 项前端音频单测、前端构建、9 项 Chromium E2E、应用 Ruff、迁移/契约导出和差异检查；不代表真实模型/CueKB/VoiceChat、实际麦克风或 Docker 验收 |
+| 最近应用验证 | §1 的 2026-10-04 CTX1 / EVAL1：207 项 pytest（比上一轮新增 40 项）、固定 10 项连续模拟序列、12 项前端音频单测、前端构建、10 项 Chromium E2E 和 Ruff；网络用例使用实际 Alembic 0008，不代表真实模型/CueKB/VoiceChat、实际麦克风或 Docker 验收 |
+| 镜像与 Compose 验证 | §1 的 2026-10-04 Docker：API/Web 实际构建、16 项隔离容器检查、6 项部署/迁移测试通过；真实供应商未调用，生产恢复与公网声学验收未执行 |
+| 最新文档基线 | REL1 的 Docker 环境/构建/验收说明与 CTX1 / EVAL1 文档同步；14 份活动 Markdown 的 169 处本地链接/锚点及 4 段 JSON 检查通过，早先文档审计仍保留在 §1 |
 | 独立 VoiceChat 交付 | D19/D20：真实服务器模块的 12 项 CPU 协议测试、补丁基线/应用后 SHA-256 检查；交付见 [补丁说明](../deploy/voicechat/README.md)，云端镜像及 GPU 输出未验证 |
 | M3、D08、D01–D06 何时验证 | §1 对应日期；不累加各次测试数作为当前总数 |
 | 真实服务是否通过 | §3：仍待验证；测试文件存在、配置 verified 或本地测试通过都不能替代真实记录 |
 | 下一阶段怎样执行 | [部署 D07-A–F](deployment.md#d07-分阶段执行设计)，场景标准见 §4，放行见 §5 |
-| 新增优化是否已实现 | [任务板 Q01–Q07](TASK_BOARD.md#3-待完成与建议顺序)：Q06 与 Q07 基础流程本地编码完成，真实验收待 D07/Q07-E；Q01–Q05 仍按各自状态 |
+| 新增优化是否已实现 | [任务板](TASK_BOARD.md#2-已完成的编码里程碑)：Q06 / Q07 基础流程及 CTX1 / EVAL1 本地编码完成，真实验收待 D07/Q07-E；Q01–Q05 仍按各自状态 |
 
 历史文档审计（2026-09-22）：9 份活动 Markdown 的 63 处本地链接及章节锚点、代码块闭合、`git diff --check` 与当时的仅文档修改检查通过。AGENTS 从 3688 减为 2912 UTF-8 字节（约 21%），这是当时入口大小变化，不是实际 token 节省测量。历史快照未修改；当前 D11 的验证另记于 §1。
 
 ## 1. 按日期记录的编码与部署前验证
+
+### 2026-10-04 Docker 构建与隔离 Compose 检查
+
+- 用户要求检查后推送 codex/q1003。当前 Docker Engine 28.4.0、Compose 2.40.3、Buildx 0.31.0 可用；使用本地 Unix socket，API/Web 两个镜像实际构建成功，生产依赖版本和基础镜像 digest 保持锁定。独立 NVIDIA VoiceChat 派生镜像仍只审阅其构建入口，未构建或启动 GPU 服务。
+- 增加可选 BuildKit proxy_ca secret：pip/npm 保留 TLS 校验，仅依赖安装步骤读取 CA；最终 API 镜像无 /run/secrets/proxy_ca 或 /app/.env。Docker context 排除嵌套 env、本地数据库及测试缓存/报告，未将凭据与本地产物加入镜像或 Git。
+- 实际迁移首次失败：构建机源码/目录为 600/700，COPY 后归 root，UID 10001 不能读取 Alembic 配置，报 No 'script_location' key found；独立容器读取配置稳定复现 PermissionError。API 构建现规范文件读取与目录访问权限，仍由 root 所有、服务用户不可写；重建后 API 导入、pip check 和迁移均通过。保留 compose-before.log / compose-before-summary.json。
+- Web 初次启动健康等待失败，Nginx 本身已运行；同一探针原命令 exit 1，增加 wget -Y off 后 exit 0 并返回 health/live。Compose 现对容器自身 127.0.0.1 的健康探针关闭代理。保留 compose-web-diagnostic.log；未关闭对外依赖安装或正式 HTTPS 客户端的 TLS 校验。
+- 隔离验证使用独立随机项目名、新 PG/Redis 数据卷、临时证书、随机测试凭据和 .invalid 外部服务地址；仅临时覆盖 Web 映射为 127.0.0.1:8087。生产 Compose 拓扑不新增外部服务，正常 API 启动不注入 mock Settings，外部文本模型/CueKB/VoiceChat 连接次数为零；readiness 配置已就绪不代表它们真实可用。
+- 最终 **16 项检查通过**：Compose 插值/拓扑、PG/Redis 健康、真实 PostgreSQL upgrade head=0008 及新增列、Alembic check、API readiness/UID 10001、secret 未入镜像、Nginx -t、客户端信任临时 CA 后校验证书、门户静态资源、同源 API 健康、通话 capability 创建/读取/401 隔离/结束后撤销、SSE 实际事件即时读取、API/Web 只读根文件系统且 API 无宿主端口。SSE 测试预期按现有中间件实际的 Cache-Control=no-store 修正，未修改 API 缓存策略。
+- 本轮重跑部署/迁移测试 **6 passed**，Ruff、部署脚本语法及 git diff --check 通过；最新应用 207 Python / 12 Node / 10 Chromium 为 CTX1/EVAL1 的既有通过记录，应用源码摘要未变，未将本轮 6 项重复测试累加。Web 的 TypeScript/Vite 构建亦在 Docker 构建中实际执行。
+- 本地证据：artifacts/docker-review/{api-build.log,web-build.log,compose.log,compose-summary.json,python.xml,document-check.json}；status=passed，四个长期服务 healthy，测试项目/网络/数据卷已删除，端口释放；14 份活动 Markdown 的 169 处本地链接/锚点、4 段 JSON 和围栏检查通过。真实知识闭环、GPU、公网证书与麦克风、实际听音、历史生产 PG 数据迁移/锁与恢复、Redis 故障及容量/性能未执行，D07/Q07-E 不因此放行。
+
+### 2026-10-04 CTX1 / EVAL1：两个 P0 编码与验证
+
+- 基线 `codex/q1003` / `a508980`，保留此前未提交的文档和独立 API 模拟改动。本轮仍在工作区，未新增提交/推送；真实 CueKB 与 VoiceChat 保持独立部署，未改其代码或调用真实接口。
+- CTX1：`task_context.py` 统一最终用户输入、来源条件、跨轮纠正与有界授权历史；原始请求和检索完整请求分开。一般回复标记未验证，型号更改清旧版本，旧/猜测参数或撤回条件先澄清；比较查询不强制继承单设备过滤。重连保留条件来源并说明可能没有听完，已取消/过期任务不自动恢复为回指目标。
+- Alembic 0008 增加 Conversation.context_state / Turn.task_context；测试验证历史 0006→0008、0008↔0007、降到 0006 后再升级及 Alembic check。原 slots/summary 保留，但旧 slots 不伪造确认来源。内部快照不成为浏览器/模型可设置的配置，公共门户 schema 未改变。
+- EVAL1：新增固定十组连续序列、实际 HTTP/WS 网络 Runner 和评分器完整性/版本检查。报告 **10/10 序列、17/17 工具步骤**；上下文 **8/8**、纠正 **3/3**、控制 **4/4**、旧输出隔离 **2/2**，这两个隔离场景的泄漏数为 **0**。未观测的真实口述事实与权限指标为 null，不填成通过。内容摘要在同一版本组，覆盖完整。
+- 定向测试暴露并修复两处 Gateway 缺陷：停止播放会丢校验文本而误报任务失败；旧续答许可可能占用新任务关联，已绑定旧 ID 的帧可能再次关联。静音保留内部当前任务校验，已有旧 ID 在关联前丢弃并回收旧许可。尚未结清的并行原生调用仍拒绝/关闭，未增加等待中自由交谈。
+- 初次完整回归 **202 passed / 1 failed**：上下文持久化使 Registry 的剩余预算比相对 Coordinator timeout 更早到期，返回 TOOL_TIMEOUT 而非共享任务 AGENT_TIMEOUT。改为同一绝对 monotonic deadline，定向复测及最终全量通过；旧失败证据为 `artifacts/continuous-dialogue/deadline-before.xml`。
+- 最终验证：`.venv/bin/python -m pytest -q -o junit_family=xunit1 --junitxml=artifacts/continuous-dialogue/python.xml` **207 passed、1 条 Starlette/AnyIO 上游弃用警告**；包含追加的 SDK 畸形型号字段用例，先执行 schema 校验再绑定上下文，按 TOOL_BAD_RESPONSE 拒绝且不检索。Ruff、**12 项 Node**、TypeScript/Vite 构建通过；系统 Chromium 的完整 E2E **10 passed、0 skipped**，包含实际门户→独立模拟 API 的三条路径。
+- Runner/CLI 的模拟评分 `--require-complete` 返回 0；相同结果进入默认 real 评分时 eligible_cases=0、真实 rate=null、complete=false，`--require-complete` 按预期返回 1。产物 `artifacts/continuous-dialogue/{results.jsonl,report.json,scored.json,real-report.json,python.xml,browser.xml}` 在忽略目录；复现见 [上下文与评测](task-context-evaluation.md)。
+- 本次验证是脚本 ASR/工具决定/回复和合成 PCM，不证明真实 Nano 选路准确率、真实音频事实/听感、未绑定供应商帧的关联、跨主机或 PG/Redis/Docker/GPU 验收；这些仍归 D07/Q07-E。部署当前代码需先备份并迁移到 0008。
+
+### 2026-10-04 独立 API 全流程模拟测试
+
+- 用户确认 CueKB 和 NVIDIA Speech/nemotron-labs-voicechat 独立部署、通过 API 对接；本轮按现有 M3/WS 契约模拟它们及外置文本模型。四个独立 loopback 监听端点在同一测试进程中运行；本项目实际路由、NvidiaAdapter、CueKBAdapter、Agents SDK、Coordinator/Registry/Store 通过网络完成闭环。没有部署或修改外部项目。
+- 新增 `scripts/simulate_full_flow.py`、42 项网络用例和 1 项不拦截项目 HTTP/WS 的浏览器用例；每个网络用例独立 SQLite、实际 Alembic 0007。生产配置/依赖/公共契约不变；测试控制入口只存在于显式夹具实例。覆盖细目与命令见 [模拟测试](simulated-full-flow.md)。
+- 三条主路径实际请求数：一般回答 CueKB/文本模型均 0、知识 Turn 0；sufficient 直查 1 次 CueKB / 0 次文本模型；reasoned 1 次 CueKB / 2 次文本模型；直查升级复用证据为 1 / 1。验证 final 唯一、ASR 绑定、工具/KB 范围、回填和 DeliveryAttempt，ACK 可在后台检索暂停时先到门户。
+- 错误处理通过：CueKB 无证据/澄清/冲突/不足/降级/截断，401/403/422/429/503、错误 JSON/过大响应，外置模型错误/漏调用/非法引用，D2 数字/单位/缺条件、原生缺结束、共享期限、上游断开、取消旧 epoch、票据复用/Origin/capability 隔离。预期失败终态不能算作成功业务回答。未知原生工具返回 VOICE_PROTOCOL_ERROR；非法参数结清 failed 工具结果，未授权实质性续答按 VOICE_TOOL_REQUIRED 拒绝。
+- 发现并修复真实仓库缺陷：浏览器断开 SSE 时，AnyIO 重复取消可能在 SQLite 驱动查询期间破坏连接清理，随后出现 no active connection/database is locked。网络回归在实际 SQLite 查询中设置屏障，修复前稳定失败并记录连接终止/清理错误；修复后清理、连接归还和新通话写入均通过。仅保护 SSE 短数据库读与关闭，不屏蔽网络发送或事件等待的取消。
+- 实际验证：`pytest -q -o junit_family=xunit1 --junitxml=artifacts/simulation/python.xml` **167 passed，1 条 Starlette/AnyIO 弃用警告**；12 项 Node 音频测试、TypeScript/Vite 构建、Ruff 通过；显式 `SIMULATED_FULL_FLOW=1` 的全套 Chromium **10 passed，0 skipped**。新增浏览器用例连接真实门户/API，检验一般→直查→复杂、来源、停止播放后继续、持久 Turn 和结束后 401；既有用例中的路由/WS 夹具范围保持原样。
+- 浏览器环境：Playwright Chromium 下载被网络策略拒绝（403 Domain forbidden），使用已安装 `/usr/bin/chromium` 完成验证，新增可选 PLAYWRIGHT_CHROMIUM_EXECUTABLE。首次测试中的鉴权码、降级 reason_code、SSE 初始 clear、引用展示及 End call 完成时序预期按实际契约修正；保留故障/隔离/唯一终态断言。
+- 本地证据：`artifacts/simulation/python.xml`、`browser.xml`、`summary.json`（含模拟标识、计数及源码 hash）；`sse-before.xml` 保留修复前失败，当前全量结果为修复后证据；产物被 Git 忽略。13 份活动 Markdown 的 156 处本地链接/锚点、4 段 JSON、围栏及 `git diff --check` 通过。当前应用基线为 a508980 加本轮未提交改动，未推送本轮代码或文档。
+- 未验证：真实 Nano 原生工具决策质量、ASR/TTS/听音、企业知识正确性、GPU、工具等待自由交谈、跨主机/TLS/Nginx、PostgreSQL/Redis、Docker 和生产性能。模拟 PCM 为合成音，转写/选路/口述为脚本；不能据此放行 D07/Q07-E，亦不能证明未打补丁的 Speech 上游版本兼容。
+
+### 2026-10-04 Q07 文档同步（仅 Markdown）
+
+- 以 `codex/q1003` / `a508980` 为代码基线，整理 AGENTS、项目 README、文档导航、任务板、架构、接入、门户、部署、Q07 和 VoiceChat 交付/研究说明。
+- 统一默认 legacy / 可选 dual_tools、general_qa / knowledge_required；区分两个原生工具与后台 search_knowledge，说明可信扩展及 tools/instructions 原生选择。架构覆盖三条路径，部署集中维护实际配置和迁移 0007，回退 legacy 时同时清除 general_qa。
+- Q01 交付台账和 Q02 有限检查已部分实现；Q07 中的 Presentation、独立许可类、结构化候选澄清、native_deadline、D1/D3、动态 ACK 等目标明确标为后续能力。历史研究保留日期/版本，不冒充当前实现。
+- 文档验证：12 份活动 Markdown 的 145 处本地链接/锚点、代码围栏、4 段 JSON、8 个实际 QA Settings 参数与模式/字段说明、`git diff --check` 及仅 Markdown 差异检查通过。
+- 未重跑应用测试或导出契约；未修改代码、运行配置、依赖、schema 或历史快照，未执行真实供应商/数据库/容器/GPU/听音验收。Q07 基础实现条目的应用测试数量为既有执行记录，D07/Q07-E 状态不变。
 
 ### 2026-10-04 Q07 原生双工具基础实现（本地编码与验证）
 
@@ -199,7 +244,7 @@
 - 真实 VoiceChat 英文语音、工具往返、工具等待时的新问题回答、pending call 结清和实际口述准确性；E03/D19 仅完成本地代码与契约验证。中文不属于本期验收范围。
 - CueKB 原生 `/v1/search` 的真实服务连接、受限 Key/ACL 和真实知识正确性；本地仅使用符合当前 CueKB schema 的受控响应与显式 mock。
 - 独立 call capability 的真实多人隔离、CueKB 范围、管理 API 拒绝和真实文本模型。正式多客户登录、账号恢复和撤权生命周期不在本期；天气/股票不在本期验收范围。
-- 真实 PostgreSQL/Redis/Docker、负载均衡故障、容量及端到端性能。
+- 隔离 PostgreSQL/Redis/Docker 基础检查已在本节最新记录通过；历史生产数据迁移/行锁、备份恢复、Redis/负载均衡故障、容量及真实端到端性能仍待验证。
 - 任务 revision、停止播报和安静边界轮换尚未在真实 VoiceChat 上验证；特别是工具阶段改问、pending call 安全结清和实际音频抑制仍受 D01 能力门槛约束。
 
 这些是已记录验证范围，不表示本轮检查了当前机器是否安装了相应运行环境。

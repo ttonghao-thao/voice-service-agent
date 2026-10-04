@@ -1,6 +1,7 @@
 import { test, expect } from "../../apps/web/node_modules/@playwright/test";
 test.use({
   launchOptions: {
+    executablePath: process.env.PLAYWRIGHT_CHROMIUM_EXECUTABLE,
     args: [
       "--use-fake-device-for-media-stream",
       "--use-fake-ui-for-media-stream",
