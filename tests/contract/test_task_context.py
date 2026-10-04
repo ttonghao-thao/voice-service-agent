@@ -91,3 +91,11 @@ def test_comparison_keeps_user_profile_as_background_without_forcing_a_single_fi
     assert not task["conditions"] and task["resolved_request"] == question
     assert task["background_conditions"]["product_model"]["value"] == "AX100"
     assert values(state) == {"product_model": "AX100", "software_version": "2.1"}
+
+
+@pytest.mark.parametrize("text", ["Actually use model AX200 instead.", "I am using the product model AX200.", "Use the device AX200."])
+def test_explicit_model_label_after_use_does_not_hide_the_correction(text):
+    state = observe({}, "My model is AX100, version 2.1.", source("first"))
+    revised = observe(state, text, source("second"))
+    assert values(revised) == {"product_model": "AX200"}
+    assert revised["conditions"]["product_model"]["source"]["input_item_id"] == "second"

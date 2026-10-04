@@ -3,6 +3,7 @@ import hashlib
 from contextlib import asynccontextmanager, contextmanager
 from datetime import timedelta
 
+import anyio
 from app.contracts import DomainError, PortalEvent, now, portal_server_event_adapter, uid
 from app.storage.models import Base, Conversation, DeliveryAttempt, Event, Record, ToolConfig, Turn, Utterance
 from app.task_context import bind_arguments, observe, snapshot, task_status, values
@@ -29,13 +30,39 @@ class Store:
     @asynccontextmanager
     async def transaction(self):
         async with self.write_lock:
-            async with self.sessions.begin() as db:
-                yield db
+            # Finish this short DB transaction/connection cleanup under AnyIO
+            # disconnect cancellation. Explicit asyncio task cancellation still
+            # rolls back; model and WebSocket I/O are outside this scope.
+            with anyio.CancelScope(shield=True):
+                manager = self.sessions.begin()
+                db = await manager.__aenter__()
+                try:
+                    yield db
+                except BaseException as exc:
+                    await self.finish_transaction(manager, (type(exc), exc, exc.__traceback__))
+                    raise
+                else:
+                    await self.finish_transaction(manager, (None, None, None))
             # Wake readers only after commit. The durable Event table remains
             # authoritative; other workers still discover changes by polling.
             for cid in db.info.get("event_conversations", ()):
                 for listener in self.event_listeners.get(cid, ()):
                     listener.set()
+
+    async def finish_transaction(self, manager, error):
+        # AsyncSession shields its own cleanup. Keep our write lock until that
+        # cleanup actually finishes even if the writer task was canceled;
+        # otherwise a new SQLite writer can deadlock against the pending commit.
+        cleanup = asyncio.create_task(manager.__aexit__(*error))
+        canceled = False
+        while not cleanup.done():
+            try:
+                await asyncio.shield(cleanup)
+            except asyncio.CancelledError:
+                canceled = True
+        cleanup.result()
+        if canceled:
+            raise asyncio.CancelledError
 
     @contextmanager
     def listen(self, cid):
@@ -91,7 +118,12 @@ class Store:
             server_seq=c.event_seq,
             payload=payload,
         )
-        portal_server_event_adapter.validate_python(e.model_dump(mode="json"))
+        wire = e.model_dump(mode="json")
+        # Authorization tags are persisted for SSE redaction, never sent as fields
+        # of the public presentation contract.
+        if kind == "portal.presentation.updated":
+            wire["payload"].pop("_authorized_kb_ids", None)
+        portal_server_event_adapter.validate_python(wire)
         db.add(
             Event(
                 id=e.event_id,
@@ -115,6 +147,7 @@ class Store:
         selected_tool=None,
         context_arguments=None,
         deadline_at=None,
+        revision_of=None,
     ):
         async with self.transaction() as db:
             c = await self.get(db, cid, principal, lock=True)
@@ -128,6 +161,11 @@ class Store:
                 return existing, c, False
             if expected_epoch is not None and c.epoch != expected_epoch:
                 raise DomainError("STALE_EPOCH", "This voice connection has expired", 409)
+            if revision_of:
+                previous = await db.get(Turn, c.current_turn) if c.current_turn else None
+                if (not previous or previous.status != "running"
+                    or (c.current_turn, c.request_revision) != revision_of):
+                    raise DomainError("STALE_REVISION", "The pending request already changed or finished", 409)
             parent_task_id = c.current_turn
             if parent_task_id:
                 previous = await db.get(Turn, parent_task_id)
@@ -137,6 +175,8 @@ class Store:
                     previous.delivery_status = "discarded"
                     previous.output_suppressed = True
                     c.context_state = task_status(c.context_state, previous.id, "superseded", "request_revised")
+                    await self.suppress_in_db(db, cid, c.epoch, None, "request_revised")
+                    await self.settle_in_db(db, cid, c.epoch, "request_revised")
             if channel == "text":
                 c.epoch += 1
                 c.voice_session_id = None
@@ -274,52 +314,204 @@ class Store:
                               "citations": [c.model_dump(mode="json") for c in evidence.citations]}
             return True
 
-    async def delivery(self, cid, epoch, call, kind, status, turn_id=None, revision=0, response_id=None):
+    async def delivery(self, cid, epoch, call, kind, status, turn_id=None, revision=0, response_id=None,
+                       input_item_id=None, phase=None, sent_samples=None):
+        states = {"prepared", "write_started", "sent", "completed", "discarded", "unknown", "suppressed"}
+        terminal = {"completed", "discarded", "unknown", "suppressed"}
+        if kind not in ("tool_result", "voice_audio") or status is not None and status not in states:
+            raise ValueError("Invalid delivery state")
         async with self.transaction() as db:
             c = await self.get(db, cid, lock=True)
-            if c.epoch != epoch or (turn_id and (c.current_turn != turn_id or c.request_revision != revision)):
+            if (c.epoch != epoch or (turn_id and (c.current_turn != turn_id or c.request_revision != revision))
+                or (kind == "voice_audio" and revision is not None and c.request_revision != revision)):
                 return False
             item = (await db.execute(select(DeliveryAttempt).where(
                 DeliveryAttempt.conversation_id == cid, DeliveryAttempt.epoch == epoch,
                 DeliveryAttempt.native_call_id == call, DeliveryAttempt.kind == kind))).scalar_one_or_none()
             if item is None:
+                if status is None:
+                    return False
                 item = DeliveryAttempt(conversation_id=cid, epoch=epoch, native_call_id=call,
-                                       kind=kind, turn_id=turn_id, request_revision=revision)
+                                       kind=kind, turn_id=turn_id, request_revision=c.request_revision if revision is None else revision)
                 db.add(item)
+            elif item.status in terminal:
+                return item.status == status and (not response_id or response_id == item.response_id)
+            if response_id and item.response_id and item.response_id != response_id:
+                return False
+            if item.status == "sent" and status in ("prepared", "write_started"):
+                return False
+            if item.status == "write_started" and status == "prepared":
+                return False
             if status is not None:
                 item.status = status
             if response_id:
                 item.response_id = response_id
-            if status == "sent":
+            if turn_id:
+                item.turn_id, item.request_revision = turn_id, revision
+            if input_item_id:
+                item.input_item_id = input_item_id
+            if phase:
+                item.phase = phase
+            if sent_samples is not None:
+                item.sent_samples = max(item.sent_samples or 0, sent_samples)
+            if status == "sent" and not item.sent_at:
                 item.sent_at = now()
+            if status in terminal or kind == "tool_result" and status == "sent":
+                item.finished_at = item.finished_at or now()
             return True
 
-    async def playback_delivery(self, cid, epoch, response_id, samples):
+    async def settle_in_db(self, db, cid, epoch=None, reason="connection_closed"):
+        query = select(DeliveryAttempt).where(DeliveryAttempt.conversation_id == cid)
+        if epoch is not None:
+            query = query.where(DeliveryAttempt.epoch == epoch)
+        for item in (await db.execute(query)).scalars():
+            if item.status in ("prepared", "write_started") or item.kind == "voice_audio" and item.status == "sent":
+                item.status = "discarded" if item.status == "prepared" else "unknown"
+                item.reason_code, item.finished_at = reason, now()
+
+    async def settle_deliveries(self, cid, epoch, reason):
+        async with self.transaction() as db:
+            await self.settle_in_db(db, cid, epoch, reason)
+
+    async def finish_voice_session(self, cid, epoch, sid, confirmed):
+        # A close handshake often completes after epoch invalidation. This is
+        # historical transport audit, never permission to publish stale output.
+        async with self.transaction() as db:
+            await self.get(db, cid)
+            existing = (await db.execute(select(Record).where(Record.conversation_id == cid,
+                Record.epoch == epoch, Record.kind == "voice_session_end", Record.source_id == sid))).scalar_one_or_none()
+            if not existing:
+                db.add(Record(conversation_id=cid, epoch=epoch, kind="voice_session_end", source_id=sid,
+                    payload={"status": "confirmed" if confirmed else "unknown", "basis": "upstream_close_handshake"}))
+
+    async def tool_settlement(self, cid, epoch, call, turn_id, current_revision, status):
+        """Audit-only obsolete call closure, with no business commit/output grant."""
+        if status not in ("write_started", "sent"):
+            raise ValueError("Invalid settlement state")
+        async with self.transaction() as db:
+            c = await self.get(db, cid, lock=True)
+            old = await db.get(Turn, turn_id)
+            if (c.epoch != epoch or c.request_revision != current_revision or not old
+                or old.conversation_id != cid or old.epoch != epoch
+                or old.status != "superseded" or old.native_call_id != call):
+                return False
+            item = (await db.execute(select(DeliveryAttempt).where(DeliveryAttempt.conversation_id == cid,
+                DeliveryAttempt.epoch == epoch, DeliveryAttempt.native_call_id == call,
+                DeliveryAttempt.kind == "tool_settlement"))).scalar_one_or_none()
+            if not item:
+                item = DeliveryAttempt(conversation_id=cid, epoch=epoch, request_revision=old.request_revision,
+                    turn_id=turn_id, native_call_id=call, kind="tool_settlement", phase="superseded")
+                db.add(item)
+            elif item.status in ("sent", "unknown", "discarded"):
+                return False
+            item.status = status
+            if status == "sent":
+                item.sent_at, item.finished_at = now(), now()
+            return True
+
+    async def suppress_deliveries(self, cid, epoch, response_id, reason):
+        async with self.transaction() as db:
+            await self.suppress_in_db(db, cid, epoch, response_id, reason)
+
+    async def suppress_in_db(self, db, cid, epoch, response_id, reason):
+        query = select(DeliveryAttempt).where(DeliveryAttempt.conversation_id == cid,
+                                             DeliveryAttempt.epoch == epoch, DeliveryAttempt.kind == "voice_audio")
+        if response_id:
+            query = query.where(DeliveryAttempt.response_id == response_id)
+        for item in (await db.execute(query)).scalars():
+            item.output_suppressed = True
+            item.reason_code = item.reason_code or reason
+            if item.status not in ("completed", "unknown", "discarded", "suppressed"):
+                item.status, item.finished_at = "suppressed", now()
+
+    async def control_delivery(self, db, c, action, epoch, revision, response_id=None):
+        key = hashlib.sha256(f"{action}:{epoch}:{revision}:{response_id or '*'}".encode()).hexdigest()
+        existing = (await db.execute(select(DeliveryAttempt).where(DeliveryAttempt.conversation_id == c.id,
+            DeliveryAttempt.epoch == epoch, DeliveryAttempt.native_call_id == key, DeliveryAttempt.kind == "control"))).scalar_one_or_none()
+        if not existing:
+            db.add(DeliveryAttempt(conversation_id=c.id, epoch=epoch, request_revision=revision,
+                native_call_id=key, kind="control", phase=action, status="applied", response_id=response_id, finished_at=now()))
+
+    async def delivery_summary(self, db, c, principal, configured_kbs):
+        attempts = (await db.execute(select(DeliveryAttempt).where(DeliveryAttempt.conversation_id == c.id,
+            DeliveryAttempt.kind.in_(("voice_audio", "tool_result"))).order_by(DeliveryAttempt.created_at.desc()).limit(20))).scalars()
+        result = []
+        for item in attempts:
+            if item.turn_id:
+                turn = await db.get(Turn, item.turn_id)
+                scope = {kb for citation in (turn.answer or {}).get("citations", []) for kb in citation.get("authorized_kb_ids", [])} if turn else set()
+                if not scope or not scope <= set(principal.knowledge_base_ids) & configured_kbs:
+                    continue
+            result.append({"kind": item.kind, "status": item.status, "phase": item.phase,
+                "turn_id": item.turn_id, "input_item_id": item.input_item_id, "response_id": item.response_id,
+                "output_suppressed": item.output_suppressed, "played_samples_estimate": item.played_samples,
+                "playback_finished_estimate": bool(item.playback_finished_at),
+                "validation_status": item.validation_status})
+            if len(result) == 3:
+                break
+        return result
+
+    async def playback_delivery(self, cid, epoch, response_id, samples, finished=False):
         async with self.transaction() as db:
             c = await self.get(db, cid, lock=True)
             if c.epoch != epoch:
                 return
             attempts = (await db.execute(select(DeliveryAttempt).where(
                 DeliveryAttempt.conversation_id == cid, DeliveryAttempt.epoch == epoch,
-                DeliveryAttempt.response_id == response_id))).scalars()
+                DeliveryAttempt.response_id == response_id, DeliveryAttempt.kind == "voice_audio"))).scalars()
             for attempt in attempts:
+                if samples > attempt.sent_samples:
+                    raise DomainError("VOICE_PROTOCOL_ERROR", "Playback acknowledgement exceeds sent audio", 400)
+                if finished and (attempt.status != "completed" or samples != attempt.sent_samples or attempt.output_suppressed):
+                    raise DomainError("VOICE_PROTOCOL_ERROR", "Playback completion is not confirmed", 400)
                 attempt.played_samples = max(attempt.played_samples, samples)
+                if finished:
+                    attempt.playback_finished_at = attempt.playback_finished_at or now()
 
-    async def invalidate(self, principal, cid, expected_epoch):
+    async def presentation(self, cid, epoch, turn_id, revision, assessment, kb_ids=()):
+        async with self.transaction() as db:
+            c = await self.get(db, cid, lock=True)
+            if c.epoch != epoch or (turn_id and (c.current_turn, c.request_revision) != (turn_id, revision)):
+                return False
+            existing = (await db.execute(select(Record).where(Record.conversation_id == cid,
+                Record.epoch == epoch, Record.kind == "speech_validation", Record.source_id == assessment.response_id))).scalar_one_or_none()
+            if existing:
+                return False
+            payload = assessment.model_dump()
+            db.add(Record(conversation_id=cid, epoch=epoch, kind="speech_validation", source_id=assessment.response_id,
+                          payload={**payload, "turn_id": turn_id, "_authorized_kb_ids": sorted(kb_ids)}))
+            item = (await db.execute(select(DeliveryAttempt).where(DeliveryAttempt.conversation_id == cid,
+                DeliveryAttempt.epoch == epoch, DeliveryAttempt.kind == "voice_audio",
+                DeliveryAttempt.native_call_id == assessment.response_id))).scalar_one_or_none()
+            if not item:
+                item = DeliveryAttempt(conversation_id=cid, epoch=epoch, request_revision=c.request_revision,
+                    native_call_id=assessment.response_id, kind="voice_audio", status="prepared",
+                    response_id=assessment.response_id, turn_id=turn_id, input_item_id=assessment.input_item_id, phase="answer")
+                db.add(item)
+            item.answer_id, item.validation_status, item.validation_reason = assessment.answer_id, assessment.status, assessment.reason_code
+            await self.event(db, c, "portal.presentation.updated", {**payload, "_authorized_kb_ids": sorted(kb_ids)}, turn_id)
+            return True
+
+    async def invalidate(self, principal, cid, expected_epoch, reason="hard_interrupt"):
         async with self.transaction() as db:
             c = await self.get(db, cid, principal, lock=True)
             if c.epoch < expected_epoch:
                 raise DomainError("STALE_EPOCH", "Conversation version mismatch", 409)
             if c.epoch != expected_epoch:
                 return c.epoch, False
+            if reason == "hard_interrupt":
+                await self.control_delivery(db, c, "interrupt", c.epoch, c.request_revision)
+            if reason == "hard_interrupt":
+                await self.suppress_in_db(db, cid, c.epoch, None, reason)
+            await self.settle_in_db(db, cid, c.epoch, reason)
             if c.current_turn:
                 t = await db.get(Turn, c.current_turn)
                 if t and t.status == "running":
                     t.status = "canceled"
-                    t.cancellation_reason = "hard_interrupt"
+                    t.cancellation_reason = reason
                     t.delivery_status = "discarded"
                     t.output_suppressed = True
-                    c.context_state = task_status(c.context_state, t.id, "canceled", "hard_interrupt")
+                    c.context_state = task_status(c.context_state, t.id, "canceled", reason)
                     c.request_revision += 1
             c.epoch += 1
             c.current_turn, c.voice_session_id = None, None
@@ -340,6 +532,7 @@ class Store:
         """Fence an old audio connection without inventing a new business revision."""
         async with self.transaction() as db:
             c = await self.get(db, cid, principal, lock=True)
+            await self.settle_in_db(db, cid, c.epoch, "voice_restarted")
             if c.current_turn:
                 t = await db.get(Turn, c.current_turn)
                 if t and t.status == "running":
@@ -374,6 +567,9 @@ class Store:
             c.current_turn = None
             c.request_revision += 1
             c.context_state = task_status(c.context_state, t.id, "canceled", reason)
+            await self.control_delivery(db, c, "cancel", expected_epoch, expected_revision)
+            await self.suppress_in_db(db, cid, expected_epoch, None, "task_canceled")
+            await self.settle_in_db(db, cid, expected_epoch, "task_canceled")
             await self.event(db, c, "portal.playback.clear", {"message": "Current search canceled"})
             return c.request_revision, True
 
@@ -388,6 +584,8 @@ class Store:
                 t = await db.get(Turn, c.current_turn)
                 if t:
                     t.output_suppressed = True
+            await self.control_delivery(db, c, "stop", expected_epoch, expected_revision, response_id)
+            await self.suppress_in_db(db, cid, expected_epoch, response_id, "user_stopped")
             await self.event(
                 db,
                 c,

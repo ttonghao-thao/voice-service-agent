@@ -1,6 +1,6 @@
 # 验收状态与真实服务门槛
 
-更新：2026-10-04。**D01–D06、D08–D10、D13–D20、E01–E03、Q06 和 Q07 基础流程已完成编码和本地自动化验证；D07/Q07-E 的真实服务端到端验收仍未完成**。默认 legacy 仍为英文知识库客服；Q07 新增可选原生双工具问答、一般回答、直查证据续答和可扩展注册，详细范围见 [Q07 §0](qa-routing-design.md#0-本轮编码范围与扩展契约)。既有独立 speech/VoiceChat 的逐轮 response 修复补丁继续保留，本轮未改上游推理/模型或镜像。设计见 [架构](architecture.md)、[接入](integration.md)、[门户协议](portal-protocol.md) 和 [部署](deployment.md)，缺口和实施顺序见 [任务板](TASK_BOARD.md)。
+更新：2026-10-04。**本轮两个 P1 + 一个 P2（LVA1–LVA3）已完成编码和本地验证；真实服务放行仍待 D07/Q07-E。** 默认 legacy，可选原生双工具问答；本轮新增口述检查、结束/恢复审计、门户进度及受可信 Provider 能力限制的等待交互。NVIDIA 等待期语音能力仍关闭，模拟扩展不能证明真实支持。当前迁移 0009；代码在 `codex/q1003` 工作区，尚未提交或推送。设计见 [Live 改进](live-agent-implementation.md)，范围和状态只看 [任务板](TASK_BOARD.md)。
 
 早期编码阶段约束（2026-09-16 确认）：CueKB/VoiceChat 无真实接口可调用，按已确认规范与受控夹具交付；当时没有 Docker，仅静态检查镜像和启动代码。2026-10-04 用户明确要求检查 Docker build/Compose，当前已有 Docker，因此执行下述隔离容器检查。真实供应商、GPU、生产恢复和实际听音仍留待 D07/Q07-E。
 
@@ -10,18 +10,31 @@
 
 | 要回答的问题 | 证据位置与边界 |
 | --- | --- |
-| 最近应用验证 | §1 的 2026-10-04 CTX1 / EVAL1：207 项 pytest（比上一轮新增 40 项）、固定 10 项连续模拟序列、12 项前端音频单测、前端构建、10 项 Chromium E2E 和 Ruff；网络用例使用实际 Alembic 0008，不代表真实模型/CueKB/VoiceChat、实际麦克风或 Docker 验收 |
-| 镜像与 Compose 验证 | §1 的 2026-10-04 Docker：API/Web 实际构建、16 项隔离容器检查、6 项部署/迁移测试通过；真实供应商未调用，生产恢复与公网声学验收未执行 |
-| 最新文档基线 | REL1 的 Docker 环境/构建/验收说明与 CTX1 / EVAL1 文档同步；14 份活动 Markdown 的 169 处本地链接/锚点及 4 段 JSON 检查通过，早先文档审计仍保留在 §1 |
+| 最近应用验证 | §1 最新 LVA1–LVA3：233 项 pytest、14 项 Node 音频单测、10 项 Chromium E2E、前端构建和 Ruff 通过；包含固定十组连续序列及实际 HTTP/WS 夹具，不证明真实 ASR/TTS/选路或听音 |
+| 镜像与 Compose 验证 | §1 最新 LVA1–LVA3：API/Web 实际 build、17 项隔离 Compose 检查，PostgreSQL 迁移 0009；修复 Web 音频资源权限 403，供应商调用为零；生产恢复仍未验收 |
+| 最新文档基线 | DOC4 精简 AGENTS/README/任务板默认入口合计 40.3% UTF-8 字节；设计集中 Live 主题，历史按需查阅。文档审计见本轮 §1，不换算为 token 节省 |
 | 独立 VoiceChat 交付 | D19/D20：真实服务器模块的 12 项 CPU 协议测试、补丁基线/应用后 SHA-256 检查；交付见 [补丁说明](../deploy/voicechat/README.md)，云端镜像及 GPU 输出未验证 |
 | M3、D08、D01–D06 何时验证 | §1 对应日期；不累加各次测试数作为当前总数 |
 | 真实服务是否通过 | §3：仍待验证；测试文件存在、配置 verified 或本地测试通过都不能替代真实记录 |
 | 下一阶段怎样执行 | [部署 D07-A–F](deployment.md#d07-分阶段执行设计)，场景标准见 §4，放行见 §5 |
-| 新增优化是否已实现 | [任务板](TASK_BOARD.md#2-已完成的编码里程碑)：Q06 / Q07 基础流程及 CTX1 / EVAL1 本地编码完成，真实验收待 D07/Q07-E；Q01–Q05 仍按各自状态 |
+| 新增优化是否已实现 | [任务板](TASK_BOARD.md#2-已完成的编码里程碑)：Q06/Q07、CTX1/EVAL1 及 LVA1–LVA3 已本地验证；Q03/Q04 和 GPT Live Provider 未实施 |
 
 历史文档审计（2026-09-22）：9 份活动 Markdown 的 63 处本地链接及章节锚点、代码块闭合、`git diff --check` 与当时的仅文档修改检查通过。AGENTS 从 3688 减为 2912 UTF-8 字节（约 21%），这是当时入口大小变化，不是实际 token 节省测量。历史快照未修改；当前 D11 的验证另记于 §1。
 
 ## 1. 按日期记录的编码与部署前验证
+
+### 2026-10-04 Live P1/P2：口述、结束恢复与等待交互
+
+- 基线 `codex/q1003` / `ce91a52`。按用户附件实施 LVA1/P1 答案呈现与实际口述关联、LVA2/P1 结束确认与恢复、LVA3/P2 等待进度与自然更正；没有实施 Q03 全阶段观测、Q04 原件下载或可选 GPT Live Provider。以下代码和文档仍在工作区，未提交或推送。
+- LVA1：批准短答 verbatim、D2 grounded 约束与 Provider 最终转写关联，保存 answer/input/turn/call/response 和受权限过滤的检查记录，门户显示失败警告。加强型号边界、部分否定/条件检查；不新增检查 LLM。外置口述偏离不删除正确文字答案；D2 仍事后检查，无法撤回已播内容。匹配不是实际音频一致或已听到的证明。
+- LVA2：Alembic 0009 增加十个交付审计字段；区分业务接受、网络写入、响应结束、播放排空估计与控制效果。断线/重启/租约替换将不完整发送记 unknown，不重发；正常 WS close 和异常缺确认分别记录。finished ACK 要求 audio.done 和精确样本数，轮换等待排空/抑制；授权重连摘要不恢复录音或旧调用。数据库取消清理完成后才释放写锁，覆盖重复取消竞态。
+- LVA3：门户进度端点/按钮无需检索或模型。可信 Adapter 四项能力全部成立才给现有两个工具扩展 query/progress/revise；progress 不改原任务，revise 用最终 ASR 和版本比较交换，继承绝对期限/已用检索预算，旧 pending call 独立结清、旧帧隔离。默认 NVIDIA schema 不含 operation、能力仍 false；增强模拟的 parent_call_id 仅是夹具扩展。
+- 最终全量 **233 pytest passed**（一条 Starlette/AnyIO 上游弃用警告），包含既有 42 项独立 API 网络用例、固定十组连续序列，以及新增 16 项 Live 交互、7 项交付和 3 项条件检查回归。首次全量暴露旧响应结束 ID 检查先于旧版本隔离的问题；调整隔离顺序后 C03 和最终全量通过。Node **14 passed**、TypeScript/Vite 构建、Ruff 和契约导出通过。
+- 系统 Chromium **10 passed、0 skipped**（22.6 秒）。独立 API 浏览器用例不拦截项目 HTTP/WS，实际验证一般→直查→复杂→口述偏差、等待时 Check progress、引用/警告、停止播放后继续及结束后 401；三个知识 Turn、CueKB 3 次/外置模型 4 次。其余既有用例的受控路由/WS 范围不变。合成 PCM、脚本转写/工具选择不证明真实模型能力。
+- API/Web 镜像实际重建成功。隔离 Compose 使用独立 PostgreSQL/Redis 卷、临时证书/凭据和 `.invalid` 供应商地址。首次音频资源 HTTPS 检查发现 worklet/dsp 为 403：Vite 保留源文件 600 权限，Nginx 无权读取。Web Dockerfile 规范静态文件/目录权限，重建后两个资源均 200 且内容为当前版本；TLS 校验保持启用。修复后重跑部署契约 **5 passed**，是全量内的重复子集，不累加。
+- **17 项 Compose 检查通过**：配置、四服务 healthy、PG head=0009 与十列、API UID 10001、API/Web 只读、API 无宿主端口、验证证书的 HTTPS、当前音频资源、同源 readiness、门户进度可用/NVIDIA 等待关闭、独立通话 capability、原生会话门槛、idle 进度零检索、客户拒绝管理接口、SSE 事件和结束后 token 撤销。未连接真实供应商；测试项目/网络/卷/临时凭据与自身模拟服务器已清理。
+- DOC4：AGENTS/README/任务板从 **26230 → 15647 UTF-8 字节（减少 40.3%）**；默认读取入口、状态、设计与验证分开，历史任务板保存在 [按需档案](archive/2026-10-04/task-board-before-p1-p2.md)。字节变化不是实测 token 节省。14 份本轮 Markdown 的 181 处本地链接/锚点、4 段 JSON、围栏及 `git diff --check` 通过，审计记录在本地 document-check.json。
+- 本地产物：`artifacts/live-agent/{python.xml,python.log,browser.xml,browser.log,docker-api.log,docker-web.log,compose-checks.json,compose-cleanup.log,document-check.json}`，均在忽略目录，不提交录音、数据库或凭据。当前代码部署须备份并 `upgrade head` 到 0009。真实 VoiceChat/CueKB/模型、ASR/TTS/听音、NVIDIA 跨轮/等待关联、生产 PG/Redis 恢复/故障/容量仍未验证，D07/Q07-E 不因此放行。
 
 ### 2026-10-04 Docker 构建与隔离 Compose 检查
 

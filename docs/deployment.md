@@ -43,7 +43,7 @@ QA_ANSWER_POLICY=general_qa
 
 若场景要求知识受控回答，将 QA_ANSWER_POLICY 改为 knowledge_required。该策略不保证 VoiceChat 对批准文本逐字朗读；D2 在一般模式中的校验发生在口述后，无法撤回已播内容。
 
-实施顺序：备份 → API/Web 匹配发布及 Alembic upgrade head（当前 0008）→ 固定 VoiceChat 模型/镜像/模板/补丁 → 在验收部署配置新模式并创建新通话 → 完成 Q07-E 后放行。0008 增加内部会话来源条件及任务快照；旧 slots 保留但不伪造确认来源。已有 Conversation 的模式/策略不随环境变量改变；原生 tools/instructions 在 voice session 建立时冻结，不发送 WS tool_choice。
+实施顺序：备份 → API/Web 匹配发布及 Alembic upgrade head（当前 0009）→ 固定 VoiceChat 模型/镜像/模板/补丁 → 在验收部署配置新模式并创建新通话 → 完成 Q07-E 后放行。0008 增加内部会话来源条件及任务快照，0009 增加交付/口述/播放审计字段；旧 slots 保留但不伪造确认来源。已有 Conversation 的模式/策略不随环境变量改变；原生 tools/instructions 在 voice session 建立时冻结，不发送 WS tool_choice。
 
 回退 QA_EXECUTION_MODE=legacy 用于新会话，需同时清除 general_qa 策略或设为 knowledge_required；活动会话先结束或 drain。新增记录保留，旧二进制与数据库回滚分别验证。QA_DIRECT_COMPOSITION、QA_MAX_ROUTE_ESCALATIONS、QA_ACK_POLICY 未加入 Settings，不能通过填写它们启用 D1/D3、动态 ACK 或额外升级。新增工具需可信代码注册及独立权限/行为验收；当前只有两个原生知识工具。
 
@@ -135,8 +135,10 @@ Redis 持有每个 conversation 的独占租约，15 秒 TTL、4 秒续约。未
 1. 备份数据库及 API/Web/VoiceChat 镜像与配置版本，保存三者匹配关系和源码 hash，检查 Alembic 迁移。
 2. 对将升级的副本调用管理员 `POST /api/v1/admin/drain`。readiness 返回不可用，拒绝新业务/语音；活跃业务在预算内结束，语音在应用会话上限内结束。
 3. 停止进程前给活跃会话留出窗口。SIGTERM 的 Uvicorn graceful timeout 为 20 秒，容器 stop grace 30 秒；到期关闭连接，客户端需重新开始，不自动重放录音。
-4. 单独执行 `alembic upgrade head`，再启动新副本。启动不替代迁移。
-5. 回滚按已记录的 API/Web/VoiceChat 组合执行；恢复已知整场 response 缺陷的旧 VoiceChat 时语音仍不能放行。数据库回滚与镜像回滚分开；当前迁移到 0008：0005 为每通话 capability，0006 为输入关联，0007 为问答策略/执行字段、Utterance 和 DeliveryAttempt，0008 为来源上下文和任务快照。旧数据迁移默认 legacy/knowledge_required，历史 nullable 字段不伪造已验证关联，旧 slots 不伪造确认来源。`downgrade` 会删除对应表/字段，不应作为无损回滚手段；需要破坏式数据库回滚时使用已验证备份恢复流程。
+4. 单独执行 `alembic upgrade head`，再启动新副本。标准 `./scripts/deploy-cloud.sh .env` 在 PG/Redis 就绪后运行 Compose 的 migrate 服务，再启动 API/Web；仅推送 Git 代码不会修改部署数据库。0009 是本项目数据库表结构的迁移版本，不是新的仓库或供应商版本；升级新增十个审计字段并保留现有记录。
+5. 回滚按已记录的 API/Web/VoiceChat 组合执行；恢复已知整场 response 缺陷的旧 VoiceChat 时语音仍不能放行。数据库回滚与镜像回滚分开；当前迁移到 **0009**：0005 为每通话 capability，0006 为输入关联，0007 为问答策略/执行字段、Utterance 和 DeliveryAttempt，0008 为来源上下文和任务快照，0009 为音频/控制交付、口述检查关联和播放排空估计。旧数据迁移默认 legacy/knowledge_required，nullable 字段不伪造已验证关联或已播放，旧 slots 不伪造确认来源。`downgrade` 删除相应表/字段（0009 降级删除新增审计字段），不是无损回滚；需要破坏式回滚时用已验证备份恢复。
+
+本轮没有等待期语音的部署开关：NVIDIA ProviderCapabilities 全部保持 false。门户进度可用；未来只有可信 Adapter 对四项真实能力完成验证后才启用工具的 operation 扩展，见 [Live §3](live-agent-implementation.md#3-等待进度与自然修订)。正常上游关闭、发送完成和播放排空估计分开记录；真实 PG/Redis、长会话轮换/断线仍须 D07-D/E 验证。
 
 健康接口：`/health/live` 为应用存活；`/health/ready` 检查数据库、归属协调和 drain，分别返回文字配置、语音配置和本地容量。管理页健康端点探测只说明可达，不冒充真实推理/工具调用成功。
 

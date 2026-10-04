@@ -106,6 +106,16 @@ class DeliveryAttempt(Base):
     status: Mapped[str] = mapped_column(String(32), default="prepared")
     sent_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
     played_samples: Mapped[int] = mapped_column(Integer, default=0)
+    sent_samples: Mapped[int] = mapped_column(Integer, default=0, server_default="0")
+    input_item_id: Mapped[str | None] = mapped_column(String(128))
+    phase: Mapped[str | None] = mapped_column(String(32))
+    reason_code: Mapped[str | None] = mapped_column(String(64))
+    output_suppressed: Mapped[bool] = mapped_column(Boolean, default=False, server_default="false")
+    finished_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    playback_finished_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    answer_id: Mapped[str | None] = mapped_column(String(36))
+    validation_status: Mapped[str | None] = mapped_column(String(32))
+    validation_reason: Mapped[str | None] = mapped_column(String(64))
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=now)
 
 

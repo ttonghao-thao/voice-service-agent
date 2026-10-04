@@ -6,7 +6,7 @@ test.skip(
   "Requires the independent API simulation harness",
 );
 
-test("Independent API flow: general answer, direct evidence, external reasoning and cleanup", async ({
+test("Independent API flow: progress, three routes, speech mismatch and cleanup", async ({
   page,
 }) => {
   const errors: string[] = [];
@@ -67,11 +67,17 @@ test("Independent API flow: general answer, direct evidence, external reasoning 
       question: "How many connections does Product AX support?",
       tool: "lookup_knowledge",
       spoken: "Product AX supports 10 connections.",
+      cuekb_delay: 1.5,
     },
     {
       question: "Explain the connection limit in the AX documentation",
       tool: "reason_over_knowledge",
       spoken: "Product AX supports 10 connections.",
+    },
+    {
+      question: "Confirm the documented AX connection limit",
+      tool: "reason_over_knowledge",
+      spoken: "Product AX supports 99 connections.",
     },
   ];
   for (const [index, scenario] of questions.entries()) {
@@ -84,6 +90,12 @@ test("Independent API flow: general answer, direct evidence, external reasoning 
     await expect(page.locator(".user-message").nth(index)).toContainText(
       scenario.question,
     );
+    if (index === 1) {
+      const progress = page.getByRole("button", { name: "Check progress", exact: true });
+      await expect(progress).toBeEnabled();
+      await progress.click();
+      await expect(page.getByText("I am still checking the authorized knowledge sources.", { exact: true })).toBeVisible();
+    }
     await expect(page.locator(".assistant-message").nth(index)).toContainText(
       scenario.spoken,
     );
@@ -103,6 +115,12 @@ test("Independent API flow: general answer, direct evidence, external reasoning 
         .nth(index)
         .locator("details");
       await expect(details).toBeVisible();
+      if (index === 3) {
+        await expect(page.locator(".assistant-message").nth(index).getByRole("alert")).toContainText(
+          "The spoken reply did not pass its text checks.",
+        );
+        await expect(details).toContainText("Product AX supports 10 connections.");
+      }
       await details.locator("summary").click();
       await details.getByRole("button", { name: /View sources/ }).click();
       await expect(
@@ -132,7 +150,7 @@ test("Independent API flow: general answer, direct evidence, external reasoning 
       await page.request.get("http://127.0.0.1:8000/__simulation/state")
     ).json();
     expect(state.queries - before.queries).toBe(index);
-    expect(state.model_calls - before.model_calls).toBe(index === 2 ? 2 : 0);
+    expect(state.model_calls - before.model_calls).toBe(index >= 2 ? (index - 1) * 2 : 0);
     expect(state.native_results - before.native_results).toBe(index);
     if (index === 1) {
       await page
@@ -152,7 +170,7 @@ test("Independent API flow: general answer, direct evidence, external reasoning 
   ).json();
   expect(
     history.items.map((turn: { selected_tool: string }) => turn.selected_tool),
-  ).toEqual(["lookup_knowledge", "reason_over_knowledge"]);
+  ).toEqual(["lookup_knowledge", "reason_over_knowledge", "reason_over_knowledge"]);
   expect(
     history.items.every(
       (turn: { answer: { status: string } }) =>
@@ -169,7 +187,7 @@ test("Independent API flow: general answer, direct evidence, external reasoning 
   await expect(
     page.getByRole("main").getByText("Voice disconnected", { exact: true }),
   ).toBeVisible();
-  await expect(page.locator(".assistant-message")).toHaveCount(3);
+  await expect(page.locator(".assistant-message")).toHaveCount(4);
   const revoked = await page.request.get(
     `/api/v1/conversations/${conversation!.id}/messages`,
     { headers: token },

@@ -224,3 +224,32 @@ test("Audio done does not lose the identity of speech still buffered for playbac
   assert.equal(stopped.payload.response_id, "buffered");
   assert.ok(process().every((x) => x === 0));
 });
+
+test("A drained buffer does not finish playback before provider audio done", () => {
+  const { send, process, messages } = audioHarness();
+  send({ type: "audio", epoch: 1, response: "open", samples: new Float32Array(6000).fill(0.2) });
+  for (let i = 0; i < 240; i++) process();
+  const before = messages.filter((m) => m.type === "ack" && m.response === "open");
+  assert.ok(before.length && before.every((m) => m.done === false));
+  send({ type: "done", epoch: 1, response: "open" });
+  for (let i = 0; i < 240; i++) process();
+  const done = messages.filter((m) => m.type === "ack" && m.response === "open" && m.done);
+  assert.equal(done.length, 1);
+  assert.equal(done[0].samples, 6000);
+});
+
+test("An ACK ending cannot mark an overlapping unfinished answer complete", () => {
+  const { send, process, messages } = audioHarness();
+  send({ type: "audio", epoch: 1, response: "ack", samples: new Float32Array(1920).fill(0.2) });
+  send({ type: "done", epoch: 1, response: "ack" });
+  send({ type: "audio", epoch: 1, response: "answer", samples: new Float32Array(1920).fill(0.3) });
+  for (let i = 0; i < 240; i++) process();
+  const acks = messages.filter((m) => m.type === "ack");
+  assert.equal(acks.find((m) => m.response === "ack")?.done, true);
+  assert.equal(acks.find((m) => m.response === "answer")?.done, false);
+  send({ type: "done", epoch: 1, response: "answer" });
+  for (let i = 0; i < 240; i++) process();
+  const done = messages.filter((m) => m.type === "ack" && m.response === "answer" && m.done);
+  assert.equal(done.length, 1);
+  assert.equal(done[0].samples, 1920);
+});

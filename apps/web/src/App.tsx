@@ -79,6 +79,9 @@ export default function App() {
   const [timeline, setTimeline] = useState<string[]>([]);
   const [atBottom, setAtBottom] = useState(true);
   const [finishedTurns, setFinishedTurns] = useState<Set<string>>(new Set());
+  const [presentations, setPresentations] = useState<Record<string, {
+    turnId: string; status: string; reason: string;
+  }>>({});
   const epoch = useRef(0),
     requestRevision = useRef(0),
     active = useRef(""),
@@ -138,6 +141,19 @@ export default function App() {
         : data.items,
     );
     const records = data.records || [];
+    setPresentations((old) => {
+      const next = { ...old };
+      for (const r of records) {
+        if (r.kind !== "speech_validation") continue;
+        next[`${r.epoch}:${r.source_id}`] = {
+          turnId: r.payload.turn_id || `input:${r.epoch}:${r.payload.input_item_id}`,
+          status: r.payload.status || "unverified", reason: r.payload.reason_code || "",
+        };
+      }
+      const revoked = new Set(data.items.filter((t) => t.answer?.reason_code === "KB_ACCESS_REVOKED").map((t) => t.id));
+      for (const [key, item] of Object.entries(next)) if (revoked.has(item.turnId)) delete next[key];
+      return next;
+    });
     setInputs((previous) => {
       const next = { ...previous };
       for (const record of records) {
@@ -279,6 +295,14 @@ export default function App() {
       if (event.type === "portal.input.state") {
         setInputState(String(event.payload.state));
       }
+      if (event.type === "portal.presentation.updated" && event.payload.response_id) {
+        if (event.request_revision < requestRevision.current) return;
+        const key = `${event.epoch}:${event.payload.response_id}`;
+        setPresentations((old) => ({ ...old, [key]: {
+          turnId: event.turn_id || `input:${event.epoch}:${event.payload.input_item_id}`,
+          status: String(event.payload.status), reason: String(event.payload.reason_code || ""),
+        } }));
+      }
       if (
         event.type === "portal.audio.done" &&
         event.turn_id &&
@@ -409,7 +433,8 @@ export default function App() {
       setTurns([]);
       setSelected(null);
       setInputs({});
-      setSpoken({});
+    setSpoken({});
+    setPresentations({});
       setTimeline([]);
       setFinishedTurns(new Set());
       followBottom.current = true;
@@ -496,6 +521,20 @@ export default function App() {
       await refresh(id);
     } catch (e) {
       setError((e as Error).message);
+    }
+  }
+  async function checkProgress() {
+    if (!cid) return;
+    try {
+      const result = await api<{ message: string }>(`/conversations/${cid}/tasks/current/progress`, {
+        method: "POST", body: JSON.stringify({
+          expected_epoch: epoch.current, expected_revision: requestRevision.current,
+        }),
+      });
+      if (active.current === cid) setProgress(result.message);
+    } catch (e) {
+      setError((e as Error).message);
+      await refresh(cid);
     }
   }
   const turnsByKey = new Map(
@@ -811,6 +850,9 @@ export default function App() {
                   .map((part) => part.text)
                   .filter(Boolean)
                   .join(" ");
+                const presentationFailed = Object.values(presentations).some(
+                  (item) => item.turnId === (t?.id || key) && item.status === "failed",
+                );
                 return (
                   <article className="turn" key={key}>
                     <div className="user-message">
@@ -866,6 +908,9 @@ export default function App() {
                             {speech ? (
                               <>
                                 <p aria-live="polite">{speech}</p>
+                                {presentationFailed && (
+                                  <Alert type="warning" showIcon message="The spoken reply did not pass its text checks. Read the written answer below." />
+                                )}
                                 {voiceState !== "ready" &&
                                   speechParts.some((part) => !part.done) && (
                                     <small className="input-status">
@@ -1013,6 +1058,8 @@ export default function App() {
                 >
                   Cancel search
                 </Button>
+                <Button disabled={!turns.some((turn) => turn.status === "running")}
+                  onClick={() => void checkProgress()}>Check progress</Button>
                 <Button
                   type="text"
                   disabled={!cid || callEnded}

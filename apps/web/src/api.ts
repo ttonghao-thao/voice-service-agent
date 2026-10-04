@@ -73,6 +73,9 @@ export interface RecordItem {
     input_item_id?: string;
     phase?: string;
     played_samples?: number;
+    status?: string;
+    mode?: string;
+    reason_code?: string | null;
   };
 }
 export interface Conversation {
@@ -102,6 +105,7 @@ export interface Capabilities {
   provider: string;
   voice_session_max_seconds: number;
   qa_execution_mode?: string;
+  portal_task_progress?: boolean;
 }
 export class ApiError extends Error {
   constructor(

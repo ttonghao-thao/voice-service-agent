@@ -215,6 +215,43 @@
       ],
       "title": "Citation",
       "type": "object"
+    },
+    "PresentationContract": {
+      "additionalProperties": false,
+      "properties": {
+        "mode": {
+          "enum": [
+            "verbatim",
+            "grounded"
+          ],
+          "title": "Mode",
+          "type": "string"
+        },
+        "required_conditions": {
+          "additionalProperties": {
+            "type": "string"
+          },
+          "title": "Required Conditions",
+          "type": "object"
+        },
+        "check_basis": {
+          "const": "provider_transcript",
+          "default": "provider_transcript",
+          "title": "Check Basis",
+          "type": "string"
+        },
+        "check_timing": {
+          "const": "after_audio",
+          "default": "after_audio",
+          "title": "Check Timing",
+          "type": "string"
+        }
+      },
+      "required": [
+        "mode"
+      ],
+      "title": "PresentationContract",
+      "type": "object"
     }
   },
   "additionalProperties": false,
@@ -320,6 +357,17 @@
       ],
       "title": "Verification Timing",
       "type": "string"
+    },
+    "presentation": {
+      "anyOf": [
+        {
+          "$ref": "#/$defs/PresentationContract"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null
     }
   },
   "required": [

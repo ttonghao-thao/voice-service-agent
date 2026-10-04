@@ -12,6 +12,21 @@ BRIDGE_ACK = "Please wait while I check the knowledge base."
 QA_ACK = "Please wait while I check that."
 
 
+@dataclass(frozen=True)
+class ProviderCapabilities:
+    """Adapter evidence, never a model/browser/environment feature claim."""
+
+    wait_progress: bool = False
+    wait_revision: bool = False
+    correlated_tool_output: bool = False
+    settles_superseded_calls: bool = False
+
+    @property
+    def wait_interaction(self):
+        return all((self.wait_progress, self.wait_revision,
+                    self.correlated_tool_output, self.settles_superseded_calls))
+
+
 def ascii_payload(value) -> bool:
     if isinstance(value, str):
         return printable_ascii(value)
@@ -112,6 +127,7 @@ def normalize(event):
 
 
 class NvidiaVoiceChatAdapter:
+    capabilities = ProviderCapabilities()
     def __init__(self, settings):
         self.settings, self.ws = settings, None
 
@@ -179,10 +195,14 @@ class NvidiaVoiceChatAdapter:
     async def close(self):
         if self.ws:
             await self.ws.close()
+            return self.ws.close_code in (1000, 1001)
+        return False
 
 
 class MockVoiceAdapter:
     """Transport harness only. It neither recognizes speech nor synthesizes fake business answers."""
+
+    capabilities = ProviderCapabilities()
 
     def __init__(self, settings):
         self.queue = asyncio.Queue(maxsize=16)

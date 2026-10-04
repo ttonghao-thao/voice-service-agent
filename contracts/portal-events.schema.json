@@ -104,6 +104,17 @@
           ],
           "title": "Verification Timing",
           "type": "string"
+        },
+        "presentation": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/PresentationContract"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null
         }
       },
       "required": [
@@ -870,6 +881,193 @@
       "title": "PortalErrorPayload",
       "type": "object"
     },
+    "PresentationAssessment": {
+      "additionalProperties": false,
+      "properties": {
+        "response_id": {
+          "maxLength": 128,
+          "minLength": 1,
+          "title": "Response Id",
+          "type": "string"
+        },
+        "answer_id": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Answer Id"
+        },
+        "input_item_id": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Input Item Id"
+        },
+        "mode": {
+          "enum": [
+            "verbatim",
+            "grounded",
+            "unverified"
+          ],
+          "title": "Mode",
+          "type": "string"
+        },
+        "status": {
+          "enum": [
+            "matched",
+            "failed",
+            "unverified"
+          ],
+          "title": "Status",
+          "type": "string"
+        },
+        "reason_code": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Reason Code"
+        },
+        "check_basis": {
+          "const": "provider_transcript",
+          "default": "provider_transcript",
+          "title": "Check Basis",
+          "type": "string"
+        },
+        "check_timing": {
+          "const": "after_audio",
+          "default": "after_audio",
+          "title": "Check Timing",
+          "type": "string"
+        }
+      },
+      "required": [
+        "response_id",
+        "mode",
+        "status"
+      ],
+      "title": "PresentationAssessment",
+      "type": "object"
+    },
+    "PresentationContract": {
+      "additionalProperties": false,
+      "properties": {
+        "mode": {
+          "enum": [
+            "verbatim",
+            "grounded"
+          ],
+          "title": "Mode",
+          "type": "string"
+        },
+        "required_conditions": {
+          "additionalProperties": {
+            "type": "string"
+          },
+          "title": "Required Conditions",
+          "type": "object"
+        },
+        "check_basis": {
+          "const": "provider_transcript",
+          "default": "provider_transcript",
+          "title": "Check Basis",
+          "type": "string"
+        },
+        "check_timing": {
+          "const": "after_audio",
+          "default": "after_audio",
+          "title": "Check Timing",
+          "type": "string"
+        }
+      },
+      "required": [
+        "mode"
+      ],
+      "title": "PresentationContract",
+      "type": "object"
+    },
+    "PresentationEvent": {
+      "additionalProperties": false,
+      "properties": {
+        "event_id": {
+          "title": "Event Id",
+          "type": "string"
+        },
+        "conversation_id": {
+          "maxLength": 128,
+          "minLength": 1,
+          "title": "Conversation Id",
+          "type": "string"
+        },
+        "epoch": {
+          "minimum": 0,
+          "title": "Epoch",
+          "type": "integer"
+        },
+        "request_revision": {
+          "default": 0,
+          "minimum": 0,
+          "title": "Request Revision",
+          "type": "integer"
+        },
+        "turn_id": {
+          "anyOf": [
+            {
+              "maxLength": 128,
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Turn Id"
+        },
+        "server_seq": {
+          "minimum": 0,
+          "title": "Server Seq",
+          "type": "integer"
+        },
+        "timestamp": {
+          "format": "date-time",
+          "title": "Timestamp",
+          "type": "string"
+        },
+        "type": {
+          "const": "portal.presentation.updated",
+          "title": "Type",
+          "type": "string"
+        },
+        "payload": {
+          "$ref": "#/$defs/PresentationAssessment"
+        }
+      },
+      "required": [
+        "conversation_id",
+        "epoch",
+        "server_seq",
+        "type",
+        "payload"
+      ],
+      "title": "PresentationEvent",
+      "type": "object"
+    },
     "ResponseDonePayload": {
       "additionalProperties": false,
       "properties": {
@@ -1431,6 +1629,7 @@
       "portal.error": "#/$defs/ErrorEvent",
       "portal.input.state": "#/$defs/InputStateEvent",
       "portal.playback.clear": "#/$defs/PlaybackClearEvent",
+      "portal.presentation.updated": "#/$defs/PresentationEvent",
       "portal.session.ended": "#/$defs/SessionEndedEvent",
       "portal.session.ready": "#/$defs/SessionReadyEvent",
       "portal.speech_text.delta": "#/$defs/SpeechTextEvent",
@@ -1471,6 +1670,9 @@
     },
     {
       "$ref": "#/$defs/SessionEndedEvent"
+    },
+    {
+      "$ref": "#/$defs/PresentationEvent"
     },
     {
       "$ref": "#/$defs/ErrorEvent"

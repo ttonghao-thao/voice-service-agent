@@ -24,6 +24,7 @@ import httpx
 import uvicorn
 from app.config import Settings
 from app.main import create_app
+from app.voice.provider import NvidiaVoiceChatAdapter, ProviderCapabilities, normalize
 from fastapi import FastAPI, Request
 from fastapi.responses import JSONResponse, Response
 from websockets.asyncio.client import connect
@@ -82,6 +83,7 @@ class VoicePlan:
     duplicate_tool: bool = False
     no_answer_end: bool = False
     hold_reply: bool = False
+    operation: str = "query"
     input_id: str = field(default_factory=lambda: "input-" + uuid4().hex)
     call_id: str = field(default_factory=lambda: "call-" + uuid4().hex)
     response_id: str = field(default_factory=lambda: "answer-" + uuid4().hex)
@@ -109,6 +111,7 @@ class IndependentAPIs:
         self.invalid_response = False
         self.oversized_response = False
         self.dynamic_conditions = False
+        self.correlated_output = False
         self.cuekb = FastAPI()
         self.model = FastAPI()
         self.cuekb.add_api_route("/v1/search", self.search, methods=["POST"])
@@ -285,6 +288,8 @@ class IndependentAPIs:
                     self.outputs.append({"call_id": item["call_id"], "result": result})
                     plan = calls[item["call_id"]]
                     plan.output_received.set()
+                    if result.get("status") == "canceled":
+                        continue
                     text = plan.spoken or (
                         result["items"][0]["content"]
                         if result.get("status") == "evidence_ready"
@@ -306,6 +311,8 @@ class IndependentAPIs:
         args = plan.arguments or {"user_request": "Rewritten tool arguments must not replace ASR"}
         if plan.tool != "consult_service_agent":
             args = {"product_model": None, "software_version": None, **args}
+            if self.correlated_output:
+                args["operation"] = plan.operation
         call = {
             "call_id": plan.call_id,
             "response_id": "ack-" + plan.input_id,
@@ -334,26 +341,48 @@ class IndependentAPIs:
             await send("response.function_call_arguments.done", **call)
         definition = next((tool for tool in update["session"]["tools"] if tool["name"] == plan.tool), None)
         if definition:
+            association = {"parent_call_id": plan.call_id} if self.correlated_output else {}
             await send(
                 "response.output_audio_transcript.done",
                 response_id=call["response_id"],
                 transcript=definition["ack_messages"][0],
+                **association,
             )
-            await send("response.output_audio.delta", response_id=call["response_id"], delta=PCM)
-            await send("response.output_audio.done", response_id=call["response_id"])
+            await send("response.output_audio.delta", response_id=call["response_id"], delta=PCM, **association)
+            await send("response.output_audio.done", response_id=call["response_id"], **association)
 
     async def reply(self, ws, plan, text):
         if plan.hold_reply:
             await plan.reply_release.wait()
+        association = {"parent_call_id": plan.call_id} if self.correlated_output and plan.tool else {}
         for event in [
             {"type": "response.output_audio_transcript.delta", "delta": text[:8]},
             {"type": "response.output_audio.delta", "delta": PCM},
             {"type": "response.output_audio_transcript.done", "transcript": text},
         ]:
-            await ws.send(json.dumps({**event, "response_id": plan.response_id}))
+            await ws.send(json.dumps({**event, "response_id": plan.response_id, **association}))
         if not plan.no_answer_end:
-            await ws.send(json.dumps({"type": "response.output_audio.done", "response_id": plan.response_id}))
+            await ws.send(json.dumps({"type": "response.output_audio.done", "response_id": plan.response_id, **association}))
         plan.reply_sent.set()
+
+
+class SimulatedWaitAdapter(NvidiaVoiceChatAdapter):
+    """Explicit fixture extension. It does NOT certify NVIDIA tool-wait support.
+
+    Only this test adapter maps the fixture's extra parent_call_id wire field;
+    the production NVIDIA normalizer/protocol are intentionally unchanged.
+    """
+
+    capabilities = ProviderCapabilities(True, True, True, True)
+
+    async def events(self):
+        async for raw in self.ws:
+            data = json.loads(raw)
+            event = normalize(data)
+            if event:
+                if data.get("parent_call_id"):
+                    event.payload["parent_call_id"] = data["parent_call_id"]
+                yield event
 
 
 class SimulationHarness:
@@ -367,10 +396,13 @@ class SimulationHarness:
         origin=None,
         answer_timeout=1000,
         deadline=5000,
+        wait_interaction=False,
     ):
         self.database_path, self.mode, self.policy = Path(database_path), mode, policy
         self.port, self.origin, self.answer_timeout, self.deadline = port, origin, answer_timeout, deadline
         self.services, self.stack = IndependentAPIs(), AsyncExitStack()
+        self.wait_interaction = wait_interaction
+        self.services.correlated_output = wait_interaction
 
     async def __aenter__(self):
         try:
@@ -426,6 +458,8 @@ class SimulationHarness:
             self.app.add_api_route("/__simulation/plan", self.plan, methods=["POST"])
             self.app.add_api_route("/__simulation/state", self.state, methods=["GET"])
             self.url = await self.stack.enter_async_context(http_server(self.app, self.port))
+            if self.wait_interaction:
+                self.app.state.voice.provider_factory = SimulatedWaitAdapter
             if self.origin is None:
                 self.settings.public_origin = self.url
             self.client = await self.stack.enter_async_context(
@@ -444,6 +478,8 @@ class SimulationHarness:
     async def plan(self, request: Request):
         """Fixture-only controller; not part of create_app or deployed routes."""
         body = await request.json()
+        # Fixture-only delay for the actual browser's progress-query regression.
+        self.services.cuekb_delay = min(2, max(0, float(body.get("cuekb_delay", 0))))
         plan = VoicePlan(question=body["question"], tool=body.get("tool"), spoken=body.get("spoken"))
         self.services.plans.append(plan)
         return {"input_id": plan.input_id, "response_id": plan.response_id}

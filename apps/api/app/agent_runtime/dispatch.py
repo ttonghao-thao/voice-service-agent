@@ -5,7 +5,7 @@ import time
 from collections.abc import Awaitable, Callable
 from dataclasses import dataclass
 
-from app.contracts import DomainError, KnowledgeArguments, StrictModel
+from app.contracts import DomainError, KnowledgeArguments, KnowledgeInteractionArguments, StrictModel
 
 
 @dataclass(frozen=True)
@@ -33,22 +33,28 @@ class ToolDispatcher:
             raise ValueError("Native tool name must be valid and unique")
         self.tools[tool.name] = tool
 
-    def resolve(self, name, arguments, registered):
+    def resolve(self, name, arguments, registered, wait_interaction=False):
         if name not in registered or name not in self.tools:
             raise DomainError("VOICE_TOOL_UNKNOWN", "This tool is not registered for this session", 502)
         if not isinstance(arguments, str) or len(arguments) > 12000:
             raise DomainError("VOICE_TOOL_ARGUMENTS", "Invalid tool arguments", 422)
         tool = self.tools[name]
         try:
-            parsed = tool.arguments.model_validate_json(arguments)
+            schema = KnowledgeInteractionArguments if wait_interaction and tool.arguments is KnowledgeArguments else tool.arguments
+            parsed = schema.model_validate_json(arguments)
         except ValueError as exc:
             raise DomainError("VOICE_TOOL_ARGUMENTS", "Tool arguments violate the schema", 422) from exc
         return ExecutionDecision(tool, parsed)
 
-    def definitions(self, registered):
+    def definitions(self, registered, wait_interaction=False):
         return [
-            {"name": name, "description": self.tools[name].description,
-             "parameters": self.tools[name].arguments.model_json_schema()}
+            {"name": name, "description": self.tools[name].description + (
+                " While a query is pending, use operation=progress to ask its server-reported status, "
+                "or operation=revise only for an explicit correction of that pending request. "
+                "These operations keep the completed user transcription authoritative. Do not start another query."
+                if wait_interaction and self.tools[name].arguments is KnowledgeArguments else ""),
+             "parameters": (KnowledgeInteractionArguments if wait_interaction
+                            and self.tools[name].arguments is KnowledgeArguments else self.tools[name].arguments).model_json_schema()}
             for name in registered
         ]
 

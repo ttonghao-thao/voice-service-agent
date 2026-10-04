@@ -16,6 +16,7 @@ from app.contracts import (
     StopPlaybackInput,
     StrictModel,
     TaskControlInput,
+    TaskProgress,
     now,
     uid,
 )
@@ -101,6 +102,12 @@ def _answer_for_principal(answer, user, settings):
 
 
 def _event_for_principal(payload, user, settings):
+    if payload.get("type") == "portal.presentation.updated":
+        body = dict(payload.get("payload", {}))
+        scope = set(body.pop("_authorized_kb_ids", ()))
+        if not scope <= set(user.knowledge_base_ids) & _configured_kbs(settings):
+            return None
+        return {**payload, "payload": body}
     if payload.get("type") != "portal.answer.final":
         return payload
     return {
@@ -112,7 +119,7 @@ def _event_for_principal(payload, user, settings):
 def _record_for_principal(record, user, settings):
     payload = dict(record.payload)
     scope = payload.pop("_authorized_kb_ids", None)
-    if record.kind == "voicechat_transcript":
+    if record.kind in ("voicechat_transcript", "speech_validation"):
         current = set(user.knowledge_base_ids)
         configured = _configured_kbs(settings)
         if (scope is None and ("customer" in user.roles or current != configured)) or (
@@ -148,6 +155,7 @@ def capabilities(s):
         "function_result_return": voice_configured,
         "native_cancel_response": False,
         "native_tool_phase_barge_in": False,
+        "portal_task_progress": True,
         "dynamic_instructions": False,
         "arbitrary_text_to_speech": False,
         "required_voice_languages": ["en-US"],
@@ -361,6 +369,8 @@ async def events(
                     safe_payload = _event_for_principal(
                         e.payload, user, request.app.state.settings
                     )
+                    if safe_payload is None:
+                        continue
                     yield f"id: {cursor}\ndata: {json.dumps(safe_payload, ensure_ascii=False)}\n\n"
                 if not rows and checked % 30 == 0:
                     yield ": keepalive\n\n"
@@ -398,6 +408,12 @@ async def cancel_current_task(cid: str, body: TaskControlInput, request: Request
     }
 
 
+@router.post("/conversations/{cid}/tasks/current/progress", response_model=TaskProgress)
+async def current_task_progress(cid: str, body: TaskControlInput, request: Request, user: User):
+    await limited(request, user)
+    return await request.app.state.coordinator.task_progress(user, cid, body.expected_epoch, body.expected_revision)
+
+
 @router.post("/conversations/{cid}/playback/stop")
 async def stop_playback(cid: str, body: StopPlaybackInput, request: Request, user: User):
     await limited(request, user)
@@ -424,7 +440,7 @@ async def end_voice(cid: str, sid: str, request: Request, user: User):
         expected = c.epoch
         if c.voice_session_id != sid:
             return {"status": "already_closed", "epoch": expected}
-    return {"status": "closed", "epoch": await request.app.state.coordinator.interrupt(user, cid, expected)}
+    return {"status": "closed", "epoch": await request.app.state.coordinator.interrupt(user, cid, expected, "session_closed")}
 
 
 @router.delete("/conversations/{cid}")

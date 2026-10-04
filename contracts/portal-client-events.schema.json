@@ -33,6 +33,11 @@
           "minimum": 0,
           "title": "Played Samples",
           "type": "integer"
+        },
+        "finished": {
+          "default": false,
+          "title": "Finished",
+          "type": "boolean"
         }
       },
       "required": [

@@ -391,7 +391,10 @@ def test_general_answer_has_no_business_turn_or_retrieval(tmp_path):
                 async with app.state.store.sessions() as db:
                     utterance = (await db.execute(select(Utterance))).scalar_one()
                     assert utterance.answer["composition"] == "provider_general"
-                    assert not (await db.execute(select(DeliveryAttempt))).scalars().all()
+                    attempts = (await db.execute(select(DeliveryAttempt))).scalars().all()
+                    assert len(attempts) == 1 and attempts[0].kind == "voice_audio"
+                    assert attempts[0].turn_id is None and attempts[0].input_item_id == "i1"
+                    assert attempts[0].response_id == "r1"
             client.portal.call(inspect)
 
 

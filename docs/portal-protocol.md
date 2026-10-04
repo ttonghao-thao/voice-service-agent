@@ -34,12 +34,13 @@
 | POST `/conversations` | 点击开始通话时请求 title、locale；返回 id、epoch、request_revision、locale、access_token；新会话仅接受 `en-US` |
 | GET `/conversations/{cid}/messages` | 当前 capability 的 Turn（含 input_item_id、selected_tool、effective_executor、escalation_reason、execution_phase）及权限过滤后的 Record（含 created_at、口述 turn_id/input_item_id/answer_kind）；仅本次 capability 可读取 |
 | POST `/conversations/{cid}/voice-sessions` | 返回 voice_session_id、epoch、request_revision、ws_url（含一次性 ticket） |
-| DELETE `/conversations/{cid}/voice-sessions/{sid}` | 关闭语音，保留会话历史；当前同时触发硬中断 |
+| DELETE `/conversations/{cid}/voice-sessions/{sid}` | 关闭语音、使旧 epoch/未完成任务失效，保留历史；关闭原因与用户硬中断分开 |
 | DELETE `/conversations/{cid}` | 结束本标签页通话、关闭语音并撤销 call token |
 | POST `/conversations/{cid}/messages` | `{text}`，要求 Idempotency-Key；202 返回 task_id/turn_id、epoch、request_revision、status；新问题 supersede 旧运行任务 |
 | GET `/conversations/{cid}/events` | SSE 业务流；`Last-Event-ID` 或 `after` 恢复游标 |
 | POST `/conversations/{cid}/playback/stop` | expected_epoch、expected_revision、可选 response_id；停止当前播报，不取消查询 |
 | POST `/conversations/{cid}/tasks/current/cancel` | expected_epoch、expected_revision；取消当前查询并拒绝晚到结果 |
+| POST `/conversations/{cid}/tasks/current/progress` | expected_epoch、expected_revision；返回当前 status/phase/message，版本过期为 409，不新增任务/检索 |
 | POST `/conversations/{cid}/interrupt` | `{expected_epoch}`；当前是取消业务、失效 epoch、关闭语音的硬中断 |
 
 同一文字幂等键相同正文不重复执行，不同正文返回 409。管理 API 不属于客户协议权限集合。验证身份和知识范围见 [接入文档](integration.md)。
@@ -75,7 +76,7 @@ SSE 的持久 Event 表与 server_seq/cursor 保持不变。同进程提交后�
 | 客户端事件 | payload / 行为 |
 | --- | --- |
 | `portal.audio.append` | 上述音频字段；附 epoch、seq |
-| `portal.playback.ack` | response_id、played_samples，附 epoch；仅估计实际播放进度，不证明客户听到 |
+| `portal.playback.ack` | response_id、played_samples、可选 finished=false，附 epoch；finished=true 须已收到 audio.done 且该响应排空，服务端核对全部发送样本；只是播放估计 |
 | `portal.playback.stop` | 可选 response_id，附 epoch；立即清播放器并抑制当前或下一段 response，不取消业务任务 |
 | `portal.interrupt` | 附 epoch；同 HTTP 硬中断语义 |
 | `portal.session.close` | 附 epoch；释放本次语音资源 |
@@ -109,11 +110,14 @@ SSE 的持久 Event 表与 server_seq/cursor 保持不变。同进程提交后�
 | `portal.input.state` | WS | state=speaking/quiet；仅输入状态，不自动等于取消业务 |
 | `portal.tool.started` | SSE | 客户可理解的查询状态；不暴露私有工具参数 |
 | `portal.answer.final` | SSE | canonical AnswerBundle 及终态；D2 在续答结束/事后检查后才提交，一般无工具回答不伪造该知识事件 |
+| `portal.presentation.updated` | SSE / WS | response_id、answer_id、input_item_id、mode、status、reason_code；实际 Provider 转写的呈现检查结果，after_audio；失败警告与完整文字答案分开 |
 | `portal.playback.clear` | SSE / WS | epoch 失效或同 epoch 清播放；有 response_id 时只抑制该响应，不能停止其他当前合法回答；旧 epoch clear 不影响新连接 |
 | `portal.session.ended` | SSE/连接生命周期 | 显示结束并释放设备；也须处理 WS close，不能只依赖单个消息 |
 | `portal.error` | WS；HTTP 使用错误响应 | code、message、retryable、trace_id；按错误恢复，不无限重试 |
 
 下行音频按握手确认的 24 kHz PCM16 播放，实际 delta 长度不要求与上行 80 ms 相同；按字节长度计算 samples。当前 WS 事件 turn_id 可空，不伪造用户转写与工具轮次的关联。持久业务事件主要走 SSE，不能假定所有事件在两个通道重复发布。
+
+本轮口述/结束/等待交互的精确语义见 [Live §1–3](live-agent-implementation.md)。messages 的 speech_validation 历史与 presentation SSE 按原授权范围过滤；matched 只代表转写通过文本检查，completed 只代表响应边界已写入，finished ACK 仍不证明听到。浏览器按响应独立排空，轮换等待播放结束估计或抑制，不恢复旧播放队列。
 
 ### 4.3 时序和背压
 

@@ -15,6 +15,8 @@ class PortalAudioProcessor extends AudioWorkletProcessor {
     this.finished = false;
     this.response = null;
     this.sourceSamples = new Map();
+    this.resamplers = new Map();
+    this.ended = new Set();
     this.port.onmessage = ({ data: d }) => {
       if (d.type === "reset") {
         this.epoch = d.epoch;
@@ -22,6 +24,8 @@ class PortalAudioProcessor extends AudioWorkletProcessor {
         this.ring.clear();
         this.playback = new Resampler(24000, sampleRate);
         this.sourceSamples.clear();
+        this.resamplers.clear();
+        this.ended.clear();
         this.response = null;
         this.finished = false;
       }
@@ -29,17 +33,17 @@ class PortalAudioProcessor extends AudioWorkletProcessor {
       if (d.type === "mute") this.muted = d.value;
       if (d.type === "volume") this.volume = d.value;
       if (d.type === "audio" && !this.suppressed && d.epoch === this.epoch) {
-        if (this.response !== d.response) {
-          this.playback = new Resampler(24000, sampleRate);
-          this.response = d.response;
-        }
+        if (this.ended.has(d.response)) return;
+        if (!this.resamplers.has(d.response))
+          this.resamplers.set(d.response, new Resampler(24000, sampleRate));
+        this.response = d.response;
         this.sourceSamples.set(
           d.response,
           (this.sourceSamples.get(d.response) || 0) + d.samples.length,
         );
         this.finished = false;
         try {
-          this.ring.push(this.playback.push(d.samples), d.response);
+          this.ring.push(this.resamplers.get(d.response).push(d.samples), d.response);
         } catch (e) {
           this.suppressed = true;
           this.ring.clear();
@@ -47,11 +51,13 @@ class PortalAudioProcessor extends AudioWorkletProcessor {
         }
       }
       if (d.type === "done" && !this.suppressed && d.epoch === this.epoch) {
+        if (this.ended.has(d.response)) return;
+        this.ended.add(d.response);
         this.finished = true;
-        if (this.response === d.response) {
+        if (this.resamplers.has(d.response)) {
           try {
             this.ring.push(
-              this.playback.push(new Float32Array(32)),
+              this.resamplers.get(d.response).push(new Float32Array(32)),
               d.response,
             );
           } catch {
@@ -84,25 +90,29 @@ class PortalAudioProcessor extends AudioWorkletProcessor {
       }
     }
     if (this.suppressed) output.fill(0);
-    else this.ring.read(output, this.volume, this.finished);
+    else this.ring.read(output, this.volume, this.ended.has(this.ring.items[0]?.response));
     this.ticks += output.length;
     if (this.ticks >= sampleRate / 2) {
       this.ticks = 0;
       for (const [response, played] of this.ring.played) {
+        const done = this.ended.has(response) &&
+          !this.ring.items.some((item) => item.response === response);
         this.port.postMessage({
           type: "ack",
           response,
           epoch: this.epoch,
-          samples: Math.min(
+          samples: done ? this.sourceSamples.get(response) || 0 : Math.min(
             this.sourceSamples.get(response) || 0,
             Math.floor((played * 24000) / sampleRate),
           ),
           buffered: this.ring.length,
-          done: this.finished && this.ring.length === 0,
+          done,
         });
-        if (this.finished && this.ring.length === 0) {
+        if (done) {
           this.ring.played.delete(response);
           this.sourceSamples.delete(response);
+          this.resamplers.delete(response);
+          this.ended.delete(response);
         }
       }
     }

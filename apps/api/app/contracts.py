@@ -54,6 +54,39 @@ class KnowledgeArguments(BridgeArguments):
     software_version: str | None = Field(max_length=120)
 
 
+class KnowledgeInteractionArguments(KnowledgeArguments):
+    # Exposed only by a trusted adapter that verifies tool-wait interaction.
+    operation: Literal["query", "progress", "revise"] = "query"
+
+
+class PresentationContract(StrictModel):
+    mode: Literal["verbatim", "grounded"]
+    required_conditions: dict[str, str] = Field(default_factory=dict)
+    check_basis: Literal["provider_transcript"] = "provider_transcript"
+    check_timing: Literal["after_audio"] = "after_audio"
+
+
+class PresentationAssessment(StrictModel):
+    response_id: str = Field(min_length=1, max_length=128)
+    answer_id: str | None = None
+    input_item_id: str | None = None
+    mode: Literal["verbatim", "grounded", "unverified"]
+    status: Literal["matched", "failed", "unverified"]
+    reason_code: str | None = None
+    check_basis: Literal["provider_transcript"] = "provider_transcript"
+    # This does not assert audio/transcript equivalence or that a person heard it.
+    check_timing: Literal["after_audio"] = "after_audio"
+
+
+class TaskProgress(StrictModel):
+    epoch: int
+    request_revision: int
+    turn_id: str | None = None
+    status: str
+    phase: str | None = None
+    message: str
+
+
 class ConversationInput(StrictModel):
     title: str = Field(default="New conversation", min_length=1, max_length=100)
     locale: Literal["en-US"] = "en-US"
@@ -129,6 +162,7 @@ class AnswerBundle(StrictModel):
     composition: Literal["external_llm", "nano_grounded", "provider_general", "legacy"] = "legacy"
     validation_level: Literal["source_checked", "provider_only", "unknown"] = "unknown"
     verification_timing: Literal["before_audio", "after_audio", "not_verified"] = "not_verified"
+    presentation: PresentationContract | None = None
 
 
 class PortalEvent(StrictModel):
@@ -278,6 +312,11 @@ class ErrorEvent(_ServerEventBase):
     payload: PortalErrorPayload
 
 
+class PresentationEvent(_ServerEventBase):
+    type: Literal["portal.presentation.updated"]
+    payload: PresentationAssessment
+
+
 PortalServerEvent = Annotated[
     SessionReadyEvent
     | TranscriptDeltaEvent
@@ -289,6 +328,7 @@ PortalServerEvent = Annotated[
     | AnswerFinalEvent
     | PlaybackClearEvent
     | SessionEndedEvent
+    | PresentationEvent
     | ErrorEvent,
     Field(discriminator="type"),
 ]
@@ -315,6 +355,7 @@ class PortalAudioPayload(StrictModel):
 class PlaybackAckPayload(StrictModel):
     response_id: str = Field(min_length=1, max_length=128)
     played_samples: int = Field(ge=0)
+    finished: bool = False
 
 
 class PlaybackStopPayload(StrictModel):

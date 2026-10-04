@@ -159,7 +159,8 @@ async def test_network_voice_business_flow(
         finals = (await db.execute(select(Event).where(Event.conversation_id == call.cid))).scalars().all()
         assert sum(event.payload["type"] == "portal.answer.final" for event in finals) == 1
         attempt = (
-            await db.execute(select(DeliveryAttempt).where(DeliveryAttempt.conversation_id == call.cid))
+            await db.execute(select(DeliveryAttempt).where(DeliveryAttempt.conversation_id == call.cid,
+                                                         DeliveryAttempt.kind == "tool_result"))
         ).scalar_one()
         assert attempt.status == "sent" and attempt.response_id == plan.response_id
     record_property("evidence_mode", "simulated_independent_apis")

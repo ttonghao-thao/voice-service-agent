@@ -163,7 +163,7 @@ export class VoiceClient {
             JSON.stringify({
               type: "portal.playback.ack",
               epoch: this.epoch,
-              payload: { response_id: d.response, played_samples: d.samples },
+              payload: { response_id: d.response, played_samples: d.samples, finished: d.done === true },
             }),
           );
         }

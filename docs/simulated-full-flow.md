@@ -20,9 +20,12 @@ CueKB 与 NVIDIA Speech / nemotron-labs-voicechat 保持独立服务职责。测
 - 模拟 VoiceChat 接收真实 PCM 帧，按脚本产生 ASR、原生工具调用、字幕及音频事件；工具选择不是 Nano 的实际推理。工具结果通过 `conversation.item.create/function_call_output` 回填。
 - 默认双工具会话只注册 `lookup_knowledge` / `reason_over_knowledge`，断言原生 WS 不含 `tool_choice`；后台文本模型的 SDK 仍使用其独立的 required/auto 配置。
 - 模拟 CueKB 验证测试 Key、服务端 KB 范围，并返回 M3 证据或注入错误；模型 API 支持普通响应和 SSE 工具调用/答案流。
-- 每个网络用例创建独立 SQLite 数据库，执行实际 Alembic `upgrade head`（当前 0008），再启动本项目；不使用自动建表。新增连续上下文序列见 [CTX1 / EVAL1](task-context-evaluation.md)。
+- 每个网络用例创建独立 SQLite 数据库，执行实际 Alembic `upgrade head`（当前 0009），再启动本项目；不使用自动建表。连续上下文序列见 [CTX1 / EVAL1](task-context-evaluation.md)。
+
 - PCM 是 500 Hz 合成音，24 kHz、PCM16、80 ms、3840 bytes。浏览器使用合成麦克风和实际 AudioWorklet/传输流程；不验证真实 ASR、TTS、语义、听感或设备麦克风。
 - SSE 取消回归单独在真实 SQLite 驱动中设置短暂查询屏障，稳定模拟断开竞态；只有该数据库时序用例注入 Session 子类，外部 API 适配器仍走网络。
+
+本轮三个 P1/P2 的额外网络矩阵见 [Live §4](live-agent-implementation.md#4-验证与维护入口)：实际口述关联、结束/播放估计、unknown 恢复、进度/更正及旧调用隔离。默认夹具仍走 NVIDIA 当前 schema；只有显式 `SimulationHarness(wait_interaction=True)` 注入独立扩展 Adapter，其额外关联字段不能当作生产 VoiceChat 协议或真实等待期能力。没有新增部署模式。
 
 ## 2. 覆盖和断言
 
@@ -57,11 +60,11 @@ CueKB 与 NVIDIA Speech / nemotron-labs-voicechat 保持独立服务职责。测
 
 20 项矩阵还检查 canonical final 唯一、DeliveryAttempt sent/response_id、最终 ASR 而非改写参数作为检索请求、KB 范围不被覆盖、门户音频帧及通话撤销。预期失败状态表示故障处理通过，不表示服务故障变为成功答案。
 
-新增浏览器用例见 [simulated-full-flow.spec.ts](../tests/e2e/simulated-full-flow.spec.ts)：不拦截项目 HTTP/WS，连续测试一般问答、直查及复杂推理；断言右侧问题、左侧实际字幕、来源、查询/模型调用次数、播放停止后下一条回答、两个知识 Turn 和结束通话后的 401。其余既有浏览器用例含受控路由或 WS，证据范围按各自测试区分。
+浏览器用例见 [simulated-full-flow.spec.ts](../tests/e2e/simulated-full-flow.spec.ts)：不拦截项目 HTTP/WS，连续测试一般问答、直查、复杂推理及外置批准短答与实际口述不一致；断言右侧问题、左侧实际字幕、来源/检查警告、等待时进度按钮、查询/模型调用次数、播放停止后继续、三个知识 Turn 和结束通话后的 401。其余既有浏览器用例含受控路由或 WS，证据范围按各自测试区分。
 
 ## 3. 复现步骤
 
-根目录使用已安装的 Python 3.12 开发环境；安装步骤见 [README](../README.md#验证命令)。不需要真实服务密钥。
+根目录使用已安装的 Python 3.12 开发环境；安装步骤见 [README](../README.md#本机验证)。不需要真实服务密钥。
 
 只执行网络矩阵：
 

@@ -6,6 +6,7 @@ from pathlib import Path
 from app.contracts import (
     AnswerBundle,
     KnowledgeArguments,
+    KnowledgeInteractionArguments,
     portal_client_event_adapter,
     portal_server_event_adapter,
 )
@@ -24,6 +25,7 @@ root = Path(__file__).resolve().parents[1]
 models = {
     "answer-bundle": AnswerBundle,
     "voice-knowledge-arguments": KnowledgeArguments,
+    "voice-knowledge-interaction-arguments": KnowledgeInteractionArguments,
     "tool-spec": ToolSpec,
     "cuekb-tool-query": CueKBSearchInput,
     "cuekb-search-request": CueKBSearchRequest,

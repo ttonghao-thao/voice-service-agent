@@ -1,6 +1,6 @@
 # Q07：实时语音问答、即时回应与分级知识路由
 
-日期：2026-10-04。版本：**Q07 修订 5，实施状态与文档同步**。状态：Q07-A–D 的基础应用流程已编码并通过本地验证；Q07-E 真实服务验收未执行。验证证据见 [验收记录](acceptance-report.md#2026-10-04-q07-原生双工具基础实现本地编码与验证)。
+日期：2026-10-04。版本：**Q07 修订 6，P1/P2 实施范围同步**。状态：Q07-A–D 及本轮 LVA1–LVA3 已编码并通过本地验证；Q07-E 真实服务验收未执行。最新结果见 [验收 §0](acceptance-report.md#0-当前审计与证据索引)，基础版本记录保留。
 
 设计前基线：`bbbd95e9c5d32788d4300cb88dedcc086fb2cc52`；基础实现：`codex/q1003` / `a508980`。本文是架构下的专项设计，§0、§3.2、§11 说明当前实现；标为后续/未实现的能力不能据此宣称可用。状态由 [任务板](TASK_BOARD.md) 唯一维护。
 
@@ -14,6 +14,7 @@
 - D2 保存 EvidenceReady 后等待有界原生续答，聚合最终字幕并在 audio.done 后检查引用、数值、常用单位及部分条件；通过才发送 canonical final，检查失败/超时不再次播报，并按 response ID 清除该回答仍在排队的音频，不停止下一条合法回答。检查是事后且不完备，不证明任意语义、单位转换或音频逐字正确。
 - 一般回答以输入/响应归属放行，保存 Utterance 和实际口述 Record，不创建知识 Turn。已开始但缺结束边界的回答有期限并记录失败；尚未开始回答不属于该期限。归属依赖已匹配的有序 response 生命周期与单个可关联输入；歧义、响应 ID 复用或不支持的并行调用失败关闭连接，不凭字幕猜测新任务。
 - Alembic 0007 增加策略、执行/证据字段、Utterance 与 DeliveryAttempt；写回前记 write_started，成功后记 sent，崩溃恢复不盲重发。播放 samples 仅是客户端估计，不是“确实听到”的证明。
+- 本轮 P1/P2 的 PresentationContract、实际转写检查、0009 交付审计、结束/重连和受可信 Adapter 能力限制的等待进度/自然修订见 [Live 改进](live-agent-implementation.md)。当前 NVIDIA 等待能力仍关闭；门户进度可用。增强模拟关联不能当作供应商协议或真实能力证明。
 - 本轮实现固定 nano_grounded，QA_DIRECT_COMPOSITION、QA_MAX_ROUTE_ESCALATIONS 与动态 ACK 开关仍是后续建议参数，未加入 Settings；一次升级固定于执行流程。D1/D3、context-only 注入、任意异步播报、其他 Provider、语音控制及工具等待自由交谈均未实现。
 
 新增工具与已有两个工具共用权限、输入绑定、任务期限、交付及审计链路；超过官方 5 工具建议只产生明确告警，后续启用须另测选择质量，不能推断并行能力。真实新模式放行仍依赖 Q07-E/D07，默认部署模板只给出可选配置注释。
@@ -360,11 +361,11 @@ legacy/knowledge_required 继续拒绝未满足工具许可的实质性输出（
 - 输入/响应关联可来自供应商已验证的事件，不要求每次等最终 ASR 才允许自然语音接话；只有工具执行必须继续等待权威最终输入。无法可靠关联的 Provider 不开启该模式。
 - 结束、失权、旧 epoch、失效 revision 或响应终态撤销许可。系统初始自行欢迎语是否允许需单独会话策略；不把“允许一般回答”扩大为整场无限输出。
 
-一般回答通过 Provider 结束事件形成持久记录，使用 provider_only / not_verified。当前有输入/响应绑定及已开始响应的结束期限，尚未实现统一 Presentation 生命周期；缺字幕/断线等完整缺测报告仍待补齐。一般许可不借用知识链的 EvidenceGrant；事后发现企业事实不能宣称先前音频已被阻止，这类漏调用须纳入模型评估。
+一般回答通过 Provider 结束事件形成持久记录，使用 provider_only / not_verified。本轮增加统一 DeliveryAttempt 音频台账和 unverified 转写检查记录，输入/响应绑定、结束期限与 unknown 恢复可审计；独立完整 Presentation 表和缺测聚合报告仍待补齐。一般许可不借用知识链的 EvidenceGrant；事后发现企业事实不能宣称先前音频已被阻止，这类漏调用须纳入模型评估。
 
 **Tool Policy 只能拦截已发生的工具调用，不能单独拦截漏调用。** 原生选路层负责选择，工具网关负责 schema/权限/参数/预算/审计，输出授权层负责响应归属及严格模式的证据门控。general_qa 的 ConversationResponseGrant 不判断每句话在语义上是否属于企业事实，不能当作漏调用防线。必须保证实时账户/设备数据不被凭空播报的部署，应在会话建立时选择 knowledge_required，拒绝无证据事实输出；不声称仅凭提示词就能兼得完全自由直答与零漏调用。未来如需同一会话按请求切换严格要求，须另行设计可靠的策略绑定和播前控制，不在本轮隐式新增语义分类器。
 
-控制行为不能靠模型说“已取消”就执行或记成功。双业务工具版本第一阶段保留按钮/明确文字控制的既有 API；无工具自然语言控制只有存在已验证的控制事件适配时才执行，不能从任意口述文本猜动作。若后续需要可靠语音取消/进度/重复，可增加独立、受约束的控制工具；它们不属于这两个知识执行工具，本轮不默默把它们塞入知识工具 schema。
+控制行为不能靠模型说“已取消”就执行或记成功。按钮/明确文字控制沿用既有 API；不从任意口述文本猜动作。本轮 P2 仅为通过可信 Provider 能力门槛的两个知识工具增加类型化 progress/revise，最终 ASR 保持权威、旧任务版本失效；默认 NVIDIA 不暴露这些操作。语音取消/重复仍为后续能力，不能将其混入现有 operation 或凭关键词执行。
 
 当前 `BusinessRuntime.validate()` 对所有业务请求强制 search_knowledge。双工具知识执行保留该约束；无工具一般回答走 Provider 会话记录通道，不进入假知识 Turn，不调用也不绕过该 validator。严格模式仍拒绝没有知识证据的实质性输出。
 
@@ -436,19 +437,19 @@ Provider 按快照使用单 bridge 或双工具/各自提示词；Gateway 以静
 
 ## 11. 数据模型与接口改动清单
 
-### 11.1 当前持久化（Alembic 0008）
+### 11.1 当前持久化（Alembic 0009）
 
 | 表/对象 | 已实现增量 |
 | --- | --- |
 | Conversation | qa_execution_mode / answer_policy / qa_toolset_version；创建时快照，旧行迁移为 legacy / knowledge_required / legacy；0008 增加有来源的 context_state |
 | Utterance | conversation、epoch、input_item_id、user_text、可空 turn_id、kind、answer；conversation/epoch/input_item_id 唯一 |
 | Turn | 可空 selected_tool / effective_executor / execution_phase / escalation_reason / toolset_version / evidence；input_item_id 由 0006 提供；0008 增加内部 task_context |
-| Answer JSON | 可选 answer_kind / composition / validation_level / verification_timing；旧数据不伪造已查证或已听到 |
-| DeliveryAttempt | id、conversation、epoch/revision、可空 turn_id/response_id、native_call_id、kind、status、sent_at、played_samples |
+| Answer JSON | 可选 answer_kind / composition / validation_level / verification_timing / presentation；旧数据不伪造已查证或已听到 |
+| DeliveryAttempt | 原工具字段；0009 增加音频/控制/旧调用结清台账、sent_samples/input_item_id/phase/reason/output_suppressed、结束/排空估计与 answer_id/validation_status/reason |
 
-DeliveryAttempt 当前覆盖工具结果写回；以 conversation/epoch/native_call_id/kind 唯一，不含独立 attempt 计数或 utterance 外键。write_started 后崩溃恢复为 unknown，未写准备记录丢弃，不盲重发。转写、答案和交付记录沿用 retention，播放 samples 仅为估计。
+DeliveryAttempt 当前覆盖工具写回、一般/知识音频及控制；以 conversation/epoch/native_call_id/kind 唯一，不含独立 attempt 计数或 utterance 外键。write_started 和未结束音频 sent 在恢复时标 unknown，prepared 丢弃，不重发。口述检查以授权 Record/SSE 保存，转写/答案/交付沿用 retention；播放与排空仍仅估计。详见 [Live §1–2](live-agent-implementation.md)。
 
-后续建议的 policy_version/provider_capability_version、Turn.utterance_id/composition 列、统一 Presentation 模型及所有一般回应的交付台账尚未实现。当前 composition 在 Answer JSON，输入由 Utterance.turn_id 与 Turn.input_item_id 关联。
+后续建议的 policy_version/provider_capability_version、Turn.utterance_id/composition 列及独立完整 Presentation 表仍未实现；已有 Answer JSON 约束、一般回应交付台账和关联审计不等于完整语义/听音证明。composition 在 Answer JSON，输入由 Utterance.turn_id 与 Turn.input_item_id 关联。P2 能力门槛与可选 operation 见 [Live §3](live-agent-implementation.md#3-等待进度与自然修订)，默认 NVIDIA schema 不变。
 
 ### 11.2 当前模块划分
 
@@ -456,18 +457,18 @@ DeliveryAttempt 当前覆盖工具结果写回；以 conversation/epoch/native_c
 | --- | --- |
 | agent_runtime/dispatch.py | NativeTool、ToolDispatcher、ExecutionDecision；可信注册、schema/权限/依赖过滤及静态分派 |
 | agent_runtime/direct.py | DirectKnowledgeExecutor、EvidenceReady；仅经 Registry 检索，一次升级；无 D1 抽取器 |
-| agent_runtime/evidence.py | EvidenceGate，有限的引用/数字/常用单位/部分条件检查；不证明语义充分 |
+| agent_runtime/evidence.py | EvidenceGate、批准短答/grounded 约束和实际转写有限检查；不证明完整语义或音频一致 |
 | agent_runtime/runtime.py | 外置执行、strict 重定向、真实检索复用、共享期限与预算；无独立分类模型 |
-| sessions/coordinator.py | Turn 创建和唯一提交、EvidenceReady 持久准备与有界续答回收、取消/超时 fence |
-| storage/models.py / store.py | 会话/执行字段、Utterance、DeliveryAttempt、未知恢复与留存；Alembic 0007 |
-| voice/provider.py / gateway.py | 模式提示词与工具快照、输入绑定、一般回答/ACK/答案许可、单写入器和交付记录；无 D3 草稿呈现 |
-| contracts.py / api/routes.py | 可选输入/答案来源字段，messages 的 Turn 执行信息/Record，capabilities 的模式和 native_tools |
-| apps/web/src/App.tsx / audio/VoiceClient.ts | 按输入/response 合并、一般来源提示、实际口述保留、按 response 清播放 |
-| config/voice-qa-prompt.txt / contracts | 新模式提示词、KnowledgeArguments 及已导出的答案/门户 schema |
+| sessions/coordinator.py | 唯一提交、有界续答回收、真实进度、CAS 修订和共享期限/检索计数、取消/超时 fence |
+| storage/models.py / store.py | 来源上下文、交付/口述/控制台账、结束/排空估计、未知恢复与留存；Alembic 0009 |
+| voice/provider.py / gateway.py | 不可变能力门槛、输入/调用关联、输出许可、单写入器和旧调用结清；无 D3 草稿呈现 |
+| contracts.py / api/routes.py | 可选呈现约束/检查元数据，受权限过滤的消息/SSE、任务进度端点及 capabilities |
+| apps/web/src/App.tsx / audio/VoiceClient.ts | 按输入/response 合并、实际口述/检查警告、进度按钮、独立响应排空估计与清播放 |
+| config/voice-qa-prompt.txt / contracts | 基础提示词、KnowledgeArguments、能力允许时的 KnowledgeInteractionArguments 与导出 schema |
 
-实际签名：ToolDispatcher.resolve(name, arguments_json, registered_names)；DirectKnowledgeExecutor.run(request, ctx, history, progress=None)；EvidenceGate.evaluate(result, ctx)。共享结果校验在 BusinessRuntime.validate，Coordinator 持有提交权；当前无独立 AnswerValidator 类。
+实际签名：ToolDispatcher.resolve(name, arguments, registered, wait_interaction=False)；DirectKnowledgeExecutor.run(request, ctx, history, progress=None)；EvidenceGate.evaluate(result, ctx)。共享结果校验在 BusinessRuntime.validate，Coordinator 持有提交权；当前无独立 AnswerValidator 类。
 
-API 保持 /api/v1 与现有 portal.*。portal.speech_text 可选 input_item_id/answer_kind；AnswerBundle 可选来源/检查元数据；一般回答通过 Record 展示，不投影成假知识 Turn。portal.answer.final 仍为持久 canonical 业务终态，D2 待原生答案回收后发布。未新增 portal.response.progress、独立 Utterance/Presentation 查询或工具配置的客户接口；如以后增加事件须纳入版本/客户端兼容。
+API 保持 /api/v1 与现有 portal.*。portal.speech_text 可选 input_item_id/answer_kind；AnswerBundle 可选来源/呈现元数据；一般回答通过 Record 展示，不投影成假知识 Turn。portal.answer.final 仍为持久 canonical 业务终态，D2 待原生答案回收后发布。本轮增加 portal.presentation.updated、playback.ack 的可选 finished 和 tasks/current/progress 端点，已纳入生成契约。未新增 portal.response.progress、独立 Utterance/Presentation 查询或工具配置的客户接口。
 
 SSE 传持久进度和 canonical answer；WSS 传实时字幕/音频。两者的序号独立，历史投影按稳定身份去重，不因双通道重复创建气泡。
 

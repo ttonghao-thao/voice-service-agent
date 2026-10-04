@@ -6,9 +6,9 @@ from datetime import timedelta
 
 from app.agent_runtime.context import RunContext
 from app.agent_runtime.direct import EvidenceReady
-from app.agent_runtime.evidence import EvidenceGate
-from app.contracts import AnswerBundle, DomainError, now
-from app.storage.models import Conversation, DeliveryAttempt, Turn
+from app.agent_runtime.evidence import EvidenceGate, presentation_contract
+from app.contracts import AnswerBundle, DomainError, TaskProgress, now
+from app.storage.models import Conversation, Turn
 from app.task_context import combined_history, task_status, values
 from sqlalchemy import select
 
@@ -22,6 +22,7 @@ class SessionCoordinator:
         self.tasks = {}
         self.all_tasks = set()
         self.awaiting_answers = {}
+        self.contexts = {}
         self.voice = None
         self.draining = False
 
@@ -56,12 +57,7 @@ class SessionCoordinator:
         async with self.store.transaction() as db:
             rows = (await db.execute(select(Conversation))).scalars()
             for c in rows:
-                attempts = (await db.execute(select(DeliveryAttempt).where(
-                    DeliveryAttempt.conversation_id == c.id,
-                    DeliveryAttempt.status.in_(("prepared", "write_started")),
-                ))).scalars()
-                for attempt in attempts:
-                    attempt.status = "unknown" if attempt.status == "write_started" else "discarded"
+                await self.store.settle_in_db(db, c.id, reason="service_restarted")
                 t = await db.get(Turn, c.current_turn) if c.current_turn else None
                 if c.voice_session_id or (t and t.status == "running"):
                     if t and t.status == "running":
@@ -86,12 +82,7 @@ class SessionCoordinator:
             async with self.store.transaction() as db:
                 c = await self.store.get(db, cid, principal, lock=True)
                 await self.coordination.check(cid)
-                attempts = (await db.execute(select(DeliveryAttempt).where(
-                    DeliveryAttempt.conversation_id == cid,
-                    DeliveryAttempt.status.in_(("prepared", "write_started")),
-                ))).scalars()
-                for attempt in attempts:
-                    attempt.status = "unknown" if attempt.status == "write_started" else "discarded"
+                await self.store.settle_in_db(db, cid, reason="gateway_lease_replaced")
                 if c.current_turn:
                     t = await db.get(Turn, c.current_turn)
                     if t and t.status == "running":
@@ -118,6 +109,7 @@ class SessionCoordinator:
         native_call_id=None,
         input_item_id=None,
         decision=None,
+        revision_of=None,
     ):
         async with self.lock(cid):
             await self.ensure_owner(principal, cid)
@@ -126,6 +118,11 @@ class SessionCoordinator:
             if len(self.all_tasks) >= self.settings.max_agent_runs:
                 raise DomainError("AGENT_CAPACITY_EXCEEDED", "Search service is busy. Please try again later.", 429, True)
             deadline = time.monotonic() + self.settings.agent_deadline_ms / 1000
+            previous_ctx = self.contexts.get(revision_of[0]) if revision_of else None
+            if revision_of:
+                if not previous_ctx or not previous_ctx.deadline or previous_ctx.deadline <= time.monotonic():
+                    raise DomainError("STALE_REVISION", "The pending request is no longer available", 409)
+                deadline = previous_ctx.deadline
             turn, conversation, created = await self.store.begin_turn(
                 principal,
                 cid,
@@ -137,7 +134,8 @@ class SessionCoordinator:
                 input_item_id,
                 decision.tool.name if decision else None,
                 decision.arguments.model_dump() if decision else None,
-                (now() + timedelta(milliseconds=self.settings.agent_deadline_ms)).isoformat(),
+                (now() + timedelta(seconds=max(0, deadline - time.monotonic()))).isoformat(),
+                revision_of,
             )
             if not created:
                 return turn, None
@@ -157,6 +155,7 @@ class SessionCoordinator:
                        **values(turn.task_context)},
                 deadline=deadline,
                 retrieval_limit=self.settings.qa_max_retrieval_calls if decision else None,
+                retrieval_calls=previous_ctx.retrieval_calls if previous_ctx else 0,
                 answer_policy=conversation.answer_policy,
                 task_context=dict(turn.task_context or {}),
             )
@@ -165,6 +164,7 @@ class SessionCoordinator:
                 conversation.context_state, visible_history, ctx.task_context.get("input_source"))
             if not await self.store.task_snapshot(ctx):
                 return turn, None
+            self.contexts[turn.id] = ctx
             task = asyncio.create_task(
                 self.execute(ctx, request, conversation.history, channel, decision)
             )
@@ -174,7 +174,27 @@ class SessionCoordinator:
             task.add_done_callback(
                 lambda done: self.tasks.pop(cid, None) if self.tasks.get(cid) is done else None
             )
+            task.add_done_callback(lambda done: self.contexts.pop(turn.id, None)
+                                   if turn.id not in self.awaiting_answers else None)
             return turn, task
+
+    async def task_progress(self, principal, cid, expected_epoch, expected_revision):
+        async with self.lock(cid):
+            await self.ensure_owner(principal, cid)
+            async with self.store.sessions() as db:
+                c = await self.store.get(db, cid, principal)
+                if (c.epoch, c.request_revision) != (expected_epoch, expected_revision):
+                    raise DomainError("STALE_REVISION", "The request changed. Refresh its progress.", 409)
+                t = await db.get(Turn, c.current_turn) if c.current_turn else None
+                status = t.status if t else "idle"
+                phase = t.execution_phase if t else None
+                message = ("I have the sources and am preparing the spoken answer." if phase == "awaiting_provider_answer"
+                    else "I am still checking the authorized knowledge sources.") if status == "running" else {
+                        "answered": "The answer is ready in the portal.", "canceled": "The search was canceled.",
+                        "failed": "The search could not be completed. Please try again.",
+                    }.get(status, "There is no search running now.")
+                return TaskProgress(epoch=c.epoch, request_revision=c.request_revision,
+                    turn_id=t.id if t else None, status=status, phase=phase, message=message)
 
     async def execute(self, ctx, request, history, channel, decision=None):
         started = time.monotonic()
@@ -227,6 +247,7 @@ class SessionCoordinator:
                 return bundle
             if decision:
                 await self.store.execution(ctx)
+            bundle = EvidenceGate.prepare(bundle, ctx.slots)
             answer_scope = sorted(
                 {kb for citation in bundle.citations for kb in citation.authorized_kb_ids}
             )
@@ -291,7 +312,7 @@ class SessionCoordinator:
                          max(0, ready.deadline - time.monotonic()))
             try:
                 text = await asyncio.wait_for(future, budget)
-                code = EvidenceGate.check_spoken(text, ready.citations)
+                code = EvidenceGate.check_presentation(text, presentation_contract("grounded", ctx.slots), ready.citations)
             except TimeoutError:
                 text, code = "", "VOICE_ANSWER_TIMEOUT"
             allowed = await self.runtime.registry.allowed(ctx.principal)
@@ -307,6 +328,7 @@ class SessionCoordinator:
                 answer_kind="knowledge", composition="nano_grounded",
                 validation_level="source_checked", verification_timing="after_audio",
                 is_mock=any(c.is_mock for c in ready.citations),
+                presentation=presentation_contract("grounded", ctx.slots),
             )
             new_history = history + [{"role": "user", "content": request,
                 "context_sequence": ctx.task_context.get("input_source", {}).get("sequence", -1)},
@@ -338,11 +360,12 @@ class SessionCoordinator:
                 await self.voice.close_conversation(ctx.conversation_id)
         finally:
             self.awaiting_answers.pop(ctx.turn_id, None)
+            self.contexts.pop(ctx.turn_id, None)
 
-    async def interrupt(self, principal, cid, expected_epoch):
+    async def interrupt(self, principal, cid, expected_epoch, reason="hard_interrupt"):
         async with self.lock(cid):
             await self.ensure_owner(principal, cid)
-            epoch, changed = await self.store.invalidate(principal, cid, expected_epoch)
+            epoch, changed = await self.store.invalidate(principal, cid, expected_epoch, reason)
             if changed:
                 task = self.tasks.pop(cid, None)
                 if task:

@@ -26,7 +26,7 @@ def test_upgrade_preserves_legacy_policy_and_downgrade_preserves_history(tmp_pat
     with sqlite3.connect(database) as db:
         assert db.execute("SELECT qa_execution_mode, answer_policy, qa_toolset_version FROM conversations").fetchone() == (
             "legacy", "knowledge_required", "legacy")
-        assert db.execute("SELECT version_num FROM alembic_version").fetchone() == ("0008",)
+        assert db.execute("SELECT version_num FROM alembic_version").fetchone() == ("0009",)
         assert db.execute("SELECT context_state FROM conversations").fetchone() == ("{}",)
         assert db.execute("SELECT slots FROM conversations").fetchone() == ('{"product_model":"AX100"}',)
         tables = {row[0] for row in db.execute("SELECT name FROM sqlite_master WHERE type='table'")}

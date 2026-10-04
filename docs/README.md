@@ -1,6 +1,6 @@
 # 文档导航与维护规则
 
-更新：2026-10-04。当前基线为 Q07 原生双工具基础实现；默认 legacy，可选 dual_tools。默认只加载一份主题文档的相关段落；不用顺序读完整套文档。
+更新：2026-10-04。当前为 Q07 + CTX1/EVAL1 + 本轮 Live P1/P2；状态只看任务板，默认 legacy、可选 dual_tools。默认只加载一份主题文档的相关段落；不用顺序读完整套文档。
 
 ## 按问题定位
 
@@ -8,11 +8,12 @@
 | --- | --- | --- |
 | 已完成什么、还缺什么 | [任务板](TASK_BOARD.md) §1–3 | 验收 §0 的基线；不要先读历史验证记录 |
 | 系统职责与调用流程 | [架构](architecture.md) §2、4 | `apps/api/app/{api,voice,sessions,agent_runtime,tools}` |
+| 口述检查、结束/重连、等待进度/更正 | [Live 改进](live-agent-implementation.md) §1–4 | Provider 门槛、呈现/交付状态、两个工具的可选 operation，当前 NVIDIA 等待能力仍关闭 |
 | 改问、取消、过期结果 | [架构](architecture.md) §5–6 | `sessions/coordinator.py`、`storage/store.py`、`voice/gateway.py` |
 | 建议优化如何实施 | [架构](architecture.md) §10 | Q01–Q03；原件查看 Q04 见接入 §7 |
 | 通用问答定位、即时接话、简单直查与复杂推理 | [Q07 详细设计](qa-routing-design.md#0-本轮编码范围与扩展契约) | 基础流程已编码并本地验证；先读实施范围，再查设计章节，D1/D3 等仍为后续能力 |
 | 两个原生工具和后台 search_knowledge 的区别、新增工具 | [接入 §5](integration.md#5-第三方扩展d06) | `agent_runtime/dispatch.py` 的 NativeTool 与 `tools/registry.py` 的不同职责 |
-| legacy / dual_tools、一般或严格回答、预算 | [部署：Q07 配置](deployment.md#问答模式与预算q07) | `config.py`、会话快照及 Alembic 0008；不是浏览器请求参数 |
+| legacy / dual_tools、一般或严格回答、预算 | [部署：Q07 配置](deployment.md#问答模式与预算q07) | `config.py`、会话快照及 Alembic 0009；不是浏览器请求参数 |
 | 门户、音频、消息格式 | [门户契约](portal-protocol.md) §3–5 | `contracts.py`、`api/routes.py`、`apps/web/src/audio/VoiceClient.ts` |
 | CueKB / VoiceChat / 文本模型 / 身份 | [接入](integration.md) §2 / §3 / §4 / §6 | `tools/adapters.py`、`voice/provider.py`、`agent_runtime/runtime.py`、`api/auth.py` |
 | 镜像、URL、迁移与恢复 | [部署](deployment.md) 对应标题 | `deploy/`、`scripts/deploy-cloud.sh`、`apps/api/migrations/` |
