@@ -22,3 +22,11 @@ class RunContext:
     slots: dict[str, Any] = field(default_factory=dict)
     tool_versions: dict[str, int] = field(default_factory=dict)
     allowed_tools: set[str] = field(default_factory=set)
+    deadline: float | None = None
+    retrieval_limit: int | None = None
+    retrieval_calls: int = 0
+    selected_tool: str | None = None
+    effective_executor: str | None = None
+    escalation_reason: str | None = None
+    answer_policy: str | None = None
+    tool_arguments: dict[str, Any] = field(default_factory=dict)

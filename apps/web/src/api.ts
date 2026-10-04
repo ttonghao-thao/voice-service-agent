@@ -41,6 +41,10 @@ export interface Answer {
   cards: Record<string, unknown>[];
   is_mock: boolean;
   reason_code: string | null;
+  answer_kind?: string;
+  composition?: string;
+  validation_level?: string;
+  verification_timing?: string;
 }
 export interface Turn {
   id: string;
@@ -66,6 +70,7 @@ export interface RecordItem {
     text?: string;
     response_id?: string;
     turn_id?: string;
+    input_item_id?: string;
     phase?: string;
     played_samples?: number;
   };
@@ -96,6 +101,7 @@ export interface Capabilities {
   weather_mode: string;
   provider: string;
   voice_session_max_seconds: number;
+  qa_execution_mode?: string;
 }
 export class ApiError extends Error {
   constructor(

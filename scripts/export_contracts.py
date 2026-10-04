@@ -5,6 +5,7 @@ from pathlib import Path
 
 from app.contracts import (
     AnswerBundle,
+    KnowledgeArguments,
     portal_client_event_adapter,
     portal_server_event_adapter,
 )
@@ -22,6 +23,7 @@ from app.tools.schemas import (
 root = Path(__file__).resolve().parents[1]
 models = {
     "answer-bundle": AnswerBundle,
+    "voice-knowledge-arguments": KnowledgeArguments,
     "tool-spec": ToolSpec,
     "cuekb-tool-query": CueKBSearchInput,
     "cuekb-search-request": CueKBSearchRequest,

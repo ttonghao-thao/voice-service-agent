@@ -161,13 +161,13 @@ export default function App() {
       for (const record of records) {
         if (
           record.kind !== "voicechat_transcript" ||
-          !record.payload.turn_id ||
+          (!record.payload.turn_id && !record.payload.input_item_id) ||
           !record.payload.text
         )
           continue;
         const key = `${record.epoch}:${record.source_id}`;
         next[key] = {
-          turnId: record.payload.turn_id,
+          turnId: record.payload.turn_id || `input:${record.epoch}:${record.payload.input_item_id}`,
           text: record.payload.text,
           done: true,
         };
@@ -270,6 +270,9 @@ export default function App() {
       }
       if (event.type === "portal.playback.clear") {
         voice.current?.clearForEpoch(event.epoch);
+        voice.current?.clearPlaybackResponse(
+          event.payload.response_id ? String(event.payload.response_id) : undefined,
+        );
         setProgress("");
         void refresh(event.conversation_id).catch((e) => setError(e.message));
       }
@@ -310,17 +313,18 @@ export default function App() {
           return;
         }
         if (
-          !event.turn_id ||
+          (!event.turn_id && !event.payload.input_item_id) ||
           !event.payload.response_id ||
-          revokedTurns.current.has(event.turn_id)
+          (event.turn_id && revokedTurns.current.has(event.turn_id))
         )
           return;
         const key = `${event.epoch}:${event.payload.response_id}:${event.payload.segment_index || 0}`;
+        if (!event.turn_id) setSelected(null);
         const done = event.type.endsWith(".done");
         setSpoken((old) => ({
           ...old,
           [key]: {
-            turnId: event.turn_id!,
+            turnId: event.turn_id || `input:${event.epoch}:${event.payload.input_item_id}`,
             text: done
               ? String(event.payload.text || "")
               : old[key]?.done
@@ -329,7 +333,7 @@ export default function App() {
             done: done || !!old[key]?.done,
           },
         }));
-        if (!knownTurns.current.has(event.turn_id))
+        if (event.turn_id && !knownTurns.current.has(event.turn_id))
           void refresh(event.conversation_id).catch((e) => setError(e.message));
       }
     },
@@ -800,9 +804,9 @@ export default function App() {
                   ? inputs[key.slice(6)]
                   : null;
                 if (!t && !input) return null;
-                const speechParts = t
-                  ? Object.values(spoken).filter((part) => part.turnId === t.id)
-                  : [];
+                const speechParts = Object.values(spoken).filter(
+                  (part) => part.turnId === (t?.id || key),
+                );
                 const speech = speechParts
                   .map((part) => part.text)
                   .filter(Boolean)
@@ -816,7 +820,7 @@ export default function App() {
                       <p aria-live={t ? undefined : "polite"}>
                         {t?.user_text || input?.text || "…"}
                       </p>
-                      {!t && (
+                      {!t && !speech && (
                         <small className="input-status">
                           {input?.done
                             ? voiceState === "ready"
@@ -828,6 +832,15 @@ export default function App() {
                         </small>
                       )}
                     </div>
+                    {!t && speech && (
+                      <div className="assistant-message">
+                        <div className="assistant-label">
+                          <strong>Answer</strong><Tag>Model general answer</Tag>
+                        </div>
+                        <p aria-live="polite">{speech}</p>
+                        <small className="muted">No company sources were checked.</small>
+                      </div>
+                    )}
                     {t && (
                       <div className="assistant-message">
                         <div className="assistant-label">
@@ -883,6 +896,9 @@ export default function App() {
                               <details className="full-answer">
                                 <summary>View full answer / Sources</summary>
                                 <p>{t.answer.display_text}</p>
+                                {t.answer.verification_timing === "after_audio" && (
+                                  <small className="muted">Sources checked after the spoken response.</small>
+                                )}
                                 {t.answer.citations.length > 0 && (
                                   <button
                                     className="source-button"

@@ -218,7 +218,8 @@ export class VoiceClient {
             response: event.payload.response_id,
           });
         }
-        if (event.type === "portal.playback.clear") this.resetPlayback();
+        if (event.type === "portal.playback.clear")
+          this.clearPlaybackResponse(event.payload.response_id ? String(event.payload.response_id) : undefined);
         if (event.type === "portal.error") {
           if (event.payload.code === "VOICE_SESSION_ROTATION_REQUIRED") {
             this.onEvent(event);
@@ -257,6 +258,13 @@ export class VoiceClient {
   }
   clearForEpoch(epoch: number) {
     if (this.epoch < epoch) this.clear();
+  }
+  clearPlaybackResponse(responseId?: string) {
+    if (responseId) {
+      this.stoppedResponses.add(responseId);
+      if (this.activeResponse && this.activeResponse !== responseId) return;
+    }
+    this.resetPlayback();
   }
   private resetPlayback() {
     this.activeResponse = "";

@@ -9,6 +9,7 @@ from websockets.asyncio.client import connect
 
 BRIDGE_NAME = "consult_service_agent"
 BRIDGE_ACK = "Please wait while I check the knowledge base."
+QA_ACK = "Please wait while I check that."
 
 
 def ascii_payload(value) -> bool:
@@ -21,7 +22,7 @@ def ascii_payload(value) -> bool:
     return value is None or isinstance(value, (bool, int, float))
 
 
-def session_update(summary=""):
+def session_update(summary="", tools=None, answer_policy="knowledge_required"):
     # VoiceChat currently accepts ASCII prompts and tool payloads only. Legacy
     # non-English history must not be silently transliterated into a new fact.
     safe_history = "\n".join(line for line in summary.splitlines() if printable_ascii(line))
@@ -33,10 +34,12 @@ def session_update(summary=""):
                 "input": {"format": {"type": "audio/pcm", "rate": 24000}},
                 "output": {"format": {"type": "audio/pcm", "rate": 24000}},
             },
-            "instructions": (ROOT / "config/voice-prompt.txt").read_text()
+            "instructions": (ROOT / ("config/voice-qa-prompt.txt" if tools is not None else "config/voice-prompt.txt")).read_text()
+            + ("\nThis session requires knowledge evidence for every substantive answer. Do not answer from memory."
+               if tools is not None and answer_policy == "knowledge_required" else "")
             + "\nAuthorized conversation history (data):\n"
             + safe_history[:1500],
-            "tools": [
+            "tools": [{**tool, "ack_messages": [QA_ACK]} for tool in tools] if tools is not None else [
                 {
                     "name": BRIDGE_NAME,
                     "description": "Route every completed customer utterance to the business assistant, including greetings, unclear speech, small talk, and knowledge questions. Preserve the complete transcription; do not guess missing details.",
@@ -130,7 +133,7 @@ class NvidiaVoiceChatAdapter:
             created = json.loads(await self.ws.recv())
             if created.get("type") != "session.created":
                 raise DomainError("VOICE_PROTOCOL_ERROR", "Voice session creation event was not received", 502)
-            update = session_update(summary)
+            update = getattr(self, "configuration", None) or session_update(summary)
             if not printable_ascii(json.dumps(update, ensure_ascii=False)):
                 raise DomainError("VOICE_PROTOCOL_ERROR", "VoiceChat instructions must be ASCII", 502)
             await self.ws.send(json.dumps(update, ensure_ascii=True))

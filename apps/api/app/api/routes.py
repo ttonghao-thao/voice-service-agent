@@ -146,13 +146,16 @@ def capabilities(s):
         "native_full_duplex": voice_configured,
         "function_result_return": voice_configured,
         "native_cancel_response": False,
-        "native_tool_phase_barge_in": voice_configured,
+        "native_tool_phase_barge_in": False,
         "dynamic_instructions": False,
         "arbitrary_text_to_speech": False,
         "required_voice_languages": ["en-US"],
         "declared_voice_languages": ["en-US"],
         "integration_verified_voice_languages": [],
         "tool_phase_recovery": "close_and_reconnect",
+        "qa_execution_mode": s.qa_execution_mode,
+        "answer_policy": s.answer_policy,
+        "qa_toolset_version": s.qa_toolset_version,
         "voice_session_max_seconds": s.voice_session_max_seconds,
     }
 
@@ -169,6 +172,9 @@ async def get_capabilities(request: Request):
     return {
         **capabilities(request.app.state.settings),
         "available_tools": sorted(await request.app.state.registry.allowed(user)),
+        "native_tools": list(await request.app.state.coordinator.runtime.dispatcher.available(
+            request.app.state.registry, user)) if request.app.state.settings.qa_execution_mode == "dual_tools"
+            else ["consult_service_agent"],
     }
 
 
@@ -199,6 +205,9 @@ async def create_conversation(body: ConversationInput, request: Request):
             access_token_hash=hashlib.sha256(access_token.encode()).hexdigest(),
             title=body.title,
             locale=body.locale,
+            qa_execution_mode=settings.qa_execution_mode,
+            answer_policy=settings.answer_policy,
+            qa_toolset_version=settings.qa_toolset_version if settings.qa_execution_mode == "dual_tools" else "legacy",
         )
         db.add(c)
         await db.flush()
@@ -248,6 +257,10 @@ async def messages(
                     "parent_task_id": t.parent_task_id,
                     "native_call_id": t.native_call_id,
                     "input_item_id": t.input_item_id,
+                    "selected_tool": t.selected_tool,
+                    "effective_executor": t.effective_executor,
+                    "escalation_reason": t.escalation_reason,
+                    "execution_phase": t.execution_phase,
                     "user_text": t.user_text,
                     "channel": t.channel,
                     # Once an answer exists, its normalized terminal state is the

@@ -1,0 +1,42 @@
+{
+  "additionalProperties": false,
+  "properties": {
+    "user_request": {
+      "maxLength": 2000,
+      "minLength": 1,
+      "title": "User Request",
+      "type": "string"
+    },
+    "product_model": {
+      "anyOf": [
+        {
+          "maxLength": 120,
+          "type": "string"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "title": "Product Model"
+    },
+    "software_version": {
+      "anyOf": [
+        {
+          "maxLength": 120,
+          "type": "string"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "title": "Software Version"
+    }
+  },
+  "required": [
+    "user_request",
+    "product_model",
+    "software_version"
+  ],
+  "title": "KnowledgeArguments",
+  "type": "object"
+}

@@ -62,6 +62,48 @@
           "default": false,
           "title": "Is Mock",
           "type": "boolean"
+        },
+        "answer_kind": {
+          "default": "legacy",
+          "enum": [
+            "knowledge",
+            "general",
+            "clarification",
+            "legacy"
+          ],
+          "title": "Answer Kind",
+          "type": "string"
+        },
+        "composition": {
+          "default": "legacy",
+          "enum": [
+            "external_llm",
+            "nano_grounded",
+            "provider_general",
+            "legacy"
+          ],
+          "title": "Composition",
+          "type": "string"
+        },
+        "validation_level": {
+          "default": "unknown",
+          "enum": [
+            "source_checked",
+            "provider_only",
+            "unknown"
+          ],
+          "title": "Validation Level",
+          "type": "string"
+        },
+        "verification_timing": {
+          "default": "not_verified",
+          "enum": [
+            "before_audio",
+            "after_audio",
+            "not_verified"
+          ],
+          "title": "Verification Timing",
+          "type": "string"
         }
       },
       "required": [
@@ -1142,6 +1184,35 @@
           "maxLength": 100000,
           "title": "Text",
           "type": "string"
+        },
+        "input_item_id": {
+          "anyOf": [
+            {
+              "maxLength": 128,
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Input Item Id"
+        },
+        "answer_kind": {
+          "anyOf": [
+            {
+              "enum": [
+                "knowledge",
+                "general"
+              ],
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Answer Kind"
         }
       },
       "required": [

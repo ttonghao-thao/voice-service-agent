@@ -14,6 +14,8 @@ API 容器内部监听 `0.0.0.0:8000`，不映射宿主端口。浏览器只从 
 
 ## 配置与独立测试通话
 
+Q07 增加可选 `QA_EXECUTION_MODE=dual_tools`，只影响新建会话，默认仍为 legacy。新模式仅注册 lookup_knowledge / reason_over_knowledge，默认允许一般模型回答；严格知识部署设置 `QA_ANSWER_POLICY=knowledge_required`，直查也走外置知识执行。先执行 Alembic 0007，再用匹配 API/Web 版本完成 Q07-E 的双工具、一般回答、证据续答及混合会话真实验收后启用；本地夹具不代表 GPU 放行。工具和 instructions 在 session 建立时注册，不发送 tool_choice。回滚 mode 只用于新会话，活动会话先结束或 drain；新增迁移的数据不自动删除，旧二进制回滚另测。可选变量示例见 `.env.example`，D1/D3 未实现。
+
 复制 `.env.example` 为 `.env`；模板中的 `voice.example.com`、`cuekb.example.com`、证书路径、镜像标签和 KB UUID 仅演示填写格式。替换示例值和所有 `REPLACE_` 值，并将 `WEB_TLS_CERT_FILE`、`WEB_TLS_KEY_FILE` 指向部署机上的可读绝对路径。Compose 固定 `AUTH_MODE=validation`、`CUEKB_MODE=real`、`ENABLED_TOOLS=search_knowledge`、`VOICE_PROVIDER=nvidia`；容量、语言和检索条数沿用代码默认值；整轮业务预算由 `AGENT_DEADLINE_MS` 显式配置，默认 30000 毫秒。不需要 tenant、账号 JSON、密码哈希、Cookie 密钥、能力开关、服务 revision、健康地址、OIDC、`APP_ENV` 或第二份 env 文件。
 
 门户首次加载不创建身份或读取历史。测试人员在当前标签页点击 “Start call” 时，API 创建新的 conversation、随机 owner 和高熵 `call_access_token`；token 只保存在该标签页 JavaScript 内存中，HTTPS/SSE 请求以 Bearer 发送，WSS 使用与该 owner/conversation/epoch 绑定的一次性 ticket。其它标签页不会得到该 token，不能读取或控制本次通话；结束通话撤销 token。`KNOWLEDGE_BASE_IDS` 仍由服务端配置并对所有测试通话统一生效，浏览器和模型不能扩大范围，管理 API 仍拒绝匿名 call capability。这不是正式客户认证方案。

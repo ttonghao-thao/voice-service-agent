@@ -8,6 +8,43 @@ test.use({
   },
   permissions: ["microphone"],
 });
+
+test("General voice answers stay in the chat without a knowledge turn", async ({ page }) => {
+  let conversationId = "";
+  let emit: (type: string, payload: Record<string, unknown>) => void;
+  page.on("response", async (response) => {
+    if (response.url().endsWith("/api/v1/conversations") && response.request().method() === "POST") {
+      conversationId = (await response.json()).id;
+    }
+  });
+  await page.routeWebSocket("**/api/v1/voice-sessions/**/stream?*", (socket) => {
+    emit = (type, payload) => socket.send(JSON.stringify({
+      type, event_id: crypto.randomUUID(), conversation_id: conversationId,
+      epoch: 1, request_revision: 0, server_seq: 1, turn_id: null, payload,
+    }));
+    emit("portal.session.ready", { sample_rate: 24000, format: "pcm16", chunk_ms: 80, is_mock: true });
+  });
+  await page.goto("/");
+  await page.getByRole("button", { name: "Start call", exact: true }).click();
+  await expect(page.getByRole("main").getByText("Voice ready", { exact: true })).toBeVisible();
+  emit!("portal.transcript.done", { item_id: "general-input", text: "What is MLO?" });
+  emit!("portal.speech_text.delta", {
+    input_item_id: "general-input", response_id: "general-response", segment_index: 0,
+    phase: "answer", answer_kind: "general", text: "MLO means multi-link ",
+  });
+  emit!("portal.speech_text.done", {
+    input_item_id: "general-input", response_id: "general-response", segment_index: 0,
+    phase: "answer", answer_kind: "general", text: "MLO means multi-link operation.",
+  });
+  emit!("portal.audio.done", { response_id: "general-response", phase: "answer" });
+  await expect(page.locator(".user-message")).toContainText("What is MLO?");
+  await expect(page.locator(".assistant-message")).toHaveCount(1);
+  await expect(page.locator(".assistant-message")).toContainText("MLO means multi-link operation.");
+  await expect(page.locator(".assistant-message")).toContainText("Model general answer");
+  await expect(page.getByText("Waiting for request", { exact: true })).toHaveCount(0);
+  await page.getByRole("button", { name: "End call", exact: true }).click();
+  await expect(page.locator(".assistant-message")).toContainText("MLO means multi-link operation.");
+});
 test("Synthetic microphone transport, playback stop, rotation and cleanup", async ({
   page,
 }) => {
@@ -148,5 +185,9 @@ test("Real AudioWorklet resumes a new reply after stop and rejects late old PCM"
   play("next");
   sendEvent!("portal.audio.done", { response_id: "next" });
   await expect.poll(readRms).toBeGreaterThan(0.05);
+  sendEvent!("portal.playback.clear", { response_id: "first" });
+  await expect.poll(readRms).toBeGreaterThan(0.05);
+  sendEvent!("portal.playback.clear", { response_id: "next" });
+  await expect.poll(readRms).toBeLessThan(0.001);
   await page.getByRole("button", { name: "End call", exact: true }).click();
 });

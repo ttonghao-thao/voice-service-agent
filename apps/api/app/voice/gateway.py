@@ -8,7 +8,9 @@ from collections import deque
 from dataclasses import dataclass
 
 import anyio
+from app.agent_runtime.direct import EvidenceReady
 from app.contracts import (
+    AnswerBundle,
     BridgeArguments,
     DomainError,
     PortalAudioAppend,
@@ -21,7 +23,14 @@ from app.contracts import (
     printable_ascii,
     uid,
 )
-from app.voice.provider import BRIDGE_ACK, BRIDGE_NAME, MockVoiceAdapter, NvidiaVoiceChatAdapter
+from app.voice.provider import (
+    BRIDGE_ACK,
+    BRIDGE_NAME,
+    QA_ACK,
+    MockVoiceAdapter,
+    NvidiaVoiceChatAdapter,
+    session_update,
+)
 
 logger = logging.getLogger(__name__)
 TRANSCRIPT_FINAL_TIMEOUT_SECONDS = 5
@@ -43,6 +52,12 @@ class VoiceSession:
     stopped: bool = False
     suppress_next_response: bool = False
     suppressed_responses: set[str] | None = None
+    qa_mode: str = "legacy"
+    answer_policy: str = "knowledge_required"
+    registered_tools: tuple[str, ...] = ()
+    tool_definitions: list | None = None
+    response_turns: dict | None = None
+    suppressed_turns: set | None = None
 
 
 class VoiceGateway:
@@ -78,6 +93,18 @@ class VoiceGateway:
                 raise DomainError("VOICE_UNAVAILABLE", "VoiceChat is not configured", 503)
             if len(self.sessions) >= s.max_voice_sessions:
                 raise DomainError("VOICE_CAPACITY_EXCEEDED", "Voice capacity is full. Use text or try again later.", 429, True)
+            registered_tools, tool_definitions = (), None
+            if conversation.qa_execution_mode == "dual_tools":
+                dispatcher = self.coordinator.runtime.dispatcher
+                registered_tools = await dispatcher.available(self.coordinator.runtime.registry, principal)
+                if not registered_tools or (
+                    "reason_over_knowledge" in registered_tools and s.agent_provider != "mock"
+                    and (not self.coordinator.runtime.client or not s.agent_model)
+                ):
+                    raise DomainError("VOICE_UNAVAILABLE", "The registered knowledge tools are not configured", 503)
+                tool_definitions = dispatcher.definitions(registered_tools)
+                if len(registered_tools) > 5:
+                    logger.warning("voice_tool_count_exceeds_recommendation count=%s", len(registered_tools))
             epoch, request_revision = await self.store.rotate_voice(principal, cid)
             old_task = self.coordinator.tasks.pop(cid, None)
             if old_task:
@@ -102,6 +129,12 @@ class VoiceGateway:
                     time.monotonic() + 60,
                     summary,
                     suppressed_responses=set(),
+                    qa_mode=c.qa_execution_mode,
+                    answer_policy=c.answer_policy,
+                    response_turns={},
+                    suppressed_turns=set(),
+                    registered_tools=registered_tools,
+                    tool_definitions=tool_definitions,
                 )
             self.sessions[sid] = session
             return {
@@ -128,6 +161,17 @@ class VoiceGateway:
             else:
                 session.suppress_next_response = True
 
+    async def suppress_turn(self, cid, epoch, turn_id):
+        last_response = None
+        for session in self.sessions.values():
+            if session.conversation_id == cid and session.epoch == epoch:
+                session.suppressed_turns.add(turn_id)
+                for rid, owner in session.response_turns.items():
+                    if owner[0] == turn_id:
+                        session.suppressed_responses.add(rid)
+                        last_response = rid
+        return last_response
+
     async def close(self):
         tasks = []
         for session in list(self.sessions.values()):
@@ -151,6 +195,8 @@ class VoiceGateway:
         session.used, session.task = True, asyncio.current_task()
         await ws.accept()
         provider = self.provider_factory(self.settings)
+        if session.qa_mode == "dual_tools":
+            provider.configuration = session_update(session.summary, session.tool_definitions, session.answer_policy)
         incoming = asyncio.Queue(maxsize=6)  # 480 ms at fixed 80 ms chunks.
         controls = asyncio.Queue(maxsize=16)
         outgoing = asyncio.Queue(maxsize=12)
@@ -164,7 +210,7 @@ class VoiceGateway:
         initial_text_completed = set()
         tool_responses = {}
         response_calls = {}
-        response_turns = {}
+        response_turns = session.response_turns
         speech_segments = {}
         speech_segment_counts = {}
         ack_prefixes = {}
@@ -172,6 +218,15 @@ class VoiceGateway:
         speech_new_delta = set()
         authorized_followups = set()
         ack_responses = set()
+        general_inputs = {}
+        general_deadlines = {}
+        completed_responses = set()
+        response_texts = {}
+        evidence_turns = {}
+        response_deliveries = {}
+        call_tools, call_versions = {}, {}
+        latest_input_id = None
+        ack_text = QA_ACK if session.qa_mode == "dual_tools" else BRIDGE_ACK
         seq, client_seq, started = 0, -1, time.monotonic()
         frames, last_input, last_ack, last_playback_stop = 0, started, 0.0, 0.0
         input_state = "quiet"
@@ -180,7 +235,7 @@ class VoiceGateway:
             await self.coordinator.coordination.check(session.conversation_id)
             return not session.stopped and await self.store.current(
                 session.conversation_id, session.epoch, tid, revision
-            )
+            ) and tid not in session.suppressed_turns
 
         def emit(kind, payload, turn_id=None):
             nonlocal seq
@@ -203,7 +258,21 @@ class VoiceGateway:
         async def writer():
             while True:
                 event = await outgoing.get()
-                if await current(event.get("turn_id"), event.get("request_revision") if event.get("turn_id") else None):
+                response_id = event["payload"].get("response_id")
+                boundary = event["type"] == "portal.audio.done"
+                if response_id in session.suppressed_responses and not boundary:
+                    continue
+                if response_id in general_inputs and general_inputs[response_id] != latest_input_id:
+                    continue
+                tid, revision = event.get("turn_id"), event.get("request_revision") if event.get("turn_id") else None
+                allowed = await current(tid, revision)
+                if boundary and tid in session.suppressed_turns:
+                    allowed = await current() and await self.store.current(
+                        session.conversation_id, session.epoch, tid, revision)
+                if allowed:
+                    if event["type"] == "portal.audio.delta":
+                        sent_samples[response_id] = sent_samples.get(response_id, 0) + len(
+                            base64.b64decode(event["payload"]["audio"], validate=True)) // 2
                     async with asyncio.timeout(2):
                         await ws.send_json(event)
 
@@ -219,10 +288,28 @@ class VoiceGateway:
                         # This is the final fence immediately at the single writer.
                         async with self.coordinator.lock(session.conversation_id):
                             if await current(tid, revision) and pending.get(call) == "ready":
-                                await provider.submit_tool_result(call, text)
+                                if session.qa_mode == "dual_tools":
+                                    allowed = await self.coordinator.runtime.registry.allowed(session.principal)
+                                    definition = self.coordinator.runtime.dispatcher.tools.get(call_tools.get(call))
+                                    if (not definition or not definition.required_tools <= allowed
+                                        or definition.permission_scope not in session.principal.scopes
+                                        or (session.principal.expires_at is not None and session.principal.expires_at <= time.time())):
+                                        raise DomainError("FORBIDDEN", "Tool access changed before delivery", 403)
+                                    for name, version in call_versions.get(call, {}).items():
+                                        if await self.store.tool_revision(name) != version:
+                                            raise DomainError("FORBIDDEN", "Tool configuration changed before delivery", 403)
+                                    if not await self.store.delivery(session.conversation_id, session.epoch, call,
+                                            "tool_result", "write_started", tid, revision):
+                                        continue
+                                # Install the one-response grant before the network write can yield.
+                                # A fast provider may start answering before submit returns.
                                 pending[call] = "sent"
                                 if authorize_output:
                                     authorized_followups.add(tool_responses.get(call, call))
+                                await provider.submit_tool_result(call, text)
+                                if session.qa_mode == "dual_tools":
+                                    await self.store.delivery(session.conversation_id, session.epoch, call,
+                                        "tool_result", "sent", tid, revision)
                                 logger.info(
                                     "voice_tool_result_submitted conversation_id=%s turn_id=%s call_id=%s",
                                     session.conversation_id,
@@ -260,13 +347,19 @@ class VoiceGateway:
                     session.conversation_id,
                     call_id,
                 )
-                if (
+                decision = None
+                if session.qa_mode == "dual_tools":
+                    decision = self.coordinator.runtime.dispatcher.resolve(
+                        payload["name"], payload["arguments"], session.registered_tools)
+                    args = decision.arguments
+                elif (
                     payload["name"] != BRIDGE_NAME
                     or not isinstance(payload["arguments"], str)
                     or len(payload["arguments"]) > 12000
                 ):
                     raise ValueError("Unsupported bridge")
-                args = BridgeArguments.model_validate_json(payload["arguments"])
+                else:
+                    args = BridgeArguments.model_validate_json(payload["arguments"])
                 request = (
                     await asyncio.wait_for(
                         asyncio.shield(final_transcript),
@@ -280,7 +373,7 @@ class VoiceGateway:
                     session.conversation_id,
                     call_id,
                     input_item_id,
-                    request == args.user_request.strip(),
+                    request == getattr(args, "user_request", "").strip(),
                 )
                 turn, task = await self.coordinator.submit(
                     session.principal,
@@ -291,13 +384,26 @@ class VoiceGateway:
                     session.epoch,
                     call_id,
                     input_item_id,
+                    decision,
                 )
                 tid = turn.id
                 revision = turn.request_revision
                 session.request_revision = revision
                 response_turns[tool_responses[call_id]] = (tid, revision)
+                for rid, parent_call in response_calls.items():
+                    if parent_call == call_id:
+                        response_turns[rid] = (tid, revision)
                 bundle = await task if task else None
                 if not bundle or not await current(tid, revision):
+                    return
+                if isinstance(bundle, EvidenceReady):
+                    evidence_turns[tid] = bundle
+                    text = json.dumps(bundle.envelope, ensure_ascii=True)
+                    pending[call_id] = "ready"
+                    await self.store.delivery(session.conversation_id, session.epoch, call_id,
+                                              "tool_result", "prepared", tid, revision)
+                    controls.put_nowait((call_id, tid, revision, text, True))
+                    wake.set()
                     return
                 logger.info(
                     "voice_bridge_finished conversation_id=%s turn_id=%s call_id=%s status=%s",
@@ -343,11 +449,17 @@ class VoiceGateway:
                 )
             if await current(tid, revision):
                 pending[call_id] = "ready"
-                controls.put_nowait((call_id, tid, revision, text, True))
+                if session.qa_mode == "dual_tools":
+                    await self.store.delivery(session.conversation_id, session.epoch, call_id,
+                                              "tool_result", "prepared", tid, revision)
+                authorize = tid is not None or session.qa_mode == "legacy"
+                if not authorize:
+                    session.suppressed_responses.add(tool_responses[call_id])
+                controls.put_nowait((call_id, tid, revision, text, authorize))
                 wake.set()
 
         async def receiver():
-            nonlocal input_state
+            nonlocal input_state, latest_input_id
             customer_input_seen = False
             async for event in provider.events():
                 if not await current():
@@ -357,7 +469,8 @@ class VoiceGateway:
                     if call in pending:
                         continue
                     if (
-                        event.payload.get("name") != BRIDGE_NAME
+                        event.payload.get("name") not in (
+                            session.registered_tools if session.qa_mode == "dual_tools" else (BRIDGE_NAME,))
                         or not isinstance(event.payload.get("arguments"), str)
                         or len(event.payload["arguments"]) > 12000
                     ):
@@ -371,10 +484,15 @@ class VoiceGateway:
                     if any(v in ("running", "ready") for v in pending.values()):
                         raise DomainError("VOICE_PROTOCOL_ERROR", "Parallel cloud tool calls are unsupported. Please ask again.", 502)
                     response_id = event.payload.get("response_id")
+                    call_tools[call] = event.payload.get("name")
+                    if session.qa_mode == "dual_tools":
+                        definition = self.coordinator.runtime.dispatcher.tools[call_tools[call]]
+                        call_versions[call] = {name: await self.store.tool_revision(name)
+                                               for name in definition.required_tools}
                     tool_responses[call] = response_id or call
                     if response_id:
                         response_calls[response_id] = call
-                    input_item_id = next(
+                    input_item_id = general_inputs.get(response_id) or next(
                         (item for item in unbound_inputs if item not in consumed_inputs),
                         None,
                     )
@@ -406,9 +524,14 @@ class VoiceGateway:
                         )
                         continue
                     final_transcript = transcript_future(input_item_id)
+                    for rid, associated_input in list(general_inputs.items()):
+                        if associated_input == input_item_id:
+                            general_inputs.pop(rid)
+                            response_calls[rid] = call
                     consumed_inputs.add(input_item_id)
                     prune_inputs()
                     if response_id:
+                        general_inputs.pop(response_id, None)
                         authorized_responses.add(response_id)
                     logger.info(
                         "voice_tool_call_received conversation_id=%s call_id=%s tool=%s input_item_id=%s",
@@ -435,6 +558,7 @@ class VoiceGateway:
                     if input_state == "speaking":
                         customer_input_seen = True
                         item_id = event.payload["item_id"]
+                        latest_input_id = item_id
                         if item_id not in input_transcripts:
                             prune_inputs()
                             if len(input_transcripts) >= 16:
@@ -450,6 +574,11 @@ class VoiceGateway:
                 if event.kind == "transcript.done":
                     customer_input_seen = True
                     item_id = event.payload["item_id"]
+                    if item_id not in input_transcripts:
+                        latest_input_id = item_id
+                    if session.qa_mode == "dual_tools":
+                        await self.store.utterance(session.principal, session.conversation_id,
+                                                   session.epoch, item_id, event.payload["text"])
                     if item_id not in input_transcripts:
                         prune_inputs()
                         if len(input_transcripts) >= 16:
@@ -506,6 +635,24 @@ class VoiceGateway:
                         authorized_responses.add(response_id)
                         if parent_response in response_turns:
                             response_turns[response_id] = response_turns[parent_response]
+                        response_deliveries[response_id] = response_calls.get(parent_response)
+                        if session.qa_mode == "dual_tools" and response_deliveries[response_id]:
+                            owner = response_turns.get(response_id)
+                            await self.store.delivery(session.conversation_id, session.epoch,
+                                response_deliveries[response_id], "tool_result", None,
+                                owner[0] if owner else None, owner[1] if owner else session.request_revision,
+                                response_id)
+                    if (
+                        session.qa_mode == "dual_tools" and session.answer_policy == "general_qa"
+                        and response_id not in authorized_responses and customer_input_seen
+                        and response_id not in completed_responses
+                        and not any(v in ("running", "ready") for v in pending.values())
+                    ):
+                        candidates = [item for item in unbound_inputs if item not in consumed_inputs]
+                        if len(candidates) == 1 and candidates[0] == latest_input_id:
+                            general_inputs[response_id] = candidates[0]
+                            general_deadlines[response_id] = time.monotonic() + self.settings.qa_provider_answer_timeout_ms / 1000
+                            authorized_responses.add(response_id)
                     if response_id not in authorized_responses and customer_input_seen:
                         logger.warning(
                             "voice_unbridged_response_rejected conversation_id=%s response_id=%s",
@@ -531,6 +678,9 @@ class VoiceGateway:
                 suppressed = bool(
                     response_id and response_id in (session.suppressed_responses or set())
                 )
+                if response_id in general_inputs and general_inputs[response_id] != latest_input_id:
+                    session.suppressed_responses.add(response_id)
+                    suppressed = True
                 turn_owner = response_turns.get(response_id)
                 if (
                     turn_owner
@@ -549,7 +699,7 @@ class VoiceGateway:
                         and response_id not in speech_segments
                     ):
                         candidate = ack_prefixes.get(response_id, "") + event.payload["text"]
-                        if BRIDGE_ACK.startswith(candidate):
+                        if ack_text.startswith(candidate):
                             ack_prefixes[response_id] = candidate
                             continue
                         if response_id in ack_prefixes:
@@ -563,7 +713,7 @@ class VoiceGateway:
                             and pending.get(response_calls[response_id]) != "sent"
                         ) or (
                             event.kind == "speech_text.done"
-                            and " ".join(event.payload["text"].split()) == BRIDGE_ACK
+                            and " ".join(event.payload["text"].split()) == ack_text
                         )
                         else "answer",
                     )
@@ -574,11 +724,15 @@ class VoiceGateway:
                         "phase": phase,
                         "segment_index": speech_segment_counts.get(response_id, 0),
                     }
+                    if session.qa_mode == "dual_tools":
+                        event.payload["answer_kind"] = "knowledge" if turn_owner else "general"
+                        event.payload["input_item_id"] = general_inputs.get(response_id)
                 if (
                     event.kind.endswith(".done")
                     and "text" in event.payload
                     and not suppressed
-                    and (event.kind != "speech_text.done" or (turn_owner and event.payload["phase"] == "answer"))
+                    and (event.kind != "speech_text.done" or ((turn_owner or response_id in general_inputs)
+                         and event.payload["phase"] == "answer"))
                 ):
                     kind = "voicechat_transcript" if event.kind.startswith("speech") else "user_transcript"
                     source = (
@@ -588,28 +742,29 @@ class VoiceGateway:
                     )
                     stored_payload = dict(event.payload)
                     if kind == "voicechat_transcript":
-                        stored_payload["turn_id"] = turn_owner[0]
+                        stored_payload["turn_id"] = turn_owner[0] if turn_owner else None
                         stored_payload["_authorized_kb_ids"] = sorted(
-                            session.principal.knowledge_base_ids
+                            session.principal.knowledge_base_ids if turn_owner else ()
                         )
                     if not await self.store.record(
                         session.conversation_id, session.epoch, kind, source, stored_payload,
-                        turn_owner[0] if kind == "voicechat_transcript" else None,
-                        turn_owner[1] if kind == "voicechat_transcript" else None,
+                        turn_owner[0] if kind == "voicechat_transcript" and turn_owner else None,
+                        turn_owner[1] if kind == "voicechat_transcript" and turn_owner else None,
                     ):
                         continue
+                    if kind == "voicechat_transcript":
+                        response_texts.setdefault(response_id, []).append(event.payload["text"])
                 if event.kind == "audio.delta":
                     audio = base64.b64decode(event.payload["audio"], validate=True)
                     if len(audio) % 2 or len(audio) > 48000:
                         raise DomainError("VOICE_PROTOCOL_ERROR", "Voice audio frame is not PCM16", 502)
                     response_id = event.payload["response_id"]
-                    sent_samples[response_id] = sent_samples.get(response_id, 0) + len(audio) // 2
                 if event.kind == "speech_text.done":
                     speech_segments.pop(response_id, None)
                     speech_segment_counts[response_id] = speech_segment_counts.get(response_id, 0) + 1
                     if response_id in initial_responses:
                         initial_text_completed.add(response_id)
-                    if " ".join(event.payload["text"].split()) == BRIDGE_ACK:
+                    if " ".join(event.payload["text"].split()) == ack_text:
                         ack_responses.add(response_id)
                     else:
                         ack_responses.discard(response_id)
@@ -624,6 +779,18 @@ class VoiceGateway:
                     # itself contains the answer, retire that spare permission.
                     if response_id not in ack_responses:
                         authorized_followups.discard(response_id)
+                        if turn_owner and turn_owner[0] in evidence_turns:
+                            self.coordinator.provider_answer(turn_owner[0], " ".join(response_texts.get(response_id, [])))
+                        elif response_id in general_inputs and not suppressed:
+                            text = " ".join(response_texts.get(response_id, []))
+                            await self.store.utterance(session.principal, session.conversation_id,
+                                session.epoch, general_inputs[response_id], answer=AnswerBundle(
+                                    status="answered" if text else "failed", display_text=text, speech_text="",
+                                    answer_kind="general", composition="provider_general",
+                                    validation_level="provider_only", verification_timing="not_verified",
+                                    is_mock=self.settings.voice_provider == "mock"))
+                            consumed_inputs.add(general_inputs[response_id])
+                        completed_responses.add(response_id)
                     ack_responses.discard(response_id)
                     authorized_responses.discard(response_id)
 
@@ -634,7 +801,8 @@ class VoiceGateway:
                         session.suppressed_responses.discard(response_id)
                         session.suppress_next_response = False
                     continue
-                if event.kind.startswith("speech_text") and event.payload["phase"] == "answer" and not turn_owner:
+                if (event.kind.startswith("speech_text") and event.payload["phase"] == "answer"
+                    and not turn_owner and response_id not in general_inputs):
                     continue
                 emit(event.kind, event.payload, turn_owner[0] if turn_owner else None)
 
@@ -673,6 +841,9 @@ class VoiceGateway:
                     if samples > sent_samples.get(response_id, -1):
                         raise DomainError("VOICE_PROTOCOL_ERROR", "Playback acknowledgement exceeds sent audio", 400)
                     if time.monotonic() - last_ack > 0.5:
+                        if session.qa_mode == "dual_tools":
+                            await self.store.playback_delivery(session.conversation_id, session.epoch,
+                                                               response_id, samples)
                         await self.store.record(
                             session.conversation_id,
                             session.epoch,
@@ -709,6 +880,14 @@ class VoiceGateway:
         async def watchdog():
             while True:
                 await asyncio.sleep(1)
+                for response_id, deadline in general_deadlines.items():
+                    if response_id in general_inputs and response_id not in completed_responses and time.monotonic() > deadline:
+                        await self.store.utterance(session.principal, session.conversation_id,
+                            session.epoch, general_inputs[response_id], answer=AnswerBundle(
+                                status="failed", display_text="The voice response timed out. Please try again.",
+                                speech_text="", reason_code="VOICE_ANSWER_TIMEOUT", answer_kind="general",
+                                composition="provider_general", validation_level="provider_only"))
+                        raise DomainError("VOICE_ANSWER_TIMEOUT", "The voice response timed out. Please try again.", 502, True)
                 if session.principal.expires_at is not None and session.principal.expires_at <= time.time():
                     raise DomainError("AUTH_REQUIRED", "Your session expired. Please sign in again.", 401)
                 if not await current():

@@ -144,6 +144,10 @@ def test_voice_response_after_user_speech_requires_business_bridge(tmp_path):
         ) as ws:
             assert ws.receive_json()["type"] == "portal.session.ready"
             error = ws.receive_json()
+            # Input activity can legitimately reach the writer before the receiver
+            # rejects the reply. The invariant is rejection before any answer/audio.
+            while error["type"] == "portal.input.state":
+                error = ws.receive_json()
             assert error["type"] == "portal.error"
             assert error["payload"]["code"] == "VOICE_TOOL_REQUIRED"
 

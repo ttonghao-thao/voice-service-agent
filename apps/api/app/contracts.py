@@ -49,6 +49,11 @@ class BridgeArguments(StrictModel):
     user_request: str = Field(min_length=1, max_length=2000)
 
 
+class KnowledgeArguments(BridgeArguments):
+    product_model: str | None = Field(max_length=120)
+    software_version: str | None = Field(max_length=120)
+
+
 class ConversationInput(StrictModel):
     title: str = Field(default="New conversation", min_length=1, max_length=100)
     locale: Literal["en-US"] = "en-US"
@@ -120,6 +125,10 @@ class AnswerBundle(StrictModel):
     cards: list[dict[str, Any]] = Field(default_factory=list)
     reason_code: str | None = None
     is_mock: bool = False
+    answer_kind: Literal["knowledge", "general", "clarification", "legacy"] = "legacy"
+    composition: Literal["external_llm", "nano_grounded", "provider_general", "legacy"] = "legacy"
+    validation_level: Literal["source_checked", "provider_only", "unknown"] = "unknown"
+    verification_timing: Literal["before_audio", "after_audio", "not_verified"] = "not_verified"
 
 
 class PortalEvent(StrictModel):
@@ -161,6 +170,8 @@ class SpeechTextPayload(StrictModel):
     segment_index: int = Field(default=0, ge=0)
     phase: Literal["status", "answer"] = "answer"
     text: str = Field(max_length=100000)
+    input_item_id: str | None = Field(default=None, max_length=128)
+    answer_kind: Literal["knowledge", "general"] | None = None
 
 
 class AudioDeltaPayload(StrictModel):

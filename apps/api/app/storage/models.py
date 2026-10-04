@@ -2,7 +2,7 @@ from datetime import datetime
 from typing import Any
 
 from app.contracts import now, uid
-from sqlalchemy import JSON, Boolean, DateTime, ForeignKey, Integer, String, Text, UniqueConstraint
+from sqlalchemy import JSON, Boolean, DateTime, ForeignKey, Index, Integer, String, Text, UniqueConstraint
 from sqlalchemy.orm import DeclarativeBase, Mapped, mapped_column
 
 
@@ -26,13 +26,17 @@ class Conversation(Base):
     slots: Mapped[dict] = mapped_column(JSON, default=dict)
     summary: Mapped[str] = mapped_column(Text, default="")
     tool_config_version: Mapped[str] = mapped_column(String(32), default="1")
+    qa_execution_mode: Mapped[str] = mapped_column(String(20), default="legacy")
+    answer_policy: Mapped[str] = mapped_column(String(32), default="knowledge_required")
+    qa_toolset_version: Mapped[str] = mapped_column(String(32), default="legacy")
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=now)
     updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=now)
 
 
 class Turn(Base):
     __tablename__ = "turns"
-    __table_args__ = (UniqueConstraint("conversation_id", "idempotency_key"),)
+    __table_args__ = (UniqueConstraint("conversation_id", "idempotency_key"),
+                      Index("ix_turns_conversation_revision", "conversation_id", "request_revision"))
     id: Mapped[str] = mapped_column(String(36), primary_key=True, default=uid)
     conversation_id: Mapped[str] = mapped_column(
         ForeignKey("conversations.id", ondelete="CASCADE"), index=True
@@ -42,6 +46,12 @@ class Turn(Base):
     parent_task_id: Mapped[str | None] = mapped_column(String(36))
     native_call_id: Mapped[str | None] = mapped_column(String(128))
     input_item_id: Mapped[str | None] = mapped_column(String(128))
+    selected_tool: Mapped[str | None] = mapped_column(String(80))
+    effective_executor: Mapped[str | None] = mapped_column(String(32))
+    escalation_reason: Mapped[str | None] = mapped_column(String(64))
+    execution_phase: Mapped[str | None] = mapped_column(String(32))
+    toolset_version: Mapped[str | None] = mapped_column(String(32))
+    evidence: Mapped[dict | None] = mapped_column(JSON)
     idempotency_key: Mapped[str] = mapped_column(String(180))
     request_hash: Mapped[str] = mapped_column(String(64))
     user_text: Mapped[str] = mapped_column(Text)
@@ -63,6 +73,37 @@ class Event(Base):
     )
     server_seq: Mapped[int] = mapped_column(Integer)
     payload: Mapped[dict] = mapped_column(JSON)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=now)
+
+
+class Utterance(Base):
+    __tablename__ = "utterances"
+    __table_args__ = (UniqueConstraint("conversation_id", "epoch", "input_item_id"),)
+    id: Mapped[str] = mapped_column(String(36), primary_key=True, default=uid)
+    conversation_id: Mapped[str] = mapped_column(ForeignKey("conversations.id", ondelete="CASCADE"), index=True)
+    epoch: Mapped[int] = mapped_column(Integer)
+    input_item_id: Mapped[str] = mapped_column(String(128))
+    user_text: Mapped[str | None] = mapped_column(Text)
+    turn_id: Mapped[str | None] = mapped_column(String(36))
+    kind: Mapped[str] = mapped_column(String(32), default="provider_general")
+    answer: Mapped[dict | None] = mapped_column(JSON)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=now)
+
+
+class DeliveryAttempt(Base):
+    __tablename__ = "delivery_attempts"
+    __table_args__ = (UniqueConstraint("conversation_id", "epoch", "native_call_id", "kind"),)
+    id: Mapped[str] = mapped_column(String(36), primary_key=True, default=uid)
+    conversation_id: Mapped[str] = mapped_column(ForeignKey("conversations.id", ondelete="CASCADE"), index=True)
+    epoch: Mapped[int] = mapped_column(Integer)
+    request_revision: Mapped[int] = mapped_column(Integer)
+    turn_id: Mapped[str | None] = mapped_column(String(36))
+    native_call_id: Mapped[str] = mapped_column(String(128))
+    response_id: Mapped[str | None] = mapped_column(String(128))
+    kind: Mapped[str] = mapped_column(String(32))
+    status: Mapped[str] = mapped_column(String(32), default="prepared")
+    sent_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    played_samples: Mapped[int] = mapped_column(Integer, default=0)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=now)
 
 

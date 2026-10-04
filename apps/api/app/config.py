@@ -4,7 +4,7 @@ from typing import Literal
 from urllib.parse import urlparse
 from uuid import UUID
 
-from pydantic import SecretStr, field_validator, model_validator
+from pydantic import Field, SecretStr, field_validator, model_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 ROOT = Path(__file__).resolve().parents[3]
@@ -26,6 +26,14 @@ class Settings(BaseSettings):
     openai_api_key: SecretStr = SecretStr("")
     # Total business-turn budget: initial model call, knowledge search, and final answer.
     agent_deadline_ms: int = 30000
+    qa_execution_mode: Literal["legacy", "dual_tools"] = "legacy"
+    qa_answer_policy: Literal["general_qa", "knowledge_required"] | None = None
+    qa_toolset_version: str = "qa-tools-v2"
+    qa_external_fallback_enabled: bool = True
+    qa_direct_max_hits: int = Field(default=3, ge=1, le=3)
+    qa_direct_evidence_max_bytes: int = Field(default=6000, ge=1024, le=6000)
+    qa_max_retrieval_calls: int = Field(default=2, ge=1, le=2)
+    qa_provider_answer_timeout_ms: int = Field(default=10000, ge=100, le=30000)
     max_agent_runs: int = 16
     cuekb_mode: Literal["mock", "real"] = "mock"
     cuekb_base_url: str = ""
@@ -81,7 +89,15 @@ class Settings(BaseSettings):
             raise ValueError("Invalid session timeout or retention")
         if self.external_tracing_enabled:
             raise ValueError("External tracing requires a reviewed redaction exporter; currently disabled")
+        if self.qa_execution_mode == "legacy" and self.qa_answer_policy == "general_qa":
+            raise ValueError("General answers require dual_tools mode")
         return self
+
+    @property
+    def answer_policy(self) -> str:
+        return self.qa_answer_policy or (
+            "general_qa" if self.qa_execution_mode == "dual_tools" else "knowledge_required"
+        )
 
     def validate_deployment(self) -> None:
         """Fail closed for the single deployed configuration; injected test settings bypass this gate."""

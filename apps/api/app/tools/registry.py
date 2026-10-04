@@ -101,14 +101,23 @@ class ToolRegistry:
                 raise DomainError("FORBIDDEN", "Tool configuration changed. Please ask again.", 403)
             adapter = self.adapters[spec.adapter_id]
             args = adapter.input_model.model_validate(arguments)
+            if name == "search_knowledge" and ctx.retrieval_limit is not None:
+                if ctx.retrieval_calls >= ctx.retrieval_limit:
+                    raise DomainError("RETRIEVAL_LIMIT", "The knowledge retrieval budget was exhausted", 409)
+                ctx.retrieval_calls += 1
             ctx.invoked.add(name)
-            async with asyncio.timeout(spec.timeout_ms / 1000):
+            budget = spec.timeout_ms / 1000
+            if ctx.deadline is not None:
+                budget = min(budget, max(0, ctx.deadline - time.monotonic()))
+            async with asyncio.timeout(budget):
                 output = await adapter.invoke(args, ctx)
                 output = adapter.output_adapter.validate_python(output).model_dump(mode="json")
             if len(json.dumps(output, ensure_ascii=False).encode()) > spec.result_limit:
                 raise DomainError("TOOL_BAD_RESPONSE", "Search result is too large", 502)
             if not await self.available(name):
                 raise DomainError("FORBIDDEN", "Tool was disabled during the search", 403)
+            if await self.store.tool_revision(name) != ctx.tool_versions.get(name, 0):
+                raise DomainError("FORBIDDEN", "Tool configuration changed during the search", 403)
             return output
         except TimeoutError:
             status = "TOOL_TIMEOUT"

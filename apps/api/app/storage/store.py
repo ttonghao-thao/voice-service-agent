@@ -4,7 +4,7 @@ from contextlib import asynccontextmanager, contextmanager
 from datetime import timedelta
 
 from app.contracts import DomainError, PortalEvent, now, portal_server_event_adapter, uid
-from app.storage.models import Base, Conversation, Event, Record, ToolConfig, Turn
+from app.storage.models import Base, Conversation, DeliveryAttempt, Event, Record, ToolConfig, Turn, Utterance
 from sqlalchemy import delete, select, text
 from sqlalchemy.ext.asyncio import async_sessionmaker, create_async_engine
 
@@ -111,6 +111,7 @@ class Store:
         expected_epoch=None,
         native_call_id=None,
         input_item_id=None,
+        selected_tool=None,
     ):
         async with self.transaction() as db:
             c = await self.get(db, cid, principal, lock=True)
@@ -145,6 +146,9 @@ class Store:
                 parent_task_id=parent_task_id,
                 native_call_id=native_call_id,
                 input_item_id=input_item_id,
+                selected_tool=selected_tool,
+                toolset_version=c.qa_toolset_version,
+                execution_phase="executing" if selected_tool else None,
                 idempotency_key=key,
                 request_hash=digest,
                 user_text=request,
@@ -153,6 +157,10 @@ class Store:
                 delivery_status="pending_validation",
             )
             db.add(t)
+            if selected_tool and input_item_id:
+                utterance = await self._utterance(db, cid, c.epoch, input_item_id)
+                utterance.turn_id, utterance.kind, utterance.user_text = t.id, "knowledge", request
+                utterance.answer = None
             c.current_turn = t.id
             if c.title in ("New conversation", "新会话"):
                 c.title = request[:36]
@@ -174,6 +182,7 @@ class Store:
             ):
                 return False
             t.status, t.answer = bundle.status, bundle.model_dump(mode="json")
+            t.execution_phase = "completed"
             t.delivery_status = "accepted"
             # Commit only validated user/assistant history, never partial SDK tool messages.
             if bundle.status in ("answered", "needs_clarification", "insufficient_evidence"):
@@ -183,6 +192,71 @@ class Store:
                 c.summary = "\n".join(str(x.get("content", "")) for x in c.history[-6:])[-1500:]
             await self.event(db, c, "portal.answer.final", t.answer, turn_id)
             return True
+
+    async def _utterance(self, db, cid, epoch, input_item_id):
+        item = (await db.execute(select(Utterance).where(
+            Utterance.conversation_id == cid, Utterance.epoch == epoch,
+            Utterance.input_item_id == input_item_id))).scalar_one_or_none()
+        if item is None:
+            item = Utterance(id=uid(), conversation_id=cid, epoch=epoch, input_item_id=input_item_id)
+            db.add(item)
+        return item
+
+    async def utterance(self, principal, cid, epoch, input_item_id, text=None, answer=None):
+        async with self.transaction() as db:
+            c = await self.get(db, cid, principal, lock=True)
+            if c.epoch != epoch:
+                return False
+            item = await self._utterance(db, cid, epoch, input_item_id)
+            if text is not None:
+                item.user_text = text
+            if answer is not None and not item.turn_id:
+                item.answer = answer.model_dump(mode="json")
+            return True
+
+    async def execution(self, ctx, evidence=None):
+        async with self.transaction() as db:
+            c = await self.get(db, ctx.conversation_id, lock=True)
+            if c.epoch != ctx.epoch or c.current_turn != ctx.turn_id or c.request_revision != ctx.request_revision:
+                return False
+            t = await db.get(Turn, ctx.turn_id)
+            t.effective_executor, t.escalation_reason = ctx.effective_executor, ctx.escalation_reason
+            if evidence is not None:
+                t.execution_phase = "awaiting_provider_answer"
+                t.evidence = {"envelope": evidence.envelope,
+                              "citations": [c.model_dump(mode="json") for c in evidence.citations]}
+            return True
+
+    async def delivery(self, cid, epoch, call, kind, status, turn_id=None, revision=0, response_id=None):
+        async with self.transaction() as db:
+            c = await self.get(db, cid, lock=True)
+            if c.epoch != epoch or (turn_id and (c.current_turn != turn_id or c.request_revision != revision)):
+                return False
+            item = (await db.execute(select(DeliveryAttempt).where(
+                DeliveryAttempt.conversation_id == cid, DeliveryAttempt.epoch == epoch,
+                DeliveryAttempt.native_call_id == call, DeliveryAttempt.kind == kind))).scalar_one_or_none()
+            if item is None:
+                item = DeliveryAttempt(conversation_id=cid, epoch=epoch, native_call_id=call,
+                                       kind=kind, turn_id=turn_id, request_revision=revision)
+                db.add(item)
+            if status is not None:
+                item.status = status
+            if response_id:
+                item.response_id = response_id
+            if status == "sent":
+                item.sent_at = now()
+            return True
+
+    async def playback_delivery(self, cid, epoch, response_id, samples):
+        async with self.transaction() as db:
+            c = await self.get(db, cid, lock=True)
+            if c.epoch != epoch:
+                return
+            attempts = (await db.execute(select(DeliveryAttempt).where(
+                DeliveryAttempt.conversation_id == cid, DeliveryAttempt.epoch == epoch,
+                DeliveryAttempt.response_id == response_id))).scalars()
+            for attempt in attempts:
+                attempt.played_samples = max(attempt.played_samples, samples)
 
     async def invalidate(self, principal, cid, expected_epoch):
         async with self.transaction() as db:
@@ -319,6 +393,6 @@ class Store:
             )
             from app.storage.models import ToolRun
 
-            for model in (Event, Record, ToolRun, Turn):
+            for model in (Event, Record, ToolRun, DeliveryAttempt, Utterance, Turn):
                 await db.execute(delete(model).where(model.conversation_id.in_(ids)))
             await db.execute(delete(Conversation).where(Conversation.id.in_(ids)))
