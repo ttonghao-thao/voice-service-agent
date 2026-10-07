@@ -1,6 +1,6 @@
 # 部署与运行
 
-> 2026-10-04：本文描述 Q07 基础实现的运行方式，不代表真实服务已经验收。本期 Compose 使用每次通话独立的临时 capability、真实 CueKB、`search_knowledge` 和 NVIDIA VoiceChat，不需要天气代理配置。真实验收仍须按 [任务板](TASK_BOARD.md) D07 执行。最终系统边界见 [架构](architecture.md)。
+> 2026-10-07：按应用基线 f498fa4 核对运行方式；本页只维护配置、构建、迁移及运行操作，不代表真实服务已经验收。本期 Compose 使用每次通话独立的临时 capability、真实 CueKB、`search_knowledge` 和 NVIDIA VoiceChat，不需要天气代理配置。真实验收仍须按 [任务板](TASK_BOARD.md) D07 执行。最终系统边界见 [架构](architecture.md)。
 
 ## 部署方式边界
 
@@ -16,7 +16,7 @@ API 容器内部监听 `0.0.0.0:8000`，不映射宿主端口。浏览器只从 
 
 复制 `.env.example` 为 `.env`；模板中的 `voice.example.com`、`cuekb.example.com`、证书路径、镜像标签和 KB UUID 仅演示填写格式。替换示例值和所有 `REPLACE_` 值，并将 `WEB_TLS_CERT_FILE`、`WEB_TLS_KEY_FILE` 指向部署机上的可读绝对路径。Compose 固定 `AUTH_MODE=validation`、`CUEKB_MODE=real`、`ENABLED_TOOLS=search_knowledge`、`VOICE_PROVIDER=nvidia`；容量、语言和检索条数沿用代码默认值；整轮业务预算由 `AGENT_DEADLINE_MS` 显式配置，默认 30000 毫秒。不需要 tenant、账号 JSON、密码哈希、Cookie 密钥、能力开关、服务 revision、健康地址、OIDC、`APP_ENV` 或第二份 env 文件。
 
-门户首次加载不创建身份或读取历史。测试人员在当前标签页点击 “Start call” 时，API 创建新的 conversation、随机 owner 和高熵 `call_access_token`；token 只保存在该标签页 JavaScript 内存中，HTTPS/SSE 请求以 Bearer 发送，WSS 使用与该 owner/conversation/epoch 绑定的一次性 ticket。其它标签页不会得到该 token，不能读取或控制本次通话；结束通话撤销 token。`KNOWLEDGE_BASE_IDS` 仍由服务端配置并对所有测试通话统一生效，浏览器和模型不能扩大范围，管理 API 仍拒绝匿名 call capability。这不是正式客户认证方案。
+每通话 capability 的创建/撤销、KB 范围及历史裁剪见 [接入 §6](integration.md#6-独立通话与知识范围d02d13)。配置中的 KNOWLEDGE_BASE_IDS 由服务端固定，不能由浏览器或模型扩大；本阶段不是正式客户认证。
 
 ## 问答模式与预算（Q07）
 
@@ -111,14 +111,7 @@ docker compose --env-file .env -f deploy/compose.production.yaml logs --tail=200
 
 ## 约 3 秒查询的分段复测
 
-代码成本与字段定义见 [查询延迟](integration.md#41-查询延迟与优化边界)。发布后使用同一组英文问题，分别记录文字“提交→完整答案”和语音“说完→最终答案开始口述”（不计 ACK），各自统计冷启动和热请求。用同一 turn 关联日志，不把不同请求的时间相加：
-
-```sh
-docker compose --env-file .env -f deploy/compose.production.yaml logs --no-color api \
-  | rg 'agent_model_call_finished|cuekb_response_validated|tool_run_finished|agent_pipeline_finished|answer_delivery_finished'
-```
-
-时间包含关系：Agent 内含模型和工具，工具内含 CueKB，提交 total 内含 Agent；不能把所有 duration 相加。浏览器通过 Network 的 SSE/HTTP 时间线补足提交后的网络和渲染。此前 300 ms 轮询改为同进程提交通知，跨进程补查保留；final 已含答案时不再等待 messages GET。部署 Nginx 已关闭 SSE 缓冲，额外的 9002 代理仍需现场核对。没有真实分段日志前，不给各阶段虚构占比，不承诺优化后的实际总耗时。
+分段日志与复测步骤统一见 [故障排查 §2–3](operations/troubleshooting.md#2-延迟分解与可观测边界)；超时配置不是已测时延。
 
 ## 副本、容量与故障恢复
 
@@ -138,25 +131,10 @@ Redis 持有每个 conversation 的独占租约，15 秒 TTL、4 秒续约。未
 4. 单独执行 `alembic upgrade head`，再启动新副本。标准 `./scripts/deploy-cloud.sh .env` 在 PG/Redis 就绪后运行 Compose 的 migrate 服务，再启动 API/Web；仅推送 Git 代码不会修改部署数据库。0009 是本项目数据库表结构的迁移版本，不是新的仓库或供应商版本；升级新增十个审计字段并保留现有记录。
 5. 回滚按已记录的 API/Web/VoiceChat 组合执行；恢复已知整场 response 缺陷的旧 VoiceChat 时语音仍不能放行。数据库回滚与镜像回滚分开；当前迁移到 **0009**：0005 为每通话 capability，0006 为输入关联，0007 为问答策略/执行字段、Utterance 和 DeliveryAttempt，0008 为来源上下文和任务快照，0009 为音频/控制交付、口述检查关联和播放排空估计。旧数据迁移默认 legacy/knowledge_required，nullable 字段不伪造已验证关联或已播放，旧 slots 不伪造确认来源。`downgrade` 删除相应表/字段（0009 降级删除新增审计字段），不是无损回滚；需要破坏式回滚时用已验证备份恢复。
 
-本轮没有等待期语音的部署开关：NVIDIA ProviderCapabilities 全部保持 false。门户进度可用；未来只有可信 Adapter 对四项真实能力完成验证后才启用工具的 operation 扩展，见 [Live §3](live-agent-implementation.md#3-等待进度与自然修订)。正常上游关闭、发送完成和播放排空估计分开记录；真实 PG/Redis、长会话轮换/断线仍须 D07-D/E 验证。
+当前没有等待期语音的部署开关：NVIDIA ProviderCapabilities 全部保持 false。门户进度可用；未来只有可信 Adapter 对四项真实能力完成验证后才启用工具的 operation 扩展，见 [Live §3](live-agent-implementation.md#3-等待进度与自然修订)。正常上游关闭、发送完成和播放排空估计分开记录；真实 PG/Redis、长会话轮换/断线仍须 D07-D/E 验证。
 
 健康接口：`/health/live` 为应用存活；`/health/ready` 检查数据库、归属协调和 drain，分别返回文字配置、语音配置和本地容量。管理页健康端点探测只说明可达，不冒充真实推理/工具调用成功。
 
 ## D07 分阶段执行设计
 
-状态：真实端到端仍待执行。现场日志/录像已确认存在收发流量和用户转写，但没有形成放行证据；D19 修复后必须复测。以下工作在后续具备真实服务的云端 Docker 验收环境执行，不是本次文档整理或编码阶段的运行指令。沿用上述构建、Compose 与回滚流程，不新增部署系统。通用场景见 [V01–V12](acceptance-report.md#4-最终方案验收清单)，双工具补充见 [Q07-T01–T27](qa-routing-design.md#14-验收矩阵)，两者都须按适用范围记录。
-
-| 阶段 | 执行方案 | 退出条件与证据 |
-| --- | --- | --- |
-| D07-A 基线与环境 | 固定应用 commit、API/Web 镜像、VoiceChat API/digest、CueKB 服务版本、文本模型与脱敏配置摘要；准备验证 KB 和授权英文样本。按唯一流程独立构建镜像，执行迁移、健康和恢复预检，验证公网 HTTPS `8087`、证书链及目标浏览器麦克风权限 | 记录 API/Web 与 VoiceChat 的匹配版本、配置和迁移结果；`verify_deployment.py` 确认文字、语音和知识工具均已配置；readiness 只作为入口条件 |
-| D07-B 真实文字与范围 | 用多个独立 call capability 验证相互隔离、KB 范围不可由请求覆盖、管理 API 被拒绝，再跑真实文本模型 → CueKB M3 的支持/澄清/冲突/故障场景 | V02–V04、V10 的文字部分具备 trace、引用版本、状态和权限证据；失败不得归类为空命中 |
-| D07-C 英文基础语音 | 先记录 QA 模式/策略/工具快照；dual_tools 同时执行 Q07-E 的三路径/混合会话与证据续答矩阵。在隔离的云端验收部署固定供应商版本，先确认静音不创建整场 response、每轮 done 与后续新 ID、ACK 不耗尽最终答案许可，再用授权录音执行协议探针并人工听音，随后验证门户 → VoiceChat → 本项目 → 真实 CueKB → 实际口述 | V01/V03/V07/V09 有录音授权、事件、实际回答和人工判定；探针的合成工具结果不充当知识闭环证据 |
-| D07-D 竞态与恢复 | 工具等待 5 秒时分别附和、新问、改问、取消、停止播报；在结果写回及播报边界断网；测试超过两分钟及多次轮换 | V05/V06/V08 留下旧 revision 拒绝、pending call 结清或关闭、新连接无旧音频的证据；增强能力不通过则只评估 basic |
-| D07-E 故障与容量 | 从单副本开始，测真实 PG 事务/迁移、Redis 租约丢失、进程退出、drain 和备份恢复；逐档增加会话与任务并发。多副本仅在验证粘性路由后测试 | V11/V12 与延迟分解、错误率、资源峰值；先测基线再冻结阈值，以独立样本复测，不能把副本预算当全局预算 |
-| D07-F 放行 | 汇总版本与所有适用 V 项，核对缺测/失败/不适用；按已验证版本设置能力声明，保留回滚版本与操作记录 | 基础语音必需项均有证据，增强声明另有 V05 门槛；失败修复后复测，剩余边界明确记录 |
-
-运行配置不承载验收结论。Compose 直接启用 NVIDIA VoiceChat，以便快速暴露真实协议与音频问题；版本、事件和听音结论写入探针报告及验收记录。`/health/ready` 只证明配置和容器就绪，不能代替协议探针或完整知识闭环。
-
-每阶段保存：执行时间、操作者、应用/供应商版本、case/V ID、输入来源、预期/实际结果、失败原因、脱敏 trace 和受控证据位置。录音/票据/真实配置不提交仓库；仓库验收记录只写结论与受控证据引用。未执行标未执行；不适用须按本期范围解释，不能用来跳过基础语音的安全与恢复项。
-
-若仅 enhanced 交互门槛失败，保留 basic 明确打断/重连能力；若权限、旧结果泄漏或实际口述事实错误等核心项失败，不放行语音。可继续提供已验收的文字服务，但不能把文字放行写成 D07 语音完成。
+D07-A–F 顺序、V01–V12 与 Q07 验收矩阵统一见 [真实服务验收](development/validation.md)。本页只维护运行配置和部署操作；执行结果写验收报告，不把 readiness 当作真实知识/音频闭环通过。

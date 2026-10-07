@@ -81,4 +81,4 @@ Q07 不新增此补丁文件或修改 GPU 推理/权重。本项目 API 按会�
 
 保留上述 Jinja 启动配置并检查镜像内最终模板：只包含本轮授权工具，dual_tools 不残留每句强制 consult_service_agent 的规则，legacy 不追加绕过 bridge 的规则。原生自动选择能力不等于当前工具定义的选择质量；本地 WebSocket/CPU 测试不替代 GPU。
 
-除原有两轮工具、ACK、尾帧、停止/取消外，还须按 [Q07-E](../../docs/qa-routing-design.md#14-验收矩阵) 验证无工具一般回答、lookup 证据续答、reasoned 外置回答及混合会话漏/误调用。D2 事后检查不是播前逐字批准；工具等待自由交谈与 D3 仍未实现。模式配置和迁移见 [部署](../../docs/deployment.md#问答模式与预算q07)。
+除原有两轮工具、ACK、尾帧、停止/取消外，还须按 [Q07-E](../../docs/development/validation.md#3-问答验收-q07-t01t27) 验证无工具一般回答、lookup 证据续答、reasoned 外置回答及混合会话漏/误调用。D2 事后检查不是播前逐字批准；工具等待自由交谈与 D3 仍未实现。模式配置和迁移见 [部署](../../docs/deployment.md#问答模式与预算q07)。

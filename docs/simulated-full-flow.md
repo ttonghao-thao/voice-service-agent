@@ -1,6 +1,6 @@
 # 独立 API 全流程模拟测试
 
-更新：2026-10-04。实现基线为 `codex/q1003` 的 Q07；测试通过真实本地网络连接本项目与外部 API 夹具。执行结果记录在 [验收报告](acceptance-report.md)，本页维护测试结构、覆盖和复现步骤。
+2026-10-07 按 `f498fa4` 核对；测试通过真实本地网络连接本项目与外部 API 夹具。执行结果记录在 [验收报告](acceptance-report.md)，本页维护测试结构、覆盖和复现步骤。
 
 ## 1. 测试边界
 
@@ -25,7 +25,7 @@ CueKB 与 NVIDIA Speech / nemotron-labs-voicechat 保持独立服务职责。测
 - PCM 是 500 Hz 合成音，24 kHz、PCM16、80 ms、3840 bytes。浏览器使用合成麦克风和实际 AudioWorklet/传输流程；不验证真实 ASR、TTS、语义、听感或设备麦克风。
 - SSE 取消回归单独在真实 SQLite 驱动中设置短暂查询屏障，稳定模拟断开竞态；只有该数据库时序用例注入 Session 子类，外部 API 适配器仍走网络。
 
-本轮三个 P1/P2 的额外网络矩阵见 [Live §4](live-agent-implementation.md#4-验证与维护入口)：实际口述关联、结束/播放估计、unknown 恢复、进度/更正及旧调用隔离。默认夹具仍走 NVIDIA 当前 schema；只有显式 `SimulationHarness(wait_interaction=True)` 注入独立扩展 Adapter，其额外关联字段不能当作生产 VoiceChat 协议或真实等待期能力。没有新增部署模式。
+P1/P2 的额外网络矩阵见 [Live §4](live-agent-implementation.md#4-验证与维护入口)：实际口述关联、结束/播放估计、unknown 恢复、进度/更正及旧调用隔离。默认夹具仍走 NVIDIA 当前 schema；只有显式 `SimulationHarness(wait_interaction=True)` 注入独立扩展 Adapter，其额外关联字段不能当作生产 VoiceChat 协议或真实等待期能力。没有新增部署模式。
 
 ## 2. 覆盖和断言
 
@@ -73,15 +73,7 @@ CueKB 与 NVIDIA Speech / nemotron-labs-voicechat 保持独立服务职责。测
   -o junit_family=xunit1 --junitxml=artifacts/simulation/network.xml
 ```
 
-全部 Python 回归：
-
-```sh
-.venv/bin/python -m pytest -q -o junit_family=xunit1 \
-  --junitxml=artifacts/simulation/python.xml
-.venv/bin/ruff check apps/api tests scripts
-npm test --prefix apps/web
-npm run build --prefix apps/web
-```
+完整 Python、前端单测/构建和 Ruff 命令只在 [根 README](../README.md#本机验证) 维护，按本次改动选用。
 
 浏览器使用三个终端。第一个启动显式模拟环境，创建临时数据库，退出后清理：
 

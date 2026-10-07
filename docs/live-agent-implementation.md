@@ -1,6 +1,6 @@
-# Live Agent 借鉴：两个 P1 与一个 P2
+# 口述、交付与等待交互
 
-本轮范围按用户附件：LVA1「答案呈现约束与实际口述关联」、LVA2「结束确认和恢复状态」、LVA3「等待期间进度问答和自然更正」。没有可确认的 gpt-live-1 专属实现资料，本项目实现基于已确认设计和现有接口，不声称复制该模型的内部 Agent。状态只在 [任务板](TASK_BOARD.md) 维护，结果见 [验收 §0](acceptance-report.md#0-当前审计与证据索引)。
+2026-10-07 按 `f498fa4` 核对。本页维护 LVA1 呈现检查、LVA2 结束/恢复与 LVA3 等待交互。状态只在 [任务板](TASK_BOARD.md) 维护，结果见 [验收 §0](acceptance-report.md#0-当前审计与证据索引)，前端 wire 字段归 [门户协议](portal-protocol.md)。
 
 ## 1. 答案约束与实际口述
 
@@ -89,7 +89,7 @@ Gateway 在 `audio.done` 后生成 `PresentationAssessment`，通过准确的 in
 
 `SimulationHarness(wait_interaction=True)` 显式注入 SimulatedWaitAdapter；只有该夹具 Adapter 将独立模拟 WS 的 parent_call_id 扩展映射为内部关联。生产 NVIDIA normalizer/公开 WS 字段不增加这一扩展。默认模拟仍用 NVIDIA 现行适配器和 schema；两种结果分开记录。
 
-通过增强模拟只证明本项目的 progress/revise、版本 fence、预算、旧 call 结清和关联处理。真实启用必须指定 Provider/模型/Prompt/推理版本并用授权音频验证四项能力、等待时更正/取消、交错输出、慢工具、失败和重连；再由可信 Adapter 映射真实关联。GPT Live Provider 接入是可选实验，本轮未增加。
+通过增强模拟只证明本项目的 progress/revise、版本 fence、预算、旧 call 结清和关联处理。真实启用必须指定 Provider/模型/Prompt/推理版本并用授权音频验证四项能力、等待时更正/取消、交错输出、慢工具、失败和重连；再由可信 Adapter 映射真实关联。GPT Live Provider 接入是可选实验，当前未实现。
 
 ## 4. 验证与维护入口
 

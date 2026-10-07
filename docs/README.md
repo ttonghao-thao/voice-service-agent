@@ -1,46 +1,30 @@
-# 文档导航与维护规则
+# 文档导航
 
-更新：2026-10-04。当前为 Q07 + CTX1/EVAL1 + 本轮 Live P1/P2；状态只看任务板，默认 legacy、可选 dual_tools。默认只加载一份主题文档的相关段落；不用顺序读完整套文档。
+先选一行，只读取所列章节；知道主题时可直接跳过本页。实现基线 `f498fa4`（2026-10-07 核对）；状态归任务板，证据归验收。代码路径相对 `apps/api/app/`，前端路径另标。
 
-## 按问题定位
+## 按任务选主题
 
-| 问题 | 读取位置 | 实现或证据入口 |
-| --- | --- | --- |
-| 已完成什么、还缺什么 | [任务板](TASK_BOARD.md) §1–3 | 验收 §0 的基线；不要先读历史验证记录 |
-| 系统职责与调用流程 | [架构](architecture.md) §2、4 | `apps/api/app/{api,voice,sessions,agent_runtime,tools}` |
-| 口述检查、结束/重连、等待进度/更正 | [Live 改进](live-agent-implementation.md) §1–4 | Provider 门槛、呈现/交付状态、两个工具的可选 operation，当前 NVIDIA 等待能力仍关闭 |
-| 改问、取消、过期结果 | [架构](architecture.md) §5–6 | `sessions/coordinator.py`、`storage/store.py`、`voice/gateway.py` |
-| 建议优化如何实施 | [架构](architecture.md) §10 | Q01–Q03；原件查看 Q04 见接入 §7 |
-| 通用问答定位、即时接话、简单直查与复杂推理 | [Q07 详细设计](qa-routing-design.md#0-本轮编码范围与扩展契约) | 基础流程已编码并本地验证；先读实施范围，再查设计章节，D1/D3 等仍为后续能力 |
-| 两个原生工具和后台 search_knowledge 的区别、新增工具 | [接入 §5](integration.md#5-第三方扩展d06) | `agent_runtime/dispatch.py` 的 NativeTool 与 `tools/registry.py` 的不同职责 |
-| legacy / dual_tools、一般或严格回答、预算 | [部署：Q07 配置](deployment.md#问答模式与预算q07) | `config.py`、会话快照及 Alembic 0009；不是浏览器请求参数 |
-| 门户、音频、消息格式 | [门户契约](portal-protocol.md) §3–5 | `contracts.py`、`api/routes.py`、`apps/web/src/audio/VoiceClient.ts` |
-| CueKB / VoiceChat / 文本模型 / 身份 | [接入](integration.md) §2 / §3 / §4 / §6 | `tools/adapters.py`、`voice/provider.py`、`agent_runtime/runtime.py`、`api/auth.py` |
-| 镜像、URL、迁移与恢复 | [部署](deployment.md) 对应标题 | `deploy/`、`scripts/deploy-cloud.sh`、`apps/api/migrations/` |
-| 公网 Web 是否需要独立 Nginx、私网客户端怎样调用 API | [部署](deployment.md)「部署方式边界」；[接入](integration.md) §6 | `deploy/nginx.conf`、`deploy/compose.production.yaml`、`api/auth.py` |
-| 云端剩余工作怎么做 | [部署](deployment.md)「D07 分阶段执行设计」 | D07-A–F；验收 V01–V12 |
-| 哪些检查真实跑过、如何放行 | [验收](acceptance-report.md) §0、3–5 | §1–2 仅在追溯某次结果时读 |
-| 约 3 秒查询与分段耗时 | [接入](integration.md) §4.1；[部署](deployment.md) | Runtime timing hooks、Store/SSE、门户 final 渲染 |
-| 无声、48000 Hz、工具 ACK 与逐轮 response | [接入](integration.md) §3；[VoiceChat 补丁](../deploy/voicechat/README.md) | `voice/gateway.py`、`VoiceClient.ts`、独立 speech `audio_server.py` |
-| 最新 VoiceChat 论文、离线容器及优化方案 | [论文与容器优化设计](voicechat-research-review.md) | Q05 设计待确认；已转换 Model Repository、工具等待限制与 D07 验收 |
-| 语音文字按 GPT 截图展示、ASR 即时气泡与口述保留 | [门户 Q06 契约](portal-protocol.md#7-q06语音文字统一聊天展示) | 本地编码完成；关联、恢复、验收边界与 D07 现场待测项 |
-| 本地验证命令 | [项目 README](../README.md) | 根目录运行；默认工作规则见 [AGENTS](../AGENTS.md) |
-| 独立服务 API 怎样模拟、全流程覆盖与复现 | [模拟测试](simulated-full-flow.md) | 独立 HTTP/WS 监听、本项目真实适配器、隔离迁移与浏览器；结果见验收 §1 |
-| 一般背景怎样用于知识查询、型号纠正和连续评测 | [上下文与评测](task-context-evaluation.md) | CTX1 / EVAL1、内部来源快照、Alembic 0008、十组连续网络场景和报告完整性 |
+| 文档 / 职责 | 何时读取 / 首查章节 | 对应代码 | 必要时追加的依赖 |
+| --- | --- | --- | --- |
+| [系统架构](architecture.md)：模块与数据流 | 跨模块/架构改动；§2–4 | voice、sessions、agent_runtime、tools、storage | 决策 → 受影响主题 |
+| [知识执行](qa-routing-design.md)：模式、工具、直查/升级 | 修改选路、注册或证据处理；§1–4 | agent_runtime、tools/registry.py | 上下文 → CueKB；口述变更再读交付 |
+| [上下文与评测](task-context-evaluation.md)：来源条件/跨轮纠正 | 修改参数继承或历史；§1–3；评测查 §4–5 | task_context.py、sessions、storage | 知识执行；等待修订再读交付 §3 |
+| [口述与交付](live-agent-implementation.md)：检查、结束/恢复、等待交互 | 分别查 §1、§2、§3 | evidence.py、voice、sessions、storage；Web audio | 门户协议；真实等待门槛再读接入 |
+| [门户协议](portal-protocol.md)：HTTP/SSE/WS 与显示语义 | 前端/接口/播放；§1–4 | contracts.py、api/routes.py；apps/web/src、public | 改呈现/恢复读交付，供应商事件读接入 |
+| [外部接入](integration.md)：VoiceChat、文本模型、权限 | Adapter/注册/鉴权；§3/4/5/6 | voice/provider.py、runtime.py、api/auth.py | CueKB 契约或对应交付；故障读排查 |
+| [CueKB 契约](interfaces/cuekb.md)：请求/证据/错误 | 检索 Adapter/映射；§1–3 | tools/adapters.py、tools/schemas.py | 影响证据判定再读知识执行 |
+| [部署](deployment.md)：唯一配置与运维操作 | 改配置、镜像、迁移、租约；按标题 | config.py、migrations；deploy、scripts/deploy-cloud.sh | 排查 → 真实验收 |
+| [故障排查](operations/troubleshooting.md)：症状/日志/时延 | 故障先查 §1；耗时查 §2–3 | Gateway、Runtime、Registry、Store、Web | 表中实际失败边界对应主题 |
+| [模拟全流程](simulated-full-flow.md)：网络夹具与复现 | 新增集成/E2E；§1–3 | scripts/simulate_full_flow.py、tests | 连续序列读上下文 §4–5；命令读根 README |
+| [关键决策](decisions/architecture-decisions.md)：原因与代价 | 改边界或评估替代方案；按 ADR ID | 涉及模块列在各决策中 | 当前主题；历史方案仅在追溯时读 |
+| [任务板](TASK_BOARD.md)：实现/计划状态 | 排期或确认剩余工作；§1–3 | ID 对应主题/测试 | 验收报告；不要默认追历史 |
+| [验收报告](acceptance-report.md)：已执行的证据 | 判断版本可用性；§0/§3 | 本地测试/部署记录 | [验收清单](development/validation.md)：D07/V/Q07 标准 |
+| [文档维护](development/documentation.md)：职责/更新规则 | 文档重组、归档或维护范围不清；§1–2 | 仅 Markdown | §3 为本轮审计，平常不加载 |
 
-代码路径未标完整前缀时，以 `apps/api/app/` 为基准。
+独立 Speech 补丁的文件/hash/构建命令仍由 [交付 README](../deploy/voicechat/README.md) 唯一维护。其版本匹配不代表 GPU/实际音频已验证。
 
-## 文档职责与读取预算
+## 信息归属与历史
 
-- **任务板**只维护状态、优先级、依赖和完成条件；**架构/接入/门户/部署**各自维护该主题设计；**验收**只维护证据和放行标准。README 不复制里程碑明细。
-- 仓库没有 `task_road.md`；[TASK_BOARD.md](TASK_BOARD.md) 是唯一任务路线图。先按 ID 查任务板，再按表内链接查主题，不创建平行状态文件。
-- 状态区分：已编码并本地验证、待真实验收、建议待排期、暂缓。代码和受控测试不能证明真实供应商能力；目标设计不能替代已实现行为。
-- 先查标题（`rg -n '^##' docs/architecture.md`）或 ID（`rg -n 'Q01|D07' docs/TASK_BOARD.md`），再截取命中章节。通常一节设计加相关函数/测试足够；发现跨边界依赖才追加邻接章节。
-- 避免整读 OpenAPI/事件 JSON；先查 `contracts.py` 和目标 route，必要时只提取对应 schema。测试按场景定位，不默认运行或加载全套。
-- 文档优化以减少每次读取范围为目标，不以删除验收证据换取短文档；本文不承诺固定 token 节省比例。
+字段定义以 `contracts.py` / 工具 schema / routes 为准，生成契约只查目标对象；参数默认值以 `config.py` / `.env.example` 为准，操作说明只在部署维护。索引记录职责和依赖，不复制协议、配置、实现状态或测试计数。
 
-## 更新与历史
-
-修改行为时同步主题设计、任务状态及实际验证记录；没有执行的项保持待验证。任务板 ID 保持稳定，链接尽量指向章节。检查相对链接、标题和 `git diff --check`；文档整理阶段仅编辑 Markdown，发布前另核对已有代码改动。
-
-`archive/2026-09-16/` 保存早期总设计、过程提案和 SHA-256 清单，仅供明确追溯；不作为当前规范，不递归加载、不重写快照。已有历史验证按日期保留在验收记录，只有规模影响按需读取时再归档，不新增并行总设计。
+历史研究、完整旧方案和日期流水见 [归档索引](archive/README.md)，默认不读；旧方案中同名字段/能力不覆盖当前代码。默认不同时加载全部链接；完整审计等任务可按实际需要扩大范围。

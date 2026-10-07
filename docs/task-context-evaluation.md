@@ -1,6 +1,6 @@
 # 统一任务上下文与连续对话评测（CTX1 / EVAL1）
 
-本主题对应参考实时 Agent 设计后确认的两个 P0。实现仍由 VoiceChat 原生选择两个知识工具；不增加分类模型、Supervisor、语义改写模型或新的部署服务。任务状态归 [任务板](TASK_BOARD.md)，实际验证归 [验收](acceptance-report.md)。
+本页维护 CTX1 来源上下文与 EVAL1 固定连续评测，2026-10-07 按 f498fa4 核对。实现仍由 VoiceChat 原生选择两个知识工具；不增加分类模型、Supervisor、语义改写模型或新的部署服务。任务状态归 [任务板](TASK_BOARD.md)，实际验证归 [验收](acceptance-report.md)。
 
 ## 1. 上下文的权威来源
 
@@ -36,7 +36,7 @@ CueKB 的 query 保留原 2000 字符上限。原始输入不为容纳背景而�
 
 重连 instructions 优先包含条件和来源、待澄清项及上轮任务状态，再补充有界授权历史。明确说明过去回复可能没有完全被听到；不会把发送/播放 samples 当成听完证明。
 
-自然 speech_started、ACK 与停止播放不使业务任务失效。停止播放保留当前任务内部口述校验，正文/音频仍抑制；任务可正常完成。新任务不会消耗旧续答许可，已有旧 response_id 的迟到帧在重新关联前丢弃。默认 NVIDIA 尚未结清的并行调用仍拒绝并关闭。后续本轮 P2 已增加受可信 Provider 门槛限制的 progress/revise：保留最终 ASR/来源，修订共享原期限/检索计数并安全结清旧调用，见 [Live §3](live-agent-implementation.md#3-等待进度与自然修订)；不表示当前 NVIDIA 支持等待自由交谈或任意播报。
+自然 speech_started、ACK 与停止播放不使业务任务失效。停止播放保留当前任务内部口述校验，正文/音频仍抑制；任务可正常完成。新任务不会消耗旧续答许可，已有旧 response_id 的迟到帧在重新关联前丢弃。默认 NVIDIA 尚未结清的并行调用仍拒绝并关闭。当前 P2 已增加受可信 Provider 门槛限制的 progress/revise：保留最终 ASR/来源，修订共享原期限/检索计数并安全结清旧调用，见 [Live §3](live-agent-implementation.md#3-等待进度与自然修订)；不表示当前 NVIDIA 支持等待自由交谈或任意播报。
 
 ## 4. 固定连续评测清单
 

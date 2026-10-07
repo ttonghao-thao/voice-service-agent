@@ -1,6 +1,6 @@
 # 后端服务与工具接入
 
-更新：2026-10-04。按主题读取。架构决策见 [architecture.md](architecture.md)，当前差距见 [任务板](TASK_BOARD.md)。
+2026-10-07 按 `f498fa4` 核对。本页维护 VoiceChat/文本模型接入与授权边界；CueKB 请求映射单列，配置只在部署维护。原因见 [关键决策](decisions/architecture-decisions.md)，状态归 [任务板](TASK_BOARD.md)。
 
 ## 1. 运行依赖与配置状态
 
@@ -18,57 +18,7 @@
 
 ## 2. CueKB 当前接入契约（D03、E01–E02）
 
-核对本地 CueKB revision：`1b9379de53c55dd41193a1529e46d48c0f219c14`（M3）；来源为其 `src/cuekb/schemas.py`、API routes/dependencies 与检索实现。部署前核对目标服务 OpenAPI，不把该 revision 当作所有部署版本。
-
-```http
-POST {server-configured-cuekb-base-url}/v1/search
-Authorization: Bearer <server-side-scoped-key>
-Content-Type: application/json
-```
-
-```json
-{
-  "query": "用户问题与已确认条件",
-  "kb_ids": ["00000000-0000-4000-8000-000000000001"],
-  "mode": "auto",
-  "top_k": 5,
-  "filters": {},
-  "include_context": true
-}
-```
-
-示例 UUID 仅说明类型。实际 KB UUID 来自服务端授权映射；旧 `kb_support` 不能直接传入。当前 CueKB query 上限 2000 字符，top_k 支持 1–20；默认选 5 是本应用建议。工具输入目前只开放 `product_model`、`software_version`，由 BusinessRuntime 从明确输入或已确认上下文传入；Adapter 不从自然语言猜测。CueKB 支持的 `document_ids` 暂不开放给模型。`relations` 是 CueKB M3 的可选请求字段；本项目可接收其返回的关系证据，但暂不让模型生成实体 UUID、关系类型或时间条件。
-
-不向上游发送自造 request_id/locale/deadline 并假定生效。HTTP 超时与应用 deadline 自行执行，取消本地等待不证明 CueKB 后台已停止。
-
-### 2.1 结果映射
-
-| CueKB | 内部证据与回答处理 |
-| --- | --- |
-| trace_id | 关联本项目 task/run，不能要求回显不存在的 request_id |
-| retrieval_status | 保留 ok/degraded/not_found，与最终 answer status 分开 |
-| evidence_status | 保留 unassessed 等原值，不能转换成“证据充分” |
-| degraded_reasons、scope_limited | 审计并参与回答决策，必要时告知限制 |
-| content_revisions | 保留知识内容版本线索，不宣称跨系统事务一致性 |
-| hits.document_id / chunk_id / version_id | 引用真实身份与版本；本项目另生成 citation_id |
-| source_text、context | 保留证据原文与上下文，内容相同不重复占预算 |
-| context_parts、context_truncated | 保存逐块原文及锚点、CueKB 的上下文截断标记；门户可展开逐块来源 |
-| relations | 保存关系类型、条件和 supports/refutes 立场；该立场不是事实真假结论 |
-| title_path、anchor、metadata | 来源定位及适用条件；缺失标题用“来源片段”，不伪造 |
-| rank、retrieval_sources | 检索排序/来源，不当作事实置信度 |
-| timings_ms、retrieval_path、executed_stages、skipped_stages | 内部诊断，不要求普通客户理解 |
-
-Citation 的 updated_at 已改为可选，未填当前时间冒充文档更新时间；不再生成 score。`version_id` 与 metadata 中受控的 `business_version` 分开，旧历史 JSON 在读取时仍按原数据兼容，新增任务字段由 Alembic 0004 迁移。
-
-CueKB M3 已提供有界章节、相邻块及表头上下文，但预算耗尽时仍可能截断或返回空 context；本项目另以 6000 字符证据预算和小于 32 KiB 的工具结果预算裁剪，使用 `context_omitted` 和 `hits_omitted` 明示应用侧裁剪，不将其冒充 CueKB 状态。回答模块仍需检查证据充分性。原件查看需经本项目重新鉴权并固定检索版本；这是待实现入口，不向浏览器暴露服务 Key 或私有下载 URL。
-
-### 2.2 身份和错误
-
-有效范围取客户授权、部署允许、CueKB Key 可读范围的交集。CueKB 当前鉴权主体是 API Key；自定义 X-Tenant-ID/X-User-ID 不代表它已执行客户级 ACL。不同隔离范围由服务端映射受限 Key/KB，不由工具参数指定。
-
-not_found 表示本次未命中，不能推导事实不存在；degraded 有 hits 时保留原因并判断可用性；401/403 为授权或配置问题，422 为契约问题，429 为负载限制，5xx/超时为服务故障。禁止统一降为“查无资料”。返回答案、读历史证据和原件时都需覆盖撤权策略。
-
-CueKB 上游 HTTP 响应上限为 256 KiB，内部工具输出上限为 32 KiB，外置模型证据正文加上下文预算为 6000 字符；Q07 D2 的 evidence-v1 包另限默认 6000 bytes / 3 项（包括问题、身份与条件字段）。这些是不同边界，超过内部预算时显式舍弃上下文或命中。知识工具预算仍为 5 秒，业务整轮预算默认 30 秒，均不能证明真实端到端时延已达标。
+请求、证据映射、错误与预算只在 [CueKB 契约](interfaces/cuekb.md) 维护；改 CueKBAdapter/工具 schema 时读取该页。路由判定见 [知识执行](qa-routing-design.md)。
 
 ## 3. VoiceChat 接入与能力门槛
 
@@ -93,13 +43,7 @@ API 通过 `VOICECHAT_WS_URL` 连接独立服务的 `/v1/realtime`。受控同�
 
 分析对象是 VoiceChat-11B 模型、nemotron-labs-voicechat 推理框架及实时 WebSocket 的完整栈。模型通过 AVAILABLE_TOOLS 与最终提示词选择工具/直接回答；运行层解析 TOOLCALL，并通过原生事件交给本项目执行，不需要 WS tool_choice 参数。
 
-| 会话 | 提示词与参数 | 选择规则 |
-| --- | --- | --- |
-| legacy | config/voice-prompt.txt、BridgeArguments | 所有完整输入先调用 consult_service_agent |
-| dual_tools / general_qa | config/voice-qa-prompt.txt、KnowledgeArguments | 一般问答可不调用；企业产品资料或明确查 KB 选 lookup/reason；无实时业务能力时如实说明 |
-| dual_tools / knowledge_required | 同上，加严格知识指令 | 不从记忆给实质性答案；lookup 服务端改走外置执行 |
-
-两个知识工具参数是 user_request、product_model、software_version，后两项为必填 nullable 字段；不知道用 null，不猜测。schema 见 [voice-knowledge-arguments](../contracts/voice-knowledge-arguments.schema.json)，KB/身份/endpoint/凭据/预算不进入模型可控参数。
+Provider 根据会话快照选择 `config/voice-prompt.txt`（legacy）或 `config/voice-qa-prompt.txt`（双工具），严格策略追加知识要求。模型可见参数及三种执行规则只在 [知识执行 §1–2](qa-routing-design.md#1-模式与工具边界) 维护。
 
 Gateway 按 input item 绑定 native call，并最多等待 5 秒最终 ASR；最终 ASR 覆盖 user_request，是业务输入和用户气泡依据。型号/版本须在最终输入或本会话已确认条件中，否则澄清。无输入不建 Turn，ASR 完成不重复启动查询。ToolDispatcher 按会话快照里的名称和 schema 分派，不进行第二次语义分类。
 
@@ -141,15 +85,15 @@ D19 上游补丁、适用源码 hash、CPU 测试与发布方式见 [VoiceChat �
 
 公开参考：[API](https://github.com/NVIDIA-NeMo/Speech/blob/nemotron-labs-voicechat/voicechat_realtime_instructions/api-reference.md)、[部署](https://github.com/NVIDIA-NeMo/Speech/blob/nemotron-labs-voicechat/voicechat_realtime_instructions/deploy.md)。原 adapter 文档基线为 NVIDIA revision `097dfe9e2f55baf653b83035868bdc89849f1b47`；实际服务以用户 speech 源码与发布 hash 为准，不能仅由公开文档推断私有镜像行为。
 
-2026-09-28 文献复核：[新论文 §7、附录 B](https://arxiv.org/html/2609.21967v1) 明确当前工具执行期间不支持 barge-in；持续收音、字幕或固定 ACK 不代表新音频参与响应生成。本机 backend 的工具期限还存在帧数/推理批次时间单位风险。详细证据见 [Q05 分析](voicechat-research-review.md)，不能据此宣称增强能力通过。
+2026-09-28 文献复核：[新论文 §7、附录 B](https://arxiv.org/html/2609.21967v1) 记录当时版本在工具执行期间不支持 barge-in；持续收音、字幕或固定 ACK 不代表新音频参与响应生成。当时核对的 backend 工具期限另有帧数/推理批次时间单位风险，不能推定新版本仍相同。详细证据见 [Q05 分析](archive/2026-09-28/voicechat-research-review.md)，不能据此宣称增强能力通过。
 
-本轮 P2 增加应用端 ProviderCapabilities 门槛与进度/修订处理；**生产 NVIDIA 仍全部 false**，默认注册两个工具的旧 schema，不发送 operation/tool_choice/任意播报命令。只有明确验证等待进度、修订、call 关联与旧调用安全结清的可信 Adapter 才使用 operation 扩展；没有 env/browser 绕过。SimulatedWaitAdapter 的 parent_call_id 是独立测试协议扩展，不是 NVIDIA 已公开字段。详细调用状态及真实启用条件见 [Live §3](live-agent-implementation.md#3-等待进度与自然修订)。基础关闭只依据 output_audio.done 与 WS 正常 close handshake；异常关闭仍是 unknown，不等于已播放。
+当前应用已有 ProviderCapabilities 门槛与进度/修订处理；**生产 NVIDIA 仍全部 false**，默认注册两个工具的旧 schema，不发送 operation/tool_choice/任意播报命令。只有明确验证等待进度、修订、call 关联与旧调用安全结清的可信 Adapter 才使用 operation 扩展；没有 env/browser 绕过。SimulatedWaitAdapter 的 parent_call_id 是独立测试协议扩展，不是 NVIDIA 已公开字段。详细调用状态及真实启用条件见 [Live §3](live-agent-implementation.md#3-等待进度与自然修订)。基础关闭只依据 output_audio.done 与 WS 正常 close handshake；异常关闭仍是 unknown，不等于已播放。
 
 ## 4. 文本模型与业务 Agent
 
 当前 `AGENT_PROVIDER=openai` 使用 Responses API，明确配置模型/API key；`compatible` 配置独立 HTTP base URL 并使用 Chat Completions。这些是本仓库适配器行为，真实供应商必须另验工具调用、结构化输出、streaming 和错误语义。VoiceChat WS/WSS 地址不能代替文本模型 endpoint。
 
-Runtime 复用授权工具和证据校验，输出 display_text、短 speech_text、引用和业务状态；SDK 的工具循环与耗时受整轮 deadline 约束。复杂知识子 agent 若启用，权限/预算继承并缩小，独立临时上下文，只返回候选结果。
+Runtime 复用授权工具和证据校验，输出 display_text、短 speech_text、引用和业务状态；SDK 的工具循环与耗时受整轮 deadline 约束。当前没有知识子 Agent；后续引入须重新评审权限、预算及唯一提交边界。
 
 后台默认只有 `search_knowledge`。Runtime 对 Responses API 和 compatible Chat Completions 在本轮没有真实授权检索时要求首次调用，并关闭并行工具调用；直查升级若已有本轮有效证据，则允许直接综合或在剩余预算内补一次检索。输出后仍校验实际授权检索后置条件。SDK 的 required/auto 是外置知识执行设置，与前台 VoiceChat WS 无关。模型未调用工具时返回 `AGENT_REQUIRED_TOOL_NOT_CALLED`；adapter 的授权、契约、限流、超时或上游错误优先于模型声称的 `insufficient_evidence`，只有真实检索结果才能形成未命中/证据不足状态。
 
@@ -157,23 +101,7 @@ Runtime、ToolRegistry、CueKB adapter 与 VoiceGateway 记录脱敏阶段日志
 
 ### 4.1 查询延迟与优化边界
 
-现场反馈约 3 秒，尚无对应 turn 的完整分段日志，不能认定“CueKB 查询用了 3 秒”。默认按提交文字到完整答案分析：HTTP/鉴权/建 Turn → 模型生成检索参数 → CueKB 检索 → 模型生成结构化答案 → 证据/权限复核与提交 → SSE → 渲染。通常含检索规划和最终回答两次串行模型请求（与 [SDK agent loop](https://developers.openai.com/api/docs/guides/agents/running-agents) 一致）；额外工具轮次、上游排队/网络、有限重试会增加耗时。语音还包含说话结束判定、最终 ASR、原生工具提取、结果注入/TTS 和播放缓冲；ACK 不计作最终答案。
-
-原页面固定 300 ms 数据库轮询，并在 final 事件后再 GET messages 才显示聊天答案。现在事务提交后唤醒同进程 SSE，通知只作为加速，持久化 Event/server_seq 仍是事实来源；回滚不通知，跨进程或漏通知保留 300 ms 补查，重连按 cursor 补读。页面对已加载 Turn 直接应用鉴权过滤后的 final，未知 Turn 才补取；晚到的 running 快照不能覆盖已收到的 final，新 epoch/revision 不能被旧请求覆盖。
-
-这消除了同进程 0–300 ms 的轮询等待和已有气泡的一次 HTTP 往返，但不承诺总耗时从 3 秒降到某个数。legacy、文字和复杂路径保留模型规划；Q07 直查使用最终输入和已确认条件，经 EvidenceGate 决定 Nano 续答或升级，不先请求外置分类模型。直查的质量、升级率及实际时延仍需同样本实测，不能因少了调用就宣称整体效果已优化。
-
-每个 `conversation_id/turn_id` 关联以下无正文日志：
-
-| 阶段 | 日志与字段 | 解释 |
-| --- | --- | --- |
-| 每次模型调用 | `agent_model_call_finished`：call_index/status/duration_ms | 模型网络往返和完整输出；失败/取消也结束计时，不代表 TTFT |
-| CueKB | `cuekb_response_validated`：trace_id/duration_ms/service_total_ms | 本项目往返含重试与解析；服务 total 若缺失为 null，不视为 0 |
-| 工具 | `tool_run_finished`：status/duration_ms | 权限、当前任务检查及 adapter；其范围包含 CueKB，不能重复相加 |
-| Agent | `agent_pipeline_finished`：model_calls/duration_ms | SDK 循环及结果校验，含模型与工具 |
-| 提交与总计 | `answer_delivery_finished`：commit_ms/total_ms/committed | total 从 Coordinator execute 开始，含业务链和提交；不含浏览器网络/渲染 |
-
-先收集同模型/KB/问题集的冷、热请求 p50/p95，按 turn 对齐。若模型阶段主导，再实测降低回答长度、模型服务排队与缓存；若 CueKB 主导，依据其 trace/timings 优化检索路径；若只在浏览器等待，检查 Nginx SSE 缓冲与额外代理。不得把 30 秒超时预算当实际等待，或把减少模型调用当不影响检索质量的已验证优化。
+按 Turn 关联模型、工具、CueKB、提交与 SSE；日志字段、包含关系和复测步骤只在 [故障排查 §2–3](operations/troubleshooting.md#2-延迟分解与可观测边界) 维护。
 
 ## 5. 第三方扩展（D06）
 
@@ -184,9 +112,7 @@ Runtime、ToolRegistry、CueKB adapter 与 VoiceGateway 记录脱敏阶段日志
 | VoiceChat 可见业务工具 | agent_runtime/dispatch.py 的 NativeTool；自己的严格 schema、可信 executor、permission_scope、required_tools；会话定义快照 | dual_tools 默认仅 lookup_knowledge / reason_over_knowledge；legacy 单 bridge |
 | 后台工具能力 | tools/registry.py 的 ToolSpec/adapter；部署白名单、管理员启停、身份范围和版本校验 | 默认 search_knowledge，通过 CueKB /v1/search 执行 |
 
-新增原生工具在可信服务端初始化阶段调用 runtime.dispatcher.register(NativeTool(...))；executor 从 ctx.tool_arguments 获取经 schema 校验的参数，user_request 若存在仍以最终 ASR 覆盖。原生定义可以使用自己的参数模型，不必包含知识型号字段；新增业务需自行实现对象权限和结果校验，后端服务调用保持 Registry 边界。注册支持扩展，不意味着本期已启用额外工具或有动态插件加载。
-
-可见工具必须同时满足身份 scope 与 required_tools 后端依赖。工具名称/定义在语音 session 固定，启停/变更后仍需版本与输出复核，新增定义在重建会话后生效。官方约 5 工具建议用于质量评估；超过仅告警，不能推断并行可靠，实际支持的调用组合另验。
+新增原生工具的注册/schema/executor/scope/依赖规则只在 [知识执行 §2](qa-routing-design.md#2-注册输入与扩展) 维护；本节维护后台 ToolSpec/Registry 的服务接入与启停授权。
 
 沿用 ToolSpec + trusted adapter + ToolRegistry：受信任代码定义参数/返回类型、调用实现、固定 endpoint/凭据引用、权限、预算、版本及错误映射。工具启停/修订后旧 run 不得继续使用失效工具。
 
