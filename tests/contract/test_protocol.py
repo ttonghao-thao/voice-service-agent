@@ -10,6 +10,7 @@ from app.contracts import (
 )
 from app.voice.provider import NvidiaVoiceChatAdapter, normalize, session_update
 from pydantic import ValidationError
+from websockets.asyncio.server import serve
 
 
 def test_native_configuration_is_exact_and_ascii():
@@ -39,6 +40,34 @@ async def test_native_tool_result_rejects_non_ascii_before_send():
     assert sent == []
     await adapter.submit_tool_result("call-1", '{"speech_text":"Verified answer"}')
     assert json.loads(sent[0])["item"]["call_id"] == "call-1"
+
+
+@pytest.mark.parametrize("created,updated", [
+    ("not-json", None),
+    ("[]", None),
+    ("null", None),
+    (json.dumps({"type": "session.created"}), "not-json"),
+    (json.dumps({"type": "session.created"}), json.dumps({"type": "session.updated", "session": []})),
+    (json.dumps({"type": "session.created"}), json.dumps({"type": "session.updated", "session": {"audio": None}})),
+    (json.dumps({"type": "session.created"}), json.dumps({"type": "session.updated", "session": {"audio": {"input": []}}})),
+])
+async def test_malformed_native_handshake_reports_protocol_error(created, updated):
+    async def native(ws):
+        await ws.send(created)
+        if updated is not None:
+            await ws.recv()
+            await ws.send(updated)
+        await ws.wait_closed()
+
+    async with serve(native, "127.0.0.1", 0) as server:
+        port = server.sockets[0].getsockname()[1]
+        adapter = NvidiaVoiceChatAdapter(Settings(_env_file=None, voicechat_ws_url=f"ws://127.0.0.1:{port}"))
+        try:
+            with pytest.raises(DomainError) as error:
+                await adapter.connect("")
+            assert error.value.code == "VOICE_PROTOCOL_ERROR"
+        finally:
+            assert await adapter.close()
 
 
 def test_new_conversations_are_english_only():

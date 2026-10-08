@@ -1,6 +1,6 @@
 # 独立 API 全流程模拟测试
 
-2026-10-07 按 `f498fa4` 核对；测试通过真实本地网络连接本项目与外部 API 夹具。执行结果记录在 [验收报告](acceptance-report.md)，本页维护测试结构、覆盖和复现步骤。
+2026-10-08 在 `ee73afb` 基线上补充外部协议故障回归；测试通过真实本地网络连接本项目与外部 API 夹具。执行结果记录在 [验收报告](acceptance-report.md)，本页维护测试结构、覆盖和复现步骤。
 
 ## 1. 测试边界
 
@@ -21,6 +21,7 @@ CueKB 与 NVIDIA Speech / nemotron-labs-voicechat 保持独立服务职责。测
 - 默认双工具会话只注册 `lookup_knowledge` / `reason_over_knowledge`，断言原生 WS 不含 `tool_choice`；后台文本模型的 SDK 仍使用其独立的 required/auto 配置。
 - 模拟 CueKB 验证测试 Key、服务端 KB 范围，并返回 M3 证据或注入错误；模型 API 支持普通响应和 SSE 工具调用/答案流。
 - 每个网络用例创建独立 SQLite 数据库，执行实际 Alembic `upgrade head`（当前 0009），再启动本项目；不使用自动建表。连续上下文序列见 [CTX1 / EVAL1](task-context-evaluation.md)。
+- 本地 SQLite 连接启用 WAL，允许历史/SSE 的读快照与交付写入并存；读写竞争与取消后写入另有回归。该配置不改变生产 PostgreSQL，也不能据此证明其锁或恢复行为。
 
 - PCM 是 500 Hz 合成音，24 kHz、PCM16、80 ms、3840 bytes。浏览器使用合成麦克风和实际 AudioWorklet/传输流程；不验证真实 ASR、TTS、语义、听感或设备麦克风。
 - SSE 取消回归单独在真实 SQLite 驱动中设置短暂查询屏障，稳定模拟断开竞态；只有该数据库时序用例注入 Session 子类，外部 API 适配器仍走网络。
@@ -29,11 +30,12 @@ P1/P2 的额外网络矩阵见 [Live §4](live-agent-implementation.md#4-验证�
 
 ## 2. 覆盖和断言
 
-网络测试见 [test_simulated_full_flow.py](../tests/integration/test_simulated_full_flow.py)，共 42 项。每个用例等待实际事件或持久终态，不能以端口可达替代业务断言。
+网络测试见 [test_simulated_full_flow.py](../tests/integration/test_simulated_full_flow.py)，共 51 项。每个用例等待实际事件或持久终态，不能以端口可达替代业务断言。
 
 | 场景组 | 项数 | 验证内容 |
 | --- | --- | --- |
-| 知识路径与外部错误矩阵 | 20 | 直查、复杂推理、证据未评估/冲突/不足/降级/截断/过多、无命中/澄清；CueKB 401/403/422/429/503、错误 JSON/超大响应；外置模型 503、未调必需工具、非法引用 |
+| 知识路径与外部错误矩阵 | 22 | 直查、复杂推理、证据未评估/冲突/不足/降级/截断/过多、无命中/澄清；CueKB 401/403/422/429/503、错误 JSON/超大响应、带证据的重定向、损坏压缩编码；外置模型 503、未调必需工具、非法引用 |
+| VoiceChat 非法协议与重连 | 7 | 错误 JSON、非对象、非法 type、超长 ID、错误 base64/PCM16；门户收到协议错误、错误音频不交付、关闭后新连接正常完成知识问答 |
 | 同会话混合路径 | 1 | 一般回答→直查→复杂推理；一般回答保存 Utterance、零知识 Turn/检索/外置调用；随后两个知识 Turn 各自完成 |
 | legacy 和严格策略 | 3 | legacy 桥接与 strict lookup 走外置链；strict 无工具回答在正文/音频放行前拒绝 |
 | D2 口述检查 | 3 | 不支持的数字、单位或缺失型号条件均失败；仅清除对应 response 的剩余播放 |
@@ -58,7 +60,7 @@ P1/P2 的额外网络矩阵见 [Live §4](live-agent-implementation.md#4-验证�
 | lookup 升级且可复用证据 | 1 | 1 | 1 |
 | reason_over_knowledge | 1 | 2（工具选择、证据作答） | 1 |
 
-20 项矩阵还检查 canonical final 唯一、DeliveryAttempt sent/response_id、最终 ASR 而非改写参数作为检索请求、KB 范围不被覆盖、门户音频帧及通话撤销。预期失败状态表示故障处理通过，不表示服务故障变为成功答案。
+22 项矩阵还检查 canonical final 唯一、DeliveryAttempt sent/response_id、最终 ASR 而非改写参数作为检索请求、KB 范围不被覆盖、门户音频帧及通话撤销。预期失败状态表示故障处理通过，不表示服务故障变为成功答案。补充的工具/协议测试覆盖不跟随重定向、部分 HTTP 响应重试与非法 WS 握手；交付测试固定读快照复现 SQLite 读写竞争。
 
 浏览器用例见 [simulated-full-flow.spec.ts](../tests/e2e/simulated-full-flow.spec.ts)：不拦截项目 HTTP/WS，连续测试一般问答、直查、复杂推理及外置批准短答与实际口述不一致；断言右侧问题、左侧实际字幕、来源/检查警告、等待时进度按钮、查询/模型调用次数、播放停止后继续、三个知识 Turn 和结束通话后的 401。其余既有浏览器用例含受控路由或 WS，证据范围按各自测试区分。
 

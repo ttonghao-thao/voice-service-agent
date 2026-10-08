@@ -44,6 +44,45 @@ async def test_bounded_invalid_and_retry_response():
                 await bounded_json(c, "GET", "https://fixture.invalid")
 
 
+async def test_bounded_redirect_never_follows_even_with_redirecting_client():
+    requests = []
+
+    def handle(request):
+        requests.append(request)
+        return httpx.Response(307, headers={"Location": "https://other.invalid"}, json={"ok": True})
+
+    async with httpx.AsyncClient(transport=httpx.MockTransport(handle), follow_redirects=True) as client:
+        with pytest.raises(DomainError) as error:
+            await bounded_json(client, "POST", "https://fixture.invalid", headers={"Authorization": "Bearer fixture"})
+    assert error.value.code == "TOOL_BAD_RESPONSE"
+    assert len(requests) == 1 and requests[0].url.host == "fixture.invalid"
+
+
+@pytest.mark.parametrize("recover", [False, True])
+async def test_bounded_partial_response_has_one_retry_and_never_uses_partial_body(recover):
+    requests = []
+
+    class InterruptedBody(httpx.AsyncByteStream):
+        async def __aiter__(self):
+            yield b'{"untrusted":'
+            raise httpx.RemoteProtocolError("peer closed before the complete body")
+
+    def handle(request):
+        requests.append(request)
+        if recover and len(requests) == 2:
+            return httpx.Response(200, json={"ok": True})
+        return httpx.Response(200, stream=InterruptedBody())
+
+    async with httpx.AsyncClient(transport=httpx.MockTransport(handle)) as client:
+        if recover:
+            assert await bounded_json(client, "GET", "https://fixture.invalid") == {"ok": True}
+        else:
+            with pytest.raises(DomainError) as error:
+                await bounded_json(client, "GET", "https://fixture.invalid")
+            assert error.value.code == "TOOL_UNAVAILABLE" and error.value.retryable
+    assert len(requests) == 2
+
+
 async def test_weather_ambiguity_and_target_timezone(app, monkeypatch):
     settings = app.state.settings
     settings.weather_mode, settings.weather_base_url = "real", "https://fixture.invalid"

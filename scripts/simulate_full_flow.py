@@ -109,6 +109,8 @@ class IndependentAPIs:
         self.truncated = False
         self.hit_count = 1
         self.invalid_response = False
+        self.redirect_response = False
+        self.invalid_encoding = False
         self.oversized_response = False
         self.dynamic_conditions = False
         self.correlated_output = False
@@ -133,6 +135,8 @@ class IndependentAPIs:
             return JSONResponse({"error": "injected simulation failure"}, status_code=self.cuekb_http_status)
         if self.invalid_response:
             return Response("not-json", media_type="application/json")
+        if self.invalid_encoding:
+            return Response("not-gzip", headers={"Content-Encoding": "gzip"}, media_type="application/json")
         if self.oversized_response:
             return Response("x" * 262145, media_type="application/json")
         status = self.cuekb_status
@@ -162,7 +166,7 @@ class IndependentAPIs:
                 for index in range(self.hit_count)
             ]
         )
-        return {
+        result = {
             "trace_id": str(uuid4()),
             "retrieval_status": status,
             "evidence_status": self.evidence_status,
@@ -171,6 +175,10 @@ class IndependentAPIs:
             "timings_ms": {"total": 1},
             "hits": hits,
         }
+        if self.redirect_response:
+            # A plausible body must never make a redirect a successful search.
+            return JSONResponse(result, status_code=302, headers={"Location": "/v1/search-target"})
+        return result
 
     async def completion(self, request: Request):
         if request.headers.get("authorization") != "Bearer " + KEY:

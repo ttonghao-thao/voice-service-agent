@@ -7,7 +7,7 @@ import anyio
 from app.contracts import DomainError, PortalEvent, now, portal_server_event_adapter, uid
 from app.storage.models import Base, Conversation, DeliveryAttempt, Event, Record, ToolConfig, Turn, Utterance
 from app.task_context import bind_arguments, observe, snapshot, task_status, values
-from sqlalchemy import delete, select, text
+from sqlalchemy import delete, event, select, text
 from sqlalchemy.ext.asyncio import async_sessionmaker, create_async_engine
 
 
@@ -15,6 +15,16 @@ class Store:
     def __init__(self, url):
         self.write_lock = asyncio.Lock()
         self.engine = create_async_engine(url, pool_pre_ping=True)
+        if self.engine.dialect.name == "sqlite":
+            @event.listens_for(self.engine.sync_engine, "connect")
+            def configure_sqlite(connection, _):
+                # History/SSE readers must not prevent voice delivery and
+                # disconnect cleanup from committing. SQLite is local/test only.
+                cursor = connection.cursor()
+                try:
+                    cursor.execute("PRAGMA journal_mode=WAL")
+                finally:
+                    cursor.close()
         self.sessions = async_sessionmaker(self.engine, expire_on_commit=False)
         self.event_listeners: dict[str, set[asyncio.Event]] = {}
 

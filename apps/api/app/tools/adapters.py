@@ -27,7 +27,9 @@ async def bounded_json(client, method, url, *, limit=32768, error_map=None, **kw
     # Redirects are intentionally disabled: configured endpoints cannot redirect into arbitrary networks.
     for attempt in range(2):
         try:
-            async with client.stream(method, url, **kwargs) as response:
+            async with client.stream(method, url, follow_redirects=False, **kwargs) as response:
+                if 300 <= response.status_code < 400:
+                    raise DomainError("TOOL_BAD_RESPONSE", "Search service returned an unexpected redirect", 502)
                 if response.status_code >= 500 and attempt == 0:
                     await response.aclose()
                     await asyncio.sleep(0.1)
@@ -46,7 +48,9 @@ async def bounded_json(client, method, url, *, limit=32768, error_map=None, **kw
                     return json.loads(body)
                 except (ValueError, UnicodeError) as exc:
                     raise DomainError("TOOL_BAD_RESPONSE", "Search service returned an invalid response", 502) from exc
-        except (httpx.TimeoutException, httpx.NetworkError) as exc:
+        except httpx.DecodingError as exc:
+            raise DomainError("TOOL_BAD_RESPONSE", "Search service returned invalid encoded data", 502) from exc
+        except (httpx.TimeoutException, httpx.NetworkError, httpx.RemoteProtocolError) as exc:
             if attempt == 1:
                 raise DomainError("TOOL_UNAVAILABLE", "Search service connection failed", 502, True) from exc
             await asyncio.sleep(0.1)

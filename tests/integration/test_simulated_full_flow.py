@@ -94,6 +94,8 @@ SCENARIOS = [
     ("cuekb-429", {"cuekb_http_status": 429}, "lookup_knowledge", "failed", "CUEKB_RATE_LIMITED", 1, 0),
     ("cuekb-503-retry", {"cuekb_http_status": 503}, "lookup_knowledge", "failed", "TOOL_UNAVAILABLE", 2, 0),
     ("invalid-json", {"invalid_response": True}, "lookup_knowledge", "failed", "TOOL_BAD_RESPONSE", 1, 0),
+    ("redirect-with-evidence", {"redirect_response": True}, "lookup_knowledge", "failed", "TOOL_BAD_RESPONSE", 1, 0),
+    ("invalid-content-encoding", {"invalid_encoding": True}, "lookup_knowledge", "failed", "TOOL_BAD_RESPONSE", 1, 0),
     ("oversized-json", {"oversized_response": True}, "lookup_knowledge", "failed", "TOOL_BAD_RESPONSE", 1, 0),
     ("model-503", {"model_http_status": 503}, "reason_over_knowledge", "failed", "AGENT_FAILED", 0, 1),
     (
@@ -169,6 +171,35 @@ async def test_network_voice_business_flow(
     record_property("text_model_http_requests", models)
     await call.close()
     assert (await simulation.client.get(call.path + "/messages", headers=call.headers)).status_code == 401
+
+
+@pytest.mark.parametrize("raw", [
+    "not-json",
+    "[]",
+    "null",
+    '{"type": []}',
+    json.dumps({"type": "response.output_audio.done", "response_id": "r" * 129}),
+    json.dumps({"type": "response.output_audio.delta", "response_id": "r1", "delta": "not-base64"}),
+    json.dumps({"type": "response.output_audio.delta", "response_id": "r1", "delta": "AA=="}),
+])
+async def test_malformed_native_event_is_protocol_error_and_connection_can_recover(simulation, raw):
+    call = await PortalCall(simulation).create()
+    await call.open_voice()
+    await simulation.services.native_connections[-1].send(raw)
+    error = await call.until("portal.error")
+    assert error["payload"]["code"] == "VOICE_PROTOCOL_ERROR"
+    await call.until("connection.closed")
+    assert not any(event["type"] == "portal.audio.delta" for event in call.events)
+    assert not (await call.history())["items"]
+    assert not simulation.services.queries and not simulation.services.model_calls
+    await call.reader
+    await call.open_voice()
+    plan = VoicePlan()
+    await call.speak(plan)
+    assert (await call.answer())["answer"]["status"] == "answered"
+    await call.until("portal.audio.done", lambda event: event["payload"]["response_id"] == plan.response_id)
+    assert len(simulation.services.queries) == len(simulation.services.outputs) == 1
+    await call.close()
 
 
 async def test_general_answer_and_same_session_three_routes(simulation):

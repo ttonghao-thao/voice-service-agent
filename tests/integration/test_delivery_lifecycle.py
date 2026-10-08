@@ -3,8 +3,8 @@
 import asyncio
 
 import pytest
-from app.storage.models import DeliveryAttempt
-from sqlalchemy import select
+from app.storage.models import Conversation, DeliveryAttempt
+from sqlalchemy import select, text
 
 from scripts.simulate_full_flow import PortalCall, SimulationHarness, VoicePlan
 
@@ -106,6 +106,27 @@ async def test_recovery_never_reopens_a_terminal_attempt(app, conversation):
     assert not await store.delivery(conversation, 0, "r1", "voice_audio", "sent", response_id="r1")
     rows = await attempts(type("Harness", (), {"app": app})(), conversation)
     assert rows[0].status == "unknown" and rows[0].reason_code == "service_restarted"
+
+
+async def test_history_reader_does_not_block_delivery_commit(app, conversation):
+    store = app.state.store
+    # Keep a real SQLite read snapshot open while a separate connection writes.
+    # This reproduces history polling overlapping voice delivery/cleanup.
+    async with store.engine.connect() as reader:
+        await reader.execute(text("BEGIN"))
+        before = (await reader.execute(select(Conversation.title).where(Conversation.id == conversation))).scalar_one()
+        try:
+            async with asyncio.timeout(1):
+                async with store.transaction() as writer:
+                    await writer.execute(text("PRAGMA busy_timeout = 200"))
+                    item = await writer.get(Conversation, conversation)
+                    item.title = "New delivery snapshot"
+            assert (await reader.execute(select(Conversation.title).where(Conversation.id == conversation))).scalar_one() == before
+        finally:
+            await reader.rollback()
+    async with store.sessions() as db:
+        assert (await db.get(Conversation, conversation)).title == "New delivery snapshot"
+    assert store.engine.pool.checkedout() == 0
 
 
 async def test_writer_cancellation_waits_for_database_commit_before_releasing_lock(app, conversation, monkeypatch):

@@ -72,8 +72,23 @@ class VoiceEvent:
     payload: dict = field(default_factory=dict)
 
 
+def decode_event(raw):
+    try:
+        event = json.loads(raw)
+    except (ValueError, UnicodeError, TypeError) as exc:
+        raise DomainError("VOICE_PROTOCOL_ERROR", "Voice service returned invalid JSON", 502) from exc
+    if not isinstance(event, dict) or not isinstance(event.get("type"), str) or not event["type"]:
+        raise DomainError("VOICE_PROTOCOL_ERROR", "Voice service returned an invalid event", 502)
+    return event
+
+
 def normalize(event):
+    if not isinstance(event, dict) or not isinstance(event.get("type"), str) or not event["type"]:
+        raise DomainError("VOICE_PROTOCOL_ERROR", "Voice service returned an invalid event", 502)
     kind = event.get("type")
+    for identifier in ("response_id", "item_id"):
+        if identifier in event and (not isinstance(event[identifier], str) or not 0 < len(event[identifier]) <= 128):
+            raise DomainError("VOICE_PROTOCOL_ERROR", "Voice event has an invalid identifier", 502)
     ids = {k: event[k] for k in ("response_id", "item_id") if isinstance(event.get(k), str)}
     if kind == "response.function_call_arguments.done":
         if not isinstance(event.get("call_id"), str) or not 0 < len(event["call_id"]) <= 128:
@@ -106,6 +121,15 @@ def normalize(event):
             value = event.get(source)
             if not isinstance(value, str) or len(value) > 100000:
                 raise DomainError("VOICE_PROTOCOL_ERROR", "Invalid voice event", 502)
+            if target == "audio.delta":
+                if not value or len(value) > 64000:
+                    raise DomainError("VOICE_PROTOCOL_ERROR", "Invalid voice audio chunk", 502)
+                try:
+                    audio = base64.b64decode(value, validate=True)
+                except ValueError as exc:
+                    raise DomainError("VOICE_PROTOCOL_ERROR", "Invalid voice audio encoding", 502) from exc
+                if len(audio) % 2 or len(audio) > 48000:
+                    raise DomainError("VOICE_PROTOCOL_ERROR", "Invalid voice PCM16 chunk", 502)
             payload[dest] = value
         return VoiceEvent(target, payload)
     if kind in ("input_audio_buffer.speech_started", "input_audio_buffer.speech_stopped"):
@@ -146,18 +170,21 @@ class NvidiaVoiceChatAdapter:
             ping_timeout=10,
         )
         async with asyncio.timeout(8):
-            created = json.loads(await self.ws.recv())
+            created = decode_event(await self.ws.recv())
             if created.get("type") != "session.created":
                 raise DomainError("VOICE_PROTOCOL_ERROR", "Voice session creation event was not received", 502)
             update = getattr(self, "configuration", None) or session_update(summary)
             if not printable_ascii(json.dumps(update, ensure_ascii=False)):
                 raise DomainError("VOICE_PROTOCOL_ERROR", "VoiceChat instructions must be ASCII", 502)
             await self.ws.send(json.dumps(update, ensure_ascii=True))
-            updated = json.loads(await self.ws.recv())
+            updated = decode_event(await self.ws.recv())
             if updated.get("type") != "session.updated":
                 raise DomainError("VOICE_PROTOCOL_ERROR", "Voice session configuration was not confirmed", 502)
+            configuration = updated.get("session")
+            audio = configuration.get("audio") if isinstance(configuration, dict) else None
             for direction in ("input", "output"):
-                if updated.get("session", {}).get("audio", {}).get(direction, {}).get("format") != {
+                stream = audio.get(direction) if isinstance(audio, dict) else None
+                if not isinstance(stream, dict) or stream.get("format") != {
                     "type": "audio/pcm",
                     "rate": 24000,
                 }:
@@ -188,7 +215,7 @@ class NvidiaVoiceChatAdapter:
 
     async def events(self):
         async for raw in self.ws:
-            event = normalize(json.loads(raw))
+            event = normalize(decode_event(raw))
             if event:
                 yield event
 

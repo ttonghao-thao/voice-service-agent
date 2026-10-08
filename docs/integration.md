@@ -28,6 +28,8 @@ API 通过 `VOICECHAT_WS_URL` 连接独立服务的 `/v1/realtime`。受控同�
 
 握手固定为 `session.created → session.update → session.updated`。legacy 注册 `consult_service_agent(user_request)`；dual_tools 按当前授权注册快照，仅有 `lookup_knowledge` / `reason_over_knowledge` 两个默认工具。Adapter 用 flat name/description/parameters/ack_messages 定义及 instructions，验证 `audio/pcm`、24000 Hz；不发送 `tool_choice`、未证实的 response.cancel、动态 TTS 或后台推送字段。工具定义不是每个音频帧重复发送。
 
+握手与流事件必须是带有效 `type` 的 JSON 对象；非法结构、音频格式、标识或 PCM16/base64 返回 `VOICE_PROTOCOL_ERROR` 并关闭连接。事件 `response_id` / `item_id` 若出现，须为 1–128 字符的字符串，输出 PCM16 chunk 限 48000 bytes；合法的未知事件类型仍可忽略。这些校验在供应商 Adapter 内完成，不将错误包交给浏览器处理，也不切换到 mock。
+
 | 阶段 | 采样和行为 |
 | --- | --- |
 | 设备 / AudioContext | 常见 48 kHz 或 44.1 kHz，以浏览器实际设置为准 |
