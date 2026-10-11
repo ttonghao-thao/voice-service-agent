@@ -21,7 +21,14 @@ from app.contracts import (
     printable_ascii,
     uid,
 )
-from app.voice.provider import BRIDGE_ACK, BRIDGE_NAME, MockVoiceAdapter, NvidiaVoiceChatAdapter
+from app.voice.provider import (
+    BRIDGE_ACK,
+    BRIDGE_NAME,
+    MockVoiceAdapter,
+    NvidiaVoiceChatAdapter,
+    VoiceEvent,
+    event_metadata,
+)
 
 logger = logging.getLogger(__name__)
 TRANSCRIPT_FINAL_TIMEOUT_SECONDS = 5
@@ -175,6 +182,17 @@ class VoiceGateway:
         seq, client_seq, started = 0, -1, time.monotonic()
         frames, last_input, last_ack, last_playback_stop = 0, started, 0.0, 0.0
         input_state = "quiet"
+        recent_events = deque(maxlen=32)
+        event_seq = 0
+
+        def trace_event(event):
+            nonlocal event_seq
+            event_seq += 1
+            recent_events.append({
+                "seq": event_seq,
+                "at_ms": int((time.monotonic() - started) * 1000),
+                **event_metadata(event),
+            })
 
         async def current(tid=None, revision=None):
             await self.coordinator.coordination.check(session.conversation_id)
@@ -223,6 +241,10 @@ class VoiceGateway:
                                 pending[call] = "sent"
                                 if authorize_output:
                                     authorized_followups.add(tool_responses.get(call, call))
+                                trace_event(VoiceEvent("tool.result.submitted", {
+                                    "call_id": call,
+                                    "response_id": tool_responses.get(call),
+                                }))
                                 logger.info(
                                     "voice_tool_result_submitted conversation_id=%s turn_id=%s call_id=%s",
                                     session.conversation_id,
@@ -352,6 +374,7 @@ class VoiceGateway:
             async for event in provider.events():
                 if not await current():
                     return
+                trace_event(event)
                 if event.kind == "tool":
                     call = event.payload["call_id"]
                     if call in pending:
@@ -411,11 +434,12 @@ class VoiceGateway:
                     if response_id:
                         authorized_responses.add(response_id)
                     logger.info(
-                        "voice_tool_call_received conversation_id=%s call_id=%s tool=%s input_item_id=%s",
+                        "voice_tool_call_received conversation_id=%s call_id=%s tool=%s input_item_id=%s response_id=%s",
                         session.conversation_id,
                         call,
                         event.payload.get("name"),
                         input_item_id,
+                        response_id,
                     )
                     pending[call] = "running"
                     task = asyncio.create_task(
@@ -464,6 +488,21 @@ class VoiceGateway:
                         future.set_result(event.payload["text"])
                     prune_inputs()
                 response_id = event.payload.get("response_id")
+                # A boundary/empty delta for an unknown response carries no
+                # answer. Do not spend a follow-up grant, suppress the ID, or
+                # disconnect on it. Known responses still need their normal
+                # completion/cleanup path. Nonempty PCM (even zeros) is gated.
+                if (
+                    response_id
+                    and response_id not in authorized_responses
+                    and response_id not in session.suppressed_responses
+                    and (
+                        event.kind == "audio.done"
+                        or (event.kind == "audio.delta" and not event.payload["audio"])
+                        or (event.kind.startswith("speech_text") and not event.payload["text"].strip())
+                    )
+                ):
+                    continue
                 if event.kind == "speech_text.delta":
                     speech_new_delta.add(response_id)
                 if event.kind == "speech_text.done":
@@ -508,9 +547,18 @@ class VoiceGateway:
                             response_turns[response_id] = response_turns[parent_response]
                     if response_id not in authorized_responses and customer_input_seen:
                         logger.warning(
-                            "voice_unbridged_response_rejected conversation_id=%s response_id=%s",
+                            "voice_unbridged_response_rejected conversation_id=%s response_id=%s diagnostic=%s",
                             session.conversation_id,
                             response_id,
+                            json.dumps({
+                                "customer_input_seen": customer_input_seen,
+                                "input_state": input_state,
+                                "pending_tools": {
+                                    state: sum(value == state for value in pending.values())
+                                    for state in ("running", "ready", "sent")
+                                },
+                                "recent_events": list(recent_events),
+                            }, ensure_ascii=True),
                         )
                         raise DomainError(
                             "VOICE_TOOL_REQUIRED",

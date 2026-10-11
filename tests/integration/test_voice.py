@@ -1,11 +1,22 @@
 import json
+import logging
 
 import pytest
 from app.config import Settings
 from app.main import create_app
-from app.voice.provider import MockVoiceAdapter, VoiceEvent
+from app.voice.provider import BRIDGE_ACK, MockVoiceAdapter, VoiceEvent
 from fastapi.testclient import TestClient
 from starlette.websockets import WebSocketDisconnect
+
+
+@pytest.fixture
+def voice_logs(caplog):
+    logger = logging.getLogger("app.voice.gateway")
+    logger.addHandler(caplog.handler)
+    try:
+        yield caplog
+    finally:
+        logger.removeHandler(caplog.handler)
 
 
 def test_native_bridge_dedup_tool_before_transcript_and_ticket(tmp_path):
@@ -114,7 +125,11 @@ def test_input_activity_never_cancels_without_explicit_control(tmp_path):
             assert client.get(f"/api/v1/conversations/{cid}/messages").json()["items"] == []
 
 
-def test_voice_response_after_user_speech_requires_business_bridge(tmp_path):
+@pytest.mark.parametrize("output_kind", ["speech_text.delta", "audio.delta"])
+@pytest.mark.parametrize("empty_prefix_count", [0, 40])
+def test_voice_response_after_user_speech_requires_business_bridge(
+    tmp_path, voice_logs, output_kind, empty_prefix_count,
+):
     app = create_app(
         Settings(
             _env_file=None,
@@ -124,14 +139,25 @@ def test_voice_response_after_user_speech_requires_business_bridge(tmp_path):
     )
 
     class Scripted(MockVoiceAdapter):
+        async def events(self):
+            for index in range(empty_prefix_count):
+                yield VoiceEvent("audio.done", {"response_id": f"empty-{index}"})
+            async for event in super().events():
+                yield event
+
         async def connect(self, summary):
             await self.queue.put(
                 VoiceEvent("input.state", {"state": "speaking", "item_id": "input-1"})
             )
             await self.queue.put(
                 VoiceEvent(
-                    "speech_text.delta",
-                    {"response_id": "unbridged", "text": "I can answer directly."},
+                    output_kind,
+                    {
+                        "response_id": "unbridged",
+                        "text": "I can answer directly.",
+                        # Even all-zero, nonempty PCM requires authorization.
+                        "audio": "AAA=",
+                    },
                 )
             )
 
@@ -144,8 +170,103 @@ def test_voice_response_after_user_speech_requires_business_bridge(tmp_path):
         ) as ws:
             assert ws.receive_json()["type"] == "portal.session.ready"
             error = ws.receive_json()
+            # The writer can deliver the already queued input state before the
+            # receiver rejects the following unbridged response.
+            if error["type"] == "portal.input.state":
+                assert error["payload"] == {"state": "speaking"}
+                error = ws.receive_json()
             assert error["type"] == "portal.error"
             assert error["payload"]["code"] == "VOICE_TOOL_REQUIRED"
+
+    rejection = next(r.message for r in voice_logs.records if "voice_unbridged_response_rejected" in r.message)
+    diagnostic = json.loads(rejection.split("diagnostic=", 1)[1])
+    assert diagnostic["customer_input_seen"] is True
+    assert diagnostic["recent_events"][-1]["kind"] == output_kind
+    assert diagnostic["recent_events"][-1]["response_id"] == "unbridged"
+    assert diagnostic["recent_events"][-2]["item_id"] == "input-1"
+    assert len(diagnostic["recent_events"]) == min(32, empty_prefix_count + 2)
+    assert diagnostic["recent_events"][-1]["seq"] == empty_prefix_count + 2
+    assert "I can answer directly." not in rejection
+    assert "AAA=" not in rejection
+
+
+@pytest.mark.parametrize("after_tool_result", [False, True])
+@pytest.mark.parametrize("empty_event", [
+    VoiceEvent("audio.done", {"response_id": "answer"}),
+    VoiceEvent("audio.delta", {"response_id": "answer", "audio": ""}),
+    VoiceEvent("speech_text.delta", {"response_id": "answer", "text": " "}),
+    VoiceEvent("speech_text.done", {"response_id": "answer", "text": ""}),
+])
+def test_empty_unowned_output_neither_disconnects_nor_spends_answer_grant(
+    tmp_path, voice_logs, after_tool_result, empty_event,
+):
+    app = create_app(Settings(
+        _env_file=None, auto_create_schema=True,
+        database_url=f"sqlite+aiosqlite:///{tmp_path}/empty-output.db",
+    ))
+
+    class Scripted(MockVoiceAdapter):
+        async def connect(self, summary):
+            await self.queue.put(VoiceEvent("input.state", {"state": "speaking", "item_id": "input"}))
+            if not after_tool_result:
+                await self.queue.put(empty_event)
+            await self.queue.put(VoiceEvent("transcript.done", {
+                "item_id": "input", "text": "Find the integration sample",
+            }))
+            await self.queue.put(VoiceEvent("tool", {
+                "response_id": "tool-response", "call_id": "call", "name": "consult_service_agent",
+                "arguments": json.dumps({"user_request": "Find the integration sample"}),
+            }))
+
+        async def submit_tool_result(self, call_id, text):
+            if after_tool_result:
+                await self.queue.put(VoiceEvent("speech_text.done", {
+                    "response_id": "tool-response", "text": BRIDGE_ACK,
+                }))
+                await self.queue.put(VoiceEvent("audio.done", {"response_id": "tool-response"}))
+                # A repeated ACK end must not consume the answer permission.
+                await self.queue.put(VoiceEvent("audio.done", {"response_id": "tool-response"}))
+                await self.queue.put(empty_event)
+                # A second orphan ID exposes accidental consumption of a grant,
+                # even when the first empty event used the eventual answer ID.
+                await self.queue.put(VoiceEvent("audio.done", {"response_id": "orphan"}))
+            await self.queue.put(VoiceEvent("speech_text.done", {
+                "response_id": "answer", "text": "The verified answer.",
+            }))
+            await self.queue.put(VoiceEvent("audio.done", {"response_id": "answer"}))
+            await self.queue.put(VoiceEvent("speech_text.delta", {
+                "response_id": "unrelated", "text": "An unbridged answer.",
+            }))
+
+    with TestClient(app) as client:
+        app.state.voice.provider_factory = Scripted
+        cid = client.post("/api/v1/conversations", json={}).json()["id"]
+        issued = client.post(f"/api/v1/conversations/{cid}/voice-sessions", json={}).json()
+        with client.websocket_connect(issued["ws_url"], headers={"Origin": "http://localhost:5173"}) as ws:
+            for _ in range(10):
+                event = ws.receive_json()
+                if event["type"] == "portal.error":
+                    assert event["payload"]["code"] == "VOICE_TOOL_REQUIRED"
+                    break
+                assert event["payload"].get("response_id") != "orphan"
+            else:
+                pytest.fail("Unrelated output must still be rejected")
+        records = client.get(f"/api/v1/conversations/{cid}/messages").json()["records"]
+        spoken = [r["payload"]["text"] for r in records if r["kind"] == "voicechat_transcript"]
+        assert spoken == ["The verified answer."]
+    rejection = next(r.message for r in voice_logs.records if "voice_unbridged_response_rejected" in r.message)
+    diagnostic = json.loads(rejection.split("diagnostic=", 1)[1])
+    events = diagnostic["recent_events"]
+    tool_event = next(e for e in events if e["kind"] == "tool")
+    result_event = next(e for e in events if e["kind"] == "tool.result.submitted")
+    assert tool_event["call_id"] == result_event["call_id"] == "call"
+    assert tool_event["response_id"] == result_event["response_id"] == "tool-response"
+    assert tool_event["seq"] < result_event["seq"] < events[-1]["seq"]
+    assert events[-1]["response_id"] == "unrelated"
+    assert diagnostic["pending_tools"] == {"running": 0, "ready": 0, "sent": 1}
+    assert "Find the integration sample" not in rejection
+    assert "The verified answer." not in rejection
+    assert BRIDGE_ACK not in rejection
 
 
 def test_tool_without_customer_input_is_settled_without_creating_turn(tmp_path):

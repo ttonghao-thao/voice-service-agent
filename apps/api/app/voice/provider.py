@@ -54,6 +54,23 @@ class VoiceEvent:
     payload: dict = field(default_factory=dict)
 
 
+def event_metadata(event: VoiceEvent) -> dict:
+    """Bounded diagnostic fields only; never include transcripts, arguments or PCM."""
+    payload = event.payload
+    result = {"kind": event.kind}
+    for key in ("response_id", "item_id", "call_id", "name"):
+        if isinstance(payload.get(key), str):
+            result[key] = payload[key][:128]
+    if event.kind == "input.state":
+        result["state"] = payload.get("state")
+    if isinstance(payload.get("text"), str):
+        result["text_chars"] = len(payload["text"])
+        result["has_text"] = bool(payload["text"].strip())
+    if isinstance(payload.get("audio"), str):
+        result["audio_base64_chars"] = len(payload["audio"])
+    return result
+
+
 def normalize(event):
     kind = event.get("type")
     ids = {k: event[k] for k in ("response_id", "item_id") if isinstance(event.get(k), str)}

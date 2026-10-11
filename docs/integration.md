@@ -107,7 +107,7 @@ speech 输出 FIFO 中每条事件在生成时固定 response/item，单发送�
 
 网关授权规则：
 
-1. 初始未桥接输出被抑制；用户输入后未桥接的直接答案以 `VOICE_TOOL_REQUIRED` 关闭。
+1. 初始未桥接输出被抑制；用户输入后未桥接的非空文字或非空 PCM 以 `VOICE_TOOL_REQUIRED` 关闭。未授权且未抑制 response 的孤立 `audio.done`、空音频 delta、空白字幕 delta/done 被丢弃，不占用后续回答许可，不把该 ID 永久抑制；已授权/已抑制 response 仍执行原有结束与清理。非空 PCM 即使全零也必须授权，不以幅值猜测静音或放行。
 2. 已绑定合法工具的 response 可承载固定 ACK；有效工具结果提交后最多再授权一个新 response。
 3. 若工具结果在 ACK 未播完时已返回，固定 ACK 不消耗后续答案的许可。固定 ACK 文本由 adapter 统一提供并按规范化空白精确识别。
 4. 若最终答案沿用工具 response，则该 response 完成时回收未使用的后续许可；若用新 response，则首次输出时消费许可。之后无关回答不能继承授权。
@@ -138,6 +138,12 @@ D19 上游补丁、适用源码 hash、CPU 测试与发布方式见 [VoiceChat �
 `VOICE_TOOL_REQUIRED` 表示用户输入出现后，网关收到尚未授权的 `response_id` 的口述文字或音频。它与初始 response 跨轮复用触发的 `VOICE_PROTOCOL_ERROR` 是不同检查；新错误不能单独证明上一项生命周期问题已完成真实验收。
 
 按同一语音 conversation 核对 `voice_tool_call_received`、`voice_unbound_tool_settled` 和 `voice_unbridged_response_rejected`。需要确认 `consult_service_agent` 原生调用已绑定客户 input，且工具/ACK/音频使用正确 response 并按顺序到达；不能仅凭提示词或绕过拒绝来认定已走业务检索。
+
+2026-10-11 日志确认本次会话的 Jinja 与工具定义已传入模型；拒绝发生于不同于初始输出的新 response。仅凭这份日志不能确定模型未调用工具、服务端未发工具事件或事件错序/归属错误，也不能把 EOS/推理取消当作模型崩溃。当前代码收到 `speech_started` 即标记客户输入，拒绝不代表客户已说完。
+
+本轮修复了源码和受控用例确认的空事件误授权/误关闭边界，但尚不能认定它就是本次现场根因。更新 API 后，拒绝 WARNING 的 `diagnostic` JSON 包含 `customer_input_seen`、`input_state`、工具 running/ready/sent 数量及最多 32 条 `recent_events`。每条记录带递增 `seq`、连接相对时间 `at_ms`、归一化 `kind` 和可用的 `response_id/item_id/call_id/name`；字幕只记长度/是否非空，音频只记 Base64 字符数，不含正文、工具参数或音频内容。标识字段最多 128 字符。缓冲也记录本地 `tool.result.submitted`（仅诊断标记，不是供应商或门户协议事件）；它表示写回成功，不表示供应商已处理或客户已听到。该时间线只覆盖 adapter 接受的事件，不是原始 WebSocket 完整抓包；超过窗口的历史不能据此认定不存在。
+
+`voice_tool_call_received` 同时记录 response ID；`scripts/probe_voicechat.py` 的时间线使用相同元数据字段。现场先按同一 conversation 检查被拒事件类型、先前 input 与 tool 的 ID/顺序，再决定是否需要独立 VoiceChat 补丁。无需为本轮 API 修复修改提示词、Web、协议 schema、数据库或独立 speech 文件；云端 API 镜像更新及真实 VoiceChat/听音仍须现场复测。
 
 对独立 VoiceChat 核对运行中的 `/s2s/audio_server.py` hash、配套模板和实际 Python 进程的 `USE_JINJA_TEMPLATE_PROMPT`。该开关在模块导入时读取；容器 shell 临时设置或已运行进程之后设置均不改变已导入的值。以 `USE_JINJA_TEMPLATE_PROMPT=1` 前缀启动 Python 时，另一次 `docker exec printenv` 只显示容器的基础环境，不能据此判定该 Python 进程是否继承了开关。应检查实际进程环境，或新 session 对应的 `Preparing prompt using jinja template` 日志。`./scripts/deploy-cloud.sh .env` 仅启动本项目，开关应在独立 VoiceChat 的进程/容器启动定义中生效。
 

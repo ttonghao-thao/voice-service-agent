@@ -8,7 +8,7 @@ from app.contracts import (
     portal_client_event_adapter,
     portal_server_event_adapter,
 )
-from app.voice.provider import NvidiaVoiceChatAdapter, normalize, session_update
+from app.voice.provider import NvidiaVoiceChatAdapter, VoiceEvent, event_metadata, normalize, session_update
 from pydantic import ValidationError
 
 
@@ -78,6 +78,25 @@ def test_tool_before_transcript_preserves_native_ids():
     )
     assert e.kind == "tool" and e.payload["call_id"] == "c1"
     assert BridgeArguments.model_validate_json(e.payload["arguments"]).user_request == "杭州明天天气"
+
+
+def test_voice_event_diagnostics_exclude_content_and_bound_identifiers():
+    metadata = event_metadata(VoiceEvent("tool", {
+        "response_id": "r" * 200,
+        "item_id": "input-1",
+        "call_id": "call-1",
+        "name": "consult_service_agent",
+        "arguments": '{"user_request":"private question"}',
+        "text": "private answer",
+        "audio": "private audio",
+        "token": "private token",
+    }))
+    assert metadata == {
+        "kind": "tool", "response_id": "r" * 128,
+        "item_id": "input-1", "call_id": "call-1", "name": "consult_service_agent",
+        "text_chars": 14, "has_text": True, "audio_base64_chars": 13,
+    }
+    assert "private" not in json.dumps(metadata)
 
 
 def test_input_state_preserves_native_item_identity():

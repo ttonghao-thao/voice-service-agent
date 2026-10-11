@@ -15,7 +15,7 @@ from pathlib import Path
 
 from app.config import Settings
 from app.contracts import BridgeArguments, now
-from app.voice.provider import BRIDGE_NAME, NvidiaVoiceChatAdapter
+from app.voice.provider import BRIDGE_NAME, NvidiaVoiceChatAdapter, event_metadata
 
 
 def read_wav(path):
@@ -111,9 +111,9 @@ async def probe(args):
                     report["event_timeline"].append(
                         {
                             "at_ms": elapsed_ms,
-                            "kind": event.kind,
-                            "response_id": event.payload.get("response_id"),
-                            "item_id": event.payload.get("item_id"),
+                            "response_id": None,
+                            "item_id": None,
+                            **event_metadata(event),
                         }
                     )
                     if event.kind == "audio.delta":
