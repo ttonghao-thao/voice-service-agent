@@ -8,6 +8,91 @@ test.use({
   },
   permissions: ["microphone"],
 });
+test("Complete ASR remains visible after bridge rejection and capture summary is emitted", async ({
+  page,
+}) => {
+  const summaries: Record<string, unknown>[] = [];
+  page.on("console", (message) => {
+    if (message.text().startsWith("voice_capture_summary "))
+      summaries.push(
+        JSON.parse(message.text().slice("voice_capture_summary ".length)),
+      );
+  });
+  let sendEvent: (type: string, payload: Record<string, unknown>) => void;
+  let captured = 0;
+  let conversationId = "";
+  let serverSeq = 0;
+  page.on("response", async (response) => {
+    if (
+      response.url().endsWith("/api/v1/conversations") &&
+      response.request().method() === "POST"
+    )
+      conversationId = (await response.json()).id;
+  });
+  await page.routeWebSocket(
+    "**/api/v1/voice-sessions/**/stream?*",
+    (socket) => {
+      sendEvent = (type, payload) =>
+        socket.send(
+          JSON.stringify({
+            type,
+            epoch: 1,
+            payload,
+            conversation_id: conversationId,
+            server_seq: ++serverSeq,
+            event_id: "diagnostic-" + serverSeq,
+            request_revision: 0,
+          }),
+        );
+      socket.onMessage((raw) => {
+        if (JSON.parse(String(raw)).type === "portal.audio.append") captured++;
+      });
+      sendEvent("portal.session.ready", {
+        sample_rate: 24000,
+        format: "pcm16",
+        chunk_ms: 80,
+      });
+    },
+  );
+  await page.goto("/");
+  await page.getByRole("button", { name: "Start call", exact: true }).click();
+  await expect.poll(() => captured).toBeGreaterThan(0);
+  sendEvent!("portal.transcript.delta", {
+    item_id: "full-input",
+    text: "HELLO ",
+  });
+  sendEvent!("portal.transcript.delta", {
+    item_id: "full-input",
+    text: "THAO ",
+  });
+  sendEvent!("portal.transcript.done", {
+    item_id: "full-input",
+    text: "HELLO THAO MOONCAKE",
+  });
+  await expect(page.locator(".user-message")).toContainText(
+    "HELLO THAO MOONCAKE",
+  );
+  sendEvent!("portal.error", {
+    code: "VOICE_TOOL_REQUIRED",
+    message:
+      "Voice did not reach the knowledge assistant. Restart voice or use text.",
+  });
+  await expect(
+    page.getByRole("main").getByText("Voice disconnected", { exact: true }),
+  ).toBeVisible();
+  await expect(page.locator(".user-message")).toContainText(
+    "HELLO THAO MOONCAKE",
+  );
+  await expect
+    .poll(() => summaries.filter((s) => s.stage === "stopped").length)
+    .toBe(1);
+  const summary = summaries.find((s) => s.stage === "stopped")!;
+  expect(summary.sent_frames).toBe(captured);
+  expect(summary.sent_samples_24k).toBe(captured * 1920);
+  expect(summary).not.toHaveProperty("audio");
+  expect(summary).not.toHaveProperty("call_token");
+});
+
 test("Synthetic microphone transport, playback stop, rotation and cleanup", async ({
   page,
 }) => {

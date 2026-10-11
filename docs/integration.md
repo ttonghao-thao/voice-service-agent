@@ -135,6 +135,8 @@ D19 上游补丁、适用源码 hash、CPU 测试与发布方式见 [VoiceChat �
 
 ### 3.5 D21：语音桥接失败排查
 
+2026-10-11 更新后现场复测：用户原句 `HELLO THAO MOONCAKE`，上游 delta/final 均仅 7 字符，门户显示 `T H A O`；随后非空 audio.delta 触发拒绝，工具状态均为零。这次不是空事件误拒绝。本地 speech 会在 agent BOS 时结束并清空 RNNT display，因此 final 只代表上游发布了结束标记，不证明整句识别完成。完整证据、源码基线、定位流程和条件修复见 [D21 部分转写与未桥接音频设计](voicechat-fault-recovery-design.md)；必要诊断已实施，执行见 §3.6。现场原因不能仅凭 BOS/reset 静态逻辑定案。
+
 `VOICE_TOOL_REQUIRED` 表示用户输入出现后，网关收到尚未授权的 `response_id` 的口述文字或音频。它与初始 response 跨轮复用触发的 `VOICE_PROTOCOL_ERROR` 是不同检查；新错误不能单独证明上一项生命周期问题已完成真实验收。
 
 按同一语音 conversation 核对 `voice_tool_call_received`、`voice_unbound_tool_settled` 和 `voice_unbridged_response_rejected`。需要确认 `consult_service_agent` 原生调用已绑定客户 input，且工具/ACK/音频使用正确 response 并按顺序到达；不能仅凭提示词或绕过拒绝来认定已走业务检索。
@@ -143,9 +145,32 @@ D19 上游补丁、适用源码 hash、CPU 测试与发布方式见 [VoiceChat �
 
 本轮修复了源码和受控用例确认的空事件误授权/误关闭边界，但尚不能认定它就是本次现场根因。更新 API 后，拒绝 WARNING 的 `diagnostic` JSON 包含 `customer_input_seen`、`input_state`、工具 running/ready/sent 数量及最多 32 条 `recent_events`。每条记录带递增 `seq`、连接相对时间 `at_ms`、归一化 `kind` 和可用的 `response_id/item_id/call_id/name`；字幕只记长度/是否非空，音频只记 Base64 字符数，不含正文、工具参数或音频内容。标识字段最多 128 字符。缓冲也记录本地 `tool.result.submitted`（仅诊断标记，不是供应商或门户协议事件）；它表示写回成功，不表示供应商已处理或客户已听到。该时间线只覆盖 adapter 接受的事件，不是原始 WebSocket 完整抓包；超过窗口的历史不能据此认定不存在。
 
-`voice_tool_call_received` 同时记录 response ID；`scripts/probe_voicechat.py` 的时间线使用相同元数据字段。现场先按同一 conversation 检查被拒事件类型、先前 input 与 tool 的 ID/顺序，再决定是否需要独立 VoiceChat 补丁。无需为本轮 API 修复修改提示词、Web、协议 schema、数据库或独立 speech 文件；云端 API 镜像更新及真实 VoiceChat/听音仍须现场复测。
+`voice_tool_call_received` 同时记录 response ID；`scripts/probe_voicechat.py` 的时间线使用相同元数据字段。现场先按同一 conversation 检查被拒事件类型、先前 input 与 tool 的 ID/顺序，再决定是否需要独立 VoiceChat 行为修复。上一轮 eca87d6 的空事件 API 修复无需修改提示词、Web、协议 schema、数据库或独立 speech；本轮必要诊断的发布范围见 §3.6，真实 VoiceChat/听音仍须现场复测。
 
 对独立 VoiceChat 核对运行中的 `/s2s/audio_server.py` hash、配套模板和实际 Python 进程的 `USE_JINJA_TEMPLATE_PROMPT`。该开关在模块导入时读取；容器 shell 临时设置或已运行进程之后设置均不改变已导入的值。以 `USE_JINJA_TEMPLATE_PROMPT=1` 前缀启动 Python 时，另一次 `docker exec printenv` 只显示容器的基础环境，不能据此判定该 Python 进程是否继承了开关。应检查实际进程环境，或新 session 对应的 `Preparing prompt using jinja template` 日志。`./scripts/deploy-cloud.sh .env` 仅启动本项目，开关应在独立 VoiceChat 的进程/容器启动定义中生效。
+
+### 3.6 D21完整输入与模型边界诊断
+
+2026-10-11 按 [D21 设计](voicechat-fault-recovery-design.md) 实施必要诊断；`HELLO THAO MOONCAKE` 仅显示 `T H A O` 的现场根因尚未闭合。生产未桥接非空音频仍报 `VOICE_TOOL_REQUIRED`；不以 ASR 伪造工具调用，不补词，不放宽回答授权。
+
+- Web 的 `voice_capture_summary` 在 ready/stopped 写浏览器 console：conversation/session/epoch、ready 相对时间、capture/sent/pre-ready/stale 帧数、24 kHz 样本数、首末 seq、mute/track 状态。启动前丢弃和失败后剩余输入可与 Gateway 对照；不缓存重放麦克风，不包含音频或 call token。
+- Adapter 从可选 `session.created.session.id` 关联 VoiceChat client ID；缺失不改变握手契约。`voice_provider_connected` / `voice_transport_finished` 记录关联及接收/成功转发/残留帧，provider 记录成功发送的 24 kHz 样本、正常化前 type 计数（最多 32 个 type 加 other 桶，type 最长 128 字符）。未知事件仅计数，不能据此推断其有效工具语义。
+- Gateway 拒绝时保留原 32 条 recent_events，并增加 structural_trace（256 条、序列化条目总量 64 KiB）。仅同 response/item 的相邻 audio.delta 汇总；不跨工具/ASR 控制边界，丢弃数和 truncated 可见。正文、工具参数和 PCM 不进入这些诊断。
+- 独立 speech 的 `VOICECHAT_DIAGNOSTICS=1` 在 WS 与 Triton 启动前设置。WS 记录已接收/解码、16 kHz 提交/完成与队列、ASR marker/长度、tool 解析及 output queued/sent seq；backend 记录覆盖前 raw function 类别/计数、ASR gate/frame/publish/final/reset、原生/ACK/forced EOU BOS 的修改前状态与 decode step。补丁、精确 hash、重载和回退步骤见 [发布说明](../deploy/voicechat/README.md)，不能只发布 API/Web 或只更新 `/s2s`。
+
+现场 A 组使用人工核对、授权且已重新录制的完整 WAV（24 kHz mono PCM16），在既有配置下执行，示例中的 revision/digest 必须替换为实际值：
+
+```sh
+PYTHONPATH=apps/api .venv/bin/python scripts/probe_voicechat.py \
+  --wav artifacts/authorized-hello-thao-mooncake.wav \
+  --api-version ACTUAL_VOICECHAT_REVISION --image-digest ACTUAL_IMAGE_DIGEST \
+  --diagnostic --observation-seconds 10 --total-timeout 60 \
+  --output artifacts/d21-voicechat-probe.json
+```
+
+探针在完整 WAV 后持续发 80 ms 静音，包括等待原生工具和合成结果的阶段；合成结果与音频只有一个写入协程。诊断模式遇到早到未桥接音频继续采元数据，不播放，也不改变生产 Gateway。握手与观察总上限 60 秒，关闭宽限最多 2 秒；invalid WAV/超预算在连接前失败，断线/超时记录 input_complete、tool_seen、exit_reason 和未发送样本。optional output_wav 属隔离测试音频，必须单独授权、保存在忽略目录并按约定删除，不能以其中的未桥接回答当作业务成功。
+
+报告保持 partial/failed/blocked，不生成声学或 CueKB passed 总结。A/B/C 同样本各至少 3 次：再对照 ready 后真实门户链与同版本原生客户端；用 provider/client/sequence ID、output seq 和采样位置关联，不按跨进程 monotonic 时间直接相减。不完整发送的运行不能判定整句识别质量；CPU/Chromium 夹具只验证行为与展示。
 
 ## 4. 文本模型与业务 Agent
 

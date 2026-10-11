@@ -1,3 +1,4 @@
+import base64
 import json
 
 import pytest
@@ -8,7 +9,14 @@ from app.contracts import (
     portal_client_event_adapter,
     portal_server_event_adapter,
 )
-from app.voice.provider import NvidiaVoiceChatAdapter, VoiceEvent, event_metadata, normalize, session_update
+from app.voice.provider import (
+    NvidiaVoiceChatAdapter,
+    VoiceEvent,
+    VoiceTrace,
+    event_metadata,
+    normalize,
+    session_update,
+)
 from pydantic import ValidationError
 
 
@@ -97,6 +105,92 @@ def test_voice_event_diagnostics_exclude_content_and_bound_identifiers():
         "text_chars": 14, "has_text": True, "audio_base64_chars": 13,
     }
     assert "private" not in json.dumps(metadata)
+
+
+def test_voice_trace_compresses_adjacent_audio_but_preserves_control_boundaries():
+    trace = VoiceTrace()
+    for index in range(500):
+        trace.append(VoiceEvent("audio.delta", {"response_id": "r", "item_id": "i", "audio": "AAA="}), index)
+    trace.append(VoiceEvent("tool", {"call_id": "c", "arguments": "secret"}), 500)
+    trace.append(VoiceEvent("audio.delta", {"response_id": "r", "item_id": "i", "audio": "AAA="}), 501)
+    snapshot = trace.snapshot()
+    assert len(snapshot["events"]) == 3
+    assert snapshot["events"][0]["count"] == 500
+    assert snapshot["events"][0]["last_seq"] == 500
+    assert snapshot["events"][0]["audio_base64_chars"] == 2000
+    assert snapshot["events"][1]["kind"] == "tool"
+    assert not snapshot["truncated"]
+    assert "secret" not in json.dumps(snapshot)
+
+
+def test_voice_trace_enforces_count_and_serialized_byte_limits():
+    for limits in ({"max_events": 2}, {"max_bytes": 350}):
+        trace = VoiceTrace(**limits)
+        for index in range(100):
+            trace.append(VoiceEvent("transcript.done", {"item_id": "i" * 10000, "text": "private"}), index)
+        snapshot = trace.snapshot()
+        assert snapshot["truncated"] and snapshot["dropped_events"] > 0
+        assert len(trace.events) <= trace.max_events and trace.bytes <= trace.max_bytes
+        assert trace.bytes == sum(len(json.dumps(e, ensure_ascii=True).encode()) for e in trace.events)
+        assert len(json.dumps(snapshot["events"], ensure_ascii=True).encode()) <= trace.max_bytes
+        assert all(len(e["item_id"]) == 128 for e in trace.events)
+        assert "private" not in json.dumps(snapshot)
+
+
+async def test_adapter_diagnostics_count_unknown_types_before_normalization_and_only_sent_audio():
+    class Socket:
+        async def send(self, raw):
+            if self.failed:
+                raise RuntimeError("controlled failure")
+
+        def __aiter__(self):
+            return self.events()
+
+        async def events(self):
+            for index in range(50):
+                yield json.dumps({"type": f"unknown-{index}", "secret": "do not record"})
+            yield json.dumps({"type": "session.end"})
+
+    adapter = NvidiaVoiceChatAdapter(Settings(_env_file=None))
+    adapter.ws = Socket()
+    adapter.ws.failed = False
+    await adapter.send_audio(base64.b64encode(bytes(3840)).decode())
+    adapter.ws.failed = True
+    with pytest.raises(RuntimeError):
+        await adapter.send_audio("AAA=")
+    events = [event async for event in adapter.events()]
+    assert [event.kind for event in events] == ["session.ended"]
+    diagnostic = adapter.diagnostics()
+    assert diagnostic["sent_audio_chunks"] == 1 and diagnostic["sent_audio_samples_24k"] == 1920
+    assert len(diagnostic["raw_event_counts"]) <= 33
+    assert sum(diagnostic["raw_event_counts"].values()) == 51
+    assert "secret" not in json.dumps(diagnostic) and diagnostic["provider_session_id"] is None
+
+
+@pytest.mark.parametrize("created_session,expected_id", [(None, None), ({"id": "client-567a5110"}, "client-567a5110")])
+async def test_provider_session_identifier_is_optional_diagnostic_metadata(monkeypatch, created_session, expected_id):
+    from app.voice import provider
+
+    class Socket:
+        def __init__(self):
+            self.index = 0
+
+        async def recv(self):
+            self.index += 1
+            if self.index == 1:
+                return json.dumps({"type": "session.created", "session": created_session})
+            return json.dumps({"type": "session.updated", "session": session_update()["session"]})
+
+        async def send(self, raw):
+            assert json.loads(raw)["type"] == "session.update"
+
+    async def connect(*args, **kwargs):
+        return Socket()
+
+    monkeypatch.setattr(provider, "connect", connect)
+    adapter = NvidiaVoiceChatAdapter(Settings(_env_file=None))
+    await adapter.connect("")
+    assert adapter.diagnostics()["provider_session_id"] == expected_id
 
 
 def test_input_state_preserves_native_item_identity():

@@ -3,4 +3,5 @@
 ARG VOICECHAT_BASE_IMAGE
 FROM ${VOICECHAT_BASE_IMAGE}
 COPY s2s/audio_server.py s2s/prompt_template.jinja /s2s/
-ENV USE_JINJA_TEMPLATE_PROMPT=1
+COPY opt/tritonserver/backends/nemotron-voicechat/model.py opt/tritonserver/backends/nemotron-voicechat/runtime_setup.py opt/tritonserver/backends/nemotron-voicechat/data_types.py /opt/tritonserver/backends/nemotron-voicechat/
+ENV USE_JINJA_TEMPLATE_PROMPT=1 VOICECHAT_DIAGNOSTICS=1

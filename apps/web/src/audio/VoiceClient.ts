@@ -9,6 +9,22 @@ export interface MicrophoneDiagnostics {
   noiseSuppression?: boolean;
   autoGainControl?: boolean;
 }
+export interface CaptureDiagnostics {
+  stage: string;
+  conversation_id: string;
+  voice_session_id: string;
+  epoch: number;
+  ready_at_ms: number | null;
+  captured_frames: number;
+  sent_frames: number;
+  pre_ready_frames: number;
+  stale_frames: number;
+  sent_samples_24k: number;
+  first_seq: number | null;
+  last_seq: number | null;
+  muted: boolean;
+  track_state: string;
+}
 export class VoiceClient {
   private context?: AudioContext;
   private node?: AudioWorkletNode;
@@ -27,12 +43,47 @@ export class VoiceClient {
   private volume = 0.8;
   private activeResponse = "";
   private stoppedResponses = new Set<string>();
+  private captureStarted = 0;
+  private readyAt: number | null = null;
+  private capturedFrames = 0;
+  private sentFrames = 0;
+  private preReadyFrames = 0;
+  private staleFrames = 0;
+  private sentSamples = 0;
+  private diagnosticsStopped = true;
   constructor(
     private onEvent: (e: PortalEvent) => void,
     private onState: (state: VoiceState) => void,
     private onError: (message: string) => void,
     private onMicrophone: (diagnostics: MicrophoneDiagnostics) => void,
+    private onDiagnostics: (diagnostics: CaptureDiagnostics) => void = () => {},
   ) {}
+  captureDiagnostics(stage = "snapshot"): CaptureDiagnostics {
+    return {
+      stage,
+      conversation_id: this.cid,
+      voice_session_id: this.sid,
+      epoch: this.epoch,
+      ready_at_ms: this.readyAt,
+      captured_frames: this.capturedFrames,
+      sent_frames: this.sentFrames,
+      pre_ready_frames: this.preReadyFrames,
+      stale_frames: this.staleFrames,
+      sent_samples_24k: this.sentSamples,
+      first_seq: this.sentFrames ? 0 : null,
+      last_seq: this.sentFrames ? this.seq - 1 : null,
+      muted: this.muted,
+      track_state: this.media?.getAudioTracks()[0]?.readyState || "unavailable",
+    };
+  }
+  private emitDiagnostics(stage: string) {
+    try {
+      this.onDiagnostics(this.captureDiagnostics(stage));
+    } catch {
+      // Optional telemetry must never block microphone/socket cleanup.
+      console.warn("Voice capture diagnostics callback failed");
+    }
+  }
   private visibility = () => {
     if (document.hidden) {
       void this.stop();
@@ -48,6 +99,15 @@ export class VoiceClient {
   async start(cid: string) {
     await this.stop();
     const generation = ++this.generation;
+    this.captureStarted = performance.now();
+    this.readyAt = null;
+    this.capturedFrames =
+      this.sentFrames =
+      this.preReadyFrames =
+      this.staleFrames =
+      this.sentSamples =
+        0;
+    this.diagnosticsStopped = false;
     this.cid = cid;
     this.onState("connecting");
     try {
@@ -87,6 +147,13 @@ export class VoiceClient {
       });
       this.context.createMediaStreamSource(this.media).connect(this.node);
       this.node.connect(this.context.destination);
+      // The worklet starts before the session request: account for these discarded frames too.
+      this.node.port.onmessage = ({ data }) => {
+        if (generation === this.generation && data.type === "capture") {
+          this.capturedFrames++;
+          this.preReadyFrames++;
+        }
+      };
       const session = await api<{
         voice_session_id: string;
         epoch: number;
@@ -115,6 +182,13 @@ export class VoiceClient {
       url.protocol = location.protocol === "https:" ? "wss:" : "ws:";
       this.ws = new WebSocket(url);
       this.node.port.onmessage = ({ data: d }) => {
+        if (generation !== this.generation) return;
+        if (d.type === "capture") {
+          this.capturedFrames++;
+          if (d.epoch !== this.epoch) this.staleFrames++;
+          else if (!this.ready || this.ws?.readyState !== WebSocket.OPEN)
+            this.preReadyFrames++;
+        }
         if (d.type === "error") {
           this.clear();
           void this.stop();
@@ -156,6 +230,8 @@ export class VoiceClient {
               },
             }),
           );
+          this.sentFrames++;
+          this.sentSamples += bytes.byteLength / 2;
         } else if (d.type === "ack" && !this.suppressed) {
           if (d.done && this.activeResponse === d.response)
             this.activeResponse = "";
@@ -184,11 +260,13 @@ export class VoiceClient {
           event.request_revision || 0,
         );
         if (event.type === "portal.session.ready") {
+          this.readyAt = performance.now() - this.captureStarted;
           this.ready = true;
           this.suppressed = false;
           this.lastCapture = 0;
           this.node?.port.postMessage({ type: "ready", epoch: this.epoch });
           this.onState("ready");
+          this.emitDiagnostics("ready");
         }
         if (event.type === "portal.audio.delta" && !this.suppressed) {
           const response = String(event.payload.response_id);
@@ -301,6 +379,10 @@ export class VoiceClient {
     this.node?.port.postMessage({ type: "volume", value });
   }
   async stop() {
+    if (!this.diagnosticsStopped) {
+      this.diagnosticsStopped = true;
+      this.emitDiagnostics("stopped");
+    }
     ++this.generation;
     this.ready = false;
     this.stoppedResponses.clear();

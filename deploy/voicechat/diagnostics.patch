@@ -1,0 +1,767 @@
+diff --git a/s2s/audio_server.py b/s2s/audio_server.py
+--- a/s2s/audio_server.py
++++ b/s2s/audio_server.py
+@@ -51,6 +51,7 @@
+ # Debug configuration
+ LOOPBACK_MODE = os.getenv("LOOPBACK_MODE", "false").lower() == "true"  # Set LOOPBACK_MODE=true to bypass Triton
+ USE_JINJA_TEMPLATE_PROMPT = os.getenv("USE_JINJA_TEMPLATE_PROMPT", "0").lower() in ("1", "true", "yes")
++VOICECHAT_DIAGNOSTICS = os.getenv("VOICECHAT_DIAGNOSTICS", "0").lower() in ("1", "true", "yes")
+ 
+ _jinja_env = Environment(
+     loader=FileSystemLoader(Path(__file__).parent),
+@@ -402,6 +403,14 @@
+         self.triton_chunk_size = int(INPUT_SAMPLE_RATE * 0.08)  # 80ms at 16kHz = 1280 samples
+         self.triton_inferences = 0  # Track number of inferences sent
+         self.audio_samples_received = 0  # Total decoded input samples (at the client input sample rate)
++        self.triton_samples_submitted_16k = 0
++        self.triton_samples_completed_16k = 0
++        self._diagnostic_started = time.monotonic()
++        self._diagnostic_seq = 0
++        self._diagnostic_events = deque()
++        self._diagnostic_bytes = self._diagnostic_dropped = 0
++        self._output_queued_seq = self._output_sent_seq = 0
++        self._audio_ranges = {}
+ 
+         # Accumulated transcripts
+         self.accumulated_user_transcript = []
+@@ -521,6 +530,55 @@
+         while (chunk := self.output_codec.read_encoded_chunk()) is not None:
+             self._queue_audio_chunk(chunk)
+ 
++    def _voice_diagnostic(self, event, **fields):
++        if not VOICECHAT_DIAGNOSTICS:
++            return
++        self._diagnostic_seq += 1
++        entry = {"seq": self._diagnostic_seq, "event": event, "client_id": self.client_id,
++                 "sequence_id": self.sequence_id,
++                 "at_ms": int((time.monotonic() - self._diagnostic_started) * 1000),
++                 "decoded_input_samples": self.audio_samples_received, "input_rate": self.input_sample_rate,
++                 "triton_submitted_samples_16k": self.triton_samples_submitted_16k,
++                 "triton_completed_samples_16k": self.triton_samples_completed_16k,
++                 "triton_buffer_samples_16k": len(self.triton_input_buffer),
++                 "inference_queue": self.inference_queue.qsize(),
++                 "input_item_id": self._input_item_id, **fields}
++        size = len(json.dumps(entry, ensure_ascii=True).encode())
++        self._diagnostic_events.append((size, entry))
++        self._diagnostic_bytes += size
++        while len(self._diagnostic_events) > 256 or self._diagnostic_bytes + 2 * len(self._diagnostic_events) > 65536:
++            removed_size, _ = self._diagnostic_events.popleft()
++            self._diagnostic_bytes -= removed_size
++            self._diagnostic_dropped += 1
++        logger.info("voice_ws_diagnostic %s", json.dumps(
++            {**entry, "dropped_events": self._diagnostic_dropped}, ensure_ascii=True))
++
++    def _trace_output_event(self, event, phase, output_seq):
++        if not VOICECHAT_DIAGNOSTICS:
++            return
++        kind = event.get("type", "")
++        identifiers = {key: str(event[key])[:128] for key in ("response_id", "item_id", "call_id") if key in event}
++        previous = self._audio_ranges.get(phase)
++        if previous and kind == "response.output_audio.delta" and previous["identifiers"] == identifiers:
++            previous["last_output_seq"] = output_seq
++            previous["count"] += 1
++            previous["audio_base64_chars"] += len(event.get("delta", ""))
++            return
++        self._flush_audio_range(phase)
++        if kind == "response.output_audio.delta":
++            self._audio_ranges[phase] = {"identifiers": identifiers, "first_output_seq": output_seq,
++                                         "last_output_seq": output_seq, "count": 1,
++                                         "audio_base64_chars": len(event.get("delta", ""))}
++        lengths = {key + "_chars": len(event[key]) for key in ("delta", "transcript", "arguments")
++                   if isinstance(event.get(key), str)}
++        self._voice_diagnostic("output." + phase, output_seq=output_seq, kind=kind, **identifiers, **lengths)
++
++    def _flush_audio_range(self, phase):
++        previous = self._audio_ranges.pop(phase, None)
++        if previous:
++            self._voice_diagnostic("output.audio.range", phase=phase, **previous["identifiers"],
++                                   **{k: v for k, v in previous.items() if k != "identifiers"})
++
+     def _queue_output_event(self, event: dict) -> None:
+         # Snapshot IDs at production time. A later model turn cannot relabel
+         # packets waiting on a slow WebSocket connection.
+@@ -528,6 +586,8 @@
+             self.output_events.put_nowait(event)
+         except asyncio.QueueFull as exc:
+             raise RuntimeError("Voice output queue exceeded its bounded capacity") from exc
++        self._output_queued_seq += 1
++        self._trace_output_event(event, "queued", self._output_queued_seq)
+ 
+     def _queue_audio_chunk(self, chunk: bytes) -> None:
+         self._queue_output_event({
+@@ -675,8 +735,7 @@
+ 
+             if self.chunks_received == 1:
+                 logger.info(
+-                    f"Client {self.client_id}: First chunk ({self.input_audio_format}) - {len(audio_bytes)} bytes, "
+-                    f"first bytes: {audio_bytes[:min(8, len(audio_bytes))].hex()}"
++                    f"Client {self.client_id}: First chunk ({self.input_audio_format}) - {len(audio_bytes)} bytes"
+                 )
+ 
+             try:
+@@ -704,6 +763,8 @@
+ 
+             audio_float32_16k = self.input_resampler.resample_chunk(pcm_float32_24k)
+             self.triton_input_buffer = np.concatenate([self.triton_input_buffer, audio_float32_16k])
++            if self.chunks_received == 1 or self.chunks_received % 12 == 0:
++                self._voice_diagnostic("input.progress", received_chunks=self.chunks_received)
+ 
+             required_samples = self.triton_chunk_size * NUM_CHUNKS_PER_INFERENCE
+             if len(self.triton_input_buffer) < required_samples:
+@@ -808,6 +869,8 @@
+                 event = await self.output_events.get()
+                 try:
+                     await asyncio.wait_for(self.websocket.send_text(json.dumps(event)), timeout=2.0)
++                    self._output_sent_seq += 1
++                    self._trace_output_event(event, "sent", self._output_sent_seq)
+                     if event["type"] == "response.output_audio.delta":
+                         self.chunks_sent += 1
+                         if self.chunks_sent % 50 == 0:
+@@ -821,6 +884,11 @@
+             self.running = False
+             await self.websocket.close(code=1011)
+         finally:
++            self._flush_audio_range("queued")
++            self._flush_audio_range("sent")
++            self._voice_diagnostic("transport.finished", queued_events=self._output_queued_seq,
++                                   sent_events=self._output_sent_seq, output_queue=self.output_events.qsize(),
++                                   received_chunks=self.chunks_received, sent_audio_chunks=self.chunks_sent)
+             logger.info(f"Client {self.client_id}: Send loop stopped")
+ 
+     async def send_session_end(self):
+@@ -1110,6 +1178,9 @@
+         has_start = "<s>" in asr_text_response
+         has_done = "</s>" in asr_text_response
+         clean_asr_text = asr_text_response.replace("<s>", "").replace("</s>", "")
++        self._voice_diagnostic("asr.dispatch", raw_chars=len(asr_text_response), clean_chars=len(clean_asr_text),
++                               has_start=has_start, has_done=has_done, speech_active=self._speech_active,
++                               accumulated_before_chars=sum(map(len, self.accumulated_user_transcript)))
+         logger.debug(
+             f"Client {self.client_id}: ASR dispatch chars={len(asr_text_response)} "
+             f"clean_chars={len(clean_asr_text)} has_start={has_start} "
+@@ -1251,7 +1322,9 @@
+             if function_call_item:
+                 output = function_call_item.get("output", "")
+                 output_str = output if isinstance(output, str) else json.dumps(output)
+-                logger.info(f"Client {self.client_id}: Sending function call output to Triton: {output_str}")
++                logger.info(f"Client {self.client_id}: Sending function call output to Triton: chars={len(output_str)}")
++                self._voice_diagnostic("function.result", chars=len(output_str),
++                                       call_id=str(function_call_item.get("call_id", ""))[:128])
+                 inputs[2].set_data_from_numpy(np.array([[output_str.encode("utf-8")]], dtype=object))
+             else:
+                 inputs[2].set_data_from_numpy(np.array([[b""]], dtype=object))
+@@ -1270,6 +1343,7 @@
+ 
+             # Track inference time
+             infer_start = time.time()
++            self.triton_samples_submitted_16k += num_samples
+ 
+             response = await asyncio.wait_for(
+                 self.triton_client.infer(
+@@ -1286,6 +1360,7 @@
+ 
+             infer_time_ms = (time.time() - infer_start) * 1000
+             self.triton_inferences += 1
++            self.triton_samples_completed_16k += num_samples
+             qsize = self.inference_queue.qsize()
+ 
+             # Record in global tracker (grouped by active stream count)
+@@ -1314,12 +1389,19 @@
+             output_asr_text = response.as_numpy("output_asr_text")
+             output_function_text = response.as_numpy("output_function_text")
+             output_audio = response.as_numpy("output_audio")
++            text_response = "".join(t.decode("utf-8") for t in output_text)
++            asr_response = "".join(t.decode("utf-8") for t in output_asr_text)
++            function_response = "".join(t.decode("utf-8") for t in output_function_text)
++            if asr_response or function_response or "<s>" in text_response or "</s>" in text_response:
++                self._voice_diagnostic("triton.output", inference=self.triton_inferences,
++                                       text_chars=len(text_response), asr_chars=len(asr_response),
++                                       function_chars=len(function_response), audio_samples_22050=output_audio.size)
+ 
+             await self._dispatch_model_output(
+                 output_audio.astype(np.float32).reshape(-1),
+-                "".join(t.decode("utf-8") for t in output_text),
+-                "".join(t.decode("utf-8") for t in output_asr_text),
+-                "".join(t.decode("utf-8") for t in output_function_text),
++                text_response,
++                asr_response,
++                function_response,
+             )
+ 
+             if self.triton_inferences % 50 == 0:
+@@ -1426,6 +1508,7 @@
+             return
+         if not all(isinstance(call, dict) for call in calls):
+             raise ValueError("Tool calls must be JSON objects")
++        self._voice_diagnostic("function.parsed", chars=len(function_text), calls=len(calls))
+         if not self._response_active:
+             await self._emit_response_created()
+         response_id = self._response_id
+@@ -1500,7 +1583,8 @@
+ 
+     async def handle_session_update(self, session_config: dict):
+         """Handle session configuration update"""
+-        logger.info(f"Client {self.client_id}: Session update: {session_config}")
++        logger.info(f"Client {self.client_id}: Session update: instructions_chars={len(session_config.get('instructions', ''))} "
++                    f"tools={len(session_config.get('tools', []))}")
+ 
+         # Parse audio configuration
+         audio_config = session_config.get("audio", {})
+diff --git a/opt/tritonserver/backends/nemotron-voicechat/model.py b/opt/tritonserver/backends/nemotron-voicechat/model.py
+--- a/opt/tritonserver/backends/nemotron-voicechat/model.py
++++ b/opt/tritonserver/backends/nemotron-voicechat/model.py
+@@ -62,6 +62,7 @@
+     RNNT_PUNCT_BIAS_TOKENS,
+     RNNT_TTS_MIN_TOKENS,
+     RNNT_TTS_RATIO_CAP,
++    VOICECHAT_DIAGNOSTICS,
+ )
+ from sequence_manager import SequenceManager
+ from torch.utils.dlpack import from_dlpack
+@@ -587,6 +588,9 @@
+             seq_state.generated_function_tokens[:, seq_state.decoder_global_step] = result_batched[batch_idx][
+                 "function_token"
+             ]
++            # Inspect model output before ACK/tool-result token injection.
++            self._trace_function_tokens(seq_state, result_batched[batch_idx]["function_token"],
++                                         result_batched[batch_idx]["token"])
+ 
+             if seq_state.fn_call["ack_tokens"] and seq_state.fn_call["state"] == "speaking_ack":
+                 # Inject ack text token into text channel so the model speaks the ack message
+@@ -705,6 +709,50 @@
+             with self._tts_loop_lock:
+                 self.model.tts.event_loop.run_until_complete(asyncio.gather(*tts_futures))
+ 
++    def _trace_function_tokens(self, seq_state, function_token, text_token):
++        if not VOICECHAT_DIAGNOSTICS:
++            return
++        raw_fn = int(function_token)
++        text_bos = int(text_token) == self.model.tokenizer.bos_id
++        kind = "pad" if raw_fn == self.pad_id else "sotc" if raw_fn == self.sotc_id else "eotc" if raw_fn == self.eotc_id else "other"
++        diagnostic = seq_state.voice_diagnostics
++        lock = diagnostic.setdefault("lock", threading.Lock())
++        with lock:
++            counts = diagnostic.setdefault("function_counts", {k: 0 for k in ("pad", "sotc", "eotc", "other")})
++            counts[kind] += 1
++            emit = kind != diagnostic.get("last_function_kind") or kind in ("sotc", "eotc") or text_bos
++            snapshot = dict(counts)
++            diagnostic["last_function_kind"] = kind
++        if emit:
++            self._voice_diagnostic(seq_state, "function.raw", kind=kind, counts=snapshot,
++                                   state=seq_state.fn_call["state"], text_bos=text_bos)
++
++    def _voice_diagnostic(self, seq_state, event, **fields):
++        """Metadata boundaries with bounded per-sequence history; no raw tokens/text."""
++        if not VOICECHAT_DIAGNOSTICS:
++            return
++        state = seq_state.voice_diagnostics
++        lock = state.setdefault("lock", threading.Lock())
++        with lock:
++            state.setdefault("events", deque())
++            state.setdefault("seq", 0)
++            state.setdefault("bytes", 0)
++            state.setdefault("dropped", 0)
++            state.setdefault("started", time.monotonic())
++            state["seq"] += 1
++            entry = {"seq": state["seq"], "sequence_id": seq_state.seq_id,
++                     "at_ms": int((time.monotonic() - state["started"]) * 1000),
++                     "step": seq_state.decoder_global_step, "event": event, **fields}
++            size = len(json.dumps(entry, ensure_ascii=True).encode())
++            state["events"].append((size, entry))
++            state["bytes"] += size
++            while len(state["events"]) > 256 or state["bytes"] + 2 * len(state["events"]) > 65536:
++                removed_size, _ = state["events"].popleft()
++                state["bytes"] -= removed_size
++                state["dropped"] += 1
++            pb_utils.Logger.log_info("voice_model_diagnostic " + json.dumps(
++                {**entry, "dropped_events": state["dropped"]}, ensure_ascii=True))
++
+     def _new_rnnt_display_state(self) -> dict:
+         return {
+             "pred_out": None,
+@@ -717,8 +765,13 @@
+             "_punct_bias_val": 0.0,
+         }
+ 
+-    def _reset_rnnt_display_buffer(self, seq_state, reset_predictor: bool = False) -> None:
++    def _reset_rnnt_display_buffer(self, seq_state, reset_predictor: bool = False, reason="reset") -> None:
+         state = seq_state.rnnt_display_state or self._new_rnnt_display_state()
++        if VOICECHAT_DIAGNOSTICS:
++            self._voice_diagnostic(seq_state, "asr.reset", reason=reason,
++                                   cumulative_chars=len(self._rnnt_display_decode_text(state.get("y_sequence", []))),
++                                   emitted_chars=seq_state.rnnt_display_emitted_len,
++                                   turn_open=seq_state.rnnt_display_turn_open)
+         state["blank_count"] = 0
+         state["nonblank_total"] = 0
+         state["speech_confirmed"] = False
+@@ -758,6 +811,9 @@
+                 seq_state.rnnt_display_emitted_len = 0
+             delta = full_text[seq_state.rnnt_display_emitted_len :]
+             if delta:
++                self._voice_diagnostic(seq_state, "asr.publish", cumulative_chars=len(full_text),
++                                       delta_chars=len(delta), emitted_before=seq_state.rnnt_display_emitted_len,
++                                       gate=state.get("speech_confirmed", False), agent_bos=agent_bos_fired)
+                 if not seq_state.rnnt_display_turn_open:
+                     seq_state.rnnt_display_pending_text += "<s>"
+                     seq_state.rnnt_display_turn_open = True
+@@ -770,6 +826,7 @@
+                 )
+ 
+         if close_turn and seq_state.rnnt_display_turn_open:
++            self._voice_diagnostic(seq_state, "asr.final", reason="sequence_end", final_chars=len(full_text))
+             seq_state.rnnt_display_pending_text += "</s>"
+             pb_utils.Logger.log_verbose(
+                 f"[RNNT display] [seq {seq_state.seq_id}] force-published turn on END "
+@@ -777,6 +834,8 @@
+             )
+ 
+         if agent_bos_fired:
++            self._voice_diagnostic(seq_state, "asr.final", reason="agent_bos", final_chars=len(full_text),
++                                   turn_open=seq_state.rnnt_display_turn_open)
+             if seq_state.rnnt_display_turn_open:
+                 seq_state.rnnt_display_pending_text += "</s>"
+                 pb_utils.Logger.log_verbose(
+@@ -787,7 +846,7 @@
+                 pb_utils.Logger.log_verbose(
+                     f"[RNNT display] [seq {seq_state.seq_id}] agent BOS with no open display turn"
+                 )
+-            self._reset_rnnt_display_buffer(seq_state)
++            self._reset_rnnt_display_buffer(seq_state, reason="agent_bos")
+             return
+ 
+         if state.get("blank_count", 0) >= RNNT_DISPLAY_FALLBACK_CLEAR_FRAMES and state.get("nonblank_total", 0) == 0:
+@@ -795,7 +854,7 @@
+                 f"[RNNT display] [seq {seq_state.seq_id}] fallback reset after "
+                 f"{state.get('blank_count', 0)} blank frames with no speech"
+             )
+-            self._reset_rnnt_display_buffer(seq_state, reset_predictor=True)
++            self._reset_rnnt_display_buffer(seq_state, reset_predictor=True, reason="blank_without_speech")
+ 
+     def _rnnt_display_decode_frame(self, asr_emb: torch.Tensor, batch_idx: int, seq_id: int, frame_idx: int) -> None:
+         if asr_emb is None or self.model.rnnt_decoder is None or not self._rnnt_vocab:
+@@ -903,6 +962,13 @@
+         state["_punct_word_acc"] = word_acc
+         state["_punct_bias_val"] = punct_bias_val
+         seq_state.rnnt_display_state = state
++
++        if VOICECHAT_DIAGNOSTICS and (emitted or seq_state.decoder_global_step % 12 == 0):
++            self._voice_diagnostic(seq_state, "asr.frame", frame_idx=frame_idx,
++                                   cumulative_chars=len(self._rnnt_display_decode_text(state["y_sequence"])),
++                                   emitted_chars=seq_state.rnnt_display_emitted_len,
++                                   nonblank_frames=state["nonblank_total"], blank_frames=state["blank_count"],
++                                   gate=state["speech_confirmed"], gate_frames=RNNT_DISPLAY_GATE_FRAMES)
+ 
+     def _rnnt_step_transcript_display(
+         self, asr_emb: torch.Tensor, seq_ids_batched: List[int], max_audio_idx: int, step_offset: int,
+@@ -1045,6 +1111,8 @@
+                         fn_call = seq_state.fn_call
+                         if fn_call.get("extracting_tool", False) and not fn_call.get("extract_cancelled", False):
+                             fn_call["extract_cancelled"] = True
++                            self._voice_diagnostic(seq_state, "function.cancel", phase="extract", reason="user_speech",
++                                                   speech_frames=seq_state.rnnt_consecutive_speech_frames)
+                             pb_utils.Logger.log_info(
+                                 f"[RNNT] [seq {seq_id}] FC extraction cancelled after "
+                                 f"{seq_state.rnnt_consecutive_speech_frames} speech frames"
+@@ -1052,6 +1120,8 @@
+                             )
+                         if fn_call.get("injecting_response", False) and not fn_call.get("inject_cancelled", False):
+                             fn_call["inject_cancelled"] = True
++                            self._voice_diagnostic(seq_state, "function.cancel", phase="inject", reason="user_speech",
++                                                   speech_frames=seq_state.rnnt_consecutive_speech_frames)
+                             pb_utils.Logger.log_info(
+                                 f"[RNNT] [seq {seq_id}] FC injection cancelled after "
+                                 f"{seq_state.rnnt_consecutive_speech_frames} speech frames"
+@@ -1126,12 +1196,19 @@
+         # existing turn instead so the next decoder step receives a valid EOS
+         # boundary and can open a new turn cleanly.
+         if current_tok == bos_id and seq_state.rnnt_agent_speaking:
++            self._voice_diagnostic(seq_state, "text.overwrite", reason="duplicate_agent_bos", before="bos", after="eos")
+             seq_state.generated_text_tokens[0, t] = eos_id
+             current_tok = eos_id
+             pb_utils.Logger.log_verbose(f"[RNNT] [seq {seq_id}] duplicate agent BOS -> EOS at step {t}")
+ 
+         # ── agent_speaking sync ───────────────────────────── NeMo L2983-3003
+         if current_tok == bos_id:
++            self._voice_diagnostic(seq_state, "agent.bos",
++                                   source="tool_ack" if seq_state.fn_call["state"] == "speaking_ack" else "model_native",
++                                   user_speaking_before=seq_state.rnnt_user_speaking,
++                                   agent_speaking_before=seq_state.rnnt_agent_speaking,
++                                   silent_frames=seq_state.rnnt_silent_frames,
++                                   nonblank_total=seq_state.rnnt_nonblank_total, effective_bou_min=effective_min)
+             seq_state.rnnt_agent_speaking = True
+             seq_state.rnnt_first_turn = False
+             seq_state.rnnt_user_speaking = False
+@@ -1161,6 +1238,9 @@
+             seq_state.rnnt_consecutive_speech_frames >= effective_min or seq_state.rnnt_nonblank_total >= effective_min
+         ) and not seq_state.rnnt_agent_speaking:
+             if not seq_state.rnnt_user_speaking:
++                self._voice_diagnostic(seq_state, "input.bou", nonblank_total=seq_state.rnnt_nonblank_total,
++                                       consecutive_frames=seq_state.rnnt_consecutive_speech_frames,
++                                       effective_bou_min=effective_min)
+                 pb_utils.Logger.log_verbose(
+                     f"[RNNT] [seq {seq_id}] BOU at {seq_state.rnnt_consecutive_speech_frames} consec"
+                     f" / {seq_state.rnnt_nonblank_total} total"
+@@ -1175,6 +1255,11 @@
+             and not seq_state.rnnt_agent_speaking
+         ):
+             if not (window == bos_id).any() and current_tok != bos_id:
++                self._voice_diagnostic(seq_state, "agent.bos", source="forced_eou",
++                                       user_speaking_before=seq_state.rnnt_user_speaking,
++                                       silent_frames=seq_state.rnnt_silent_frames,
++                                       eos_silence_threshold=RNNT_EOS_SILENCE_FRAMES,
++                                       nonblank_total=seq_state.rnnt_nonblank_total)
+                 seq_state.generated_text_tokens[0, t] = bos_id
+                 seq_state.rnnt_user_speaking = False
+                 seq_state.rnnt_nonblank_total = 0
+@@ -1318,6 +1403,10 @@
+         return text
+ 
+     def _reset_fn_call_state(self, fn_call: Dict[str, Any], seq_state=None) -> None:
++        if seq_state is not None:
++            self._voice_diagnostic(seq_state, "function.reset", previous_state=fn_call.get("state"),
++                                   request_chars=len(fn_call.get("request", "")),
++                                   counts=dict(seq_state.voice_diagnostics.get("function_counts", {})))
+         fn_call["state"] = "idle"
+         fn_call["frames_in_state"] = 0
+         fn_call["request"] = ""
+@@ -1421,9 +1510,11 @@
+             max_tool_tokens = MAX_TOOL_TOKENS
+             for _ in range(max_tool_tokens):
+                 if fn_call.get("extract_cancelled", False):
++                    self._voice_diagnostic(seq_state, "function.extract.stop", reason="cancelled")
+                     logger.log_info(f"[seq {seq_id}] Fast extraction cancelled")
+                     break
+                 if not self._seq_mgr.is_started(seq_id):
++                    self._voice_diagnostic(seq_state, "function.extract.stop", reason="sequence_removed")
+                     logger.log_info(f"[seq {seq_id}] Sequence removed during extraction, stopping")
+                     break
+                 buffer_capacity = seq_state.generated_text_tokens.shape[1]
+@@ -1450,6 +1541,7 @@
+                     if sanitized:
+                         fn_call["request"] = sanitized
+                         fn_call["pending_function_text"] = sanitized
++                        self._voice_diagnostic(seq_state, "function.valid", chars=len(sanitized), source="fast_extract")
+                         # Mirror the ack/waiting_for_response transition from parse_function_call_tokens
+                         ack_message = self._select_tool_ack_message(seq_state, sanitized)
+                         if ack_message:
+@@ -1457,7 +1549,7 @@
+                             fn_call["state"] = "speaking_ack"
+                             fn_call["frames_in_state"] = 0
+                             logger.log_info(
+-                                f"[seq {seq_id}] fast extract -> speaking_ack, ack: {ack_message!r} "
++                                f"[seq {seq_id}] fast extract -> speaking_ack, ack_chars={len(ack_message)} "
+                                 f"(step: {seq_state.decoder_global_step})"
+                             )
+                         else:
+@@ -1468,16 +1560,19 @@
+                                 f"(step: {seq_state.decoder_global_step})"
+                             )
+                     else:
+-                        logger.log_error(f"[seq {seq_id}] Fast extract: failed to sanitize {fn_call['request']!r}")
++                        self._voice_diagnostic(seq_state, "function.invalid", chars=len(fn_call["request"]), source="fast_extract")
++                        logger.log_error(f"[seq {seq_id}] Fast extract: failed to sanitize chars={len(fn_call['request'])}")
+                         self._reset_fn_call_state(fn_call, seq_state)
+                     break
+                 elif fn_token != self.pad_id:
+                     fn_call["request"] += self.model.tokenizer.ids_to_text([fn_token])
+                     # logger.log_info(f"[seq {seq_id}] fast extract accumulated: {fn_call['request']!r}")
+             else:
++                self._voice_diagnostic(seq_state, "function.extract.stop", reason="max_tool_tokens",
++                                       max_tokens=max_tool_tokens, chars=len(fn_call["request"]))
+                 logger.log_error(
+                     f"[seq {seq_id}] Fast extract: exceeded {max_tool_tokens} steps without eotc_id, "
+-                    f"accumulated: {fn_call['request']!r}, resetting"
++                    f"accumulated_chars={len(fn_call['request'])}, resetting"
+                 )
+                 self._reset_fn_call_state(fn_call, seq_state)
+ 
+@@ -1577,10 +1672,10 @@
+                 json.loads(function_text)
+                 return function_text
+             except json.JSONDecodeError:
+-                logger.log_error(f"Failed to parse function text as JSON: {function_text}")
++                logger.log_error(f"Failed to parse function text as JSON: chars={len(function_text)}")
+                 return ""
+         else:
+-            logger.log_error(f"Function call request does not contain <TOOLCALL> and </TOOLCALL>: {function_text}")
++            logger.log_error(f"Function call request missing TOOLCALL delimiters: chars={len(function_text)}")
+             return ""
+ 
+     def parse_function_call_tokens(self, seq_id, token_ids):
+@@ -1618,6 +1713,7 @@
+                     continue
+                 self._reset_fn_call_state(fn_call)
+                 fn_call["state"] = "waiting_for_request"
++                self._voice_diagnostic(seq_state, "function.start", state=fn_call["state"])
+                 logger.log_info(
+                     f"Function call state transition: idle -> waiting_for_request (seq_id: {seq_id}) (step: {seq_state.decoder_global_step})"
+                 )
+@@ -1630,16 +1726,18 @@
+                 if sanitized_function_text:
+                     fn_call["request"] = sanitized_function_text
+                     fn_call["state"] = "request_received"
++                    self._voice_diagnostic(seq_state, "function.valid", chars=len(sanitized_function_text), source="parser")
+                     logger.log_info(
+                         f"Function call state transition: waiting_for_request -> request_received (seq_id: {seq_id}) (step: {seq_state.decoder_global_step})"
+                     )
+                 else:
+-                    logger.log_error(f"Failed to sanitize function calling tokens {fn_call['request']}")
++                    self._voice_diagnostic(seq_state, "function.invalid", chars=len(fn_call["request"]))
++                    logger.log_error(f"Failed to sanitize function calling tokens: chars={len(fn_call['request'])}")
+                     self._reset_fn_call_state(fn_call, seq_state)
+             else:
+                 if fn_call["state"] == "waiting_for_request":
+                     fn_call["request"] += self.model.tokenizer.ids_to_text([token])
+-                    logger.log_info(f"Function request text: {fn_call['request']}")
++                    logger.log_info(f"Function request text: chars={len(fn_call['request'])}")
+ 
+         # Transition out of request_received: speak ack immediately if available, else wait for response
+         if sanitized_function_text:
+@@ -1650,7 +1748,7 @@
+                 fn_call["state"] = "speaking_ack"
+                 fn_call["frames_in_state"] = 0
+                 logger.log_info(
+-                    f"Function call state transition: request_received -> speaking_ack (seq_id: {seq_id}) (step: {seq_state.decoder_global_step}) ack: {ack_message!r}"
++                    f"Function call state transition: request_received -> speaking_ack (seq_id: {seq_id}) (step: {seq_state.decoder_global_step}) ack_chars={len(ack_message)}"
+                 )
+             else:
+                 fn_call["state"] = "waiting_for_response"
+@@ -1696,8 +1794,13 @@
+                 generated_function_text = seq_state.fn_call["pending_function_text"]
+                 seq_state.fn_call["pending_function_text"] = ""
+                 logger.log_info(
+-                    f"[seq {seq_id}] delivering pending function text from fast extraction: {generated_function_text!r}"
+-                )
++                    f"[seq {seq_id}] delivering pending function text from fast extraction: chars={len(generated_function_text)}"
++                )
++
++            if generated_function_text or generated_asr_text or "<s>" in generated_text or "</s>" in generated_text:
++                self._voice_diagnostic(seq_state, "decode.output", start_step=start_idx, end_step=end_idx,
++                                       function_chars=len(generated_function_text), asr_chars=len(generated_asr_text),
++                                       text_chars=len(generated_text), state=seq_state.fn_call["state"])
+ 
+             generated_text_batched.append(generated_text)
+             generated_function_text_batched.append(generated_function_text)
+@@ -1814,7 +1917,7 @@
+                 self._seq_mgr[seq_id].fn_call["response"] = fn_response
+                 self._seq_mgr[seq_id].fn_call["response_tokens"] = deque(self.model.tokenizer.text_to_ids(fn_response))
+                 logger.log_info(
+-                    f"seq_id: {seq_id} response: {fn_response!r} "
++                    f"seq_id: {seq_id} response_chars={len(fn_response)} "
+                     f"Token length:{len(self._seq_mgr[seq_id].fn_call['response_tokens'])}"
+                 )
+ 
+@@ -2025,6 +2128,9 @@
+ 
+                 if end_flag_batched[idx]:
+                     logger.log_info(f"Sequence {seq_id} ended")
++                    self._voice_diagnostic(self._seq_mgr[seq_id], "sequence.end",
++                                           counts=dict(self._seq_mgr[seq_id].voice_diagnostics.get("function_counts", {})),
++                                           state=self._seq_mgr[seq_id].fn_call["state"])
+                     # Cancel any in-flight tool extraction or response injection
+                     self._seq_mgr[seq_id].fn_call["extract_cancelled"] = True
+                     for threads in (self._extraction_threads, self._injection_threads):
+@@ -2105,13 +2211,13 @@
+         logger = pb_utils.Logger
+         self._seq_mgr[seq_id].tool_ack_messages = self._extract_tool_ack_messages(system_prompt)
+         if self._seq_mgr[seq_id].tool_ack_messages:
+-            logger.log_info(f"Tool ack messages for seq {seq_id}: {self._seq_mgr[seq_id].tool_ack_messages}")
++            logger.log_info(f"Tool ack configuration for seq {seq_id}: tools={len(self._seq_mgr[seq_id].tool_ack_messages)}")
+         llm_prompt = _re_tool_ack_messages_pattern.sub("", system_prompt).strip()
+         prompt_token_ids, prompt_embedded, prompt_len = self._prepare_system_prompt_embeddings(llm_prompt)
+         if prompt_embedded is None:
+             logger.log_info(f"Skipping empty system prompt for sequence {seq_id}")
+             return None
+-        logger.log_info(f"Sending system prompt to sequence {seq_id}: {llm_prompt}")
++        logger.log_info(f"Sending system prompt to sequence {seq_id}: chars={len(llm_prompt)}")
+         result = await self._get_vllm_llm_next_token(seq_id, prompt_token_ids, prompt_embedded)
+         logger.log_info(f"System prompt sent to sequence {seq_id}")
+         return result
+diff --git a/opt/tritonserver/backends/nemotron-voicechat/runtime_setup.py b/opt/tritonserver/backends/nemotron-voicechat/runtime_setup.py
+--- a/opt/tritonserver/backends/nemotron-voicechat/runtime_setup.py
++++ b/opt/tritonserver/backends/nemotron-voicechat/runtime_setup.py
+@@ -60,6 +60,7 @@
+ # Configurable via environment variables
+ MODEL_STEPS_PER_CALL = int(os.environ.get("MODEL_STEPS_PER_CALL", "2"))
+ MODEL_OUTPUT_SAMPLE_RATE = 22050  # codec output sample rate (Hz)
++VOICECHAT_DIAGNOSTICS = os.environ.get("VOICECHAT_DIAGNOSTICS", "0").lower() in ("1", "true", "yes")
+ FORCE_TURN_TAKING_THRESHOLD = int(os.environ.get("FORCE_TURN_TAKING_THRESHOLD", "40"))
+ DEBUG_MODE = os.environ.get("DEBUG_MODE", "0").lower() in ("1", "true", "yes")
+ MAX_TOOL_TOKENS = int(os.environ.get("MAX_TOOL_TOKENS", "512"))
+diff --git a/opt/tritonserver/backends/nemotron-voicechat/data_types.py b/opt/tritonserver/backends/nemotron-voicechat/data_types.py
+--- a/opt/tritonserver/backends/nemotron-voicechat/data_types.py
++++ b/opt/tritonserver/backends/nemotron-voicechat/data_types.py
+@@ -66,6 +66,7 @@
+ 
+     # RNNT transcript display side-channel. This is intentionally separate from
+     # rnnt_eou_state and the RNNT turn-taking counters below.
++    voice_diagnostics: dict = field(default_factory=dict)  # Metadata only; never prompt, ASR or audio content.
+     rnnt_display_state: Optional[dict] = None
+     rnnt_display_emitted_len: int = 0
+     rnnt_display_turn_open: bool = False
+diff --git a/s2s/tests/test_response_lifecycle.py b/s2s/tests/test_response_lifecycle.py
+--- a/s2s/tests/test_response_lifecycle.py
++++ b/s2s/tests/test_response_lifecycle.py
+@@ -40,6 +40,39 @@
+ def pcm(events):
+     return np.frombuffer(b"".join(base64.b64decode(e["delta"]) for e in events
+                                  if e["type"] == "response.output_audio.delta"), dtype="<i2")
++
++
++@pytest.mark.asyncio
++async def test_diagnostics_preserve_tool_before_ack_order_without_logging_content(monkeypatch, caplog):
++    monkeypatch.setattr(server, "VOICECHAT_DIAGNOSTICS", True)
++    caplog.set_level("INFO", logger=server.__name__)
++    socket = Socket()
++    session = server.AudioSession("test", socket)
++    await session._dispatch_model_output(np.zeros(3528, np.float32), "<s>" + ACK, "<s>HELLO THAO MOONCAKE</s>", CALL)
++    await session._dispatch_model_output(np.zeros(3528, np.float32), "</s>", "", "")
++    writer = asyncio.create_task(session._send_loop())
++    await asyncio.wait_for(session.output_events.join(), 2)
++    writer.cancel()
++    with pytest.raises(asyncio.CancelledError):
++        await writer
++    for phase in ("queued", "sent"):
++        entries = [e for _, e in session._diagnostic_events if e["event"] == "output." + phase]
++        tool = next(e for e in entries if e["kind"] == "response.function_call_arguments.done")
++        audio = next(e for e in entries if e["kind"] == "response.output_audio.delta")
++        assert tool["output_seq"] < audio["output_seq"] and tool["response_id"] == audio["response_id"]
++    assert session._output_queued_seq == session._output_sent_seq == len(socket.events)
++    assert "HELLO" not in caplog.text and ACK not in caplog.text and '"user_request"' not in caplog.text
++
++
++def test_ws_diagnostic_history_is_bounded_and_truncation_is_explicit(monkeypatch):
++    monkeypatch.setattr(server, "VOICECHAT_DIAGNOSTICS", True)
++    session = server.AudioSession("test", Socket())
++    for index in range(500):
++        session._voice_diagnostic("test.boundary", index=index)
++    assert len(session._diagnostic_events) <= 256 and session._diagnostic_bytes <= 65536
++    assert session._diagnostic_dropped > 0
++    assert len(json.dumps([e for _, e in session._diagnostic_events], ensure_ascii=True).encode()) <= 65536
++    assert session._diagnostic_bytes == sum(len(json.dumps(e, ensure_ascii=True).encode()) for _, e in session._diagnostic_events)
+ 
+ 
+ @pytest.mark.asyncio
+diff --git a/s2s/tests/test_voice_diagnostics.py b/s2s/tests/test_voice_diagnostics.py
+new file mode 100644
+--- /dev/null
++++ b/s2s/tests/test_voice_diagnostics.py
+@@ -0,0 +1,118 @@
++"""CPU extraction of real model boundary methods; no Torch/NeMo/GPU import."""
++import ast
++import json
++import threading
++import time
++from collections import deque
++from pathlib import Path
++from types import SimpleNamespace
++
++import numpy as np
++import pytest
++
++
++def model_harness(enabled=True):
++    source = Path(__file__).parents[2] / "opt/tritonserver/backends/nemotron-voicechat/model.py"
++    tree = ast.parse(source.read_text())
++    cls = next(n for n in tree.body if isinstance(n, ast.ClassDef) and n.name == "TritonPythonModel")
++    names = {"_voice_diagnostic", "_trace_function_tokens", "_new_rnnt_display_state", "_reset_rnnt_display_buffer",
++             "_append_rnnt_display_output", "_apply_turn_taking_from_rnnt_states"}
++    methods = [n for n in cls.body if isinstance(n, ast.FunctionDef) and n.name in names]
++    assert len(methods) == len(names)
++    logs = []
++    logger = SimpleNamespace(log_info=logs.append, log_verbose=lambda _: None)
++    namespace = {"VOICECHAT_DIAGNOSTICS": enabled, "threading": threading, "time": time,
++                 "deque": deque, "json": json, "pb_utils": SimpleNamespace(Logger=logger),
++                 "RNNT_DISPLAY_FALLBACK_CLEAR_FRAMES": 100, "FORCE_TURN_TAKING_THRESHOLD": 5,
++                 "RNNT_BOU_MIN_FRAMES_FIRST_TURN": 2, "RNNT_DENSITY_THRESHOLD": .2,
++                 "RNNT_DENSITY_LOW_MIN": 3, "RNNT_BOU_MIN_FRAMES": 4,
++                 "RNNT_NOISE_RESET_FRAMES": 100, "RNNT_EOS_SILENCE_FRAMES": 2,
++                 "RNNT_MAX_AGENT_RESPONSE_FRAMES": 0, "RNNT_TTS_RATIO_CAP": 0,
++                 "RNNT_BARGE_IN_FRAMES": 10, "RNNT_EOU_EXTRA_PAD_THRESHOLD": 100}
++    isolated = ast.Module(body=[ast.ClassDef(name="Boundary", bases=[], keywords=[], body=methods, decorator_list=[])], type_ignores=[])
++    exec(compile(ast.fix_missing_locations(isolated), str(source), "exec"), namespace)
++    model = namespace["Boundary"]()
++    model._rnnt_display_decode_text = lambda tokens: "".join(tokens)
++    model.model = SimpleNamespace(tokenizer=SimpleNamespace(bos_id=1, eos_id=2))
++    model.pad_id = 0
++    model.sotc_id = 10
++    model.eotc_id = 12
++    return model, logs
++
++
++def state():
++    return SimpleNamespace(seq_id=42, decoder_global_step=0, voice_diagnostics={},
++                           rnnt_display_state={"y_sequence": [], "speech_confirmed": True,
++                                               "blank_count": 0, "nonblank_total": 1},
++                           rnnt_display_emitted_len=0, rnnt_display_turn_open=False,
++                           rnnt_display_pending_text="")
++
++
++def test_diagnostic_limits_count_bytes_and_never_mutate_stored_entries():
++    model, logs = model_harness()
++    seq = state()
++    for index in range(500):
++        model._voice_diagnostic(seq, "test.boundary", index=index, reason="r" * 200)
++    diag = seq.voice_diagnostics
++    assert len(diag["events"]) <= 256 and diag["bytes"] <= 65536 and diag["dropped"] > 0
++    assert diag["bytes"] == sum(len(json.dumps(entry, ensure_ascii=True).encode()) for _, entry in diag["events"])
++    assert len(json.dumps([entry for _, entry in diag["events"]], ensure_ascii=True).encode()) <= 65536
++    assert json.loads(logs[-1].split(" ", 1)[1])["dropped_events"] == diag["dropped"]
++
++
++@pytest.mark.parametrize("enabled", [False, True])
++def test_raw_function_categories_and_counts_use_actual_tokenizer_bos(enabled):
++    model, logs = model_harness(enabled)
++    seq = state()
++    seq.fn_call = {"state": "process_response"}
++    for token in [0, 0, 10, 11, 12]:
++        model._trace_function_tokens(seq, token, 1 if token == 12 else 0)
++    if enabled:
++        records = [json.loads(line.split(" ", 1)[1]) for line in logs]
++        assert [e["kind"] for e in records] == ["pad", "sotc", "other", "eotc"]
++        assert records[-1]["counts"] == {"pad": 2, "sotc": 1, "eotc": 1, "other": 1}
++        assert records[-1]["text_bos"] and records[-1]["state"] == "process_response"
++    else:
++        assert seq.voice_diagnostics == {} and logs == []
++
++
++@pytest.mark.parametrize("enabled", [False, True])
++def test_diagnostics_preserve_complete_display_delta_and_bos_reset(enabled):
++    model, logs = model_harness(enabled)
++    seq = state()
++    seq.rnnt_display_state["y_sequence"] = ["HELLO "]
++    model._append_rnnt_display_output(seq, False)
++    seq.rnnt_display_state["y_sequence"] += ["THAO MOONCAKE"]
++    model._append_rnnt_display_output(seq, True)
++    assert seq.rnnt_display_pending_text == "<s>HELLO THAO MOONCAKE</s>"
++    assert seq.rnnt_display_state["y_sequence"] == [] and seq.rnnt_display_emitted_len == 0
++    assert all("HELLO" not in line and "MOONCAKE" not in line for line in logs)
++    if enabled:
++        records = [json.loads(line.split(" ", 1)[1]) for line in logs]
++        final = next(e for e in records if e["event"] == "asr.final")
++        assert final["final_chars"] == 19 and final["reason"] == "agent_bos"
++        assert records[-1]["event"] == "asr.reset" and records[-1]["cumulative_chars"] == 19
++    else:
++        assert seq.voice_diagnostics == {} and logs == []
++
++
++@pytest.mark.parametrize("source,token,fn_state", [("model_native", 1, "idle"), ("tool_ack", 1, "speaking_ack"), ("forced_eou", 0, "idle")])
++def test_bos_source_records_user_state_before_turn_mutation(source, token, fn_state):
++    model, logs = model_harness()
++    seq = state()
++    seq.generated_text_tokens = np.array([[token]], dtype=np.int64)
++    seq.fn_call = {"state": fn_state}
++    seq.rnnt_rolling_density = .5
++    seq.rnnt_first_turn = True
++    seq.rnnt_user_speaking = True
++    seq.rnnt_agent_speaking = False
++    seq.rnnt_silent_frames = 2
++    seq.rnnt_nonblank_total = 3
++    seq.rnnt_consecutive_speech_frames = 0
++    seq.rnnt_turn_text_tokens = seq.rnnt_agent_talking_frames = 0
++    model._apply_turn_taking_from_rnnt_states(42, seq)
++    records = [json.loads(line.split(" ", 1)[1]) for line in logs]
++    bos = next(e for e in records if e["event"] == "agent.bos")
++    assert bos["source"] == source and bos["user_speaking_before"]
++    assert bos["nonblank_total"] == 3 and not seq.rnnt_user_speaking
++    assert seq.generated_text_tokens[0, 0] == 1 and seq.rnnt_agent_speaking

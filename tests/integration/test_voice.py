@@ -185,6 +185,10 @@ def test_voice_response_after_user_speech_requires_business_bridge(
     assert diagnostic["recent_events"][-1]["response_id"] == "unbridged"
     assert diagnostic["recent_events"][-2]["item_id"] == "input-1"
     assert len(diagnostic["recent_events"]) == min(32, empty_prefix_count + 2)
+    assert len(diagnostic["structural_trace"]["events"]) == empty_prefix_count + 2
+    assert diagnostic["structural_trace"]["events"][0]["seq"] == 1
+    assert diagnostic["transport"]["forwarded_frames"] == 0
+    assert "I can answer directly" not in rejection
     assert diagnostic["recent_events"][-1]["seq"] == empty_prefix_count + 2
     assert "I can answer directly." not in rejection
     assert "AAA=" not in rejection

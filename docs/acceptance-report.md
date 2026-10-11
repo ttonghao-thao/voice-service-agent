@@ -10,8 +10,9 @@
 
 | 要回答的问题 | 证据位置与边界 |
 | --- | --- |
-| 最近应用验证 | §1 的 2026-10-11 D22：132 项 pytest、Ruff、差异检查通过；本次未改前端/协议，不重跑前端或导出契约；真实模型/CueKB/VoiceChat 与 Docker 验收仍待 D07 |
-| 独立 VoiceChat 交付 | D19/D20：真实服务器模块的 12 项 CPU 协议测试、补丁基线/应用后 SHA-256 检查；交付见 [补丁说明](../deploy/voicechat/README.md)，云端镜像及 GPU 输出未验证 |
+| 最近应用验证 | §1 的 2026-10-11 D21 必要诊断：157 项 pytest、Ruff、14 项 Web、构建、9 项 Chromium 受控回归通过；真实模型/CueKB/VoiceChat 与 Docker 验收仍待 D07 |
+| 现场部分转写与断连 | §1 的 D21 定位设计：用户确认原句，ASR 仅 7 字符，非空音频被拒；源码审查支持进一步定位，未证明真实根因或修复通过 |
+| 独立 VoiceChat 交付 | D21 在 D19 基线上增加 WS/backend 诊断，22 项 CPU 协议/状态测试及增量补丁应用后复跑通过，6 文件 SHA-256 一致；见 [补丁说明](../deploy/voicechat/README.md)，云端镜像及 GPU 输出未验证 |
 | M3、D08、D01–D06 何时验证 | §1 对应日期；不累加各次测试数作为当前总数 |
 | 真实服务是否通过 | §3：仍待验证；测试文件存在、配置 verified 或本地测试通过都不能替代真实记录 |
 | 下一阶段怎样执行 | [部署 D07-A–F](deployment.md#d07-分阶段执行设计)，场景标准见 §4，放行见 §5 |
@@ -20,6 +21,22 @@
 历史文档审计（2026-09-22）：9 份活动 Markdown 的 63 处本地链接及章节锚点、代码块闭合、`git diff --check` 与当时的仅文档修改检查通过。AGENTS 从 3688 减为 2912 UTF-8 字节（约 21%），这是当时入口大小变化，不是实际 token 节省测量。历史快照未修改；当前 D11 的验证另记于 §1。
 
 ## 1. 按日期记录的编码与部署前验证
+
+### 2026-10-11 D21 完整输入探针与 WS/backend 必要诊断
+
+- 用户确认设计后实施 M11–M13。本地确定的探针缺陷是 WAV 完成后不继续送静音，可能阻止后续模型解码；已改为持续 80 ms 音频循环，早到未桥接输出不终止诊断，音频和 synthetic 工具结果由一个 writer 提交。WAV/观察预算连接前校验，握手和观察总上限 60 秒，关闭宽限 2 秒；断线/超时保留 input_complete/tool_seen/exit_reason、未发送样本及有界历史，取消并等待所有工具结果任务。
+- Web ready/stopped 的 console 元数据计数区分采集、pre-ready、stale 与成功发送；API 关联可选 provider session ID，统计正常化前 type、成功转发和剩余队列。拒绝日志新增 256 条/64 KiB structural_trace（保留旧 32 条窗口），仅合并相邻同 owner 音频。不记录 ASR 正文、工具参数、PCM 或凭证；没有改变门户 schema、数据库或迁移。
+- 独立 speech 的 `VOICECHAT_DIAGNOSTICS` 在启动时解析；WS 记录解码/Triton 样本数与工具/输出 queued/sent seq，backend 记录 raw function token 类别、ASR gate/publish/final/reset、BOS 来源和覆写前状态、decode step、提取取消。原 INFO 中完整 prompt/工具请求/结果和 PCM 首字节替换为长度。默认不开全局 verbose；没有调整 RNNT 阈值、prompt、工具状态机或回答授权。
+- 交付 `diagnostics.patch`、`diagnostics-source-manifest.json` 和更新后的 Dockerfile/README；补丁以保存的 D19 after WS/test 文件及审计 backend 为 before，不覆盖已有 D19 补丁。6 文件 before/after hash 自动计算；在独立临时源码上 `git apply --check`、实际应用、逐文件 after hash、CPU pytest 与 py_compile 均通过。镜像还要覆盖三个 backend 文件，重新加载 WS/Triton；本机未执行容器操作。
+- 验证：本项目 pytest **157 passed**（一条 Starlette/AnyIO 上游弃用警告）、Ruff；Web `npm test` **14 passed**，类型检查/构建通过；Chromium **9 passed**，其中完整 `HELLO THAO MOONCAKE` ASR 的夹具断连后仍显示全文并发出 capture summary；独立 speech **22 CPU passed**，应用补丁后的隔离源码复跑相同 22 项通过。浏览器使用显式注入的本地 mock/WS 夹具与合成麦克风，未调用真实 VoiceChat/CueKB，未进行 GPU、现场录音或听音验收。
+- 结论：必要诊断与探针修复已本地交付；当前生产故障仍未证明已解决。R1–R5 业务/模型行为修复须按固定音频 A/B/C 对照命中具体分支，不能以本地测试数、字幕夹具或日志新增替代现场根因闭合。
+
+### 2026-10-11 D21 部分转写与未桥接故障设计（仅文档）
+
+- 用户确认原句为 `HELLO THAO MOONCAKE`，截图显示 `T H A O`。新 Gateway 时间线显示 delta/final 均为 7 字符，final 后 12 ms 收到未授权非空音频；pending 工具状态全零。用户提供的 VoiceChat 日志显示提示词和工具配置已加载，断连发生在 Gateway 拒绝之后，没有所示工具状态转换/解析失败日志。
+- 本地只读核对 Browser/Worklet、API/Gateway、独立 speech WS、RNNT display/EOU、function token 通道与门户渲染。确认 ready 前采集不发送，agent BOS 与 display final/reset 耦合；这些是源码事实，未核对现场 backend hash，也未获得原始音频，不直接认定它们就是现场缺字根因。
+- [设计](voicechat-fault-recovery-design.md) 固化完整句样本、三组对照、采集点、R1–R5 判定/修复、取消与授权约束、文件/发布影响及验收门槛。本轮只修改 Markdown，未改源码、配置、schema、补丁、模型或依赖，未执行运行测试、真实服务、Docker、GPU 或听音验收。已检查 5 份变更 Markdown 的 79 处本地链接/锚点、代码块闭合、仅文档变更范围及 `git diff --check`，均通过。
+- 结论：上次空事件修复并未解决这次非空音频拒绝；当前故障仍未通过现场验收，后续编码待设计确认。既有 144 项通过是之前应用版本的本地证据，不是本轮设计或现场模型的测试结果。
 
 ### 2026-10-11 D21 空响应边界修复与桥接诊断
 

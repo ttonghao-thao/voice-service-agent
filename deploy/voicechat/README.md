@@ -1,6 +1,6 @@
 # speech 启动更新与 VoiceChat 接入边界
 
-2026-09-28。本目录交付独立 speech 的 WebSocket 传输修复。本项目代码和补丁由 voice-service-agent 仓库发布，speech 本机源文件已同步；云端尚未部署。它不改变模型权重、离线转换、Triton 推理或自然插话/停顿逻辑。
+2026-10-11。本目录保留 D19 WebSocket 传输修复，并新增 D21 漏字/未桥接故障的 WS 与 Triton backend 诊断。补丁由 voice-service-agent 仓库发布，speech 本机源文件已同步；云端尚未部署。D21 不改变 RNNT 门槛、工具状态机、模型权重、离线转换或自然插话逻辑；现场故障仍需固定音频对照，不能将诊断交付当作 ASR 修复成功。
 
 ## 为什么原生 HTML 正常，本项目仍需检查传输边界
 
@@ -19,8 +19,11 @@
 | `USE_JINJA_TEMPLATE_PROMPT=1` | **在 WebSocket Python 进程启动前设置** | 避免默认模板追加“常识直接回答”的路由；本次已恢复默认模板原文，无需改它 |
 | `docs/voicechat-api.md` | 更新说明 | 当前传输契约、原生能力与业务控制边界 |
 | `s2s/tests/test_response_lifecycle.py`、`s2s/tests/requirements.txt` | 仅 CPU 测试环境使用 | 不安装到现有 GPU 运行环境 |
+| `s2s/audio_server.py`、backend `model.py/runtime_setup.py/data_types.py` | 在 D19 基线之上应用 [diagnostics.patch](diagnostics.patch) | 输入/推理样本计数、ASR final/reset、BOS 来源、raw function 类别、解析/入队/发送顺序；仅长度、计数与标识 |
+| `VOICECHAT_DIAGNOSTICS=1` | WS 与 Triton 进程启动前设置，重新加载这两个服务 | 启动级开关；关掉后不产生新增边界日志，不影响原有业务行为 |
+| `s2s/tests/test_voice_diagnostics.py` | 仅 CPU 测试环境使用 | 从实际模型源码提取边界方法，验证启闭诊断不改转写/BOS 行为、隐私与容量 |
 
-`opt/tritonserver/backends/nemotron-voicechat/model.py`、模型仓库/权重、`deploy_s2s_model.sh` 和 `run_s2s_server.sh` 不需要因本次接入改动而更新；不需要重新转换模型。不改 GPU、端口、共享内存、模型卷等已验证参数。自然插话由模型处理，应用不会在每次 speech_started 时自动取消查询。
+D19 只修改 WS；D21 增加上述三个 backend 文件，必须同步加载，不能只更新 `/s2s`。模型仓库/权重、部署脚本和已验证的 GPU、端口、共享内存、模型卷参数保持原样，不需要重新转换模型。自然插话由模型处理，应用不会在每次 speech_started 时自动取消查询。
 
 ## 源码核对与本地测试
 
@@ -38,9 +41,23 @@ python -m py_compile s2s/audio_server.py
 
 `git apply` 可用于非 Git 源码目录。已应用本轮最终版本时用 after hash 核对，不重复应用。上一轮临时 D19 文件与本轮最终版不同，尤其默认工具模板已恢复；应使用保存的原始基线重新应用最终补丁。先备份已有修改，不用 `--reject` 或跳过冲突。
 
+D21 是增量补丁，输入基线为 D19 的 after 文件及设计审计的三个 backend 文件。[diagnostics-source-manifest.json](diagnostics-source-manifest.json) 的 before/after hash 由实际源码计算。已应用 D19 时直接执行：
+
+```sh
+git apply --check /path/to/voice-service-agent/deploy/voicechat/diagnostics.patch
+git apply /path/to/voice-service-agent/deploy/voicechat/diagnostics.patch
+python -m pytest s2s/tests -q
+python -m py_compile s2s/audio_server.py \
+  opt/tritonserver/backends/nemotron-voicechat/model.py \
+  opt/tritonserver/backends/nemotron-voicechat/runtime_setup.py \
+  opt/tritonserver/backends/nemotron-voicechat/data_types.py
+```
+
+环形元数据每会话/sequence 最多 256 条、64 KiB，超限记录 dropped_events。音频仅汇总相邻且同 owner 的区间，不跨 ASR/tool 等控制边界；WS 日志区分 queued/sent 的 output_seq。模型日志记录覆盖 ACK/工具结果 token 之前的 function 类别与累计数，ASR gate/frame/publish/final/reset、原生/ACK/forced EOU BOS、提取取消和 decode step 范围。默认 INFO 的 prompt、工具参数/结果和首 PCM 字节改为长度；不要开启含原文的全局 verbose。开关关闭可停日志，文件回退应恢复完整 before 组合并重载 WS/Triton。
+
 ## 更新运行镜像并启动
 
-沿用现场已经验证的离线镜像。可使用本目录 [Dockerfile](Dockerfile) 在该镜像之上只覆盖 WebSocket 文件与既有模板（构建上下文必须是应用补丁后的 speech 目录）：
+沿用现场已经验证的离线镜像。可使用本目录 [Dockerfile](Dockerfile) 覆盖 WS、既有模板和 D21 的三个 backend 文件（构建上下文必须是应用两份补丁后的 speech 目录）：
 
 ```sh
 voicechat_base_image='YOUR_VALIDATED_OFFLINE_IMAGE@sha256:YOUR_DIGEST'
@@ -50,12 +67,12 @@ docker build --build-arg VOICECHAT_BASE_IMAGE="$voicechat_base_image" \
   -t "$voicechat_release_image" /path/to/speech
 ```
 
-该派生镜像不安装依赖或下载权重，继承原镜像 entrypoint、command 和运行环境，并设置 Jinja 为默认。随后在**现场原有启动命令/Compose**中替换镜像，显式加入 `-e USE_JINJA_TEMPLATE_PROMPT=1`（Compose 使用 environment），保留全部原参数并重建容器。仅 `docker restart` 不会应用新镜像或新环境变量。若 `/s2s` 已被 bind mount 覆盖，镜像内 COPY 不生效，须同步更新挂载源文件。
+该派生镜像不安装依赖或下载权重，继承原镜像 entrypoint、command 和运行环境，默认开启 Jinja 和 D21 元数据诊断。随后在**现场原有启动命令/Compose**中替换镜像，显式加入 `-e USE_JINJA_TEMPLATE_PROMPT=1 -e VOICECHAT_DIAGNOSTICS=1`（Compose 使用 environment），保留全部原参数并重建容器。仅 `docker restart` 不会应用新镜像或新环境变量。若 `/s2s` 或 `/opt/tritonserver/backends` 被 bind mount 覆盖，COPY 不生效，须同步更新挂载源文件。核对实际后端路径与 manifest；不同版本发生冲突时先比较源码，不能强行套补丁。
 
 在已配置的容器 shell 中直接运行现有脚本时，对应命令为：
 
 ```sh
-USE_JINJA_TEMPLATE_PROMPT=1 /s2s/run_s2s_server.sh
+USE_JINJA_TEMPLATE_PROMPT=1 VOICECHAT_DIAGNOSTICS=1 /s2s/run_s2s_server.sh
 ```
 
 不要在已有服务进程运行时再启动一份。启动完成后核对环境、实际文件 hash 与镜像：
@@ -64,8 +81,14 @@ USE_JINJA_TEMPLATE_PROMPT=1 /s2s/run_s2s_server.sh
 voicechat_container='YOUR_VOICECHAT_CONTAINER'
 docker inspect --format '{{.Image}}' "$voicechat_container"
 docker exec "$voicechat_container" printenv USE_JINJA_TEMPLATE_PROMPT
-docker exec "$voicechat_container" sha256sum /s2s/audio_server.py /s2s/prompt_template.jinja
+docker exec "$voicechat_container" printenv VOICECHAT_DIAGNOSTICS
+docker exec "$voicechat_container" sha256sum /s2s/audio_server.py /s2s/prompt_template.jinja \
+  /opt/tritonserver/backends/nemotron-voicechat/model.py \
+  /opt/tritonserver/backends/nemotron-voicechat/runtime_setup.py \
+  /opt/tritonserver/backends/nemotron-voicechat/data_types.py
 ```
+
+上面的 shell 前缀只影响启动的子进程；另一次 `docker exec printenv` 不证明已有 Python/Triton 进程继承了变量。应在实际进程环境与新会话 `voice_ws_diagnostic` / `voice_model_diagnostic` 日志中确认。仅重启 WS 不会加载 backend 改动；按现场既有方式重新加载 Triton，或重建同时运行两者的容器。
 
 本项目也需发布匹配的 API/Web 镜像。发生回退时使用已记录的源码/镜像组合；回到旧 WebSocket 边界后不能继续宣称本项目的逐轮停止/授权已通过。
 

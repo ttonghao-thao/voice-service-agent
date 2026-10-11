@@ -27,6 +27,7 @@ from app.voice.provider import (
     MockVoiceAdapter,
     NvidiaVoiceChatAdapter,
     VoiceEvent,
+    VoiceTrace,
     event_metadata,
 )
 
@@ -183,11 +184,14 @@ class VoiceGateway:
         frames, last_input, last_ack, last_playback_stop = 0, started, 0.0, 0.0
         input_state = "quiet"
         recent_events = deque(maxlen=32)
+        structural_trace = VoiceTrace()
         event_seq = 0
+        forwarded_audio_frames = 0
 
         def trace_event(event):
             nonlocal event_seq
             event_seq += 1
+            structural_trace.append(event, int((time.monotonic() - started) * 1000))
             recent_events.append({
                 "seq": event_seq,
                 "at_ms": int((time.monotonic() - started) * 1000),
@@ -226,6 +230,7 @@ class VoiceGateway:
                         await ws.send_json(event)
 
         async def upstream_writer():
+            nonlocal forwarded_audio_frames
             while True:
                 await wake.wait()
                 wake.clear()
@@ -254,6 +259,7 @@ class VoiceGateway:
                     else:
                         audio = incoming.get_nowait()
                         await provider.send_audio(audio)
+                        forwarded_audio_frames += 1
 
         def transcript_future(item_id):
             future = input_transcripts.get(item_id)
@@ -558,6 +564,13 @@ class VoiceGateway:
                                     for state in ("running", "ready", "sent")
                                 },
                                 "recent_events": list(recent_events),
+                                "structural_trace": structural_trace.snapshot(),
+                                "transport": {
+                                    "received_frames": frames,
+                                    "forwarded_frames": forwarded_audio_frames,
+                                    "queued_frames": incoming.qsize(),
+                                    "provider": provider.diagnostics() if hasattr(provider, "diagnostics") else {},
+                                },
                             }, ensure_ascii=True),
                         )
                         raise DomainError(
@@ -782,6 +795,10 @@ class VoiceGateway:
         error = None
         try:
             await provider.connect(session.summary)
+            logger.info(
+                "voice_provider_connected conversation_id=%s epoch=%s provider_session_id=%s",
+                session.conversation_id, session.epoch, getattr(provider, "provider_session_id", None),
+            )
             emit(
                 "session.ready",
                 {
@@ -809,6 +826,13 @@ class VoiceGateway:
                     task.cancel()
                 await asyncio.gather(*tasks, *workers, return_exceptions=True)
                 await provider.close()
+                logger.info(
+                    "voice_transport_finished conversation_id=%s epoch=%s received_frames=%s "
+                    "forwarded_frames=%s queued_frames=%s provider=%s",
+                    session.conversation_id, session.epoch, frames, forwarded_audio_frames,
+                    incoming.qsize(),
+                    json.dumps(provider.diagnostics() if hasattr(provider, "diagnostics") else {}, ensure_ascii=True),
+                )
                 if error:
                     try:
                         async with asyncio.timeout(1):

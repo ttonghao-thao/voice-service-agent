@@ -5,7 +5,7 @@ import vm from "node:vm";
 import ts from "typescript";
 import { PlaybackRing, Resampler, pcm16 } from "../public/dsp.js";
 
-function audioHarness(rate = 48000) {
+function audioHarness(rate = 48000, onDiagnostics = () => {}) {
   let Processor;
   const messages = [];
   const source = readFileSync(
@@ -39,7 +39,10 @@ function audioHarness(rate = 48000) {
       socket = this;
     }
     close() {}
-    send() {}
+    sent = [];
+    send(message) {
+      this.sent.push(JSON.parse(message));
+    }
     emit(type, payload = {}) {
       this.onmessage({ data: JSON.stringify({ type, epoch: 1, payload }) });
     }
@@ -95,12 +98,17 @@ function audioHarness(rate = 48000) {
     URL,
     location: { href: "https://example.test/", protocol: "https:" },
     atob,
+    btoa,
+    performance,
+    crypto: { randomUUID: () => "event-id" },
+    console,
   });
   const client = new exports.VoiceClient(
     () => {},
     () => {},
     () => {},
     () => {},
+    onDiagnostics,
   );
   client.node = node;
   client.epoch = 1;
@@ -113,14 +121,60 @@ function audioHarness(rate = 48000) {
     send,
     process,
     messages,
-    async connect() {
+    capture(epoch = 1) {
+      client.node.port.onmessage({
+        data: { type: "capture", epoch, pcm: new ArrayBuffer(3840) },
+      });
+    },
+    async connect(ready = true) {
       await client.start("cid");
       assert.ok(socket, "VoiceClient must open its WebSocket");
-      socket.emit("portal.session.ready");
+      if (ready) socket.emit("portal.session.ready");
       return socket;
     },
   };
 }
+
+test("Capture diagnostics distinguish pre-ready, stale and actually sent frames without content", async () => {
+  const diagnostics = [];
+  const { client, connect, capture } = audioHarness(48000, (d) =>
+    diagnostics.push(d),
+  );
+  const socket = await connect(false);
+  capture();
+  assert.equal(socket.sent.length, 0);
+  socket.emit("portal.session.ready");
+  capture(0);
+  capture();
+  capture();
+  const summary = client.captureDiagnostics();
+  assert.equal(summary.captured_frames, 4);
+  assert.equal(summary.pre_ready_frames, 1);
+  assert.equal(summary.stale_frames, 1);
+  assert.equal(summary.sent_frames, 2);
+  assert.equal(summary.sent_samples_24k, 3840);
+  assert.equal(summary.first_seq, 0);
+  assert.equal(summary.last_seq, 1);
+  assert.ok(summary.ready_at_ms >= 0);
+  assert.equal(socket.sent[0].seq, 0);
+  await client.stop();
+  await client.stop();
+  assert.equal(diagnostics.length, 2);
+  assert.equal(diagnostics[1].stage, "stopped");
+  assert.equal(diagnostics[1].conversation_id, "cid");
+  assert.equal(diagnostics[1].voice_session_id, "sid");
+  assert.ok(!("audio" in summary) && !("call_token" in summary));
+});
+
+test("Failing optional diagnostics cannot prevent voice cleanup", async () => {
+  const { client, connect } = audioHarness(48000, () => {
+    throw new Error("telemetry failed");
+  });
+  await connect();
+  await client.stop();
+  assert.equal(client.ws, undefined);
+  assert.equal(client.node, undefined);
+});
 
 test("Stop playback clears queued audio and the next authorized reply is audible", () => {
   const { client, send, process } = audioHarness();

@@ -341,6 +341,7 @@ export default function App() {
       setVoiceState,
       onError,
       setMicrophone,
+      (diagnostics) => console.info("voice_capture_summary", JSON.stringify(diagnostics)),
     );
     return () => {
       void voice.current?.stop();

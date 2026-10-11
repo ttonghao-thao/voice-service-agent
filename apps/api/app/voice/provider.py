@@ -1,6 +1,7 @@
 import asyncio
 import base64
 import json
+from collections import Counter, deque
 from dataclasses import dataclass, field
 
 from app.config import ROOT
@@ -71,6 +72,44 @@ def event_metadata(event: VoiceEvent) -> dict:
     return result
 
 
+class VoiceTrace:
+    """Bounded metadata history; compress only adjacent audio from the same owner."""
+
+    def __init__(self, max_events=256, max_bytes=65536):
+        self.events = deque()
+        self.sizes = deque()
+        self.bytes = 0
+        self.seq = 0
+        self.dropped = 0
+        self.max_events = max_events
+        self.max_bytes = max_bytes
+
+    def append(self, event, at_ms):
+        self.seq += 1
+        entry = {"seq": self.seq, "at_ms": at_ms, **event_metadata(event)}
+        if self.events and event.kind == "audio.delta":
+            previous = self.events[-1]
+            if all(previous.get(k) == entry.get(k) for k in ("kind", "response_id", "item_id")):
+                self.events.pop()
+                self.bytes -= self.sizes.pop()
+                previous["last_seq"] = self.seq
+                previous["last_at_ms"] = at_ms
+                previous["count"] = previous.get("count", 1) + 1
+                previous["audio_base64_chars"] = previous.get("audio_base64_chars", 0) + entry.get("audio_base64_chars", 0)
+                entry = previous
+        size = len(json.dumps(entry, ensure_ascii=True).encode())
+        self.events.append(entry)
+        self.sizes.append(size)
+        self.bytes += size
+        while len(self.events) > self.max_events or self.bytes + 2 * len(self.events) > self.max_bytes:
+            removed = self.events.popleft()
+            self.bytes -= self.sizes.popleft()
+            self.dropped += removed.get("count", 1)
+
+    def snapshot(self):
+        return {"events": list(self.events), "dropped_events": self.dropped, "truncated": bool(self.dropped)}
+
+
 def normalize(event):
     kind = event.get("type")
     ids = {k: event[k] for k in ("response_id", "item_id") if isinstance(event.get(k), str)}
@@ -128,6 +167,18 @@ def normalize(event):
 class NvidiaVoiceChatAdapter:
     def __init__(self, settings):
         self.settings, self.ws = settings, None
+        self.provider_session_id = None
+        self.sent_audio_chunks = 0
+        self.sent_audio_samples_24k = 0
+        self.raw_event_counts = Counter()
+
+    def diagnostics(self):
+        return {
+            "provider_session_id": self.provider_session_id,
+            "sent_audio_chunks": self.sent_audio_chunks,
+            "sent_audio_samples_24k": self.sent_audio_samples_24k,
+            "raw_event_counts": dict(self.raw_event_counts),
+        }
 
     async def connect(self, summary):
         s = self.settings
@@ -147,6 +198,10 @@ class NvidiaVoiceChatAdapter:
             created = json.loads(await self.ws.recv())
             if created.get("type") != "session.created":
                 raise DomainError("VOICE_PROTOCOL_ERROR", "Voice session creation event was not received", 502)
+            created_session = created.get("session")
+            provider_id = created_session.get("id") if isinstance(created_session, dict) else None
+            if isinstance(provider_id, str):
+                self.provider_session_id = provider_id[:128]
             update = session_update(summary)
             if not printable_ascii(json.dumps(update, ensure_ascii=False)):
                 raise DomainError("VOICE_PROTOCOL_ERROR", "VoiceChat instructions must be ASCII", 502)
@@ -162,9 +217,12 @@ class NvidiaVoiceChatAdapter:
                     raise DomainError("VOICE_PROTOCOL_ERROR", "Voice sample format does not match configuration", 502)
 
     async def send_audio(self, audio):
+        samples = len(base64.b64decode(audio, validate=True)) // 2
         await self.ws.send(
             json.dumps({"type": "input_audio_buffer.append", "event_id": uid(), "audio": audio})
         )
+        self.sent_audio_chunks += 1
+        self.sent_audio_samples_24k += samples
 
     async def submit_tool_result(self, call_id, text):
         try:
@@ -186,7 +244,13 @@ class NvidiaVoiceChatAdapter:
 
     async def events(self):
         async for raw in self.ws:
-            event = normalize(json.loads(raw))
+            data = json.loads(raw)
+            kind = data.get("type")
+            kind = kind[:128] if isinstance(kind, str) else "missing"
+            if kind not in self.raw_event_counts and len(self.raw_event_counts) >= 32:
+                kind = "other"
+            self.raw_event_counts[kind] += 1
+            event = normalize(data)
             if event:
                 yield event
 
