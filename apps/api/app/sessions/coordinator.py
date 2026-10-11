@@ -172,6 +172,11 @@ class SessionCoordinator:
                         request, ctx, runtime_history, progress if channel == "text" else None
                     )
             except TimeoutError:
+                logger.warning(
+                    "agent_turn_timed_out conversation_id=%s turn_id=%s channel=%s "
+                    "reason_code=AGENT_TIMEOUT budget_ms=%s",
+                    ctx.conversation_id, ctx.turn_id, channel, self.settings.agent_deadline_ms,
+                )
                 bundle = self.runtime.failure("AGENT_TIMEOUT", "The request timed out. Please try again later.")
             answer_scope = sorted(
                 {kb for citation in bundle.citations for kb in citation.authorized_kb_ids}
@@ -197,10 +202,11 @@ class SessionCoordinator:
                     ctx.slots,
                 )
             logger.info(
-                "answer_delivery_finished conversation_id=%s turn_id=%s channel=%s committed=%s commit_ms=%s total_ms=%s",
+                "answer_delivery_finished conversation_id=%s turn_id=%s channel=%s committed=%s commit_ms=%s total_ms=%s status=%s reason_code=%s",
                 ctx.conversation_id, ctx.turn_id, channel, committed,
                 round((time.monotonic() - commit_started) * 1000),
                 round((time.monotonic() - started) * 1000),
+                bundle.status, bundle.reason_code or "none",
             )
             return bundle if committed else None
         except asyncio.CancelledError:

@@ -1,4 +1,5 @@
 import asyncio
+import hashlib
 import json
 import logging
 import re
@@ -164,13 +165,55 @@ class BusinessRuntime:
                     async for _ in stream.stream_events():
                         pass  # Raw deltas and reasoning are never exposed before evidence validation.
                     raw = stream.final_output
+                    completed_run = stream
                 else:
                     result = await Runner.run(
                         agent, inputs, context=ctx, max_turns=8, hooks=timings, run_config=RunConfig(tracing_disabled=True)
                     )
                     raw = result.final_output
-            answer = AgentAnswer.model_validate(raw)
-            validated = await self.validate(answer, ctx)
+                    completed_run = result
+                answer = AgentAnswer.model_validate(raw)
+                validated = await self.validate(answer, ctx)
+                if validated.reason_code == "RAG_INVALID_CITATION":
+                    # Keep the original deadline, evidence and context. Repair cannot retrieve again.
+                    if not await self.registry.store.current(
+                        ctx.conversation_id, ctx.epoch, ctx.turn_id, ctx.request_revision
+                    ):
+                        run_status = "canceled"
+                        return self.failure("STALE_EPOCH", "This search was canceled.")
+                    if not ctx.invoked <= await self.registry.allowed(ctx.principal):
+                        return self.failure("FORBIDDEN", "Knowledge access changed. Please ask again.")
+                    repair_agent = agent.clone(
+                        tools=[],
+                        model_settings=ModelSettings(tool_choice="none", parallel_tool_calls=False),
+                        instructions=agent.instructions + "\nCorrect the previous answer's citation structure once. "
+                        "Use only evidence already returned in this turn. Do not retrieve or invent sources. "
+                        "Every [Cn] in display_text must be declared in citation_ids; use only the allowed "
+                        "citation IDs supplied below, never document IDs or history citations. Re-evaluate "
+                        "support: if existing evidence cannot support the answer, return insufficient_evidence "
+                        "without unsupported factual claims or invalid citations. Never relabel an unsupported "
+                        "claim with an unrelated valid citation.",
+                    )
+                    logger.info(
+                        "agent_citation_repair_started conversation_id=%s turn_id=%s attempt=1",
+                        ctx.conversation_id, ctx.turn_id,
+                    )
+                    repaired = await Runner.run(
+                        repair_agent,
+                        completed_run.to_input_list() + [{
+                            "role": "user",
+                            "content": "Correct the citation validation failure. Allowed citation IDs: "
+                            + json.dumps(sorted(ctx.evidence))
+                            + ". Failure types: " + ",".join(self.citation_issues(answer, ctx)),
+                        }],
+                        context=ctx, max_turns=1, hooks=timings,
+                        run_config=RunConfig(tracing_disabled=True),
+                    )
+                    validated = await self.validate(AgentAnswer.model_validate(repaired.final_output), ctx)
+                    logger.info(
+                        "agent_citation_repair_finished conversation_id=%s turn_id=%s status=%s reason_code=%s",
+                        ctx.conversation_id, ctx.turn_id, validated.status, validated.reason_code or "none",
+                    )
             run_status = validated.status
             logger.info(
                 "agent_run_finished conversation_id=%s turn_id=%s status=%s invoked_tools=%s reason_code=%s",
@@ -183,6 +226,10 @@ class BusinessRuntime:
             return validated
         except TimeoutError:
             run_status = "timeout"
+            logger.warning(
+                "agent_run_timed_out conversation_id=%s turn_id=%s reason_code=AGENT_TIMEOUT budget_ms=%s",
+                ctx.conversation_id, ctx.turn_id, self.settings.agent_deadline_ms,
+            )
             return self.failure("AGENT_TIMEOUT", "The request timed out. Please try again later.")
         except asyncio.CancelledError:
             run_status = "canceled"
@@ -206,8 +253,29 @@ class BusinessRuntime:
             if stream is not None and not stream.is_complete:
                 stream.cancel(mode="immediate")
 
-    async def validate(self, answer, ctx):
+    @staticmethod
+    def citation_issues(answer, ctx):
         references = set(re.findall(r"\[(C\d+)\]", answer.display_text))
+        issues = []
+        if references - set(answer.citation_ids):
+            issues.append("undeclared_reference")
+        if set(answer.citation_ids) - ctx.evidence.keys():
+            issues.append("unknown_citation")
+        return issues
+
+    @staticmethod
+    def citation_log_ids(values):
+        # Provider strings are untrusted: never emit arbitrary identifiers, text or log newlines.
+        values = sorted(set(values))
+        return json.dumps({
+            "count": len(values),
+            "ids": [value if re.fullmatch(r"C[0-9]{1,8}", value) else
+                    "sha256:" + hashlib.sha256(value.encode()).hexdigest()[:16]
+                    for value in values[:20]],
+            "omitted": max(0, len(values) - 20),
+        }, separators=(",", ":"))
+
+    async def validate(self, answer, ctx):
         if "search_knowledge" in ctx.allowed_tools and "search_knowledge" not in ctx.invoked:
             return self.failure(
                 "AGENT_REQUIRED_TOOL_NOT_CALLED",
@@ -227,13 +295,6 @@ class BusinessRuntime:
                 else "The knowledge search failed temporarily. Please try again later."
             )
             return self.failure(code, message)
-        if references - set(answer.citation_ids) or any(
-            cid not in ctx.evidence for cid in answer.citation_ids
-        ):
-            return self.failure(
-                "RAG_INVALID_CITATION",
-                "Source validation failed, so I cannot provide a reliable answer right now.",
-            )
         if not all(
             [
                 await self.registry.store.enabled(name)
@@ -243,6 +304,20 @@ class BusinessRuntime:
             ]
         ):
             return self.failure("FORBIDDEN", "Knowledge access changed. Please ask again.")
+        issues = self.citation_issues(answer, ctx)
+        if issues:
+            logger.warning(
+                "agent_citation_validation_failed conversation_id=%s turn_id=%s "
+                "reason_code=RAG_INVALID_CITATION failure_types=%s available=%s referenced=%s declared=%s",
+                ctx.conversation_id, ctx.turn_id, ",".join(issues),
+                self.citation_log_ids(ctx.evidence),
+                self.citation_log_ids(re.findall(r"\[(C\d+)\]", answer.display_text)),
+                self.citation_log_ids(answer.citation_ids),
+            )
+            return self.failure(
+                "RAG_INVALID_CITATION",
+                "Source validation failed, so I cannot provide a reliable answer right now.",
+            )
         # `failed` is a service-owned execution state. Some compatible models
         # still emit it despite a successful tool call, which previously left a
         # cited answer carrying a contradictory Search failed status. Accept the

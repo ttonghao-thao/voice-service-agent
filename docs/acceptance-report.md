@@ -10,7 +10,7 @@
 
 | 要回答的问题 | 证据位置与边界 |
 | --- | --- |
-| 最近应用验证 | §1 的 2026-09-28 D20：102 项 pytest、12 项前端音频单测、前端构建、8 项 Chromium E2E、应用 Ruff、契约导出和差异检查；不代表真实模型/CueKB/VoiceChat、实际麦克风或 Docker 验收 |
+| 最近应用验证 | §1 的 2026-10-11 D22：132 项 pytest、Ruff、差异检查通过；本次未改前端/协议，不重跑前端或导出契约；真实模型/CueKB/VoiceChat 与 Docker 验收仍待 D07 |
 | 独立 VoiceChat 交付 | D19/D20：真实服务器模块的 12 项 CPU 协议测试、补丁基线/应用后 SHA-256 检查；交付见 [补丁说明](../deploy/voicechat/README.md)，云端镜像及 GPU 输出未验证 |
 | M3、D08、D01–D06 何时验证 | §1 对应日期；不累加各次测试数作为当前总数 |
 | 真实服务是否通过 | §3：仍待验证；测试文件存在、配置 verified 或本地测试通过都不能替代真实记录 |
@@ -20,6 +20,15 @@
 历史文档审计（2026-09-22）：9 份活动 Markdown 的 63 处本地链接及章节锚点、代码块闭合、`git diff --check` 与当时的仅文档修改检查通过。AGENTS 从 3688 减为 2912 UTF-8 字节（约 21%），这是当时入口大小变化，不是实际 token 节省测量。历史快照未修改；当前 D11 的验证另记于 §1。
 
 ## 1. 按日期记录的编码与部署前验证
+
+### 2026-10-11 D22 引用修正与失败诊断
+
+- Runtime 增加有界、脱敏的引用校验 WARNING；补充本轮引用输出约束。非法引用最多修正一次，复用已有 SDK 输入与证据；修正阶段不注册工具、不重置总预算，仍执行工具权限/版本与引用/证据校验。取消传播及 Coordinator 提交隔离保持有效。
+- Runtime/Coordinator 明确记录整轮超时，最终交付日志携带 `status/reason_code`。没有修改 API/schema、数据库迁移、依赖或前端。
+- 已执行：针对 SDK/会话/语音 71 项通过；全量 `.venv/bin/python -m pytest -q` **132 passed**；`.venv/bin/ruff check apps/api tests scripts`、`git diff --check` 通过。pytest 存在一条既有 Starlette/AnyIO 弃用警告。
+- 新增受控回归覆盖 Responses/Chat Completions、流式/非流式、漏声明/未知/历史/非标准编号、修正成功/再次失败/不足、Runtime 与 Coordinator 原 deadline、修正取消、过期任务、工具版本变更和日志长度/敏感字符串。SDK 网络通过 MockTransport；边界测试显式替换 Runner，未连接真实供应商。
+- 工作区原有 `test_voice.py` 顺序容忍修改不纳入此文字修复提交；另外从 HEAD 导出未修改语音测试到临时目录，独立运行 **13 passed**，确认本次交付不依赖该未提交改动。
+- 未运行真实 LLM、CueKB、VoiceChat、Docker、生产数据库或浏览器/听音验收。现场需更新 API 镜像及匹配提示词后复测引用修正成功率和延迟；修正不保证供应商永远给出合法引用，也不构成逐条语义正确性的证明。
 
 ### 2026-09-29 Q06 语音文字统一聊天展示（本地编码与验证）
 

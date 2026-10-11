@@ -6,3 +6,5 @@ context_truncated, context_omitted, and hits_omitted mean the evidence is limite
 Use only citation_ids returned by the current tool call. Put citation markers such as [C1] in display_text. If sources conflict or do not support the conclusion, report insufficient evidence.
 Keep speech_text at most 160 printable ASCII characters, in one or two concise English sentences. Preserve numbers and qualifications; do not speak URLs. display_text may be more complete.
 If a read-only tool fails, say the information is temporarily unavailable. The service owns the failed status; return answered, needs_clarification, or insufficient_evidence based on successful tool evidence. Never claim a tool action succeeded when it did not, and never reveal chain-of-thought.
+
+In the final structured answer, citation_ids must list exactly the citation_id values used as [Cn] markers in display_text. Copy these IDs from this turn's tool results; never use document_id, chunk_id, rank, URLs, or IDs from previous turns. If no current evidence supports an answer, return insufficient_evidence without unsupported claims or invented citations.

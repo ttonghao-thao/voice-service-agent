@@ -133,6 +133,14 @@ D19 上游补丁、适用源码 hash、CPU 测试与发布方式见 [VoiceChat �
 
 2026-09-28 文献复核：[新论文 §7、附录 B](https://arxiv.org/html/2609.21967v1) 明确当前工具执行期间不支持 barge-in；持续收音、字幕或固定 ACK 不代表新音频参与响应生成。本机 backend 的工具期限还存在帧数/推理批次时间单位风险。详细证据、现有实现与待确认优化见 [Q05 分析](voicechat-research-review.md)，不据此修改当前代码或宣称增强能力通过。
 
+### 3.5 D21：语音桥接失败排查
+
+`VOICE_TOOL_REQUIRED` 表示用户输入出现后，网关收到尚未授权的 `response_id` 的口述文字或音频。它与初始 response 跨轮复用触发的 `VOICE_PROTOCOL_ERROR` 是不同检查；新错误不能单独证明上一项生命周期问题已完成真实验收。
+
+按同一语音 conversation 核对 `voice_tool_call_received`、`voice_unbound_tool_settled` 和 `voice_unbridged_response_rejected`。需要确认 `consult_service_agent` 原生调用已绑定客户 input，且工具/ACK/音频使用正确 response 并按顺序到达；不能仅凭提示词或绕过拒绝来认定已走业务检索。
+
+对独立 VoiceChat 核对运行中的 `/s2s/audio_server.py` hash、配套模板和实际 Python 进程的 `USE_JINJA_TEMPLATE_PROMPT`。该开关在模块导入时读取；容器 shell 临时设置或已运行进程之后设置均不改变已导入的值。以 `USE_JINJA_TEMPLATE_PROMPT=1` 前缀启动 Python 时，另一次 `docker exec printenv` 只显示容器的基础环境，不能据此判定该 Python 进程是否继承了开关。应检查实际进程环境，或新 session 对应的 `Preparing prompt using jinja template` 日志。`./scripts/deploy-cloud.sh .env` 仅启动本项目，开关应在独立 VoiceChat 的进程/容器启动定义中生效。
+
 ## 4. 文本模型与业务 Agent
 
 当前 `AGENT_PROVIDER=openai` 使用 Responses API，明确配置模型/API key；`compatible` 配置独立 HTTP base URL 并使用 Chat Completions。这些是本仓库适配器行为，真实供应商必须另验工具调用、结构化输出、streaming 和错误语义。VoiceChat WS/WSS 地址不能代替文本模型 endpoint。
@@ -162,6 +170,24 @@ Runtime、ToolRegistry、CueKB adapter 与 VoiceGateway 记录脱敏阶段日志
 | 提交与总计 | `answer_delivery_finished`：commit_ms/total_ms/committed | total 从 Coordinator execute 开始，含业务链和提交；不含浏览器网络/渲染 |
 
 先收集同模型/KB/问题集的冷、热请求 p50/p95，按 turn 对齐。若模型阶段主导，再实测降低回答长度、模型服务排队与缓存；若 CueKB 主导，依据其 trace/timings 优化检索路径；若只在浏览器等待，检查 Nginx SSE 缓冲与额外代理。不得把 30 秒超时预算当实际等待，或把减少模型调用当不影响检索质量的已验证优化。
+
+### 4.2 D21：文字请求失败排查
+
+文字 POST → SessionCoordinator → BusinessRuntime → 配置的文本模型/ToolRegistry/CueKB，不经过 VoiceChat 音频服务。文字任务用其自身 `conversation_id/turn_id` 关联 `agent_run_started`、`agent_run_failed`、`agent_model_call_finished`、工具阶段与 `answer_delivery_finished`；同一 API 日志中较早的 voice 记录不属于该文字请求。
+
+`agent_run_failed` 的完整 `exception_type` 是首要证据。用户已确认早期 `NotFoundError` 为文本 LLM 配置错误；它与后续 `RAG_INVALID_CITATION` 是不同故障。核对 API 容器实际的 `AGENT_PROVIDER`、`AGENT_BASE_URL` 和 `AGENT_MODEL`，不输出 API key。
+
+### 4.3 D22：最终引用校验、一次修正与超时诊断
+
+2026-10-11 现场 turn `e875b306-f662-4bad-93f2-a5259f84b377`：两次模型调用完成，CueKB `retrieval_status=ok/hit_count=5`，最终 `RAG_INVALID_CITATION`。这证明检索链路执行成功，不能证明模型引用正确，也不能把原始 hit_count 当作证据预算筛选后的可用引用数。
+
+最终 `display_text` 的 `[Cn]` 必须列入 `citation_ids`，每个声明的 ID 必须属于本轮 `ctx.evidence`。提示词要求正文和列表一致，不能使用 document/chunk UUID、rank 或历史轮次 ID。后端继续验证真实工具调用、工具错误、启用状态/版本、证据状态及引用，Coordinator 保留提交时的 epoch/revision/租约检查。引用结构通过不代表逐条语义支持已获证明。
+
+校验失败记录 WARNING `agent_citation_validation_failed`，包含 `undeclared_reference` / `unknown_citation`、可用/正文/声明三组 ID；每组最多 20 项，附总数及省略数。只有形如 `C` 加 1–8 位 ASCII 数字的值原样输出，其余值仅记录 SHA-256 摘要前 16 位；不记录问题、正文、工具参数、证据或供应商原始异常。
+
+Runtime 对引用校验失败至多发起一次修正，复用同一次 SDK 执行的输入/工具结果和现有上下文。修正 Agent 无工具，`tool_choice=none/max_turns=1`，不再检索、不重置整轮 deadline、不发布原始增量；修正前检查当前任务及授权，修正后重新执行完整校验。已有证据不能支持回答时允许明确 `insufficient_evidence`；仍非法则失败，不按位置替换引用或强行指定 C1。取消正常传播，旧任务不会借修正恢复提交。
+
+`agent_citation_repair_started/finished` 标识修正尝试和结果，第三次模型调用仍由 `agent_model_call_finished` 计时。Runtime/Coordinator 的整轮超时分别记录 WARNING `agent_run_timed_out` / `agent_turn_timed_out`，含 `AGENT_TIMEOUT`、关联 ID 和预算；外层 deadline 引发的内部 canceled 不等于用户主动取消，须结合外层日志判断。`answer_delivery_finished` 包含最终 `status/reason_code`，`committed=True` 只表示结果已保存。修正可能增加一次模型往返，真实模型兼容性、成功率和延迟须现场复测。
 
 ## 5. 第三方扩展（D06）
 

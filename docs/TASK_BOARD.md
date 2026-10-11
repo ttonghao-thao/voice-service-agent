@@ -1,6 +1,6 @@
 # 当前任务板
 
-更新：2026-09-29。目标设计见 [architecture.md](architecture.md)，状态证据见 [acceptance-report.md](acceptance-report.md)。本期范围已确定为英文知识库客服，默认只启用 `search_knowledge`。
+更新：2026-10-11。目标设计见 [architecture.md](architecture.md)，状态证据见 [acceptance-report.md](acceptance-report.md)。本期范围已确定为英文知识库客服，默认只启用 `search_knowledge`。
 
 ## 1. 当前结论与审计基线
 
@@ -13,6 +13,24 @@ D19/D20 对照同次录像/日志、speech 源码与原生 HTML 确认：原生�
 D16–D18 的知识工具后置条件、最终 ASR 输入绑定、文字总预算和答案终态修复继续保留；设计已整体更新为当前流程，历史逐轮问题与验证只保存在 [验收记录](acceptance-report.md)。2026-09-22 的 `9b44859` 仅为历史文档审计基线。
 
 尚有独立边界：`parent_task_id` 不是子 Agent 调度，`accepted` 不代表已听到，引用存在不证明语义充分，原件查看尚未实现；这些属于 Q 系列建议，不把它们自动扩张为本次交付范围。
+
+## 本轮 D21 现场语音与文字失败排查
+
+2026-10-10 用户明确两次独立请求：语音门户报 `VOICE_TOOL_REQUIRED`，文字请求后台报 `agent_run_failed`。分别按各自 conversation/turn 关联，不将两者认定为同一异常。调用链与排查入口见 [接入 §3.5](integration.md#35-d21语音桥接失败排查) 和 [接入 §4.2](integration.md#42-d21文字请求失败排查)。
+
+1. M1（完成）：核对 Gateway、provider、Runtime、Coordinator 与部署边界；确认语音报错为未授权 response 拒绝，文字走独立文本模型与 CueKB 链路。
+2. M2（进行中）：修正未桥接口述回归用例对 `portal.input.state` 与 `portal.error` 到达顺序的错误假设，复跑语音及 SDK 受控回归；保持生产授权逻辑。
+3. M3（文字根因已确认；语音待现场证据）：用户确认文字 `NotFoundError` 来自 LLM 配置；后续文字引用校验失败见 D22。语音仍待核对运行文件/模板及 native tool/response 顺序。
+4. M4（待现场复测）：文字引用校验按 D22 实施；语音不绕过桥接授权。现场 GPU、模型/CueKB、容器及听音归 D07，不由本地测试替代。
+
+## 本轮 D22 引用校验与失败诊断（2026-10-11）
+
+用户已授权编码并发布 main。现场请求检索成功后以 `RAG_INVALID_CITATION` 失败。
+
+1. M1（完成）：核对模型输出、引用校验、证据投影、整轮 deadline 和提交链路。
+2. M2（完成）：有界脱敏引用诊断、输出约束及同一预算内至多一次无工具修正；保留全部证据/权限校验。
+3. M3（完成）：两种 SDK API、流式/非流式、错误引用、失败修正、超时及取消回归；132 项 pytest、Ruff 和差异检查通过，详细边界见验收记录。
+4. M4（待发布）：同步接入/验收文档，审查 diff，提交推送 main 并核对远端提交。
 
 ## 本轮 D20 实施计划
 
@@ -73,6 +91,7 @@ D19 里程碑：M1 附件/源码与调用链审计完成；M2 门户及网关修
 
 | 顺序 / ID | 工作与状态 | 依赖 / 完成条件 | 方案入口 |
 | --- | --- | --- | --- |
+| P0 / D21 | 现场语音桥接与文字模型失败定位，进行中 | 分别确认 native bridge 授权及文本模型异常；运行文件/进程配置、实际 endpoint 与完整异常证据齐全，再进行针对性修复和真实复测 | [语音排查](integration.md#35-d21语音桥接失败排查)、[文字排查](integration.md#42-d21文字请求失败排查) |
 | P0 / D09 | 单一配置与本地测试账号，历史完成、部署入口由 D12 替换 | 原账号 JSON、密码、Cookie/JWT 流程不再用于本期验证；底层范围过滤保留 | [验收历史](acceptance-report.md#2026-09-23-d09-单一配置与受限测试认证) |
 | P0 / D10 | Web HTTPS 与私网 API，历史完成、私网 API 由 D12 移除 | PostgreSQL/Redis digest 和 Web `8087` 保留；API 不再映射宿主 `8088` | [验收历史](acceptance-report.md#2026-09-23-d10-镜像与公网-https--私网-api-端口) |
 | P0 / D11 | 入口文档、任务路线图与设计/证据同步，历史完成 | 当时记录的账号与私网 API 边界已由 D12 更新 | [验收 §1](acceptance-report.md#1-按日期记录的编码与部署前验证) |
