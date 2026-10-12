@@ -66,6 +66,14 @@
 - 未调用工具是否由模板可选措辞造成；也不能仅凭 INFO 缺失断言模型永不支持该调用。
 - 本次不同 response ID 排除了“这次命中同 ID 复用检查”，不代表所有生命周期场景已验收。
 
+### 2.4 补齐诊断后的证据边界
+
+2026-10-11 用户补齐的新 sequence 同时出现 WS 与 backend 诊断。backend 采用并追踪的 64 个 raw function outputs 全为 PAD，SOTC/EOTC/other 均为零，function state 保持 idle；计数在 ACK/工具结果注入前累加。它支持“截至断连前工具未进入原生调用状态”，不能证明继续完整输入后仍不会调用，也不能证明实际 function head 配置、权重和 tokenizer 正确。
+
+display 在 step 54/56 累计 3/8 字符，step 61 达到 gate 并发布 12 字符；step 63 的 `model_native` BOS 随后触发 final/reset，清空前 cumulative/emitted 均为 12。因此已积累的 12 字符已发布，没有确认清空时丢掉这段文本。实际发言、词位置和原始测试样本尚未提供，不能认定整句完整或截断。display gate 与 turn-taking BOU 使用独立状态；12 字符 display 不是 LLM 的文本输入上限，LLM 接收 perception 的 encoded_audio。
+
+WS 已接收并解码 126720 个 24 kHz 样本（5.28 秒），Triton completed 为 81920 个 16 kHz 样本（5.12 秒），另有 2246 个 16 kHz 样本约 140 ms 留在输入缓冲。output queued/sent 均为 72，output_queue 为零；`dropped_events` 表示有界诊断历史淘汰，不是音频丢包。当前日志仍不能证明最后一个词进入了模型，也未提供该新会话对应 API 错误码。不得把不同 sequence 的日志拼成一轮根因证据。
+
 ## 3. 一次复现需要采集的最小证据
 
 下列必要诊断已按本设计实现，字段留在内部日志/探针报告，不属于 OpenAI/VoiceChat/门户协议。在现有模块扩展，没有新建诊断服务；现场使用方法见 [接入 §3.6](integration.md#36-d21完整输入与模型边界诊断)。
@@ -95,6 +103,60 @@ Adapter 读取已有 `session.created.session.id`，记录 conversation/epoch �
 
 ## 4. 可复现的定位流程与分支判定
 
+### 4.0 先核对工具能力与完整输入，再判断模型行为
+
+本节按用户确认的优先级排列。2026-10-12 用户授权整理并编码当前可实施的定位工具，已实现磁盘元数据 CLI、门户固定 WAV 音源及 D23 有界诊断；运行配置、模型、模板和生产授权不变。当前方案及证据状态统一如下：
+
+| 方案 | 当前交付 | 下一步与判断条件 |
+| --- | --- | --- |
+| D20 播放恢复、ACK 授权竞态、SSE/答案渲染延迟 | 已编码并有本地回归；逐次 LLM/CueKB/Agent/commit 计时保留 | 现场阶段耗时与实际听音归 D07，不把约 3 秒总延迟归因单一模型 |
+| D21 空 response 边界与 Browser/API/provider/speech/backend 诊断 | 已编码；非空未授权音频仍拒绝；完整探针 EOF 后送静音 | 部署现有增量补丁与诊断开关，按同一次 call 的 ID/seq/sample 对齐 |
+| D21 模型产物核对 | audit_voicechat_artifacts.py 已实现，仅读 config/source/index/header 与可选本地 tokenizer | 现场执行并核对实际加载路径；磁盘 head/key/ID 证据不代替运行 class/head loaded/真实工具调用 |
+| D21 固定文件 A/B/C 对照 | A 独立探针和 B 门户 WAV 入口已实现；C 使用同配置原生客户端 | 人工确认同一录音，每组至少 3 次；B 保留生产关闭，A 承担完整观察 |
+| R1–R5 条件行为修复与 R3a 模板对照 | 判定/实施设计已整理，尚未命中具体根因 | 先证明工具能力、内容与完整处理，再按首个差异选择修复，不同时改阈值/head/template/授权 |
+| D22 引用修正与失败定位 | 已编码，最多一次无工具修正，共享整轮 deadline | 真实模型输出/引用复测；不以有 citation 代替语义支持 |
+| D23 多轮检索意图 | 已补内部 query/filter/history 形状、投影计数和最终校验分支日志 | 受控核对实际 query/filter 与新会话基线；意图/prompt/filter 行为修正仍待证据 |
+| Q01–Q05 后续优化 | 保持各主题文档既有状态，未自动扩张为本次编码 | 容量/语义口述质量/工具等待/模型切换按独立条件实施，见任务板 |
+
+发布入口是本项目 API/Web 与核对 CLI；独立 VoiceChat 的既有源码补丁仍须单独构建发布。全部本地验证与现场未验项见验收记录。
+
+**第一步：证明当前运行路径具备工具能力。** 查开关后还必须查它在哪条执行路径生效：
+
+- 本机 `nemo/collections/speechlm2/models/duplex_stt_model.py` 的 `use_function_head` 缺省为 true；false 会使该 NeMo/PyTorch 模型的 function_head 为 None。这不自动证明当前线上 vLLM head 已启用。
+- 实际 Triton 在 `checkpoint_utils/load_utils.py` 加载模型版本目录下的 `nano-v2-vllm`，`model.py::_vllm_llm_step` 读取 `custom_outputs["function_tokens"]`。本机现有 speech 源码不包含实际自定义 vLLM 的 `nemotron_h.py`；须取得线上已加载模块的路径、版本、head 构造、权重映射和 PAD/SOTC 选择代码，补齐这一段审计，不能用普通 Transformers 的同名模型替代。
+- 核对实际模型版本目录的根 `config.json`、`nano-v2-vllm/config.json` 中的 architecture/custom outputs，以及 safetensors header 的 function_head 权重键与 shape、加载日志。导出脚本默认保留 `stt_model.function_head` 并声明 function_tokens，但只校验全部筛选权重非空，不能单凭导出成功证明 head 存在。
+- 核对实际 tokenizer 的 PAD `<SPECIAL_12>`、SOTC `<SPECIAL_20>`、EOTC `<SPECIAL_21>` 与 head vocabulary/加载代码一致；核对 `duplex_user_channel_weight`、`duplex_text_channel_weight`、`duplex_function_channel_weight` 的有效值。这三个值在当前 backend 中缺省为 1.0，并影响合并给 LLM 的 embedding；不是 function head 总开关。
+- `tools=1` 证明工具元数据已注册，`USE_JINJA_TEMPLATE_PROMPT` 决定 WS 渲染分支，`VOICECHAT_DIAGNOSTICS` 决定日志输出；三者均不能代替 head/权重/生成通道检查。`checkpoint_utils/import_utils.py` 遇到已有 tokenizer/nano-v2-vllm 目录会跳过生成，更新 backend 或模板不能证明模型产物也更新。
+
+配置补充：用户提供的 `nano-v2-vllm/config.json` 声明 `NemotronHForCausalLM`、`combined_embeds`（bfloat16、dim 4480，与 hidden_size 一致）及 `custom_outputs=[text_logits,function_tokens]`，这些声明与当前导出/调用路径一致，不能再将“缺少 function_tokens 配置项”作为本次推断。该 JSON 不包含 `use_function_head`，不能据此解释为 false，也不证明 head 创建/加载完成。`auto_map` 声明 Transformers 映射，不能单独证明 vLLM 实际采用的模型实现。文件内 `pad_token_id=0` 与 backend 使用 `<SPECIAL_12>` 的约定需要核对实际 token ID 和 vLLM head 代码；仅凭两处表示方式不同不能判定冲突。权重键/shape、特殊 token 映射、有效运行模块及该文件确为加载文件的证明仍待补齐。
+
+退出条件：实际加载路径和版本明确，工具定义正确传入，function head、custom output、权重和 token 映射无已知屏蔽/缺失。尚缺实际 vLLM 实现时，该项保持未验证；不预先安装、重新转换或改权重。
+
+三项现场只读操作见 [发布说明的核对命令](../deploy/voicechat/README.md#d21原生工具通道的只读核对)。优先使用新 CLI 汇总分项 verified/unknown/failed；手动命令用于读取命中行上下文。定位同环境 vLLM 与 registry、读取 index/shard 和独立 embeddings 的 header、核对实际 token ID，不加载模型或修改 token；磁盘结果仍须与进程加载证据对应。
+
+**第二步：证明发送的是正确且完整的语音，并定位处理到哪一个样本。** 分开检查格式、内容、顺序、完整性：
+
+| 边界 | 检查内容 | 当前证据不足之处 |
+| --- | --- | --- |
+| Browser capture → 24 kHz PCM | ready 前后、mute/track、声道、重采样、PCM16 little-endian、1920 samples/80 ms、末帧 | 帧数和 sampleRate 标签不能证明整句有声或无失真 |
+| Browser → API → provider | source seq、接收/转发计数、FIFO、成功发送与失败后的未发送样本 | WS send 成功不是对端解码/推理完成确认 |
+| VoiceChat decode → 16 kHz buffer | 接收块、解码样本、重采样延迟、队列丢弃及缓冲位置 | 接收计数在解码前增长；只数包不能证明内容 |
+| Triton submitted/completed → perception | 有效语音末样本位置、已完成位置、buffer/queue、encoder frame 选择 | 完成推理批次数不能证明所有词被处理或理解 |
+
+当前 Web 在 ready 前丢弃完整 capture 帧，但 ready/reset 不清 capture 重采样器和未满帧累计，第一帧可能跨 ready 边界；现有 pre_ready_frames 不是精确的采样边界。mute 仍生成全零帧并维持时间轴，stop 不排空未满帧/FIR/浏览器 WS。因此固定样本必须标明语音相对 ready 的实际样本位置，数量相同不能替代非静音内容检查。VoiceChat 的 prompt 预发送另含 1280 个 16 kHz 初始化静音样本；建立 decoder step 与客户音频映射时须区分初始化、重采样延迟和滚动窗口，不直接以 step × 80 ms 当客户词位置。
+
+使用同一人工确认的完整 WAV，标注词位置与末个语音样本。24 kHz 透传边界可在授权隔离复测中比较同源 PCM；发生重采样的边界比较对齐后的时长/波形、RMS/peak及人工听音，不能要求不同采样率字节一致。说明 soxr 延迟、末帧补零和尾部静音，不把正常滤波缓冲当丢包。现有生产诊断只有元数据，不能伪称已有逐帧内容证明；不得开启全局正文/PCM日志。
+
+先执行 §4.1 的 A 组完整输入探针：`input_complete` 只证明 WAV 已发送，还须由 VoiceChat/Triton 计数证明末个有效语音样本已进入处理，并持续发送尾部静音驱动解码。再运行 B 门户及同配置 C 原生客户端，各至少 3 次，找同一样本位置的第一次分叉。当前 Gateway 失败清理会取消上游 writer 并关闭连接；直接断连不等同 speech 的显式 session.close 排空路径，因此必须记录失败时尚未发送/处理的尾部。
+
+退出条件：同一样本的全部有效语音在 ready 后进入对应链路，数量/顺序/内容无损坏证据，最后有效语音样本完成模型输入处理；关闭前未完成的运行单列为 incomplete，不能作为整句识别或工具能力失败的充分证据。
+
+**第三步：区分声音输入、语义理解和字幕展示。** perception 返回 encoded_audio 与 asr_emb，LLM 先使用 encoded_audio，EOU/display 后处理并使用独立 RNNT 状态。检查 LLM 实际使用的 encoder frame/embedding 及配置，与人工词位置和 decode step 对齐；分别比较 RNNT 累计文本、published/final 和模型行为。字幕完整不能单独证明 LLM 理解完整，字幕短也不能推出 LLM 只收到这些字符。
+
+**第四步：检查让话与最终输入边界。** 将 native/ACK/forced EOU BOS 映射到固定样本位置，判断是否在仍有有效后续语音或尾帧未处理时 final/reset。display gate 与 BOU/EOU 门槛不能直接比较；只有证据命中 R2 才调整对应状态/索引，不先改阈值、删除 reset 或增加固定等待。
+
+**第五步：按工具通道的第一个差异分支。** 配置及完整输入均通过后，仍全 PAD/无 SOTC，检查模型触发行为并进入 R3a 单变量模板对照；有 SOTC 却未完成，进入 R3b；已有有效 function 文本但 WS 事件缺失、晚于音频或归属错误，进入 R4；API 完整而 DOM 有损再进入 R5。每步检查都要有“首个差异、具体函数/条件、下一项所需证据”，不同时改所有层。
+
 ### 4.1 固定样本与三组对照
 
 建立人工核对的英文样本 `HELLO THAO MOONCAKE`，记录实际发音、每个词在音频中的位置、开头静音和句尾。不能用自动识别结果反向当参考答案，也不能把输入为文字或 TTS 合成样本的结果当真人发音验收。原现场录音不可得时，明确标记为重新录制复现。
@@ -105,6 +167,8 @@ Adapter 读取已有 `session.created.session.id`，记录 conversation/epoch �
 
 每组最少重复 3 次，保存逐次结果而非只给平均值。另测试慢速、正常语速、词间短停顿及拼读 THAO；记录间隔，不能预先宣称任意长停顿都是同一输入。B 的 ready 前开口只作为单独负例，不与 ready 后正例混算。
 
+2026-10-12 已实现门户内预录 WAV 入口，见 [门户 §8](portal-protocol.md#8-d21预录语音实时输入)。它为 B 组提供可重复的真实浏览器输入，保留生产失败关闭；不能替代 A 组不因首帧未授权音频结束的完整观察。文件由浏览器读取并作为 Worklet 上行音源，复用现有 API/VoiceChat 契约，不引入服务端录音上传/存储。真实 B 组仍须接入现场 API/VoiceChat；本地 WS 夹具通过不等于 B 组验收。
+
 旧 `probe_voicechat.py` 在 WAV 发完后等待工具时没有持续送静音，污染需要持续音频驱动解码的诊断。已修复为单一输入发送循环：完整 WAV 后继续发送 80 ms 静音直到观察期限，工具结果经同一写入路径提交；监听、发送、结果任务共享取消/关闭流程。保留合成工具结果标记，不使用真实业务数据。
 
 已实现 `--diagnostic`：WAV 完成后默认继续观察 10 秒，连接握手与观察共享 `--total-timeout`，最大 60 秒，另有最多 2 秒关闭宽限；输入和尾部观察超过预算在启动前拒绝。期限为可调整的探针参数，不是生产让话规则。退出记录 input_complete/tool_seen/exit_reason（observation_complete/tool_timeout/total_timeout/peer_closed/error）及所有未发送样本；握手慢或对端断开也可能使输入未发完，不能用于判断整句 ASR 准确性。样本计数标明 24 kHz 与末帧补零，synthetic tool result 永远不记为 CueKB 闭环通过。
@@ -113,12 +177,14 @@ Adapter 读取已有 `session.created.session.id`，记录 conversation/epoch �
 
 | 证据 | 定位结论 | 修复分支 |
 | --- | --- | --- |
+| 实际运行 head/custom output 被关闭、缺权重或 token 不一致 | 先处理工具能力/模型产物配置边界 | §4.0 第一步；取得运行证据后决定修复 |
 | HELLO 所在样本未过 ready 或 capture/sent 数不匹配 | 收音/发送阶段缺失，先于 ASR | R1 |
+| 帧数相同，但授权同源 PCM/重采样对照出现静音、失真或顺序差异 | 音频内容/转换链异常；数量相同不足以排除 | R1，定位首次内容差异 |
 | 完整 WAV 已送入 Triton，RNNT 累计文本始终缺 HELLO/MOONCAKE | 识别、frame 选择或展示 decoder 的问题 | R2a |
 | RNNT 累计包含完整片段，但 published 长度变短、门槛阻塞或 reset 丢失 | 展示发布/缓冲缺陷 | R2b |
 | 尚有明确后续用户语音时，agent BOS 导致 final/reset | 结束时序提前；区分原生 BOS/强制 EOU | R2c |
 | A 最终完整，B 在未桥接首音频关闭后缺尾部 | 断连放大了上游未桥接问题；不将其单独归咎于 UI | R3/R4，同时验证 R2 |
-| raw function 无 SOTC，模型先生成回答 | 工具触发行为不符合当前产品要求 | R3a |
+| 能力配置与完整输入均通过后，raw function 仍无 SOTC，模型先生成回答 | 工具触发行为不符合当前产品要求 | R3a |
 | raw 已有 SOTC，但 parser 没进入状态或未完成 | token 映射、step 范围、解析/提取问题 | R3b |
 | output_function_text 有效，工具事件却晚于同一工具 ACK 首帧或 ID 错误 | WS 事件归属/发送缺陷 | R4 |
 | Gateway 收到完整 final，DOM 仍只有中间词 | 前端归并/渲染问题 | R5 |
@@ -155,7 +221,7 @@ R2c 的内部状态要求（拟定，非新线上字段）：
 
 ### 5.3 R3：原生工具必须真正生成并解析
 
-- R3a：只在证明 raw function channel 从未触发时，做最小模板对照。保留现有工具标记/参数形状，收敛“if required/if you decide”等可选措辞与应用的每次桥接要求，分别测试问候、产品名、知识问题、听不清与闲聊。不得发送未证实的 `tool_choice=required` 协议字段。模板对照有效才更新运行模板和交付清单，不仅看提示词日志。
+- R3a：先完成 §4.0 的实际工具能力与完整输入检查，证明完整观察中 raw function channel 从未触发，再做最小模板对照；首帧音频即关闭的生产日志不足以替代完整观察。保留现有工具标记/参数形状，同音频、同模型、同工具仅改变“if required/if you decide”等可选措辞，分别测试问候、产品名、知识问题、听不清与闲聊。不得发送未证实的 `tool_choice=required` 协议字段。以 SOTC → 合法原生 tool event 的稳定覆盖判定，模板对照有效才更新运行模板和交付清单，不仅看提示词日志。
 - R3b：核对实际 tokenizer 对工具起止 special token 的解析、custom function_tokens 的来源、generated_function_tokens 的写入与读取 step 范围，以及 fast extraction 的取消/一次性交付。修复后合法 JSON 只发一次，非法 JSON 明确失败，不吞异常或从语音正文猜工具调用。
 - 工具参数继续通过 BridgeArguments 校验，最终用户请求仍取完整 final ASR。拼写或产品含义不清交业务澄清，不能拿工具参数臆测补齐 ASR。
 - 若完整输入与 token 通道均正常，而模型仍不稳定调用工具，则当前模型/模板组合未满足本期原生 bridge 能力门槛。记录失败并暂停放行；不得在本轮静默切换成“ASR 到达即调用业务”或伪造 call_id。此类确定性编排属于另一个架构变更，需要单独设计批准。
@@ -196,7 +262,7 @@ R2c 的内部状态要求（拟定，非新线上字段）：
 ## 7. 实施顺序与退出条件
 
 1. **设计确认后先补最小诊断和探针**：不改变生产授权/让话语义；本地受控验证字段、上限、隐私、发送完整性和关闭。完成不等于故障修复。
-2. **现场固定样本对照**：确认实际版本并执行 A/B/C，保存完整元数据、人工标注及首次差异；形成 R1–R5 根因条目。没有数据的分支保持未验证，不靠推测同时改所有层。
+2. **工具能力、完整输入与现场对照**：按 §4.0 先核对实际 vLLM/head/模型产物配置，再证明固定样本内容与末个有效语音完成处理，执行 A/B/C；随后分离 perception/LLM、display、BOS 与 function 的首次差异，最后才做条件模板对照。保存逐次元数据、人工标注及未完成区间，形成 R1–R5 根因条目。没有数据的分支保持未验证，不靠推测同时改所有层。
 3. **只实现证据命中的修复**：先写能暴露原问题的用例，再改对应模块；涉及模型边界先证明自然插话、短暂停顿和工具等待无回归。增补详细的内部字段/边界决定规则后再改该分支，不能让实现者自行猜测声学阈值。
 4. **本地验证与补丁交付**：按 §6 运行受影响测试、全量 Python、静态检查；涉及 Web 才增加 npm/build/浏览器；审查补丁、清单和部署步骤。
 5. **现场复测与放行**：同音频、同版本对照证明先前差异消失，再跑真实 CueKB 与听音。失败保留证据、回退对应发布，不扩大模型权限或在运行时自动切模式。

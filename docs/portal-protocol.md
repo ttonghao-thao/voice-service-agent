@@ -224,3 +224,35 @@ Stop playback 保留已收到正文并更新播放状态；普通 `speech_starte
 Turn 通过 Alembic 0006 新增 nullable `input_item_id`，旧行不伪造关联。Gateway 在合法工具调用与最终 ASR 绑定后提交 Turn，把对应 response 的口述事件标记为 `phase=answer` 与 `turn_id`；同一 response 的多段口述用 `segment_index` 分开。固定 ACK 用已配置短语和响应阶段识别为 `phase=status`，不存成答案正文。`speech_text.done` 的受控 Record 保存 `turn_id`，按既有 owner、KB 范围与 revision/epoch 过滤；历史快照和 WS 各自按稳定身份归并。
 
 现有部署升级前的旧 Turn 没有可靠的输入/口述关联，页面保留完整业务答案的展开入口，不将旧 `display_text` 冒充实际口述。正在使用的标签页可通过同一 capability 补取已定稿文字；刷新后的新 capability 不访问旧通话。生成口述文字不表示已听到。受控回归与构建见 [验收记录](acceptance-report.md)，真实 VoiceChat/CueKB、浏览器设备和撤权现场复测仍归 D07。
+
+## 8. D21：预录语音实时输入
+
+2026-10-12 已实现浏览器预录文件入口，复用现有音频/业务链，用于 [D21 的 B 组固定音源对照](voicechat-fault-recovery-design.md#41-固定样本与三组对照)。本地自动化与受控浏览器验证完成，现场 VoiceChat/CueKB 对照仍待 D07；入口实现不代表现场故障已修复。
+
+### 8.1 最小交互与输入路径
+
+语音控制区提供“Microphone / Audio file”输入选择；文件模式提供本地 WAV 选择、时长/格式显示、“Start file call”和发送进度。文件在浏览器内存解析，不新增 API 文件上传接口或服务端录音存储。仅接受 24 kHz、mono、PCM16 WAV，上限 30 秒、2 MiB；读取前检查文件大小，随后严格校验 RIFF 长度、chunk 边界/填充、唯一 fmt/data、PCM 参数及非空对齐内容，不只检查扩展名。与独立探针使用同一人工确认的用户语音样本。
+
+解析/校验完成后，用户明确开始才调用现有 newConversation 创建独立 capability/conversation，再签发语音 session。文件模式不调用 getUserMedia，与麦克风输入互斥；运行中不切换输入源。已静音的麦克风状态不能继承到文件模式，Mute 控件在文件模式禁用或隐藏，现有下行音量与 Stop playback 保留。
+
+输入路径为本地 WAV → AudioBufferSourceNode → 现有 AudioWorklet → 24 kHz PCM16/1920 samples/80 ms → VoiceClient 的 portal.audio.append → Gateway → VoiceChat。复用同一 WS、seq、背压、ASR/工具绑定及下行播放，不复制一套 VoiceClient。AudioBufferSourceNode 适用于有准确调度需求的内存音频源，见 [Web Audio 规范](https://www.w3.org/TR/webaudio/#AudioBufferSourceNode)。按音频时钟以正常速度输入，不整文件突发发送或用主线程计时器补发积压帧；不把原录音接到扬声器再经麦克风收录。
+
+VoiceClient.start 返回不代表 portal ready；文件在 portal.session.ready 后，用 AudioContext 时钟安排未来 80 ms 的起点，先经 Worklet 私有 file/file.ready 消息确认 epoch、绝对 startFrame 和 sourceFrames，再从第零样本启动一次。确认迟到或 generation 失效则停止，不补发追赶。Worklet 首次 process 的 currentFrame 可以非零，发送游标按该实际起点换算。录音只接 Worklet 输入，Worklet 输出继续仅播放 VoiceChat 回答，不监听外放文件。公开 WS、Gateway、数据库与独立 VoiceChat 契约不变。
+
+### 8.2 EOF、停止、错误与完整性
+
+- 文件 source.onended 只表示源耗尽，不表示 Worklet 尾部已发、WS 已送达、Triton 已处理或业务已完成。EOF 后保持 Worklet/WS 持续发送静音，自然推出重采样和不足整帧的尾部，等待业务/语音响应；仍受现有通话时限约束，用户可 End call。不得以 EOF 立即关闭会话，也不发送虚构的 input commit/finish 事件。
+- 界面区分文件输入进度、源结束、上行尾部待发送、等待回答和提前中断。只有发送游标证明最后有效文件样本已进入上行发送路径，才能标记本地 input complete；不能仅根据 onended 或经过文件时长标成功。记录实际转换后样本/发送游标和未发送区间，元数据不进入业务协议。
+- Stop playback 继续只停止客服下行播放，文件输入继续；End call、错误或已结束 generation 停止/断开文件源并清理回调/AudioBuffer/AudioContext。清理后的 onended、文件解析或 ready 回调不能恢复旧输入。后台 AudioContext 暂停期间，发送游标不会按墙钟前进；恢复或结束仍按实际处理/成功发送状态判定。
+- 文件测试遇到会话轮换/断连，首版结束该次测试；未发完时显示 incomplete，由用户显式重跑并创建新 call。不通过现有 rotate 分支切回麦克风，也不自动从头重播或续播旧录音。
+- 生产未桥接音频仍按当前 VOICE_TOOL_REQUIRED 等规则失败关闭。若只送了部分文件，记录剩余样本，不显示完整输入成功；不会为测试放宽 Gateway 授权，独立 A 组探针继续承担完整观察。
+
+实现直接解析 int16 little-endian，再用 createBuffer(1, samples, 24000) 建立音源，不调用 decodeAudioData。AudioBufferSourceNode 仍按设备 Context rate 渲染，再由 Worklet 转回 24 kHz，因此源 WAV 的 hash 不能当作实际上行 PCM 的 hash。Worklet 每个完整 1920-sample capture 带私有 fileSamples/fileComplete；游标保守扣除 FIR 尾部，只有该帧 ws.send 成功才确认本地已发送。进度分为 waiting_ready/sending/tail_pending/waiting_answer/incomplete/ended，更新至多每秒四次（阶段变化即时）。console capture summary 记录 source/context rate、文件总/已发/未发样本与 EOF/complete，不记录文件名、PCM、正文或 capability。内容对照比较实际上行 PCM 和对齐后的波形/词位置，不补词、改 ASR 或伪造工具调用。
+
+### 8.3 实施范围与验收
+
+主要影响 App.tsx 的文件入口/状态、recordedAudio.ts 的严格 WAV 解析、VoiceClient.ts 的音源分支/ready/EOF/rotation/清理和 audio-worklet.js 的私有游标；复用现有 dsp.js。App 取消启动时会关闭晚到签发的 capability/conversation，文本提交与语音启动互斥。新输入源是产品能力扩展，不将它误记成 R1/ASR 根因修复。
+
+本地验证覆盖格式/时长/大小拒绝、ready 前不消耗文件、正常速率、首尾样本、末帧与持续静音、无麦克风申请/回声、取消/错误/轮换不重播、Stop playback 不截断上行和不完整输入状态。Chromium 使用实际 AudioContext/source/Worklet，HTTP/WS 为受控夹具；24/44.1/48 kHz Worklet 与非零首个 currentFrame 均有回归。测试结果见 [验收记录](acceptance-report.md)。同一 WAV 的 ASR/tool/DOM 真实链各至少 3 次仍归 D07。
+
+操作顺序：选择 Audio file → Choose WAV → 确认格式/时长 → Start file call → 观察“Recording sent. Waiting for reply”或剩余未发时长。文件结束后继续等待，需退出时点击 End call；提前断连/轮换后显式重跑会新建独立 call。固定录音可重现说话、停顿和既定插话时序，但不能根据客服的新回答动态改变发言；它不验证麦克风权限、设备采集、AEC/NS/AGC 或真实物理声学，也不替代真人自然对话验收。

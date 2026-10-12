@@ -220,6 +220,59 @@ Runtime 对引用校验失败至多发起一次修正，复用同一次 SDK 执�
 
 `agent_citation_repair_started/finished` 标识修正尝试和结果，第三次模型调用仍由 `agent_model_call_finished` 计时。Runtime/Coordinator 的整轮超时分别记录 WARNING `agent_run_timed_out` / `agent_turn_timed_out`，含 `AGENT_TIMEOUT`、关联 ID 和预算；外层 deadline 引发的内部 canceled 不等于用户主动取消，须结合外层日志判断。`answer_delivery_finished` 包含最终 `status/reason_code`，`committed=True` 只表示结果已保存。修正可能增加一次模型往返，真实模型兼容性、成功率和延迟须现场复测。
 
+### 4.4 D23：多轮文字检索意图定位
+
+2026-10-11 现场对照：同会话先输入 `Find the product troubleshooting procedure`，答案称结果主要为品牌历史/规格，并要求提供产品型号；随后输入 `THAO MOONCAKE`，答案变为“查询该产品的 troubleshooting，但未找到相关知识”，状态为 `insufficient_evidence`。新会话直接输入 `THAO MOONCAKE`，则得到带引用的品牌/产品介绍。补充日志已确认图 1 第一轮命中 5 条、第二轮零命中；不能再将两轮都归为“模型有命中但不回答”。
+
+**当前结论：第二轮实际请求零命中已确认；原因仍优先核对历史影响下生成的 query/filter，尚未证明 CueKB 服务异常。** 第二轮裸名称既可以是用户回答上一轮的型号澄清，也可以是独立的新主题；截图没有明确换题标记。新会话缺少这段历史，所以两次模型输入并不相同。不能以此直接认定前端故障，也不能认定用户必须重开会话才能查询知识。
+
+图 1 的补充日志来自同一 `conversation_id=8ca75e3c-2395-4f2f-9da9-6ef470b6e523`，两轮均只有所示一次知识调用、两次已完成模型调用，答案均 `committed=True`：
+
+| 轮次与时间 | CueKB 返回 | 工具执行与最终答案 | 已确定的定位层次 |
+| --- | --- | --- | --- |
+| 第一轮 `54031f6e-986b-431b-830f-05e9077a8472`，14:59:17–21 | `trace_id=30d3f836-2908-444f-ada2-eacaf3e9a846`；`retrieval_status=ok/hit_count=5`；往返 110 ms | 工具 `ok`；答案 `insufficient_evidence/CUEKB_NO_EVIDENCE` | 原始检索有结果，但最终未形成有依据的回答；需区分内容不支持所问流程、预算裁剪和模型未声明引用 |
+| 第二轮 `76697f25-b7b5-4231-b219-d3b7975843d4`，14:59:37–40 | `trace_id=718f385f-8ded-4998-9afa-695cdfe1a9f6`；`retrieval_status=not_found/hit_count=0`；往返 50 ms | 工具 `ok`；答案 `insufficient_evidence/reason_code=none` | 本轮实际检索零命中；须取得 query/filter 才能区分意图续接、过滤过窄或其他检索原因 |
+
+所给片段没有超时、工具失败或引用修正记录。`tool_run_finished status=ok` 表示调用、输出契约验证及权限复查完成，成功返回零命中也属于 `ok`；`committed=True` 表示答案已保存，不证明其意图判断正确。
+
+当前源码链路与边界：
+
+- `apps/web/src/App.tsx` 的 `send` 只提交 `draft.trim()` 的 `{text}`；API 将 `body.text` 传入 Coordinator，Store 原样保存 `user_text`。文字气泡直接显示本轮 `answer.display_text`，final 以 turn/epoch/revision 绑定。未发现门户把前一问拼入新问题的代码。
+- `sessions/coordinator.py` 每轮创建新的 `RunContext`。Store 对 `answered`、`needs_clarification`、`insufficient_evidence` 均保存最近 24 条已提交历史；Coordinator 鉴权后只投影 `role/content`，Runtime 以 `history + 当前 user request` 送入模型。因此前轮“Please specify the product model”会进入第二轮模型输入，但没有独立的待澄清意图/状态元数据。
+- `agent_runtime/runtime.py` 强制本轮调用 `search_knowledge`，并将模型生成的 JSON 参数送到 Registry。CueKB adapter 将 `query`、`product_model`、`software_version` 映射到 `/v1/search`；没有强制 query 等于用户原文。`config/agent-prompt.txt` 允许会话确认的型号过滤，但没有定义裸品牌词的“补充/换题”歧义处理。
+- evidence/retrievals/invoked/tool_errors 均为每轮独立容器。CueKB adapter 不写入持久知识型号 slots；本期只有 `search_knowledge`。当前未发现前轮缺证据结果或知识型号槽直接泄漏到新轮的路径。模型仍可能从历史推断 query 或错误地把品牌作为 `product_model`；需实际参数证据确认。
+- Runtime 通常保留模型返回的 `insufficient_evidence`。即使本轮检索命中品牌资料，资料不足以回答 troubleshooting 也可以形成该状态。图 2 的 `Search scope was limited` 来自 degraded/scope_limited/application_limited 的提示，不能据此判断具体限制原因。
+
+**reason_code 的现有语义与诊断缺口：** compatible 路径的 `BusinessRuntime.validate` 不从原始命中数量统一推导 `reason_code`。模型返回 `failed` 且未声明引用/cards 时，后端规范化为 `insufficient_evidence/CUEKB_NO_EVIDENCE`，同时记录 `agent_status_normalized`；模型返回 `answered` 但未声明引用/cards 时也会降级为同一码，并替换为固定的缺证据正文。这两处均不能由该码推出 `ctx.evidence` 为空或 CueKB 零命中。模型原始状态已是 `insufficient_evidence` 时，默认 `reason_code=None` 可直接保留，因此第二轮的 `none` 不表示没有原因。
+
+第一轮截图保留了自定义的型号澄清文字，但所给日志片段没有 `agent_status_normalized`。若完整日志、截图轮次和当前源码版本一致，固定降级正文与规范化日志尚未对齐；需要确认部署版本、日志是否完整，以及该轮原始模型状态/声明引用数量，不能仅凭 `CUEKB_NO_EVIDENCE` 指定它走了哪一分支。第一轮最终缺证据可以是合理拒答；它是否丢失了可用证据仍未证明。
+
+现场闭环按同一 `conversation_id/turn_id` 对齐所有工具调用及 `trace_id`，不要将两组请求或不同轮次混在一起：
+
+| 证据组合 | 能确认的阶段 | 仍需确认 |
+| --- | --- | --- |
+| CueKB `not_found/hit_count=0` | 本次实际检索未命中 | query 是否承接 troubleshooting、是否有不合适的型号/版本 filter；不能推导知识库没有该品牌 |
+| CueKB `ok/degraded` 且 `hit_count>0`，最终 `insufficient_evidence` | 检索命中与业务答案状态不同 | 可用证据是否被裁剪、是否只支持品牌介绍、模型是否误判意图；原始 hits 不等于全部送入模型 |
+| `agent_citation_repair_started/finished` 后变为 `insufficient_evidence` | 本轮还执行了无工具引用修正 | 原始/修正输出与既有证据的支持关系；修正没有重新检索 |
+| 工具或授权错误、最终 `failed` | 执行/访问失败 | 以真实 reason_code 定位，不描述为“查无资料” |
+
+图 1 的 `cuekb_response_validated`、`tool_run_finished`、`agent_run_finished` 已取得，接下来需要第二轮实际 query/filter，并与图 2 新会话请求对照。2026-10-12 已补有界内部诊断：agent_run_started 的 request_chars/history_items；agent_retrieval_plan 的 tool_call_index、query_chars/query_matches_request、product_filter_present/version_filter_present 和 history_items。filter_present 只表示非 null，不表示参数合法；真正参数校验仍在 Registry。普通日志不包含 query/filter 原文，不能还原具体改写；可按 trace 在受控现场核对请求参数，不输出问题正文、历史、工具参数或证据到正常日志。
+
+cuekb_evidence_projected 已记录 trace_id、原始 hit_count、retained_hit_count、hits_omitted、context_omitted 与本轮 evidence_count；这些计数同时保留在内部 RunContext.retrievals，公开工具输出不变。该日志在 Registry 输出/权限复查前产生，不能单独表示执行成功或提交。agent_answer_validated 已记录 model_status、status、reason_code、branch、证据/声明引用/cards/检索数量和最多 8 个 trace（各最多 128 字符）；分支区分 required_tool_missing/tool_error/tool_authorization_changed/invalid_citation/unsafe_retrieval_evidence/answered_without_evidence/citations_without_tool/model_*。公开业务 status/reason_code 和既有验证条件保持不变；故此不能仍单凭 CUEKB_NO_EVIDENCE 或 none 推断原始命中数。
+
+最小现场对照应保持同一部署、模型和 KB 范围，等待每轮最终答案后再提交下一轮：
+
+| 场景 | 输入 | 检查目标 |
+| --- | --- | --- |
+| 基线 | 新会话直接 `THAO MOONCAKE` | 保留用户已经成功的对照与本轮检索记录 |
+| 原场景 | 首轮 troubleshooting，第二轮裸 `THAO MOONCAKE` | 收集实际 query/filter 与检索状态，确认是否被解释成型号补充 |
+| 明确新主题 | 同样首轮后输入 `New question: Tell me about THAO MOONCAKE. Do not continue the troubleshooting request.` | 不继承 troubleshooting；没有确认型号时不加型号过滤；答案只使用本轮证据 |
+| 明确继续 | 同样首轮后输入 `Continue the previous question: find troubleshooting procedures for THAO MOONCAKE.` | 允许续接；只有品牌资料时不得编造故障排查流程，也不得声称品牌资料不存在 |
+
+待确认后的修正方向：保留模型规划 → ToolRegistry → CueKB，不清空全部历史、不硬编码品牌、不把每个短输入都强制当新问题。完整新问题以当前意图为准；明确补充条件可以承接前轮；裸名称具有两种合理解释时询问用户要品牌介绍还是继续故障排查。品牌/主题词不能自动当成具体型号元数据，未确认 filter 保持空。回答区分“找到品牌资料，但缺少当前所问流程”和真正零命中。以上为条件修正建议，尚未修改 prompt、意图/filter 行为、协议或数据库；本轮只增加上述内部诊断。
+
+本地证据：隔离 HTTP/Coordinator 回放验证第二轮原文为 `THAO MOONCAKE`、历史含前轮 user/assistant 两条、新会话历史为空、每轮上下文/证据容器独立、持久 user_text 原文一致。该回放显式替换 Runtime，不调用文本模型或 CueKB，不能证明真实模型采用了哪一种 query。相关既有回归 **11 passed**；详细范围见验收 D23。补充现场日志确认了第一轮 5 条原始命中、第二轮 0 条；真实参数、图 2 基线及明确换题/继续的对照仍待现场证据。补充日志后的分析阶段仅更新文档；2026-10-12 已实现上述内部诊断并增加受控测试，详细结果见验收记录。
+
 ## 5. 第三方扩展（D06）
 
 沿用 ToolSpec + trusted adapter + ToolRegistry：受信任代码定义参数/返回类型、调用实现、固定 endpoint/凭据引用、权限、预算、版本及错误映射。工具启停/修订后旧 run 不得继续使用失效工具。

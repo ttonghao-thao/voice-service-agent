@@ -66,11 +66,13 @@ class BusinessRuntime:
             name: await self.registry.store.tool_revision(name) for name in ctx.allowed_tools
         }
         logger.info(
-            "agent_run_started conversation_id=%s turn_id=%s provider=%s allowed_tools=%s",
+            "agent_run_started conversation_id=%s turn_id=%s provider=%s allowed_tools=%s "
+            "request_chars=%s history_items=%s",
             ctx.conversation_id,
             ctx.turn_id,
             self.settings.agent_provider,
             ",".join(sorted(ctx.allowed_tools)),
+            len(request), len(history),
         )
         if "search_knowledge" not in ctx.allowed_tools:
             return self.failure(
@@ -100,11 +102,14 @@ class BusinessRuntime:
                 "AGENT_NOT_CONFIGURED", "The text model is not configured for business answers."
             )
         tools = []
+        tool_call_index = 0
         for name in sorted(ctx.allowed_tools):
             spec = self.registry.specs[name]
             adapter = self.registry.adapters[spec.adapter_id]
 
             async def invoke(wrapper, args, tool_name=name):
+                nonlocal tool_call_index
+                tool_call_index += 1
                 logger.info(
                     "agent_tool_call_received conversation_id=%s turn_id=%s tool=%s",
                     ctx.conversation_id,
@@ -113,8 +118,22 @@ class BusinessRuntime:
                 )
                 if progress:
                     await progress("Searching " + self.registry.specs[tool_name].display_name)
+                arguments = json.loads(args)
+                if tool_name == "search_knowledge" and isinstance(arguments, dict):
+                    query = arguments.get("query")
+                    logger.info(
+                        "agent_retrieval_plan conversation_id=%s turn_id=%s tool_call_index=%s "
+                        "query_chars=%s query_matches_request=%s product_filter_present=%s "
+                        "version_filter_present=%s history_items=%s",
+                        ctx.conversation_id, ctx.turn_id, tool_call_index,
+                        len(query) if isinstance(query, str) else "unknown",
+                        query == request if isinstance(query, str) else "unknown",
+                        arguments.get("product_model") is not None,
+                        arguments.get("software_version") is not None,
+                        len(history),
+                    )
                 return json.dumps(
-                    await self.registry.invoke(tool_name, json.loads(args), wrapper.context),
+                    await self.registry.invoke(tool_name, arguments, wrapper.context),
                     ensure_ascii=False,
                 )
 
@@ -276,11 +295,23 @@ class BusinessRuntime:
         }, separators=(",", ":"))
 
     async def validate(self, answer, ctx):
+        def finish(bundle, branch):
+            logger.info(
+                "agent_answer_validated conversation_id=%s turn_id=%s model_status=%s "
+                "status=%s reason_code=%s branch=%s evidence_count=%s declared_citation_count=%s "
+                "card_count=%s retrieval_count=%s retrieval_trace_ids=%s",
+                ctx.conversation_id, ctx.turn_id, answer.status, bundle.status,
+                bundle.reason_code or "none", branch, len(ctx.evidence), len(answer.citation_ids),
+                len(ctx.cards), len(ctx.retrievals),
+                json.dumps([str(item.get("trace_id", "unknown"))[:128] for item in ctx.retrievals[:8]]),
+            )
+            return bundle
+
         if "search_knowledge" in ctx.allowed_tools and "search_knowledge" not in ctx.invoked:
-            return self.failure(
+            return finish(self.failure(
                 "AGENT_REQUIRED_TOOL_NOT_CALLED",
                 "Knowledge search was not executed, so I cannot provide a reliable answer right now.",
-            )
+            ), "required_tool_missing")
         if ctx.tool_errors:
             code = ctx.tool_errors[-1]
             configuration_errors = {
@@ -294,7 +325,7 @@ class BusinessRuntime:
                 if code in configuration_errors
                 else "The knowledge search failed temporarily. Please try again later."
             )
-            return self.failure(code, message)
+            return finish(self.failure(code, message), "tool_error")
         if not all(
             [
                 await self.registry.store.enabled(name)
@@ -303,7 +334,8 @@ class BusinessRuntime:
                 for name in ctx.invoked
             ]
         ):
-            return self.failure("FORBIDDEN", "Knowledge access changed. Please ask again.")
+            return finish(self.failure("FORBIDDEN", "Knowledge access changed. Please ask again."),
+                          "tool_authorization_changed")
         issues = self.citation_issues(answer, ctx)
         if issues:
             logger.warning(
@@ -314,10 +346,10 @@ class BusinessRuntime:
                 self.citation_log_ids(re.findall(r"\[(C\d+)\]", answer.display_text)),
                 self.citation_log_ids(answer.citation_ids),
             )
-            return self.failure(
+            return finish(self.failure(
                 "RAG_INVALID_CITATION",
                 "Source validation failed, so I cannot provide a reliable answer right now.",
-            )
+            ), "invalid_citation")
         # `failed` is a service-owned execution state. Some compatible models
         # still emit it despite a successful tool call, which previously left a
         # cited answer carrying a contradictory Search failed status. Accept the
@@ -325,7 +357,9 @@ class BusinessRuntime:
         # the validated evidence. Actual runtime/tool failures returned above.
         status = answer.status
         reason_code = None
+        branch = "model_" + status
         if status == "failed":
+            branch = "model_failed_normalized"
             status = "answered" if answer.citation_ids or ctx.cards else "insufficient_evidence"
             reason_code = None if status == "answered" else "CUEKB_NO_EVIDENCE"
             logger.info(
@@ -341,25 +375,25 @@ class BusinessRuntime:
                 for item in ctx.retrievals
             )
             if conflicting:
-                return AnswerBundle(
+                return finish(AnswerBundle(
                     status="insufficient_evidence",
                     display_text="The available knowledge is insufficient or conflicting. Please clarify or contact a representative.",
                     speech_text="The available knowledge is insufficient or conflicting. Please clarify.",
                     citations=[ctx.evidence[c] for c in dict.fromkeys(answer.citation_ids)],
                     reason_code="CUEKB_EVIDENCE_UNSAFE",
-                )
+                ), "unsafe_retrieval_evidence")
             # Conservative policy: affirmative business answers need current evidence.
             if not answer.citation_ids and not ctx.cards:
-                return AnswerBundle(
+                return finish(AnswerBundle(
                     status="insufficient_evidence",
                     display_text="I could not find enough evidence. Please clarify or contact a representative.",
                     speech_text="I could not find enough evidence. Please clarify.",
                     reason_code="CUEKB_NO_EVIDENCE",
-                )
+                ), "answered_without_evidence")
             if answer.citation_ids and "search_knowledge" not in ctx.invoked:
-                return self.failure(
+                return finish(self.failure(
                     "RAG_INVALID_CITATION", "No knowledge search was recorded for this request."
-                )
+                ), "citations_without_tool")
         degraded = any(
             item.get("retrieval_status") == "degraded"
             or item.get("scope_limited")
@@ -378,7 +412,7 @@ class BusinessRuntime:
         if not printable_ascii(speech_text):
             speech_text = "Please read the written response in the portal."
             reason_code = "VOICE_NON_ASCII_SPEECH"
-        return AnswerBundle(
+        return finish(AnswerBundle(
             status=status,
             display_text=display_text,
             speech_text=speech_text,
@@ -386,7 +420,7 @@ class BusinessRuntime:
             cards=ctx.cards,
             is_mock=any(c.is_mock for c in ctx.evidence.values()),
             reason_code=reason_code,
-        )
+        ), branch)
 
     @staticmethod
     def failure(code, message):

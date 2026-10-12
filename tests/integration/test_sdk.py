@@ -144,7 +144,8 @@ async def test_actual_sdk_runner_executes_registered_tool_and_validates_output(a
     assert all("integration sample" not in line for line in timings)
 
 
-async def test_knowledge_answer_fails_when_required_tool_was_not_called(app, conversation):
+async def test_knowledge_answer_fails_when_required_tool_was_not_called(app, conversation, caplog):
+    caplog.set_level("INFO", logger="app.agent_runtime.runtime")
     principal = Principal(
         user_id="dev-operator",
         scopes=frozenset({"knowledge:read"}),
@@ -164,9 +165,15 @@ async def test_knowledge_answer_fails_when_required_tool_was_not_called(app, con
     assert result.status == "failed"
     assert result.reason_code == "AGENT_REQUIRED_TOOL_NOT_CALLED"
     assert "not executed" in result.display_text
+    validated = next(record.getMessage() for record in caplog.records
+                     if record.getMessage().startswith("agent_answer_validated "))
+    assert "branch=required_tool_missing" in validated
+    assert "model_status=insufficient_evidence status=failed" in validated
+    assert "evidence_count=0 declared_citation_count=0 card_count=0 retrieval_count=0" in validated
 
 
-async def test_tool_failure_cannot_be_rewritten_as_insufficient_evidence(app, conversation):
+async def test_tool_failure_cannot_be_rewritten_as_insufficient_evidence(app, conversation, caplog):
+    caplog.set_level("INFO", logger="app.agent_runtime.runtime")
     principal = Principal(
         user_id="dev-operator",
         scopes=frozenset({"knowledge:read"}),
@@ -188,6 +195,10 @@ async def test_tool_failure_cannot_be_rewritten_as_insufficient_evidence(app, co
     assert result.status == "failed"
     assert result.reason_code == "CUEKB_AUTH_FAILED"
     assert "not configured correctly" in result.display_text
+    validated = next(record.getMessage() for record in caplog.records
+                     if record.getMessage().startswith("agent_answer_validated "))
+    assert "branch=tool_error" in validated and "reason_code=CUEKB_AUTH_FAILED" in validated
+    assert "model_status=insufficient_evidence status=failed" in validated
 
 
 @pytest.mark.parametrize("citation_case", [None, "undeclared", "unknown", "uuid", "history", "repeat", "unsupported"])
@@ -369,6 +380,15 @@ def assert_citation_result(result, requests, case, caplog):
         assert "sha256:" in failures[0]
     assert "api-key-do-not-log" not in "\n".join(messages)
     assert "document-secret-uuid" not in "\n".join(messages)
+    validated = [line for line in messages if line.startswith("agent_answer_validated ")]
+    assert len(validated) == (2 if case else 1)
+    assert "evidence_count=1" in validated[-1] and "retrieval_count=1" in validated[-1]
+    assert f" status={result.status} " in validated[-1]
+    if case:
+        assert "branch=invalid_citation" in validated[0] and "status=failed" in validated[0]
+        assert "reason_code=RAG_INVALID_CITATION" in validated[0]
+    trace_ids = json.loads(validated[-1].split("retrieval_trace_ids=", 1)[1])
+    assert len(trace_ids) == 1 and len(trace_ids[0]) == 36
 
 
 @pytest.mark.parametrize("boundary", ["runtime_timeout", "coordinator_timeout", "cancel", "stale", "revoked"])
@@ -459,3 +479,107 @@ def test_citation_diagnostics_are_bounded_and_do_not_log_provider_text():
     result = BusinessRuntime.citation_log_ids([PRIVATE_CITATION, "x" * 10000])
     assert PRIVATE_CITATION not in result and "x" * 100 not in result
     assert "sha256:" in result and "\n" not in result
+
+
+@pytest.mark.parametrize("rewrite_and_filter", [False, True])
+async def test_sdk_retrieval_observation_reports_plan_without_private_inputs(
+    app, conversation, caplog, rewrite_and_filter
+):
+    from pydantic import SecretStr
+
+    private_request = "PRIVATE_customer_request_773"
+    query = "PRIVATE_rewritten_query_774" if rewrite_and_filter else private_request
+    product = "PRIVATE_product_filter_775" if rewrite_and_filter else None
+    version = "PRIVATE_version_filter_776" if rewrite_and_filter else None
+    history = [{"role": "user", "content": "PRIVATE_history_question_777"},
+               {"role": "assistant", "content": "PRIVATE_history_answer_778"}]
+    principal = Principal(user_id="dev-operator", scopes=frozenset({"knowledge:read"}),
+                          knowledge_base_ids=(KB_SUPPORT,))
+    turn, _, _ = await app.state.store.begin_turn(principal, conversation, "private-plan", private_request, "text")
+    ctx = RunContext(principal, conversation, turn.id, turn.epoch, request_revision=turn.request_revision)
+    settings = app.state.settings
+    settings.agent_provider, settings.agent_model = "openai", "contract-fixture"
+    settings.cuekb_mode, settings.cuekb_base_url = "real", "https://cuekb-fixture.invalid"
+    settings.cuekb_api_key = SecretStr("PRIVATE_cuekb_key_779")
+    caplog.set_level("INFO", logger="app.agent_runtime.runtime")
+    caplog.set_level("INFO", logger="app.tools.adapters")
+    model_calls, searches = [], []
+    trace_id = "00000000-0000-4000-8000-000000000201"
+
+    def handler(request):
+        body = json.loads(request.content)
+        if request.url.path == "/v1/search":
+            searches.append(body)
+            assert body["query"] == query
+            assert body["filters"] == {"product_model": product, "software_version": version, "document_ids": []}
+            return httpx.Response(200, json={
+                "trace_id": trace_id, "retrieval_status": "ok", "content_revisions": {KB_SUPPORT: 7},
+                "timings_ms": {"total": 1}, "hits": [{
+                    "document_id": "00000000-0000-4000-8000-000000000202",
+                    "chunk_id": "00000000-0000-4000-8000-000000000203",
+                    "version_id": "00000000-0000-4000-8000-000000000204",
+                    "rank": 1, "source_text": "PRIVATE_source_evidence_780", "context": None,
+                    "title_path": [], "anchor": {}, "metadata": {}, "retrieval_sources": ["keyword"],
+                }],
+            })
+        assert request.url.path == "/v1/responses"
+        model_calls.append(body)
+        if len(model_calls) == 1:
+            assert body["tool_choice"] == "required"
+            assert history[0] in body["input"] and history[1] in body["input"]
+            output = [{"type": "function_call", "id": "fc_1", "call_id": "call_1",
+                       "name": "search_knowledge", "status": "completed",
+                       "arguments": json.dumps({"query": query, "product_model": product,
+                                                "software_version": version})}]
+        else:
+            output = [{"type": "message", "id": "msg_1", "role": "assistant", "status": "completed",
+                       "content": [{"type": "output_text", "annotations": [], "text": json.dumps({
+                           "status": "answered", "display_text": "Supported fixture [C1]",
+                           "speech_text": "Supported fixture.", "citation_ids": ["C1"],
+                       })}]}]
+        return httpx.Response(200, json={
+            "id": f"resp_{len(model_calls)}", "object": "response", "created_at": 1788600000,
+            "model": "contract-fixture", "status": "completed", "output": output,
+            "usage": {"input_tokens": 10, "output_tokens": 10, "total_tokens": 20},
+        })
+
+    runtime = app.state.coordinator.runtime
+    async with httpx.AsyncClient(transport=httpx.MockTransport(handler)) as http:
+        app.state.registry.adapters["cuekb_http"].client = http
+        runtime.client = AsyncOpenAI(api_key="fixture", base_url="https://llm-fixture.invalid/v1",
+                                     http_client=http, max_retries=0)
+        result = await runtime.run(private_request, ctx, history)
+    assert result.status == "answered" and result.reason_code is None
+    assert result.citations[0].content == "PRIVATE_source_evidence_780"
+    assert len(model_calls) == 2 and len(searches) == 1
+    messages = [record.getMessage() for record in caplog.records]
+    started = next(line for line in messages if line.startswith("agent_run_started "))
+    plan = next(line for line in messages if line.startswith("agent_retrieval_plan "))
+    validated = next(line for line in messages if line.startswith("agent_answer_validated "))
+    assert f"request_chars={len(private_request)} history_items=2" in started
+    assert "tool_call_index=1" in plan and f"query_chars={len(query)}" in plan
+    assert f"query_matches_request={not rewrite_and_filter}" in plan
+    assert f"product_filter_present={rewrite_and_filter} version_filter_present={rewrite_and_filter}" in plan
+    assert "history_items=2" in plan
+    assert "branch=model_answered" in validated and "model_status=answered status=answered reason_code=none" in validated
+    assert "evidence_count=1 declared_citation_count=1 card_count=0 retrieval_count=1" in validated
+    assert json.loads(validated.split("retrieval_trace_ids=", 1)[1]) == [trace_id]
+    assert "PRIVATE_" not in "\n".join(messages)
+
+
+async def test_answer_validation_trace_observation_is_bounded_and_preserves_business_result(app, caplog):
+    caplog.set_level("INFO", logger="app.agent_runtime.runtime")
+    principal = Principal(user_id="dev-operator", scopes=frozenset({"knowledge:read"}),
+                          knowledge_base_ids=(KB_SUPPORT,))
+    ctx = RunContext(principal, "conversation", "turn", 0)
+    ctx.retrievals = [{"trace_id": f"trace-{index}-" + "x" * 1000} for index in range(20)]
+    answer = AgentAnswer(status="needs_clarification", display_text="Confirm product.",
+                         speech_text="Confirm product.", citation_ids=[])
+    result = await app.state.coordinator.runtime.validate(answer, ctx)
+    assert result.status == "needs_clarification" and result.display_text == answer.display_text
+    line = next(record.getMessage() for record in caplog.records
+                if record.getMessage().startswith("agent_answer_validated "))
+    ids = json.loads(line.split("retrieval_trace_ids=", 1)[1])
+    assert "retrieval_count=20" in line and "branch=model_needs_clarification" in line
+    assert len(ids) == 8 and all(len(value) == 128 for value in ids)
+    assert "trace-8-" not in line and "x" * 129 not in line

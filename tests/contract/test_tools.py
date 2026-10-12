@@ -1,5 +1,6 @@
 import asyncio
 import json
+import logging
 from datetime import datetime
 
 import httpx
@@ -344,6 +345,68 @@ async def test_model_failed_status_cannot_override_successful_retrieval(app, con
     assert normalized.status == "answered"
     assert normalized.reason_code is None
     assert normalized.citations[0].citation_id == "C1"
+
+
+@pytest.mark.parametrize("case", ["success", "no_hits", "budget"])
+async def test_cuekb_projection_observation_matches_retained_evidence_without_private_values(app, caplog, case):
+    settings = app.state.settings
+    settings.cuekb_mode, settings.cuekb_base_url = "real", "https://cuekb-fixture.invalid"
+    settings.cuekb_api_key = SecretStr("PRIVATE_cuekb_credential")
+    logger = logging.getLogger("app.tools.adapters")
+    logger.addHandler(caplog.handler)
+    caplog.set_level("INFO", logger="app.tools.adapters")
+    trace_id = "00000000-0000-4000-8000-000000000201"
+    source = "PRIVATE_source_excerpt"
+    context = "PRIVATE_context_excerpt"
+    hits = []
+    for index in range(0 if case == "no_hits" else 2 if case == "budget" else 1):
+        chunk = f"00000000-0000-4000-8000-{index + 203:012d}"
+        hit_source = source + "A" * 7000 if case == "budget" and index == 0 else source
+        hit_context = hit_source + context + "B" * 6000 if case == "budget" else context
+        hits.append({
+            "document_id": "00000000-0000-4000-8000-000000000202", "chunk_id": chunk,
+            "version_id": "00000000-0000-4000-8000-000000000204", "rank": index + 1,
+            "source_text": hit_source, "context": hit_context,
+            "context_parts": [{"chunk_id": chunk, "source_text": hit_source, "anchor": {}, "title_path": []}],
+            "relations": [], "title_path": [], "anchor": {}, "metadata": {}, "retrieval_sources": ["keyword"],
+        })
+
+    def handler(request):
+        body = json.loads(request.content)
+        assert body["query"] == "PRIVATE_query"
+        assert body["filters"] == {"product_model": "PRIVATE_product", "software_version": "PRIVATE_version",
+                                   "document_ids": []}
+        return httpx.Response(200, json={
+            "trace_id": trace_id, "retrieval_status": "not_found" if case == "no_hits" else "ok",
+            "content_revisions": {KB_SUPPORT: 7}, "timings_ms": {"total": 1}, "hits": hits,
+        })
+
+    ctx = RunContext(dev_user(), "conversation", "turn", 0)
+    try:
+        async with httpx.AsyncClient(transport=httpx.MockTransport(handler)) as client:
+            result = await CueKBAdapter(settings, client).invoke(CueKBSearchInput(
+                query="PRIVATE_query", product_model="PRIVATE_product", software_version="PRIVATE_version"), ctx)
+        retained = 0 if case == "no_hits" else 1
+        omitted = 1 if case == "budget" else 0
+        projection = ctx.retrievals[0]
+        assert projection["trace_id"] == trace_id
+        assert projection["hit_count"] == len(hits) and projection["retained_hit_count"] == retained
+        assert projection["hits_omitted"] == omitted and projection["context_omitted"] == (case == "budget")
+        assert projection["application_limited"] == (case == "budget")
+        assert len(result["hits"]) == len(ctx.evidence) == retained
+        assert result["hits_omitted"] == omitted
+        assert "retained_hit_count" not in result and "hit_count" not in result  # Internal observation only.
+        if retained:
+            assert result["hits"][0]["content"] == source
+            assert result["hits"][0]["context"] == (None if case == "budget" else context)
+        messages = [record.getMessage() for record in caplog.records]
+        lines = [line for line in messages if line.startswith("cuekb_evidence_projected ")]
+        assert len(lines) == 1
+        assert f"trace_id={trace_id} hit_count={len(hits)} retained_hit_count={retained}" in lines[0]
+        assert f"hits_omitted={omitted} context_omitted={case == 'budget'} evidence_count={retained}" in lines[0]
+        assert "PRIVATE_" not in "\n".join(messages)
+    finally:
+        logger.removeHandler(caplog.handler)
 
 
 async def test_new_registered_tool_needs_no_chat_or_voice_changes(app, conversation):

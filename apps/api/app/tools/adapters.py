@@ -260,7 +260,17 @@ class CueKBAdapter:
                 "degraded_reasons": result.degraded_reasons,
                 "scope_limited": result.scope_limited,
                 "application_limited": bool(omitted or context_omitted_any),
+                "hit_count": len(result.hits),
+                "retained_hit_count": len(hits),
+                "hits_omitted": omitted,
+                "context_omitted": context_omitted_any,
             }
+        )
+        logger.info(
+            "cuekb_evidence_projected conversation_id=%s turn_id=%s trace_id=%s "
+            "hit_count=%s retained_hit_count=%s hits_omitted=%s context_omitted=%s evidence_count=%s",
+            ctx.conversation_id, ctx.turn_id, trace_id, len(result.hits), len(hits),
+            omitted, context_omitted_any, len(ctx.evidence),
         )
         return {**base, "hits": hits, "hits_omitted": omitted}
 

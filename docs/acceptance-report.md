@@ -1,6 +1,6 @@
 # 验收状态与真实服务门槛
 
-更新：2026-09-28。**D01–D06、D08–D10、D13–D20、E01–E03 已完成编码和本地自动化验证；D07 的真实服务端到端验收仍未完成**。当前交付包含 API 工具/口述授权、Web 播放状态修复，以及独立 speech/VoiceChat 的逐轮 response 修复补丁；当前确认的 speech 基线同步更新 WebSocket 文件并启用已有 Jinja 模板，推理/自然打断与离线模型转换不变；不是所有 VoiceChat 客户端都需要这份补丁。D20 另优化 SSE/答案渲染并增加阶段计时。设计已按当前职责、音频/事件流、生命周期、异常边界和发布流程整体重写，详细见 [架构](architecture.md)、[接入](integration.md)、[门户协议](portal-protocol.md) 和 [部署](deployment.md)。本期仅验收英文知识库客服；真实验证在云端 Docker 环境执行。缺口和实施顺序见 [任务板](TASK_BOARD.md)。
+更新：2026-10-12。**D01–D06、D08–D10、D13–D20、E01–E03 已完成编码和本地自动化验证；D07 的真实服务端到端验收仍未完成**。当前交付包含 API 工具/口述授权、Web 播放状态修复，以及独立 speech/VoiceChat 的逐轮 response 修复补丁；当前确认的 speech 基线同步更新 WebSocket 文件并启用已有 Jinja 模板，推理/自然打断与离线模型转换不变；不是所有 VoiceChat 客户端都需要这份补丁。D20 另优化 SSE/答案渲染并增加阶段计时。设计已按当前职责、音频/事件流、生命周期、异常边界和发布流程整体重写，详细见 [架构](architecture.md)、[接入](integration.md)、[门户协议](portal-protocol.md) 和 [部署](deployment.md)。本期仅验收英文知识库客服；真实验证在云端 Docker 环境执行。缺口和实施顺序见 [任务板](TASK_BOARD.md)。
 
 编码阶段约束（2026-09-16 确认）：CueKB/VoiceChat 无真实接口可调用，满足已确认接口规范和处理逻辑并通过相应契约/本地测试，即满足该阶段验收要求。Docker 环境不提供，仅在必要时静态检查镜像制作和启动代码，不搭建环境或执行镜像构建。以下真实服务与容器验收项留待后续部署阶段，不作为编码完成的阻塞项。
 
@@ -10,7 +10,7 @@
 
 | 要回答的问题 | 证据位置与边界 |
 | --- | --- |
-| 最近应用验证 | §1 的 2026-10-11 D21 必要诊断：157 项 pytest、Ruff、14 项 Web、构建、9 项 Chromium 受控回归通过；真实模型/CueKB/VoiceChat 与 Docker 验收仍待 D07 |
+| 最近应用验证 | §1 的 2026-10-12 D21/D23：194 项 pytest、Ruff、38 项 Web、类型/构建、14 项 Chromium 受控回归通过；真实模型/CueKB/VoiceChat 与 Docker 验收仍待 D07 |
 | 现场部分转写与断连 | §1 的 D21 定位设计：用户确认原句，ASR 仅 7 字符，非空音频被拒；源码审查支持进一步定位，未证明真实根因或修复通过 |
 | 独立 VoiceChat 交付 | D21 在 D19 基线上增加 WS/backend 诊断，22 项 CPU 协议/状态测试及增量补丁应用后复跑通过，6 文件 SHA-256 一致；见 [补丁说明](../deploy/voicechat/README.md)，云端镜像及 GPU 输出未验证 |
 | M3、D08、D01–D06 何时验证 | §1 对应日期；不累加各次测试数作为当前总数 |
@@ -21,6 +21,33 @@
 历史文档审计（2026-09-22）：9 份活动 Markdown 的 63 处本地链接及章节锚点、代码块闭合、`git diff --check` 与当时的仅文档修改检查通过。AGENTS 从 3688 减为 2912 UTF-8 字节（约 21%），这是当时入口大小变化，不是实际 token 节省测量。历史快照未修改；当前 D11 的验证另记于 §1。
 
 ## 1. 按日期记录的编码与部署前验证
+
+### 2026-10-12 D21/D23 定位工具、文件实时输入与诊断实施
+
+- 用户授权归并当前方案、开始编码并发布 main。统一清单见 [D21 设计 §4.0](voicechat-fault-recovery-design.md#40-先核对工具能力与完整输入再判断模型行为)，明确已实施的 D20/D21/D22、本轮核对/文件/日志，以及证据命中后才实施的 R1–R5、模板和 D23 意图行为调整；未放宽生产未桥接输出拒绝。
+- 新增 audit_voicechat_artifacts.py：只读有界 config/AST/index/safetensors header 与可选 offline tokenizer；验证 paths/index/header/layout/token mapping，分项 verified/unknown/failed。31 项 metadata-only 测试通过；runtime_class/head_loaded/tool_execution/capability 始终 unknown，未加载真实模型/权重 payload、启动 engine 或安装依赖。
+- 门户实现 Audio file / Choose WAV / Start file call。只接受 24 kHz mono PCM16 WAV（30 秒/2 MiB）；AudioBufferSource → 现有 Worklet/WS，ready 与未来起点握手后按音频时钟发送。24/44.1/48 kHz、非零首个 currentFrame、首尾样本、FIR/末帧尾部有受控回归；只有成功 ws.send 的有效文件游标才标记本地 complete。EOF 后持续静音，Stop playback 不截断上行，错误/轮换/End 不重播。取消 pending capability 与文本/语音启动互斥已覆盖。
+- D23 增加 request/history 与 query/filter 形状、原始/保留 hits 及省略计数、最终 model/status/reason/branch/证据引用计数和有界 trace。6 项新增受控测试及现有引用/工具错误断言验证元数据准确、隐私和公开结果不变；没有调整 query、prompt、filter、检索策略或答案语义。计数/布尔值不能还原真实查询，投影日志也不代表 Registry 完成或 commit。
+- 统一验证：pytest **194 passed**（一条 Starlette/AnyIO 上游弃用警告）；Ruff；Web **38 passed**（新增 24）；TypeScript/生产构建；Chromium **14 passed**（新增文件输入 5）；diff 和文档链接检查通过。CLI 定向 31、SDK/工具/CLI 定向 90 均属于上述全量，不累加为总数。
+- 浏览器使用实际 AudioContext/AudioBufferSource/AudioWorklet；HTTP/WS 或 ASGI/SQLite/mock 为显式受控夹具。首轮全浏览器回归因任务中断使本地夹具 API 退出，依赖后端的 5 项失败；恢复该夹具并稳定运行后全套通过。文件定向首次也遇到开发 HMR 清理，运行文件稳定后 5 项通过。未把这些中断写作产品根因或忽略失败。
+- 本轮不改公开协议/schema、迁移、依赖、VoiceChat 模型/模板/backend，不执行 Docker/GPU/真实 CueKB/VoiceChat/麦克风声学或听音。现场工具 head 加载、完整有效语音进入 Triton、A/B/C 每组至少三次、D23 实际参数/新会话对照仍待 D07；不能宣称现场故障修复通过。
+
+### 2026-10-11 D21 工具能力与完整输入分析顺序（仅文档）
+
+- 2026-10-12 预录文件入口可行性：只读核对 App.newConversation/VoiceClient.start/ready/rotation/stop 与 Worklet 采集/播放链，确认可用本地文件音源复用实时 WS 业务链。提案记录于 [门户 §8](portal-protocol.md#8-d21预录语音实时输入)，只改 Markdown，diff 检查通过；没有实现文件输入、运行浏览器回放或验证真实 VoiceChat/CueKB。文件 source EOF 与上行/Triton 完整处理分开，生产拒绝保留，录音测试不代替麦克风/声学或 A 组完整观察。
+- 2026-10-12 增补三项只读现场操作说明：定位同 Python 环境的 vLLM 包及 registry/head 源码；仅读取 safetensors index/shard header 和独立输入 embeddings metadata；以 local_files_only/offline 模式核对实际 tokenizer 的特殊 token ID，不新增/保存 token、不创建 engine。三段 Python 语法解析通过，标准库 header 函数用人工 metadata-only 临时夹具读取通过；没有加载真实 tokenizer、vLLM 或权重，未执行 GPU/容器或现场命令。diff 检查通过。说明入口见 [发布说明](../deploy/voicechat/README.md#d21原生工具通道的只读核对)。
+- 用户补齐 WS/backend 诊断后，按其要求先审计工具开关，再审计语音正确/完整发送。NeMo `use_function_head` 缺省 true，但实际 Triton 使用 `nano-v2-vllm` 的 custom function output；本机缺少实际 vLLM head 实现，线上 head 配置、权重、tokenizer 和生成条件仍未验证。导出脚本保留 function_head 前缀而不逐项验证其存在；已有模型/tokenizer 目录会跳过生成。上述是静态源码事实，不是现场产物缺失结论。
+- 静态调用链覆盖 Web capture/PCM、Gateway FIFO、provider 透传、VoiceChat soxr/队列和 Triton submitted/completed。正常 API 路径不改 PCM；ready 前丢弃、mute 全零、首帧边界和异常关闭不排空均存在。新日志残留约 140 ms 输入不能证明整句已完成处理；是否丢词仍待固定样本内容与词位置对照。
+- backend 采用的 raw function outputs 为 PAD=64/SOTC=0；display 发布 12 字符后由 native BOS final/reset。没有据此认定 head 被关闭、模板是根因、reset 丢字或所有完整输入都不调用工具。LLM 使用 encoded_audio，display ASR 是独立侧通道。
+- 仅更新 D21 分析计划、证据和任务板，保留既有 D23 文档修改；不修改运行代码、配置、模型、模板、协议或依赖。未执行 GPU、浏览器、真实 VoiceChat/CueKB、容器或录音检查；现场能力仍归 D07。后续按 [设计 §4.0](voicechat-fault-recovery-design.md#40-先核对工具能力与完整输入再判断模型行为) 逐项取得证据。
+
+### 2026-10-11 D23 多轮文字检索意图定位（未编码）
+
+- 现场截图：同会话“故障排查 → 助手要求型号 → THAO MOONCAKE”给出缺证据，而新会话裸名称得到品牌介绍。当前源码允许历史影响检索规划；仅截图及最终 `insufficient_evidence` 不能证明 CueKB 零命中。补充 14:59:17–40 日志确认图 1 第一轮 CueKB `ok/hit_count=5`、第二轮 `not_found/hit_count=0`，两轮工具正常且交付已提交。分析、参数/结果分支和现场对照见 [接入 §4.4](integration.md#44-d23多轮文字检索意图定位)。
+- 补充日志的只读源码复核：第一轮 `CUEKB_NO_EVIDENCE` 可以由未声明引用的模型状态规范化/降级产生，并非原始零命中标识；第二轮模型已给出 `insufficient_evidence` 时可保留 `reason_code=None`，存在诊断分类缺口。第一轮自定义截图正文、缺失规范化日志与部署源码分支尚需对齐；未凭日志推定原始模型状态，未取得实际 query/filter 或图 2 基线。补充日志后仅更新分析文档，未重跑测试或执行真实服务。
+- 隔离 SQLite、ASGI HTTP/Coordinator 三次提交回放：同会话第二轮 request 和持久 user_text 原文一致，历史含上一轮 user/assistant 两条（包含型号澄清正文），新会话历史为零，每轮 RunContext/evidence/retrievals/tool_errors 容器独立。Runtime 被显式受控夹具替换，输出带 is_mock；没有执行真实模型或知识检索。回放脚本首轮在 lifespan 初始化前访问 Coordinator 报脚本错误，修正注入时机后全部断言通过；该错误不来自生产请求路径。
+- 既有定向回归 **11 passed**（0.47 秒）：文字输入与幂等、缺证据不伪造、改问/已提交历史、工具失败不能伪装证据不足、显式非空过滤、成功证据与模型 failed 状态，以及 CueKB HTTP 错误映射。没有新增运行代码或测试，现有夹具不覆盖真实模型的裸名称/换题判别。
+- 仅更新分析、计划和证据 Markdown；未执行真实模型/CueKB/VoiceChat、浏览器、Docker/GPU、生产数据库或云端检查，未提交/推送。本轮尚不能宣称现场故障根因已闭合或修复已通过。
 
 ### 2026-10-11 D21 完整输入探针与 WS/backend 必要诊断
 

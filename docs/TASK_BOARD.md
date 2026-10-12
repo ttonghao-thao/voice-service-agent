@@ -1,6 +1,6 @@
 # 当前任务板
 
-更新：2026-10-11。目标设计见 [architecture.md](architecture.md)，状态证据见 [acceptance-report.md](acceptance-report.md)。本期范围已确定为英文知识库客服，默认只启用 `search_knowledge`。
+更新：2026-10-12。目标设计见 [architecture.md](architecture.md)，状态证据见 [acceptance-report.md](acceptance-report.md)。本期范围已确定为英文知识库客服，默认只启用 `search_knowledge`。
 
 ## 1. 当前结论与审计基线
 
@@ -41,6 +41,24 @@ D16–D18 的知识工具后置条件、最终 ASR 输入绑定、文字总预�
 2. M12（本地完成）：speech WS、RNNT/BOS、raw function 与 decode 边界诊断；增量补丁/6 文件 before-after hash、原基线应用和应用后 CPU 回归通过；Dockerfile 已交付三个 backend 文件及启动级开关，未执行 Docker/GPU。
 3. M13（本地验证完成）：pytest **157 passed**、Ruff、Web **14 passed**、构建、Chromium 受控链 **9 passed**；独立 speech 及应用后补丁 **22 CPU passed**。文档同步，main 交付；现场固定音频/GPU/CueKB/听音仍归 D07，R1–R5 行为修复仅在证据命中后实施。当前故障仍未通过现场验收。
 
+2026-10-11 补齐 WS/backend 日志后的分析顺序（仅分析与文档）：
+
+1. M14（源码审计完成）：先查工具能力的真实执行路径。NeMo `use_function_head` 缺省为 true，但当前 Triton 通过自定义 vLLM 获取 `function_tokens`；本机未包含实际 vLLM head 实现。现场必须核对实际模块、模型配置、function head 权重和 tokenizer，不能以 `tools=1` 或 Jinja 开关代替能力证明。
+2. M15（分析计划完成）：核对 Browser → API → VoiceChat → Triton 的格式、内容、顺序和完整处理。已成功转发的帧不等于整句话已采集/完成推理；补齐日志仍有约 140 ms 的 16 kHz 输入缓冲。先用完整固定 WAV 和持续静音探针，再与生产门户及同配置原生客户端对照。
+3. M16（待现场执行）：在配置与完整输入均通过后，检查 perception/LLM 输入、ASR display、native BOS 和 function 通道；随后才做单变量模板对照。新 sequence 记录 `PAD=64/SOTC=0/EOTC=0`，只证明断连前 backend 采用的 function 输出未触发调用。具体判定与退出条件见 [D21 设计 §4.0](voicechat-fault-recovery-design.md#40-先核对工具能力与完整输入再判断模型行为)。不修改运行代码、配置、权重或生产授权。
+4. M17（2026-10-12 操作说明完成）：[三项只读核对命令](../deploy/voicechat/README.md#d21原生工具通道的只读核对) 给出同环境 vLLM/registry/head 源码定位、index/shard 与独立 embeddings 的 header 读取、实际本地 tokenizer ID 核对。三段 Python 语法检查和 metadata-only header 夹具读取通过；未在现场运行 vLLM/tokenizer 或读取真实权重。用户提供的 config 已声明 function_tokens，实际 head 加载及 ID 匹配仍待现场输出。
+5. M18（2026-10-12 可行性方案完成，随后 M21 编码）：门户增加预录 WAV 实时输入可以复用现有 VoiceClient/AudioWorklet/WS 业务链，无需 API 文件上传或服务端存储。方案见 [门户 §8](portal-protocol.md#8-d21预录语音实时输入)。每次测试独立 call、ready 后开始、EOF 后持续静音、保留生产拒绝和不自动重播；文件模式只覆盖固定音源的 B 组真实链，不能替代麦克风/声学验收或独立 A 组完整观察。可行性阶段只改 Markdown；实施结果见 M21。
+
+2026-10-12 用户授权整理、编码并发布 main：
+
+1. M19（完成）：归并当前定位/优化的实施清单，保持既有 D20/D21/D22 修复与诊断，区分待现场证明的 R1–R5、模型/模板条件调整及 D23 文字意图方案；不得把未知假设作为生产修复。
+2. M20（本地完成）：实现可复用的只读模型产物核对 CLI，覆盖 config、vLLM 磁盘实现、safetensors header/index/输入 embeddings 和实际本地 tokenizer；输出证据分项与未知运行状态，不加载模型/权重 payload。
+3. M21（本地完成）：实现门户 WAV 文件音源，复用现有 WS/Worklet 链；独立 call、ready 后输入、尾部完整发送与静音等待、错误/轮换不重播，保留麦克风与生产授权。
+4. M22（本地验证完成）：pytest 194 passed、Web 38 passed、Chromium 14 passed、Ruff、类型/构建和 diff 检查；其中 CLI 31 项 metadata-only 回归。主题方案、CLI/门户运行说明与验收记录已同步，公开协议/schema 和依赖未改。
+5. M23（随本轮交付）：只提交预期文件，推送 main 并核对 HEAD、origin/main 与远端 main hash；发布结果以 Git refs 与完成报告为准。现场模型/VoiceChat/CueKB/GPU、真实麦克风与听音仍待 D07，不以本地回归代替。
+
+D23 一并完成有界内部诊断：query 长度/是否等于当前输入、filter 是否存在、history 数量、检索证据投影计数和最终校验分支；不记录正文、不调整 query/prompt/filter 或公开答案语义。
+
 ## 本轮 D22 引用校验与失败诊断（2026-10-11）
 
 用户已授权编码并发布 main。现场请求检索成功后以 `RAG_INVALID_CITATION` 失败。
@@ -49,6 +67,15 @@ D16–D18 的知识工具后置条件、最终 ASR 输入绑定、文字总预�
 2. M2（完成）：有界脱敏引用诊断、输出约束及同一预算内至多一次无工具修正；保留全部证据/权限校验。
 3. M3（完成）：两种 SDK API、流式/非流式、错误引用、失败修正、超时及取消回归；132 项 pytest、Ruff 和差异检查通过，详细边界见验收记录。
 4. M4（完成）：实现与验收文档以 `06015d6` 提交并推送 main，已核对 HEAD、origin/main 与远端 main 一致；现场模型复测仍待 D07。
+
+## 本轮 D23 多轮文字检索意图定位（诊断已编码，意图行为待证据）
+
+用户现场对照：同会话先问 `Find the product troubleshooting procedure`，助手要求产品型号；随后输入 `THAO MOONCAKE` 返回 `insufficient_evidence`，而新会话直接输入该名称可以回答。
+
+1. M1（源码审计完成）：沿门户输入、Turn、会话历史、模型规划、CueKB 请求和答案显示核对；未发现输入串接或上一轮证据容器直接共享。第二轮保留上一轮的澄清正文，存在“补充型号/独立品牌问题”的意图歧义，尚未取得真实 query/filter。
+2. M2（本地验证完成）：隔离 HTTP/Coordinator 回放确认第二轮原文不变、历史包含前轮两条正文、新会话无历史、每轮上下文/证据容器独立；相关既有回归 **11 passed**。夹具替换 Runtime，未复现真实模型的查询语义，不调用真实模型/CueKB/VoiceChat，不执行容器操作。
+3. M3（现场日志部分确认）：图 1 同一 conversation 的首轮 `54031f6e` 检索 `ok/5 hits`、最终 `insufficient_evidence/CUEKB_NO_EVIDENCE`；次轮 `76697f25` 检索 `not_found/0 hits`、最终 `insufficient_evidence/reason_code=none`；两次工具均 `ok`、交付均已提交。当前 reason_code 不能统一表达检索原因。仍需实际 query/filter、图 2 基线及必要的部署版本/原始模型状态，辅以明确换题/继续旧问对照，闭合意图与过滤参数原因。分析及诊断设计见 [接入 §4.4](integration.md#44-d23多轮文字检索意图定位)。分析阶段不修改运行代码。
+4. M4（2026-10-12 本地完成）：补 query/filter/history 形状、原始/保留证据计数、最终验证分支日志，并验证正文/历史/参数不进入普通日志；原始 query/prompt/filter/公开答案语义未改。真实意图根因与行为修正仍待受控现场对照。
 
 ## 本轮 D20 实施计划
 
