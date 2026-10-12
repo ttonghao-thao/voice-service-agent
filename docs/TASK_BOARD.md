@@ -1,6 +1,6 @@
 # 当前任务板
 
-更新：2026-10-12。目标设计见 [architecture.md](architecture.md)，状态证据见 [acceptance-report.md](acceptance-report.md)。本期范围已确定为英文知识库客服，默认只启用 `search_knowledge`。
+更新：2026-10-13。目标设计见 [architecture.md](architecture.md)，状态证据见 [acceptance-report.md](acceptance-report.md)。本期范围已确定为英文知识库客服，默认只启用 `search_knowledge`。
 
 ## 1. 当前结论与审计基线
 
@@ -58,6 +58,15 @@ D16–D18 的知识工具后置条件、最终 ASR 输入绑定、文字总预�
 5. M23（随本轮交付）：只提交预期文件，推送 main 并核对 HEAD、origin/main 与远端 main hash；发布结果以 Git refs 与完成报告为准。现场模型/VoiceChat/CueKB/GPU、真实麦克风与听音仍待 D07，不以本地回归代替。
 
 D23 一并完成有界内部诊断：query 长度/是否等于当前输入、filter 是否存在、history 数量、检索证据投影计数和最终校验分支；不记录正文、不调整 query/prompt/filter 或公开答案语义。
+
+2026-10-12 WAV 现场复测后，两个问题的优化方案（本轮设计，不改运行行为）：
+
+1. M24（证据与设计完成）：核对三份附件、浏览器实际 PCM 对照、文件完成 summary、RNNT 1→45 累计/发布及 raw function 全 PAD；首词转写与工具触发分开定位，同次关联及实际模型输入仍有证据边界。方案见 [D21 §5.6](voicechat-fault-recovery-design.md#56-两个用户问题的优化方案与实施门槛)。
+2. M25（本地完成，待离线 GPU 执行）：交付单 sequence、默认关闭的最小隔离诊断包；固定 WS/Triton sequence，保存并精确核对 WS/soxr/submitted/received PCM，记录 encoder window/选帧、`asr_emb`/`encoded_audio`、`combined_embeds` 与 custom output；同帧使用支持 `partial_hypotheses` 的 NeMo `GreedyRNNTInfer` 对照手写 greedy。原始内容只写有界 `0700/0600` 授权 artifact，不进普通日志；离线分析器按 R1→frame→RNNT→combined→function 输出首个分支。增量补丁/manifest/具体执行见 [VoiceChat M25 离线验证](../deploy/voicechat/README.md#m25-隔离离线验证方法)。
+3. M26（按证据实施）：修复 PCM、选帧、RNNT decoder/state 或词表映射的首个差异；同帧参考路径也失败时记录声学/产物能力问题，不直接补词/减 gate/加静音。
+4. M27（按证据实施）：完整独立观察后核对工具触发；输入/head 确认后才做模板单变量对照，命中解析/WS 差异才改 R3b/R4。生产桥接授权保留，不静默改为 ASR 自动受理。
+5. M28（待真实验收）：原版/500 ms/1 s 各至少三次及语速/停顿/插话回归；原生工具→真实知识→有效答案→授权口述→实际播放闭环。更新涉及的独立 VoiceChat 文件/补丁/manifest/部署与回退；本地验证不替代 D07。
+6. M29（本地验证完成）：新增分析器/manifest 回归纳入全量 pytest **200 passed**；Ruff、部署脚本语法、diff 检查通过。M25 补丁在独立 D21-after 基线 `git apply --check`、实际应用、4 文件 after hash 与 `py_compile` 通过；本机无 speech CPU 依赖、Docker/GPU/真实模型环境，未临时安装，独立 speech pytest 和 M26–M28 均保持待执行。
 
 ## 本轮 D22 引用校验与失败诊断（2026-10-11）
 

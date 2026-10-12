@@ -1,0 +1,22 @@
+{
+  "base": "diagnostics.patch after state",
+  "patch_sha256": "29e14f418c361fa2be4f2a7edc8db98238256ef777f8080500561be5667c6e50",
+  "files": {
+    "s2s/audio_server.py": {
+      "before_sha256": "29a1443984ebd55aa84186bf6cf9fec48601a0fd90dee76f415d7fe763008aa5",
+      "after_sha256": "d879c7fec7b428cb4d6d1318c7a47b6f1559910cf55c418518f9c85d32e98f20"
+    },
+    "s2s/tests/test_response_lifecycle.py": {
+      "before_sha256": "30961cd99d46dff71fdbb6e400a9800e0f0fb39f1996219d4400847135312c44",
+      "after_sha256": "4afdf6025447b9640713528436c2b440db108e0234c0fc0d78af5370091123b9"
+    },
+    "opt/tritonserver/backends/nemotron-voicechat/model.py": {
+      "before_sha256": "d62013dcdc659c6916ee23c4098dc9da2a1d8059673ca5a266406b7553eacab7",
+      "after_sha256": "61dd8cd48853f331270256d8db8923a3b9fc9bb5bbdd8925bf1a6b7fcdbaeb9d"
+    },
+    "opt/tritonserver/backends/nemotron-voicechat/runtime_setup.py": {
+      "before_sha256": "c1d7f848e17e2bda067187fb7e202c253f25cb6a9bb55393485b483da2d845ec",
+      "after_sha256": "f89b36f66222b3384791b5eecc98d82ae54fe7dd01f086224d4dfc1514fa28cc"
+    }
+  }
+}

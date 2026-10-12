@@ -1,0 +1,643 @@
+diff --git a/opt/tritonserver/backends/nemotron-voicechat/model.py b/opt/tritonserver/backends/nemotron-voicechat/model.py
+index 1b2abb0..b7b449f 100644
+--- a/opt/tritonserver/backends/nemotron-voicechat/model.py
++++ b/opt/tritonserver/backends/nemotron-voicechat/model.py
+@@ -1,4 +1,5 @@
+ import asyncio
++import hashlib
+ import json
+ import logging
+ import math
+@@ -62,6 +63,10 @@ from runtime_setup import (
+     RNNT_PUNCT_BIAS_TOKENS,
+     RNNT_TTS_MIN_TOKENS,
+     RNNT_TTS_RATIO_CAP,
++    VOICECHAT_CAPTURE_DIR,
++    VOICECHAT_CAPTURE_MAX_BYTES,
++    VOICECHAT_CAPTURE_MAX_STEPS,
++    VOICECHAT_CAPTURE_SEQUENCE_ID,
+     VOICECHAT_DIAGNOSTICS,
+ )
+ from sequence_manager import SequenceManager
+@@ -234,6 +239,15 @@ class TritonPythonModel:
+         self._injection_threads: Dict[int, threading.Thread] = {}
+         # Serialises run_until_complete calls on self.model.tts.event_loop from multiple threads
+         self._tts_loop_lock = threading.Lock()
++        self._capture_lock = threading.Lock()
++        self._capture_bytes = 0
++        self._capture_event_count = 0
++        self._capture_rnnt_reference = None
++        if VOICECHAT_CAPTURE_SEQUENCE_ID is not None:
++            logger.log_warning(
++                f"Isolated raw VoiceChat capture enabled for sequence {VOICECHAT_CAPTURE_SEQUENCE_ID}; "
++                "use only authorized test audio"
++            )
+ 
+         logger.log_info("Model initialization done")
+ 
+@@ -252,6 +266,71 @@ class TritonPythonModel:
+         not the Future that asyncio.gather() returns directly)."""
+         return await asyncio.gather(*coros)
+ 
++    def _capture_enabled(self, seq_id: int) -> bool:
++        return VOICECHAT_CAPTURE_SEQUENCE_ID is not None and int(seq_id) == VOICECHAT_CAPTURE_SEQUENCE_ID
++
++    def _capture_path(self, seq_id: int) -> Path:
++        path = VOICECHAT_CAPTURE_DIR / f"sequence-{seq_id}"
++        path.mkdir(mode=0o700, exist_ok=True)
++        if path.is_symlink():
++            raise RuntimeError("Isolated capture sequence directory must not be a symlink")
++        return path
++
++    def _capture_write(self, seq_id: int, filename: str, payload: bytes) -> int:
++        if not self._capture_enabled(seq_id):
++            return -1
++        with self._capture_lock:
++            if self._capture_bytes + len(payload) > VOICECHAT_CAPTURE_MAX_BYTES:
++                raise RuntimeError("Isolated VoiceChat capture exceeded VOICECHAT_CAPTURE_MAX_BYTES")
++            path = self._capture_path(seq_id) / filename
++            offset = path.stat().st_size if path.exists() else 0
++            flags = os.O_WRONLY | os.O_CREAT | os.O_APPEND
++            if hasattr(os, "O_NOFOLLOW"):
++                flags |= os.O_NOFOLLOW
++            descriptor = os.open(path, flags, 0o600)
++            try:
++                view = memoryview(payload)
++                while view:
++                    view = view[os.write(descriptor, view) :]
++            finally:
++                os.close(descriptor)
++            self._capture_bytes += len(payload)
++            return offset
++
++    def _capture_event(self, seq_id: int, event: str, **fields) -> None:
++        if not self._capture_enabled(seq_id) or self._capture_event_count >= VOICECHAT_CAPTURE_MAX_STEPS * 8:
++            return
++        entry = {
++            "schema_version": 1,
++            "sequence_id": int(seq_id),
++            "event": event,
++            "capture_index": self._capture_event_count,
++            **fields,
++        }
++        payload = (json.dumps(entry, ensure_ascii=True, allow_nan=False) + "\n").encode()
++        self._capture_write(seq_id, "model-events.jsonl", payload)
++        self._capture_event_count += 1
++
++    def _capture_tensor(self, seq_id: int, name: str, tensor: torch.Tensor, **fields) -> None:
++        if not self._capture_enabled(seq_id):
++            return
++        array = tensor.detach().to(dtype=torch.float32, device="cpu").contiguous().numpy().astype("<f4", copy=False)
++        payload = array.tobytes(order="C")
++        offset = self._capture_write(seq_id, f"{name}.f32le", payload)
++        self._capture_event(
++            seq_id,
++            "tensor",
++            name=name,
++            shape=list(array.shape),
++            offset_bytes=offset,
++            bytes=len(payload),
++            sha256=hashlib.sha256(payload).hexdigest(),
++            minimum=float(array.min()) if array.size else 0.0,
++            maximum=float(array.max()) if array.size else 0.0,
++            l2=float(np.linalg.norm(array)),
++            **fields,
++        )
++
+     def _init_rnnt_display_vocab(self) -> None:
+         """Resolve RNNT vocabulary and punctuation IDs for display-only transcript biasing."""
+         self._rnnt_vocab = []
+@@ -499,7 +578,35 @@ class TritonPythonModel:
+                 special_token_ids=self.special_token_ids,
+             ).squeeze(0)
+             tokens.append(token)
+-            function_tokens.append(vllm_result["custom_outputs"]["function_tokens"])
++            function_token = vllm_result["custom_outputs"]["function_tokens"]
++            function_tokens.append(function_token)
++            if self._capture_enabled(seq_id) and seq_state.decoder_global_step < VOICECHAT_CAPTURE_MAX_STEPS:
++                function_logits = vllm_result["custom_outputs"].get("function_logits")
++                score_fields = {"function_scores_available": isinstance(function_logits, torch.Tensor)}
++                if isinstance(function_logits, torch.Tensor):
++                    scores = function_logits.detach().to(dtype=torch.float32).reshape(-1)
++                    top_score = float(scores.max().item())
++                    for label, token_id in (("pad", self.pad_id), ("sotc", self.sotc_id), ("eotc", self.eotc_id)):
++                        if 0 <= token_id < scores.numel():
++                            value = float(scores[token_id].item())
++                            score_fields[f"{label}_score"] = value
++                            score_fields[f"{label}_rank"] = int((scores > value).sum().item()) + 1
++                            score_fields[f"{label}_top_delta"] = top_score - value
++                self._capture_event(
++                    seq_id,
++                    "llm.output",
++                    step=int(seq_state.decoder_global_step),
++                    custom_output_keys=sorted(map(str, vllm_result.get("custom_outputs", {}).keys())),
++                    text_token=int(token),
++                    function_token=int(function_token),
++                    function_kind=(
++                        "pad" if int(function_token) == self.pad_id
++                        else "sotc" if int(function_token) == self.sotc_id
++                        else "eotc" if int(function_token) == self.eotc_id
++                        else "other"
++                    ),
++                    **score_fields,
++                )
+ 
+         return {
+             "token": tokens[-1],
+@@ -547,12 +654,22 @@ class TritonPythonModel:
+                 audio_idx = max_audio_idx - (self.options.num_chunks_per_inference - 1) + step_offset
+             else:
+                 audio_idx = seq_state.audio_chunk_idx
+-            current_input_embeds = (
+-                encoded_audio[batch_idx : batch_idx + 1, audio_idx : audio_idx + 1, :] * duplex_user_channel_weight
+-            )  # (1, 1, D)
++            selected_audio = encoded_audio[batch_idx : batch_idx + 1, audio_idx : audio_idx + 1, :]
++            current_input_embeds = selected_audio * duplex_user_channel_weight  # (1, 1, D)
+             current_input_embeds += last_embeds.unsqueeze(1) * duplex_text_channel_weight  # (1, 1, D)
+             current_input_embeds += last_function_emb.unsqueeze(1) * duplex_function_channel_weight  # (1, 1, D)
+ 
++            if self._capture_enabled(seq_id) and seq_state.decoder_global_step < VOICECHAT_CAPTURE_MAX_STEPS:
++                common = {
++                    "step": int(seq_state.decoder_global_step),
++                    "step_offset": int(step_offset),
++                    "frame_index": int(audio_idx),
++                    "audio_chunk_index": int(seq_state.audio_chunk_idx),
++                    "chunk_samples_16k": int(self.options.num_samples_per_chunk),
++                }
++                self._capture_tensor(seq_id, "encoded-selected", selected_audio, channel="perception", **common)
++                self._capture_tensor(seq_id, "combined-embeds", current_input_embeds, channel="llm", **common)
++
+             seq_state.input_embeddings = current_input_embeds  # (B, 1, D)
+ 
+             current_input_embeds_batched.append(seq_state.input_embeddings)
+@@ -856,9 +973,9 @@ class TritonPythonModel:
+             )
+             self._reset_rnnt_display_buffer(seq_state, reset_predictor=True, reason="blank_without_speech")
+ 
+-    def _rnnt_display_decode_frame(self, asr_emb: torch.Tensor, batch_idx: int, seq_id: int, frame_idx: int) -> None:
++    def _rnnt_display_decode_frame(self, asr_emb: torch.Tensor, batch_idx: int, seq_id: int, frame_idx: int) -> list:
+         if asr_emb is None or self.model.rnnt_decoder is None or not self._rnnt_vocab:
+-            return
++            return []
+ 
+         seq_state = self._seq_mgr[seq_id]
+         state = seq_state.rnnt_display_state or self._new_rnnt_display_state()
+@@ -969,6 +1086,76 @@ class TritonPythonModel:
+                                    emitted_chars=seq_state.rnnt_display_emitted_len,
+                                    nonblank_frames=state["nonblank_total"], blank_frames=state["blank_count"],
+                                    gate=state["speech_confirmed"], gate_frames=RNNT_DISPLAY_GATE_FRAMES)
++        return emitted
++
++    def _capture_reference_rnnt(
++        self, asr_emb: torch.Tensor, batch_idx: int, seq_id: int, frame_idx: int, actual_tokens: list
++    ) -> None:
++        if not self._capture_enabled(seq_id):
++            return
++        seq_state = self._seq_mgr[seq_id]
++        if seq_state.decoder_global_step >= VOICECHAT_CAPTURE_MAX_STEPS:
++            return
++        frame = asr_emb[batch_idx : batch_idx + 1, frame_idx : frame_idx + 1, :].transpose(1, 2)
++        self._capture_tensor(
++            seq_id,
++            "asr-selected",
++            frame.transpose(1, 2),
++            channel="rnnt",
++            step=int(seq_state.decoder_global_step),
++            frame_index=int(frame_idx),
++            chunk_samples_16k=int(self.options.num_samples_per_chunk),
++        )
++        try:
++            if self._capture_rnnt_reference is None:
++                from nemo.collections.asr.parts.submodules.rnnt_greedy_decoding import GreedyRNNTInfer
++
++                decoding = self.model.rnnt_decoder.decoding
++                blank_id = getattr(self.model.rnnt_decoder, "blank_id", decoding.joint._num_classes - 1)
++                self._capture_rnnt_reference = GreedyRNNTInfer(
++                    decoder_model=decoding.decoder,
++                    joint_model=decoding.joint,
++                    blank_index=blank_id,
++                    max_symbols_per_step=RNNT_DISPLAY_MAX_SYMBOLS,
++                )
++            capture_state = seq_state.voice_diagnostics
++            previous = capture_state.get("capture_reference_hypothesis")
++            previous_count = int(capture_state.get("capture_reference_token_count", 0))
++            lengths = torch.ones(1, dtype=torch.long, device=frame.device)
++            result = self._capture_rnnt_reference(
++                encoder_output=frame,
++                encoded_lengths=lengths,
++                partial_hypotheses=[previous] if previous is not None else None,
++            )
++            hypothesis = result[0][0]
++            all_tokens = (
++                hypothesis.y_sequence.detach().cpu().tolist()
++                if isinstance(hypothesis.y_sequence, torch.Tensor)
++                else [int(token) for token in hypothesis.y_sequence]
++            )
++            reference_tokens = all_tokens[previous_count:]
++            capture_state["capture_reference_hypothesis"] = hypothesis
++            capture_state["capture_reference_token_count"] = len(all_tokens)
++            self._capture_event(
++                seq_id,
++                "rnnt.compare",
++                step=int(seq_state.decoder_global_step),
++                frame_index=int(frame_idx),
++                punctuation_bias_enabled=bool(RNNT_PUNCT_BIAS_ENABLED),
++                manual_tokens=[int(token) for token in actual_tokens],
++                reference_tokens=reference_tokens,
++                manual_text=self._rnnt_display_decode_text(actual_tokens),
++                reference_text=self._rnnt_display_decode_text(reference_tokens),
++                matches=[int(token) for token in actual_tokens] == reference_tokens,
++            )
++        except Exception as exc:
++            self._capture_event(
++                seq_id,
++                "rnnt.reference_error",
++                step=int(seq_state.decoder_global_step),
++                frame_index=int(frame_idx),
++                error_type=type(exc).__name__,
++            )
+ 
+     def _rnnt_step_transcript_display(
+         self, asr_emb: torch.Tensor, seq_ids_batched: List[int], max_audio_idx: int, step_offset: int,
+@@ -984,7 +1171,8 @@ class TritonPythonModel:
+             else:
+                 frame_idx = seq_state.audio_chunk_idx
+             frame_idx = max(0, min(frame_idx, max_audio_idx))
+-            self._rnnt_display_decode_frame(asr_emb, batch_idx, seq_id, frame_idx)
++            emitted = self._rnnt_display_decode_frame(asr_emb, batch_idx, seq_id, frame_idx)
++            self._capture_reference_rnnt(asr_emb, batch_idx, seq_id, frame_idx, emitted)
+ 
+             t = seq_state.decoder_global_step
+             agent_bos_fired = (
+@@ -1904,6 +2092,13 @@ class TritonPythonModel:
+                 continue
+ 
+             # Append input audio to buffer
++            self._capture_tensor(
++                seq_id,
++                "triton-received-16k",
++                audio_signal[batch_idx],
++                step=seq_state_check.decoder_global_step,
++                sample_rate=16000,
++            )
+             self._seq_mgr[seq_id].audio_buffer = torch.cat(
+                 (self._seq_mgr[seq_id].audio_buffer, audio_signal[batch_idx].unsqueeze(0)), dim=1
+             )  # (1, T)
+@@ -1979,6 +2174,17 @@ class TritonPythonModel:
+         logger.log_verbose("Inputs collated")
+ 
+         encoded_audio, asr_emb = self.perception(audio_to_encode, buffer_len_tensor)  # (B, T, D)
++        for batch_idx, seq_id in enumerate(seq_ids_batched):
++            if self._capture_enabled(seq_id):
++                self._capture_event(
++                    seq_id,
++                    "encoder.window",
++                    step=self._seq_mgr[seq_id].decoder_global_step,
++                    input_samples=int(buffer_len_tensor[batch_idx].item()),
++                    encoded_shape=list(encoded_audio[batch_idx : batch_idx + 1].shape),
++                    asr_shape=list(asr_emb[batch_idx : batch_idx + 1].shape) if asr_emb is not None else None,
++                    audio_chunk_idx=int(self._seq_mgr[seq_id].audio_chunk_idx),
++                )
+ 
+         self.generate_tokens(encoded_audio, seq_ids_batched, asr_emb=asr_emb)
+ 
+@@ -2041,6 +2247,28 @@ class TritonPythonModel:
+                         arr = pb_utils.get_input_tensor_by_name(request, "system_prompt").as_numpy()
+                         system_prompt = arr.ravel()[0].decode("utf-8").strip()
+                         self._seq_mgr[sequence_id].system_prompt = system_prompt
++                        if self._capture_enabled(sequence_id):
++                            decoding = getattr(self.model.rnnt_decoder, "decoding", None)
++                            joint = getattr(decoding, "joint", None)
++                            blank_id = (
++                                getattr(self.model.rnnt_decoder, "blank_id", getattr(joint, "_num_classes", 1) - 1)
++                                if self.model.rnnt_decoder is not None else None
++                            )
++                            custom_specs = getattr(self.model, "llm_custom_input_specs", None) or []
++                            self._capture_event(
++                                sequence_id,
++                                "model.start",
++                                model_class=type(self.model).__name__,
++                                llm_engine_class=type(getattr(self.model, "llm_engine", None)).__name__,
++                                rnnt_decoder_class=type(decoding).__name__,
++                                rnnt_blank_id=int(blank_id) if blank_id is not None else None,
++                                rnnt_vocab_size=len(self._rnnt_vocab),
++                                pad_id=int(self.pad_id),
++                                sotc_id=int(self.sotc_id),
++                                eotc_id=int(self.eotc_id),
++                                custom_input_specs_count=len(custom_specs),
++                                punctuation_bias_enabled=bool(RNNT_PUNCT_BIAS_ENABLED),
++                            )
+                         if system_prompt:
+                             system_prompt_coros.append(
+                                 self._send_system_prompt(sequence_id, self._seq_mgr[sequence_id].system_prompt)
+@@ -2128,6 +2356,14 @@ class TritonPythonModel:
+ 
+                 if end_flag_batched[idx]:
+                     logger.log_info(f"Sequence {seq_id} ended")
++                    self._capture_event(
++                        seq_id,
++                        "model.end",
++                        step=int(self._seq_mgr[seq_id].decoder_global_step),
++                        function_counts=dict(self._seq_mgr[seq_id].voice_diagnostics.get("function_counts", {})),
++                        function_state=self._seq_mgr[seq_id].fn_call["state"],
++                        capture_bytes=int(self._capture_bytes),
++                    )
+                     self._voice_diagnostic(self._seq_mgr[seq_id], "sequence.end",
+                                            counts=dict(self._seq_mgr[seq_id].voice_diagnostics.get("function_counts", {})),
+                                            state=self._seq_mgr[seq_id].fn_call["state"])
+diff --git a/opt/tritonserver/backends/nemotron-voicechat/runtime_setup.py b/opt/tritonserver/backends/nemotron-voicechat/runtime_setup.py
+index 7592c2b..bc3406c 100644
+--- a/opt/tritonserver/backends/nemotron-voicechat/runtime_setup.py
++++ b/opt/tritonserver/backends/nemotron-voicechat/runtime_setup.py
+@@ -1,5 +1,6 @@
+ import logging
+ import os
++from pathlib import Path
+ 
+ import torch
+ 
+@@ -61,6 +62,34 @@ DEVICE = torch.device("cuda:0" if torch.cuda.is_available() else "cpu")
+ MODEL_STEPS_PER_CALL = int(os.environ.get("MODEL_STEPS_PER_CALL", "2"))
+ MODEL_OUTPUT_SAMPLE_RATE = 22050  # codec output sample rate (Hz)
+ VOICECHAT_DIAGNOSTICS = os.environ.get("VOICECHAT_DIAGNOSTICS", "0").lower() in ("1", "true", "yes")
++
++
++def _isolated_capture_config():
++    raw_dir = os.environ.get("VOICECHAT_CAPTURE_DIR", "").strip()
++    raw_sequence = os.environ.get("VOICECHAT_CAPTURE_SEQUENCE_ID", "").strip()
++    if not raw_dir and not raw_sequence:
++        return None, None
++    if not raw_dir or not raw_sequence:
++        raise RuntimeError("VOICECHAT_CAPTURE_DIR and VOICECHAT_CAPTURE_SEQUENCE_ID must be set together")
++    root = Path(raw_dir)
++    if not root.is_absolute() or not root.is_dir() or root.is_symlink():
++        raise RuntimeError("VOICECHAT_CAPTURE_DIR must be an existing absolute non-symlink directory")
++    try:
++        sequence_id = int(raw_sequence)
++    except ValueError as exc:
++        raise RuntimeError("VOICECHAT_CAPTURE_SEQUENCE_ID must be an integer") from exc
++    if not 0 < sequence_id < 2**32:
++        raise RuntimeError("VOICECHAT_CAPTURE_SEQUENCE_ID must fit an unsigned 32-bit sequence id")
++    return root, sequence_id
++
++
++VOICECHAT_CAPTURE_DIR, VOICECHAT_CAPTURE_SEQUENCE_ID = _isolated_capture_config()
++VOICECHAT_CAPTURE_MAX_STEPS = int(os.environ.get("VOICECHAT_CAPTURE_MAX_STEPS", "96"))
++VOICECHAT_CAPTURE_MAX_BYTES = int(os.environ.get("VOICECHAT_CAPTURE_MAX_BYTES", str(16 * 1024 * 1024)))
++if not 1 <= VOICECHAT_CAPTURE_MAX_STEPS <= 512:
++    raise RuntimeError("VOICECHAT_CAPTURE_MAX_STEPS must be between 1 and 512")
++if not 1024 <= VOICECHAT_CAPTURE_MAX_BYTES <= 64 * 1024 * 1024:
++    raise RuntimeError("VOICECHAT_CAPTURE_MAX_BYTES must be between 1 KiB and 64 MiB")
+ FORCE_TURN_TAKING_THRESHOLD = int(os.environ.get("FORCE_TURN_TAKING_THRESHOLD", "40"))
+ DEBUG_MODE = os.environ.get("DEBUG_MODE", "0").lower() in ("1", "true", "yes")
+ MAX_TOOL_TOKENS = int(os.environ.get("MAX_TOOL_TOKENS", "512"))
+diff --git a/s2s/audio_server.py b/s2s/audio_server.py
+index d482279..8f5080f 100644
+--- a/s2s/audio_server.py
++++ b/s2s/audio_server.py
+@@ -7,6 +7,7 @@ Uses FastAPI for WebSocket handling
+ 
+ import asyncio
+ import base64
++import hashlib
+ import json
+ import logging
+ import os
+@@ -52,6 +53,32 @@ TRITON_MODEL_NAME = "nemotron-voicechat"  # Update with your model name
+ LOOPBACK_MODE = os.getenv("LOOPBACK_MODE", "false").lower() == "true"  # Set LOOPBACK_MODE=true to bypass Triton
+ USE_JINJA_TEMPLATE_PROMPT = os.getenv("USE_JINJA_TEMPLATE_PROMPT", "0").lower() in ("1", "true", "yes")
+ VOICECHAT_DIAGNOSTICS = os.getenv("VOICECHAT_DIAGNOSTICS", "0").lower() in ("1", "true", "yes")
++VOICECHAT_CAPTURE_DIR = os.getenv("VOICECHAT_CAPTURE_DIR", "").strip()
++VOICECHAT_CAPTURE_SEQUENCE_ID = os.getenv("VOICECHAT_CAPTURE_SEQUENCE_ID", "").strip()
++VOICECHAT_CAPTURE_MAX_SECONDS = int(os.getenv("VOICECHAT_CAPTURE_MAX_SECONDS", "30"))
++
++
++def _capture_configuration():
++    """Validate the explicit, single-sequence raw artifact capture configuration."""
++    if not VOICECHAT_CAPTURE_DIR and not VOICECHAT_CAPTURE_SEQUENCE_ID:
++        return None
++    if not VOICECHAT_CAPTURE_DIR or not VOICECHAT_CAPTURE_SEQUENCE_ID:
++        raise RuntimeError("VOICECHAT_CAPTURE_DIR and VOICECHAT_CAPTURE_SEQUENCE_ID must be set together")
++    root = Path(VOICECHAT_CAPTURE_DIR)
++    if not root.is_absolute() or not root.is_dir() or root.is_symlink():
++        raise RuntimeError("VOICECHAT_CAPTURE_DIR must be an existing absolute non-symlink directory")
++    try:
++        sequence_id = int(VOICECHAT_CAPTURE_SEQUENCE_ID)
++    except ValueError as exc:
++        raise RuntimeError("VOICECHAT_CAPTURE_SEQUENCE_ID must be an integer") from exc
++    if not 0 < sequence_id < 2**32:
++        raise RuntimeError("VOICECHAT_CAPTURE_SEQUENCE_ID must fit an unsigned 32-bit sequence id")
++    if not 1 <= VOICECHAT_CAPTURE_MAX_SECONDS <= 120:
++        raise RuntimeError("VOICECHAT_CAPTURE_MAX_SECONDS must be between 1 and 120")
++    return root, sequence_id, VOICECHAT_CAPTURE_MAX_SECONDS
++
++
++VOICECHAT_CAPTURE = _capture_configuration()
+ 
+ _jinja_env = Environment(
+     loader=FileSystemLoader(Path(__file__).parent),
+@@ -373,7 +400,7 @@ class AudioSession:
+         self.chunks_sent = 0
+         self.chunks_dropped = 0
+         self._session_end_sent = False
+-        self.sequence_id = int(uuid.uuid4().int & 0xFFFFFFFF)  # 32-bit sequence ID
++        self.sequence_id = VOICECHAT_CAPTURE[1] if VOICECHAT_CAPTURE else int(uuid.uuid4().int & 0xFFFFFFFF)
+         self.triton_client: Optional[httpclient.InferenceServerClient] = None
+         self.inference_queue: asyncio.Queue = asyncio.Queue(maxsize=MAX_QUEUE_SIZE)
+         self.send_task: Optional[asyncio.Task] = None
+@@ -411,6 +438,22 @@ class AudioSession:
+         self._diagnostic_bytes = self._diagnostic_dropped = 0
+         self._output_queued_seq = self._output_sent_seq = 0
+         self._audio_ranges = {}
++        self._capture_dir = None
++        self._capture_files = {}
++        self._capture_hashes = {}
++        self._capture_counts = {}
++        self._capture_max_seconds = 0
++        if VOICECHAT_CAPTURE:
++            root, _, max_seconds = VOICECHAT_CAPTURE
++            capture_dir = root / f"sequence-{self.sequence_id}"
++            capture_dir.mkdir(mode=0o700, exist_ok=False)
++            self._capture_dir = capture_dir
++            self._capture_max_seconds = max_seconds
++            logger.warning(
++                "Isolated raw VoiceChat capture enabled for sequence %s in %s; use only authorized test audio",
++                self.sequence_id,
++                capture_dir,
++            )
+ 
+         # Accumulated transcripts
+         self.accumulated_user_transcript = []
+@@ -434,6 +477,59 @@ class AudioSession:
+             return PCM16Codec(sample_rate)
+         raise ValueError(f"Unsupported audio format: {format}")
+ 
++    def _capture_array(self, name: str, values: np.ndarray, sample_rate: int) -> None:
++        if self._capture_dir is None:
++            return
++        array = np.asarray(values, dtype="<f4").reshape(-1)
++        payload = array.tobytes(order="C")
++        current = self._capture_counts.get(name, 0)
++        if current + len(payload) > self._capture_max_seconds * sample_rate * 4:
++            raise RuntimeError(f"Isolated capture limit exceeded for {name}")
++        path = self._capture_dir / f"{name}.f32le"
++        flags = os.O_WRONLY | os.O_CREAT | os.O_APPEND
++        if hasattr(os, "O_NOFOLLOW"):
++            flags |= os.O_NOFOLLOW
++        descriptor = os.open(path, flags, 0o600)
++        try:
++            view = memoryview(payload)
++            while view:
++                view = view[os.write(descriptor, view) :]
++        finally:
++            os.close(descriptor)
++        digest = self._capture_hashes.setdefault(name, hashlib.sha256())
++        digest.update(payload)
++        self._capture_counts[name] = current + len(payload)
++        self._capture_files[name] = {"sample_rate": sample_rate, "format": "float32_le"}
++
++    def _finish_capture(self, reason: str) -> None:
++        if self._capture_dir is None:
++            return
++        files = {}
++        for name, metadata in self._capture_files.items():
++            byte_count = self._capture_counts[name]
++            files[name] = {
++                **metadata,
++                "bytes": byte_count,
++                "samples": byte_count // 4,
++                "sha256": self._capture_hashes[name].hexdigest(),
++            }
++        summary = {
++            "schema_version": 1,
++            "scope": "authorized_isolated_voicechat_capture",
++            "client_id": self.client_id,
++            "sequence_id": self.sequence_id,
++            "reason": reason,
++            "files": files,
++            "triton_submitted_samples_16k": self.triton_samples_submitted_16k,
++            "triton_completed_samples_16k": self.triton_samples_completed_16k,
++            "remaining_buffer_samples_16k": len(self.triton_input_buffer),
++        }
++        temporary = self._capture_dir / "ws-summary.json.tmp"
++        temporary.write_text(json.dumps(summary, ensure_ascii=True, indent=2) + "\n", encoding="utf-8")
++        temporary.chmod(0o600)
++        temporary.replace(self._capture_dir / "ws-summary.json")
++        self._capture_dir = None
++
+     async def _validate_input_rate(self, new_rate) -> Optional[int]:
+         """Validate a client-supplied input rate.
+ 
+@@ -756,12 +852,14 @@ class AudioSession:
+                 return
+ 
+             self.audio_samples_received += pcm_float32_24k.shape[-1]
++            self._capture_array("ws-decoded-24k", pcm_float32_24k, self.input_sample_rate)
+ 
+             if LOOPBACK_MODE:
+                 await self.process_loopback_audio(pcm_float32_24k)
+                 return
+ 
+             audio_float32_16k = self.input_resampler.resample_chunk(pcm_float32_24k)
++            self._capture_array("soxr-output-16k", audio_float32_16k, INPUT_SAMPLE_RATE)
+             self.triton_input_buffer = np.concatenate([self.triton_input_buffer, audio_float32_16k])
+             if self.chunks_received == 1 or self.chunks_received % 12 == 0:
+                 self._voice_diagnostic("input.progress", received_chunks=self.chunks_received)
+@@ -821,6 +919,7 @@ class AudioSession:
+             flushed = self.input_resampler.resample_chunk(np.array([], dtype=np.float32), last=True)
+             self._input_resampler_finalized = True
+             if len(flushed):
++                self._capture_array("soxr-output-16k", flushed, INPUT_SAMPLE_RATE)
+                 self.triton_input_buffer = np.concatenate([self.triton_input_buffer, flushed])
+ 
+         while len(self.triton_input_buffer) >= required_samples:
+@@ -1301,6 +1400,8 @@ class AudioSession:
+             if self.triton_client is None:
+                 raise Exception("Triton client not initialized for session")
+ 
++            self._capture_array("triton-submitted-16k", audio_float32, INPUT_SAMPLE_RATE)
++
+             # Prepare Triton inputs
+             inputs = [
+                 httpclient.InferInput("audio_signal", audio_float32.shape, np_to_triton_dtype(audio_float32.dtype)),
+@@ -1807,7 +1908,12 @@ async def handle_websocket(websocket: WebSocket):
+     await websocket.accept(subprotocol=subprotocol)
+     logger.info(f"Client {client_id} connected from {websocket.client}")
+ 
+-    session = AudioSession(client_id, websocket)
++    try:
++        session = AudioSession(client_id, websocket)
++    except FileExistsError:
++        logger.error("Client %s rejected: isolated capture sequence directory already exists", client_id)
++        await websocket.close(code=1013, reason="Isolated capture sequence already used")
++        return
+     graceful_close = False
+ 
+     try:
+@@ -1899,6 +2005,7 @@ async def handle_websocket(websocket: WebSocket):
+         logger.error(f"Client {client_id}: Unexpected error: {e}", exc_info=True)
+ 
+     finally:
++        capture_reason = "graceful_close" if graceful_close else "disconnect_or_error"
+         if graceful_close and session.chunks_received > 0:
+             try:
+                 await session.drain_inference_queue()
+@@ -1922,6 +2029,8 @@ async def handle_websocket(websocket: WebSocket):
+                     logger.warning(f"Client {client_id}: Error finalizing sequence: {e}")
+             await session.send_session_end()
+ 
++        session._finish_capture(capture_reason)
++
+         logger.info(
+             f"Client {client_id}: Session ended - "
+             f"Received: {session.chunks_received}, Sent: {session.chunks_sent}, "
+diff --git a/s2s/tests/test_response_lifecycle.py b/s2s/tests/test_response_lifecycle.py
+index 981bf10..a8682eb 100644
+--- a/s2s/tests/test_response_lifecycle.py
++++ b/s2s/tests/test_response_lifecycle.py
+@@ -1,6 +1,7 @@
+ """CPU-only regressions: real server dispatch/resampling, controlled model outputs."""
+ import asyncio
+ import base64
++import hashlib
+ import importlib.util
+ import json
+ from pathlib import Path
+@@ -75,6 +76,37 @@ def test_ws_diagnostic_history_is_bounded_and_truncation_is_explicit(monkeypatch
+     assert session._diagnostic_bytes == sum(len(json.dumps(e, ensure_ascii=True).encode()) for _, e in session._diagnostic_events)
+ 
+ 
++def test_isolated_capture_is_single_sequence_bounded_and_content_exact(monkeypatch, tmp_path):
++    monkeypatch.setattr(server, "VOICECHAT_CAPTURE", (tmp_path, 42, 1))
++    session = server.AudioSession("capture", Socket())
++    assert session.sequence_id == 42
++    first = np.linspace(-0.5, 0.5, 160, dtype=np.float32)
++    second = np.linspace(0.25, -0.25, 80, dtype=np.float32)
++    session._capture_array("ws-decoded-24k", first, 24000)
++    session._capture_array("ws-decoded-24k", second, 24000)
++    session._finish_capture("test")
++    capture = tmp_path / "sequence-42"
++    payload = (capture / "ws-decoded-24k.f32le").read_bytes()
++    assert np.array_equal(np.frombuffer(payload, dtype="<f4"), np.r_[first, second])
++    summary = json.loads((capture / "ws-summary.json").read_text())
++    assert summary["sequence_id"] == 42 and summary["reason"] == "test"
++    assert summary["files"]["ws-decoded-24k"]["samples"] == 240
++    assert summary["files"]["ws-decoded-24k"]["sha256"] == hashlib.sha256(payload).hexdigest()
++    with pytest.raises(FileExistsError):
++        server.AudioSession("second", Socket())
++
++
++def test_isolated_capture_refuses_partial_or_unsafe_configuration(monkeypatch, tmp_path):
++    monkeypatch.setattr(server, "VOICECHAT_CAPTURE_DIR", str(tmp_path))
++    monkeypatch.setattr(server, "VOICECHAT_CAPTURE_SEQUENCE_ID", "")
++    with pytest.raises(RuntimeError, match="must be set together"):
++        server._capture_configuration()
++    monkeypatch.setattr(server, "VOICECHAT_CAPTURE_SEQUENCE_ID", "42")
++    monkeypatch.setattr(server, "VOICECHAT_CAPTURE_DIR", "relative/path")
++    with pytest.raises(RuntimeError, match="absolute non-symlink"):
++        server._capture_configuration()
++
++
+ @pytest.mark.asyncio
+ async def test_idle_codec_arrays_do_not_create_or_poison_a_response():
+     session = server.AudioSession("test", Socket())

@@ -1,6 +1,6 @@
 # 验收状态与真实服务门槛
 
-更新：2026-10-12。**D01–D06、D08–D10、D13–D20、E01–E03 已完成编码和本地自动化验证；D07 的真实服务端到端验收仍未完成**。当前交付包含 API 工具/口述授权、Web 播放状态修复，以及独立 speech/VoiceChat 的逐轮 response 修复补丁；当前确认的 speech 基线同步更新 WebSocket 文件并启用已有 Jinja 模板，推理/自然打断与离线模型转换不变；不是所有 VoiceChat 客户端都需要这份补丁。D20 另优化 SSE/答案渲染并增加阶段计时。设计已按当前职责、音频/事件流、生命周期、异常边界和发布流程整体重写，详细见 [架构](architecture.md)、[接入](integration.md)、[门户协议](portal-protocol.md) 和 [部署](deployment.md)。本期仅验收英文知识库客服；真实验证在云端 Docker 环境执行。缺口和实施顺序见 [任务板](TASK_BOARD.md)。
+更新：2026-10-13。**D01–D06、D08–D10、D13–D20、E01–E03 已完成编码和本地自动化验证；D07 的真实服务端到端验收仍未完成**。当前交付包含 API 工具/口述授权、Web 播放状态修复，以及独立 speech/VoiceChat 的逐轮 response 修复补丁；当前确认的 speech 基线同步更新 WebSocket 文件并启用已有 Jinja 模板，推理/自然打断与离线模型转换不变；不是所有 VoiceChat 客户端都需要这份补丁。D20 另优化 SSE/答案渲染并增加阶段计时。设计已按当前职责、音频/事件流、生命周期、异常边界和发布流程整体重写，详细见 [架构](architecture.md)、[接入](integration.md)、[门户协议](portal-protocol.md) 和 [部署](deployment.md)。本期仅验收英文知识库客服；真实验证在云端 Docker 环境执行。缺口和实施顺序见 [任务板](TASK_BOARD.md)。
 
 编码阶段约束（2026-09-16 确认）：CueKB/VoiceChat 无真实接口可调用，满足已确认接口规范和处理逻辑并通过相应契约/本地测试，即满足该阶段验收要求。Docker 环境不提供，仅在必要时静态检查镜像制作和启动代码，不搭建环境或执行镜像构建。以下真实服务与容器验收项留待后续部署阶段，不作为编码完成的阻塞项。
 
@@ -10,9 +10,9 @@
 
 | 要回答的问题 | 证据位置与边界 |
 | --- | --- |
-| 最近应用验证 | §1 的 2026-10-12 D21/D23：194 项 pytest、Ruff、38 项 Web、类型/构建、14 项 Chromium 受控回归通过；真实模型/CueKB/VoiceChat 与 Docker 验收仍待 D07 |
+| 最近应用验证 | §1 的 2026-10-13 M25：200 项 pytest、Ruff、部署脚本语法与 diff 通过；Web 仍采用 2026-10-12 的 38 项单测、类型/构建和 14 项 Chromium 证据；真实模型/CueKB/VoiceChat 与 Docker 验收仍待 D07 |
 | 现场部分转写与断连 | §1 的 D21 定位设计：用户确认原句，ASR 仅 7 字符，非空音频被拒；源码审查支持进一步定位，未证明真实根因或修复通过 |
-| 独立 VoiceChat 交付 | D21 在 D19 基线上增加 WS/backend 诊断，22 项 CPU 协议/状态测试及增量补丁应用后复跑通过，6 文件 SHA-256 一致；见 [补丁说明](../deploy/voicechat/README.md)，云端镜像及 GPU 输出未验证 |
+| 独立 VoiceChat 交付 | D21 在 D19 基线上增加 WS/backend 诊断；M25 再提供默认关闭的单 sequence 原始证据补丁与离线分析器。旧版 22 项 CPU 证据保留；M25 本机完成增量 apply/hash/py_compile，独立 speech pytest 因本机无其依赖未执行。见 [补丁说明](../deploy/voicechat/README.md)，云端镜像及 GPU 输出未验证 |
 | M3、D08、D01–D06 何时验证 | §1 对应日期；不累加各次测试数作为当前总数 |
 | 真实服务是否通过 | §3：仍待验证；测试文件存在、配置 verified 或本地测试通过都不能替代真实记录 |
 | 下一阶段怎样执行 | [部署 D07-A–F](deployment.md#d07-分阶段执行设计)，场景标准见 §4，放行见 §5 |
@@ -21,6 +21,22 @@
 历史文档审计（2026-09-22）：9 份活动 Markdown 的 63 处本地链接及章节锚点、代码块闭合、`git diff --check` 与当时的仅文档修改检查通过。AGENTS 从 3688 减为 2912 UTF-8 字节（约 21%），这是当时入口大小变化，不是实际 token 节省测量。历史快照未修改；当前 D11 的验证另记于 §1。
 
 ## 1. 按日期记录的编码与部署前验证
+
+### 2026-10-13 M25 VoiceChat 隔离诊断与离线判定
+
+- 在既有 D21 诊断 after 基线上交付第三份增量补丁 `isolated-diagnostics.patch` 与 before/after manifest。只有 `VOICECHAT_CAPTURE_DIR` 和固定 `VOICECHAT_CAPTURE_SEQUENCE_ID` 同时存在才启用；目录必须为既有绝对非 symlink，单进程只允许一个新 sequence 目录。普通生产启动不设置这些变量，行为和普通日志不变。
+- WS 定向保存实际 decode PCM、soxr 16 kHz 和真正提交 Triton 的 float32；backend 保存收到 PCM、encoder window、实际选择的 `encoded_audio/asr_emb` frame、`combined_embeds` 以及 custom output 类型/token。artifact 有 30 秒/16 MiB/96 step 默认上限、`0700` 目录和 `0600` 文件；原始 token/文字和 tensor 只在授权 artifact 内，不进 INFO 诊断。
+- 同一组 `asr_emb` frame 继续真实手写 display greedy，同时用 `GreedyRNNTInfer`、相同 decoder/joint/blank/max-symbol 和逐块 `partial_hypotheses` 独立续接；离线等价对照要求临时关闭 punctuation bias，避免将不同后处理误判为 decoder 差异。`combined_embeds` hash 变化证明 backend 提交值变化，但不单独证明 vLLM 内部 head 已加载。
+- 新增 `analyze_voicechat_capture.py`，无模型依赖地检查 resampler→量化→submitted→received 内容、frame 范围/单调性、greedy token 等价、combined embeddings 变化及 `text_logits/function_tokens` runtime custom output，并按 R1/M26/M27/M28 给出首个后续动作。具体离线步骤、退出码和三组 WAV 重复要求见 [发布说明 M25](../deploy/voicechat/README.md#m25-隔离离线验证方法)。
+- 本仓库全量 pytest **200 passed**（一条既有 Starlette/AnyIO 弃用警告），Ruff、`sh -n scripts/deploy-cloud.sh` 和 `git diff --check` 通过。补丁在独立 D21-after 基线完成 `git apply --check`、实际应用、4 个 after SHA-256 和 `py_compile`。当前机器没有独立 speech 的 NumPy/soxr/Triton CPU 测试环境，按约束未安装依赖；该环境中的两份 speech pytest、Docker/GPU、真实 VoiceChat/CueKB、录音/听音、插话与 M26–M28 仍未执行。
+- 本轮完成的是定位并安全选择最小修复所需的 M25，不把全 PAD、完整字幕或本地测试写成故障已解决。M26/M27 继续只按离线结果命中的首个差异实施；真实全双工知识闭环仍须 M28/D07 验收。
+
+### 2026-10-12 WAV 首词与工具触发优化方案（设计）
+
+- 用户提供原版、500 ms、1 s 三份授权录音。标准库 WAV 核对确认格式、95952 原样本、两份精确零前缀且语音 PCM 逐字节相同；本地实际 Chromium/Worklet 受控捕获原附件（44.1 kHz 三次、48 kHz 一次）完整保留首尾，未做真实 VoiceChat/听音。附件与派生捕获留在被忽略的 artifacts，有清理约定，未提交录音。
+- 最新现场 summary 确认 1 s 文件全部送入浏览器上行；两段独立 VoiceChat sequence 的累计转写 1→45、首次 publish 从 0 发出全部累计前缀、final/reset 时 cumulative=emitted=45，function 输出均 64 PAD/零 SOTC。采样/词表/head 的具体根因与同次 API/provider 绑定仍未闭合，不能与旧 final=44 合并证明。
+- 用户要求两个问题的优化方案，已更新 [D21 §2.5/§5.6](voicechat-fault-recovery-design.md#56-两个用户问题的优化方案与实施门槛) 和任务板 M24–M28：隔离 PCM/encoder/RNNT 等价对照、条件最小修复、原生工具输入/head/模板对照、共同验收与独立发布。核对 NeMo 参考 greedy 的逐块 partial_hypotheses 契约；不把离线编码或不支持续接的 batch 路径当等价基线。
+- 本轮只更新 Markdown，未修改运行代码/模板/配置/契约/依赖或执行新的 GPU/容器/真实知识服务检查。验证为文档链接/锚点、代码块闭合及 diff 检查，不把方案记成根因修复或真实验收通过。
 
 ### 2026-10-12 D21/D23 定位工具、文件实时输入与诊断实施
 

@@ -1,6 +1,6 @@
 # D21：部分转写与未桥接音频的定位、修复设计
 
-日期：2026-10-11。状态：**必要诊断与探针修复已本地实现、验证；现场根因尚未闭合**。R1–R5 条件修复仍以现场证据为前提，不代表声学或真实业务验收已通过。状态统一维护在 [任务板](TASK_BOARD.md#本轮-d21-现场语音与文字失败排查)，当前接口见 [接入 §3](integration.md#3-voicechat-接入与能力门槛)。
+日期：2026-10-11，更新：2026-10-13。状态：**必要诊断、探针与 M25 隔离证据包已本地实现、验证；现场根因尚未闭合**。R1–R5 条件修复仍以同一 sequence 的离线/现场证据为前提，不代表声学或真实业务验收已通过。状态统一维护在 [任务板](TASK_BOARD.md#本轮-d21-现场语音与文字失败排查)，当前接口见 [接入 §3](integration.md#3-voicechat-接入与能力门槛)。
 
 ## 1. 目标与范围
 
@@ -73,6 +73,16 @@
 display 在 step 54/56 累计 3/8 字符，step 61 达到 gate 并发布 12 字符；step 63 的 `model_native` BOS 随后触发 final/reset，清空前 cumulative/emitted 均为 12。因此已积累的 12 字符已发布，没有确认清空时丢掉这段文本。实际发言、词位置和原始测试样本尚未提供，不能认定整句完整或截断。display gate 与 turn-taking BOU 使用独立状态；12 字符 display 不是 LLM 的文本输入上限，LLM 接收 perception 的 encoded_audio。
 
 WS 已接收并解码 126720 个 24 kHz 样本（5.28 秒），Triton completed 为 81920 个 16 kHz 样本（5.12 秒），另有 2246 个 16 kHz 样本约 140 ms 留在输入缓冲。output queued/sent 均为 72，output_queue 为零；`dropped_events` 表示有界诊断历史淘汰，不是音频丢包。当前日志仍不能证明最后一个词进入了模型，也未提供该新会话对应 API 错误码。不得把不同 sequence 的日志拼成一轮根因证据。
+
+### 2.5 2026-10-12 WAV 与完整诊断后的新证据
+
+用户提供的 monkey mooncake 录音为 24 kHz mono PCM16，95952 samples / 3.998 秒，data chunk 在 offset 78（含 LIST 元数据），约 14 ms 开始有声。500 ms / 1 s 两份附件分别只增加 12000 / 24000 个零样本，去掉静音后的语音 PCM 与原件逐字节一致；用户报告三种起始位置仍从 o 开始。真实 Chromium 的 44.1 kHz Context 三次及 48 kHz 一次通过受控 WS 捕获，首部与整段均有对齐覆盖；这是本地音频链证据，不是现场 VoiceChat/听音验收。
+
+最新浏览器 summary 确认 1 s 版本 119952 samples / 4.998 秒全部进入成功发送帧，unsent=0、file_input_complete=true、pre_ready/stale=0；66 帧共 126720 samples / 5.28 秒。两段独立 VoiceChat sequence 也各解码 126720 个 24 kHz 样本，Triton submitted/completed=81920 个 16 kHz 样本 / 5.12 秒，queue=0、buffer=2246 / 140.375 ms。理论重采样 84480 与 completed+buffer 的差 314 / 19.625 ms 与持续滤波缓存相容，不能据此认定丢包。尚缺本轮 API provider_session_id 绑定，不能只凭相同帧数把浏览器与两次连接合成一次，也不能把两次连接分别指定为 500 ms / 1 s。
+
+两条模型轨迹均在 step 9/19 累计与已发布均为零时 reset；step 24/30/34 累计 1/9/17 字符，step 34 从 emitted_before=0 发布全部 17 字符，之后单调增长至 45，step 62 的 model_native BOS 导致 final/reset 时 cumulative=emitted=45。gate、publish 和所示 reset 没有删掉已积累的非空首缀；问题位于形成可显示累计文本之前，仍需区分实际 PCM、选帧、RNNT 原始 token 与词表映射。新 final=45 不与旧会话 final=44 混算。两条 function 通道截至断连均 PAD=64、SOTC/EOTC/other=0、idle，未生成原生工具起始 token，随后产生普通回答音频触发生产拒绝。
+
+当前源码中 preprompt 的 1280 静音样本在 sequence_start 分支跳过音频缓冲，不自动计入客户样本时轴；本次 step 64 尚未达到 70 chunks / 5.6 秒窗口上限。asr_emb 是 modality adapter 前的 encoder 输出，encoded_audio 是 adapter 后的 LLM 输入；frame_idx 的时间单位需核对 preprocessor stride、encoder subsampling、adapter 压缩和窗口起点，不能用 decoder step × 80 ms 猜词位置。以上为新现场元数据与本地源码结论，不是已闭合的运行根因。
 
 ## 3. 一次复现需要采集的最小证据
 
@@ -240,6 +250,36 @@ R2c 的内部状态要求（拟定，非新线上字段）：
 
 错误后的已识别文字继续保留；不将 `Request not accepted` 理解为 ASR 已完整。可在确认编码范围时改善恢复提示，说明本次语音未完成业务受理、允许用户改用现有文字输入重新提交；不自动补全原句、不自动重试查询。UI 文案优化不是本故障成功条件。
 
+### 5.6 两个用户问题的优化方案与实施门槛
+
+目标分别是保留真实说出的首词/完整请求，以及完成有依据的业务问答和实际口述。现有证据支持首词转写缺失、原生工具未触发后音频被拒绝；没有证明浏览器丢掉音频，也没有证明两者同根因。两条线并行核对共同 perception 输入，再按首个差异做最小修复，保持 VoiceGateway → SessionCoordinator → BusinessRuntime → ToolRegistry → CueKB。
+
+**A：首词转写。** 在明确授权的隔离测试 sequence 中导出实际 WS 24 kHz PCM、soxr 后 16 kHz PCM 与真正提交 Triton 的 PCM，标注首部有声位置、滤波延迟、补零和尾部；复用已有输入路径，不重新录音替代原件。原始音频、首批 RNNT token/词表文本和张量只进入隔离 artifact，默认关闭、定向到测试 sequence、有界、设清理时间；正常日志保持元数据，不开全局 verbose 或新增公开下载接口。
+
+建立 encoder 窗口起点/有效长度、asr_emb/encoded_audio shape、所选 frame index 与实际样本区间的映射。核对独立 rnnt_tokenizer、blank ID、joint vocabulary、decoder/joint 权重版本和实际加载；此前 LLM/function 的 131072 词表检查不能代替 RNNT 检查。
+
+对同一组实际选中的 asr_emb 帧，分别运行现有手写 display greedy 与 NeMo GreedyRNNTInfer 参考路径：相同权重、dtype、blank ID、max_symbols、独立且等价的初态；参考路径使用支持 partial_hypotheses 的逐块续接，不能将不支持续接的 greedy_batch 接口当作等价流式基线。参考输入按接口 [B,D,T] 转置，不重复编码音频。诊断对照先让双方无额外标点 bias，再单独测试 bias，避免用不同声学输入/状态/后处理比较两个结果。
+
+| 首个差异 | 允许的条件修复 |
+| --- | --- |
+| 实际 PCM 首部不同或损坏 | 修复对应解析/重采样/发送边界，并用原件对齐证明差异消失 |
+| encoder 帧时间单位或选择不一致 | 修正索引、有效范围和 predictor 推进，保证每个有效帧处理一次 |
+| 同帧参考解码完整、手写路径缺首词 | 修正 greedy 状态/符号循环/blank 处理，或复用现有 NeMo 参考组件替代重复实现；display 生命周期与 turn-taking 不随意合并 |
+| 原始 token 正确、词表/文字映射有损 | 修复 RNNT 映射与模型产物的一致性 |
+| 两条等价解码均缺首词 | 检查 encoder/模型产物及不同人工录音的声学覆盖，记录能力不足；不在门户补写 Hello，不直接调整 gate 或继续增加固定静音 |
+
+**B：业务无回答。** 使用已有 diagnostic probe 完整输入后持续观察，分别判断原生工具始终未触发或晚于第一段未经桥接音频。核对运行实例的 asr_head/function_head 加载，以及 perception → combined_embeds → vLLM forward 每步确实更新、有声区间非固定 dummy；观察有限的 PAD/SOTC 分数、排名/分差及类别变化，不能以磁盘键存在代替运行 head 正确，也不把普通 text temperature/top-p 当成 function argmax 的控制开关。
+
+在工具元数据、实际输入及 head 均确认后，做模板单变量对照：保留工具名、schema、special token、ACK/result 格式和推理参数，仅将 Jinja 中 if required / if you decide 的可选措辞与本项目每轮先 consult_service_agent 的要求统一。提示词已明确强制桥接，但当前 Jinja 仍有可选表述；这是对照候选，不是已确定根因。只有原生 SOTC → 合法工具 → 正确 call/input 绑定 → 业务执行的覆盖稳定改善，才发布模板。若原生工具出现后才发现 parser/WS 顺序差异，再进入 R3b/R4，不暂存未经授权音频后追认。
+
+工具触发后，继续验证完整 final ASR、一个 Turn/一次业务调用、真实 CueKB、本轮证据/引用校验、结果提交和语音写回、实际听音。Bridge 失败与 CueKB 失败在状态和提示中保持区分。可选门户改善是在失败后保留转写并提供“检查文字后提交”的入口，只有用户明确点击才用现有文字接口重新受理，不自动重试或启动第二次查询。
+
+若等价输入和 head 均正确，模板对照仍不能满足本期原生工具门槛，记录当前模型/模板组合不通过。后续可另行设计确定性的 ASR → BusinessRuntime → 受控 TTS 模式，需要补齐独立语音生成/自然交互契约，并在启动时固定选择；当前契约不支持把任意业务文本直接变为 VoiceChat 口述，不能静默切模式、伪造 call_id 或向无 pending call 的连接写回结果。
+
+**C：共同验收与交付。** 固定原版、500 ms、1 s 三份样本分别至少三次，按词序核对 hello / please / introduce / monkey / mooncake / products，允许预先约定的大小写/标点归一。补正常/慢速、词间短停顿、不同人工录音、自然插话和取消/旧 epoch，用实际首次差异及修复前后对照放行。每次完成有效输入后必须先有合法原生工具，后有业务结果及授权口述；非法/缺失工具仍安全失败。记录首个转写、final、tool、检索、commit、首个授权音频和实际播放的分段耗时，取得基线后再优化延迟，不用降低识别/授权标准换取速度。
+
+预计主要发布独立 VoiceChat backend/模板及增量补丁；若对照命中本项目边界才改对应 API/Web。涉及 model.py、load_utils.py 或实际 vLLM 源码时须把对应文件纳入镜像/挂载核对、manifest 和重新加载步骤，保留上一版本回退。本机只做受控 CPU/契约验证，GPU、真实模型/CueKB 和听音由 D07 执行。
+
 ## 6. 文件与发布影响
 
 | 文件/模块 | 必要或条件性改动 | 验证要求 |
@@ -253,6 +293,7 @@ R2c 的内部状态要求（拟定，非新线上字段）：
 | `apps/web/src/audio/VoiceClient.ts`、`public/audio-worklet.js` | 必要的受控采集证据，R1 成立才改行为 | `apps/web/tests/worklet.test.mjs`、浏览器音频测试 |
 | `apps/web/src/App.tsx`、`tests/e2e/voice-audio.spec.ts` | 必要：console capture summary 与 DOM/断连受控回归；R5 才改渲染行为 | 完整句/断连/相同内容不同 item 的 DOM 断言 |
 | `deploy/voicechat/` 补丁、manifest、README、Dockerfile | 编码结束后按实际涉及文件更新交付，不手填未验证 hash | 原基线 apply-check、应用后 hash；保留旧发布可回退 |
+| `deploy/voicechat/isolated-diagnostics.patch`、对应 manifest、`scripts/analyze_voicechat_capture.py` | M25 必要：只在显式单 sequence capture 配置下保存原始 artifact 并离线选择首个差异 | D21-after apply-check/after hash、分析器契约；GPU 执行方法见发布说明 |
 | 主题文档、任务板、验收记录 | 分别记录设计、状态与实际证据 | 相对链接、diff、未验证项 |
 
 本轮设计不改变外部 schema，不新增数据库字段/迁移；诊断字段留在日志/探针报告，不泄漏到业务 domain。若后续需要线上事件新字段或修改 schema，必须先修订设计及 contracts、运行 export_contracts，再更新前后端回归，不能借诊断直接加入协议。
@@ -268,6 +309,8 @@ R2c 的内部状态要求（拟定，非新线上字段）：
 5. **现场复测与放行**：同音频、同版本对照证明先前差异消失，再跑真实 CueKB 与听音。失败保留证据、回退对应发布，不扩大模型权限或在运行时自动切模式。
 
 2026-10-11 用户确认编码后，已完成第 1 项以及第 4 项的本地受控验证与补丁交付：探针、浏览器/API 采集元数据、独立 speech WS/backend 边界诊断和发布路径。`VOICECHAT_DIAGNOSTICS` 在 WS/backend 模块导入时读取，默认关闭，派生诊断镜像默认开启；关闭不改变模型行为。第 2、3、5 项仍需现场同样本证据，R1–R5 运行行为修复没有凭推测实施。详细验证归 [验收](acceptance-report.md)，本地交付不等于现场故障解决。
+
+2026-10-13 补齐 M25：`VOICECHAT_CAPTURE_DIR` 与固定 `VOICECHAT_CAPTURE_SEQUENCE_ID` 仅在专用单通话实例同时设置时启用，形成同一 sequence 的 WS/soxr/submitted/received PCM、encoder frame、RNNT 手写/参考 greedy、`combined_embeds` 和 runtime custom output artifact；普通生产启动和日志不含原始内容。离线分析器严格按 §5.6 表格顺序给出首个差异，不能自动修改运行代码。M26/M27 仍需实际报告命中后再写回对应最小修复，M28/D07 状态不变。
 
 ## 8. 验收矩阵
 

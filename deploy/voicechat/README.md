@@ -22,6 +22,9 @@
 | `s2s/audio_server.py`、backend `model.py/runtime_setup.py/data_types.py` | 在 D19 基线之上应用 [diagnostics.patch](diagnostics.patch) | 输入/推理样本计数、ASR final/reset、BOS 来源、raw function 类别、解析/入队/发送顺序；仅长度、计数与标识 |
 | `VOICECHAT_DIAGNOSTICS=1` | WS 与 Triton 进程启动前设置，重新加载这两个服务 | 启动级开关；关掉后不产生新增边界日志，不影响原有业务行为 |
 | `s2s/tests/test_voice_diagnostics.py` | 仅 CPU 测试环境使用 | 从实际模型源码提取边界方法，验证启闭诊断不改转写/BOS 行为、隐私与容量 |
+| `s2s/audio_server.py`、backend `model.py/runtime_setup.py` | 在 D21 诊断 after 基线上应用 [isolated-diagnostics.patch](isolated-diagnostics.patch) | M25 单 sequence 原始 PCM/tensor、encoder frame、RNNT 参考 greedy、combined embeds 与 function custom output 隔离证据；默认关闭 |
+| `VOICECHAT_CAPTURE_DIR`、`VOICECHAT_CAPTURE_SEQUENCE_ID` | 只在隔离、单通话、授权录音复测进程启动前同时设置 | 固定 WS/Triton 同一个 32-bit sequence；缺一或目录不安全时启动失败，不允许生产常开 |
+| [analyze_voicechat_capture.py](../../scripts/analyze_voicechat_capture.py) | 在宿主机离线读取一个 `sequence-N` artifact 目录 | 按传输→encoder→RNNT→combined embeds→function 通道给出首个证据分支，不加载模型 |
 
 D19 只修改 WS；D21 增加上述三个 backend 文件，必须同步加载，不能只更新 `/s2s`。模型仓库/权重、部署脚本和已验证的 GPU、端口、共享内存、模型卷参数保持原样，不需要重新转换模型。自然插话由模型处理，应用不会在每次 speech_started 时自动取消查询。
 
@@ -55,9 +58,65 @@ python -m py_compile s2s/audio_server.py \
 
 环形元数据每会话/sequence 最多 256 条、64 KiB，超限记录 dropped_events。音频仅汇总相邻且同 owner 的区间，不跨 ASR/tool 等控制边界；WS 日志区分 queued/sent 的 output_seq。模型日志记录覆盖 ACK/工具结果 token 之前的 function 类别与累计数，ASR gate/frame/publish/final/reset、原生/ACK/forced EOU BOS、提取取消和 decode step 范围。默认 INFO 的 prompt、工具参数/结果和首 PCM 字节改为长度；不要开启含原文的全局 verbose。开关关闭可停日志，文件回退应恢复完整 before 组合并重载 WS/Triton。
 
+M25 是第三份增量补丁，输入必须是 `diagnostics.patch` 的 after 状态；[isolated-diagnostics-source-manifest.json](isolated-diagnostics-source-manifest.json) 固定补丁及四个文件的 before/after SHA-256。不要把它直接套到原始 speech 或只更新 WS。应用后先做静态和既有 CPU 回归：
+
+```sh
+git apply --check /path/to/voice-service-agent/deploy/voicechat/isolated-diagnostics.patch
+git apply /path/to/voice-service-agent/deploy/voicechat/isolated-diagnostics.patch
+python -m py_compile s2s/audio_server.py \
+  opt/tritonserver/backends/nemotron-voicechat/model.py \
+  opt/tritonserver/backends/nemotron-voicechat/runtime_setup.py
+python -m pytest s2s/tests/test_response_lifecycle.py s2s/tests/test_voice_diagnostics.py -q
+```
+
+补丁只在显式 capture 环境变量同时存在时写原始 artifact；普通 `VOICECHAT_DIAGNOSTICS=1` 仍只写脱敏元数据。`Dockerfile` 已覆盖这些运行文件，但不会默认设置 capture 环境变量。
+
+## M25 隔离离线验证方法
+
+以下流程只能在无其他客户连接的专用 VoiceChat 实例执行。artifact 含授权录音对应 PCM、RNNT token/文字和 tensor，不进入普通日志、不提交 Git；目录须用现场既有安全方式挂载给 WS 与 Triton backend，并约定完成后清理。
+
+1. 为每次通话选择一个未使用的 unsigned 32-bit `sequence_id` 和全新的绝对目录。原版、500 ms、1 s 各至少三次，每次重建专用实例并更换目录/ID，不能在一个进程内并发或复用。
+2. 等价 greedy 对照必须临时设 `RNNT_PUNCT_BIAS_ENABLED=0`；这只是诊断变量，不写入生产默认。保留现有模型、权重、工具 schema、Jinja、采样参数与业务授权不变。
+3. 用现有门户 `Audio file` 或 `probe_voicechat.py` 完整送入固定 WAV，EOF 后继续静音并正常 `session.close`，等待 sequence final。异常断线的报告只能解释已保存区间，不能当完整输入。
+4. 在宿主机对确切 `sequence-N` 目录运行分析器；退出码 `0/1/2` 分别表示必要对照均有结论、发现差异、证据仍不完整。`0` 也不代表真实知识/听音通过。
+
+示例启动环境（路径和 ID 必须替换，目录需事先以 `0700` 创建）：
+
+```sh
+VOICECHAT_CAPTURE_DIR=/var/lib/voicechat-diagnostic/run-01 \
+VOICECHAT_CAPTURE_SEQUENCE_ID=420001 \
+VOICECHAT_CAPTURE_MAX_SECONDS=15 \
+VOICECHAT_CAPTURE_MAX_STEPS=96 \
+VOICECHAT_CAPTURE_MAX_BYTES=16777216 \
+RNNT_PUNCT_BIAS_ENABLED=0 \
+USE_JINJA_TEMPLATE_PROMPT=1 \
+VOICECHAT_DIAGNOSTICS=1 \
+/s2s/run_s2s_server.sh
+```
+
+离线分析：
+
+```sh
+python scripts/analyze_voicechat_capture.py \
+  /var/lib/voicechat-diagnostic/run-01/sequence-420001 \
+  --output /var/lib/voicechat-diagnostic/run-01/report.json
+```
+
+报告判定按以下优先级停止在首个差异：
+
+| check | `failed` 的后续动作 |
+| --- | --- |
+| `transport` | R1：比对 soxr 量化后的 16 kHz 与 Triton 收到内容，修 WS/重采样/队列的首个 byte 差异 |
+| `encoder_mapping` | M26：修 frame index、有效窗口或重复/漏处理 |
+| `rnnt_reference` | M26：同帧手写 greedy 与支持 `partial_hypotheses` 的 NeMo greedy 不同时，修 predictor/blank/symbol state；有 punctuation bias 时报告保持 `unknown` |
+| `combined_embeds` | M26：修 perception 到 LLM custom input 的零值或冻结；hash 变化只证明 backend 提交值变化，不单独证明 vLLM 内部 head 已正确加载 |
+| `function_runtime` | M27：缺 custom output 时修运行实现；若 custom output 存在但全 PAD，继续核对实际 head loading/score，再做单变量模板对照 |
+
+所有 prerequisite 均为 `verified` 且已看到 SOTC/EOTC 后，才进入 M28 的原生工具→真实 CueKB→有效引用答案→授权口述→浏览器实际播放与插话/取消验收。报告不输出原始文字，但 capture 目录本身仍是敏感测试 artifact；完成证据提取后按现场保留策略删除确切的 `sequence-N` 目录，不能扩大到共享挂载根目录。
+
 ## 更新运行镜像并启动
 
-沿用现场已经验证的离线镜像。可使用本目录 [Dockerfile](Dockerfile) 覆盖 WS、既有模板和 D21 的三个 backend 文件（构建上下文必须是应用两份补丁后的 speech 目录）：
+沿用现场已经验证的离线镜像。可使用本目录 [Dockerfile](Dockerfile) 覆盖 WS、既有模板和 D21 的三个 backend 文件（构建上下文必须是依次应用三份补丁后的 speech 目录）：
 
 ```sh
 voicechat_base_image='YOUR_VALIDATED_OFFLINE_IMAGE@sha256:YOUR_DIGEST'
