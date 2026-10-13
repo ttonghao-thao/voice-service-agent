@@ -1,6 +1,6 @@
 # 当前任务板
 
-更新：2026-10-13；当前实现以本文件所在的 `codex/q1003` 提交为准，目标演进设计原基线为 `56d7774`。状态只在此维护；验证结果归 [验收](acceptance-report.md#0-当前审计与证据索引)，当前故障与后续实现归 [q1003 目标架构](q1003-target-architecture.md)。本地实现不意味着现场故障已修复或云端已部署。
+更新：2026-10-13；当前实现以本文件所在的 `codex/q1003` 提交为准，故障设计核对基线为 `1158760`。状态只在此维护；验证结果归 [验收](acceptance-report.md#0-当前审计与证据索引)，目标方案归 [q1003 目标架构](q1003-target-architecture.md)，当前唯一测试语音的故障证据与定位归 [D21](voicechat-fault-recovery-design.md)。本地实现不意味着现场故障已修复或云端已部署。
 
 ## 1. 当前结论与审计基线
 
@@ -45,7 +45,7 @@
 | Q04 | 计划中：受权原件下载，须先确认 CueKB 契约 | [接入 §7](integration.md#7-q04原件查看的后续设计) |
 | Q05 / Q07-F | 计划中：独立推理优化、D1/D3、context-only/任意播报/自由交谈、其他 Provider；GPT Live 为可选实验 | [决策 ADR-03/05](decisions/architecture-decisions.md) 与 [历史研究](archive/2026-09-28/voicechat-research-review.md) |
 | Q1003-ARCH | 目标设计已完成；全局工具目录/注册加固已按本轮需求实现，`social_only`/quarantine 及其余故障修复仍未实施 | [目标架构](q1003-target-architecture.md)；[工具目录](interfaces/voice-tools.md) |
-| Q1003-DIAG | 计划中：语义移植有界事件/PCM/WAV/函数 token 诊断，在 q1003 用同序列定位句首 `Hell` 丢失与无 SOTC/EOTC/工具事件的首个差异点 | [目标架构 §6](q1003-target-architecture.md#6-两个当前故障的定位与修复路径) |
+| Q1003-DIAG | 当前测试语音已唯一固定；计划语义移植有界 PCM/RNNT/function 诊断，在 q1003 用同一 sequence 定位句首 `Hell` 丢失与无 SOTC/EOTC/工具事件的首个差异点 | [D21](voicechat-fault-recovery-design.md)；[目标架构 §6](q1003-target-architecture.md#6-两个当前故障的定位与修复路径) |
 | Q1003-SAFE | 计划中：实现启动级 `social_only`、纯规则 ResponseAuthorizationPolicy、有界 quarantine 和门户显式恢复；不得以 `general_qa` 掩盖漏调用 | [目标架构 §5](q1003-target-architecture.md#5-目标架构) |
 | Q1003-VERIFY | 待离线与真实验证：路由/竞态/协议回归、GPU VoiceChat、真实 CueKB/ACL、浏览器麦克风和人工听音；任一企业漏调用或未授权音频泄漏即 no-go | [离线验证](q1003-target-architecture.md#9-离线验证方法)、[真实门槛](q1003-target-architecture.md#10-真实验收与放行门槛) |
 

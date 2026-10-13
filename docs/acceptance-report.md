@@ -13,7 +13,8 @@
 | 当前功能范围 | Q07/CTX1/EVAL1/LVA1–LVA3 已本地实现 | NVIDIA 等待期四项能力仍 false；增强模拟的 parent_call_id 不属于生产协议 |
 | 历史代码发布 | 3bb0928 与文档 f498fa4 已推送 codex/q1003 并核对远端 | 这是 2026-10-04 的发布记录；本轮自测执行时 HEAD 为 ee73afb 加工作区修复，未执行部署 |
 | 文档整理 | 2026-10-07 DOC5：仅 Markdown；链接/锚点、历史保留、代码对照和五类读取路径验证 | 方法、实际字节统计与限制见 [文档审计 §3](development/documentation.md#3-2026-10-07-审计与场景验证)，该次整理未重跑应用测试 |
-| q1003 目标设计 | 2026-10-13：基于 `56d7774` 整理业务目标、当前故障、`social_only`/响应隔离、诊断路径、里程碑和离线/真实验收门槛 | 仅 Markdown，执行链接目标、锚点、格式和 Git diff 检查；未编码、未重跑应用测试，未验证真实 VoiceChat/CueKB/GPU/浏览器听音；见 [目标架构](q1003-target-architecture.md) |
+| q1003 目标设计 | 2026-10-13：目标方案原基线 `56d7774`，按当前实现 `1158760` 刷新工具目录边界；整理业务目标、`social_only`/响应隔离、诊断路径、里程碑和离线/真实门槛 | 仅 Markdown，未编码 `social_only`/quarantine，未验证真实 VoiceChat/CueKB/GPU/浏览器听音；见 [目标架构](q1003-target-architecture.md) |
+| D21 当前语音故障 | 2026-10-13：唯一保留测试语音 `Hello, please introduce MONKEY MOONCAKE products.`，整理句首 `Hell` 缺失、输入后无回答、证据边界、分层定位和放行门槛 | 仅文档收敛；预录 WAV 功能的受控测试不证明真实 ASR、function channel、CueKB 或听音通过；见 [D21](voicechat-fault-recovery-design.md) |
 | 预录 WAV 输入 | 2026-10-13：26 项 Web 单测、生产构建和 Web 镜像构建通过；完整 Chromium 14 通过、1 项按条件跳过，其中新增文件输入 5 项全通过；既有独立 API 模拟矩阵 51 项通过 | Chromium 使用实际 AudioContext/AudioBufferSource/AudioWorklet；HTTP/WS 与独立 CueKB/VoiceChat/文本模型均为受控夹具。覆盖格式/大小/时长、ready 前不发送、实时输入/EOF、无麦克风、错误/轮换不重播、启动竞态及文字互斥；未验证真实 VoiceChat/CueKB、GPU、ASR/TTS 或听音 |
 | 全局工具目录与注册 | 2026-10-13：三工具真实应用分派及原始 call_id 回填、六工具无固定数量截断、重启保留、全局可见/调用授权、CAS、启停/reload、活动连接刷新、无效候选和错误回显拒绝均通过；SQLite 0010 升降级及 Alembic check 通过 | 配置更新使麦克风重新注册，文件停止且不重播，新增两个 Chromium 场景通过。API/Web 镜像构建及 Compose config --quiet 通过；未执行生产 Compose 启动、PG 数据迁移、真实 VoiceChat/GPU/模型工具质量验收。统一契约见 [工具目录](interfaces/voice-tools.md) |
 
