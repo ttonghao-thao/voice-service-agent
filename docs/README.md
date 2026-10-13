@@ -9,6 +9,7 @@
 | [系统架构](architecture.md)：模块与数据流 | 跨模块/架构改动；§2–4 | voice、sessions、agent_runtime、tools、storage | 决策 → 受影响主题 |
 | [q1003 目标架构](q1003-target-architecture.md)：业务目标、当前故障与演进方案 | 修复句首丢失/无回答，或实施 `social_only`、响应隔离和原生工具可靠性；§1、4–10 | voice、sessions、agent_runtime、tools、storage；apps/web、deploy/voicechat | 知识执行、接入、门户协议、真实验收 |
 | [D21 当前语音故障](voicechat-fault-recovery-design.md)：唯一测试语音、证据边界与分层定位 | 复现 `Hello, please introduce MONKEY MOONCAKE products.` 的句首缺失或无回答；§1–6，验证查 §9–10 | voice、Gateway、Web audio；独立 VoiceChat runtime | 目标架构、接入、门户协议、真实验收 |
+| [VoiceChat 修改源码快照](voicechat/README.md)：本地 Speech 最终修改文件与 SHA-256 | 审查或恢复外接 VoiceChat/Speech 修改；先读范围和证据边界 | `docs/voicechat/s2s`、`docs/voicechat/opt` | 补丁应用、构建与验证仍读交付 README |
 | [知识执行](qa-routing-design.md)：模式、工具、直查/升级 | 修改选路、注册或证据处理；§1–4 | agent_runtime、tools/registry.py | 上下文 → CueKB；口述变更再读交付 |
 | [上下文与评测](task-context-evaluation.md)：来源条件/跨轮纠正 | 修改参数继承或历史；§1–3；评测查 §4–5 | task_context.py、sessions、storage | 知识执行；等待修订再读交付 §3 |
 | [口述与交付](live-agent-implementation.md)：检查、结束/恢复、等待交互 | 分别查 §1、§2、§3 | evidence.py、voice、sessions、storage；Web audio | 门户协议；真实等待门槛再读接入 |
@@ -24,7 +25,7 @@
 | [验收报告](acceptance-report.md)：已执行的证据 | 判断版本可用性；§0/§3 | 本地测试/部署记录 | [验收清单](development/validation.md)：D07/V/Q07 标准 |
 | [文档维护](development/documentation.md)：职责/更新规则 | 文档重组、归档或维护范围不清；§1–2 | 仅 Markdown | §3 为本轮审计，平常不加载 |
 
-独立 Speech 补丁的文件/hash/构建命令仍由 [交付 README](../deploy/voicechat/README.md) 唯一维护。其版本匹配不代表 GPU/实际音频已验证。
+独立 Speech 补丁的应用顺序和构建命令由 [交付 README](../deploy/voicechat/README.md) 维护；本地最终修改源码及其 hash 保存在 [VoiceChat 快照](voicechat/README.md)。版本或 hash 匹配不代表 GPU/实际音频已验证。
 
 ## 信息归属与历史
 
