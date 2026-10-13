@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useRef, useState } from "react";
-import { Alert, Button, Drawer, Input, Slider, Spin, Tag } from "antd";
+import { Alert, Button, Drawer, Input, Radio, Slider, Spin, Tag } from "antd";
 import {
   AudioOutlined,
   AudioMutedOutlined,
@@ -25,9 +25,11 @@ import {
 } from "./api";
 import {
   MicrophoneDiagnostics,
+  RecordingProgress,
   VoiceClient,
   VoiceState,
 } from "./audio/VoiceClient";
+import { prepareRecording, PreparedRecording } from "./audio/recordedAudio";
 
 const stateLabels: Record<VoiceState, string> = {
   closed: "Voice disconnected",
@@ -45,6 +47,14 @@ const statuses: Record<string, string> = {
   superseded: "Superseded",
   expired: "Expired",
   running: "Searching",
+};
+const recordingStageLabels: Record<RecordingProgress["stage"], string> = {
+  waiting_ready: "Waiting for voice connection",
+  sending: "Sending recording in real time",
+  tail_pending: "Finishing recording input",
+  waiting_answer: "Recording sent. Waiting for reply",
+  incomplete: "Recording input interrupted",
+  ended: "File call ended",
 };
 
 function visibleTurnStatus(turn: Turn) {
@@ -66,6 +76,19 @@ export default function App() {
     [volume, setVolume] = useState(0.8),
     [inputState, setInputState] = useState("quiet"),
     [microphone, setMicrophone] = useState<MicrophoneDiagnostics | null>(null);
+  const [voiceInput, setVoiceInput] = useState<"microphone" | "file">(
+    "microphone",
+  );
+  const [recording, setRecording] = useState<PreparedRecording | null>(null);
+  const [recordingProgress, setRecordingProgress] =
+    useState<RecordingProgress | null>(null);
+  const [recordingLoading, setRecordingLoading] = useState(false);
+  const [startingCall, setStartingCall] = useState(false);
+  const recordingFile = useRef<HTMLInputElement>(null);
+  const recordingSelection = useRef(0);
+  const callStarting = useRef(false);
+  const callAttempt = useRef(0);
+  const textSending = useRef(false);
   const [selected, setSelected] = useState<Answer | null>(null),
     [sidebar, setSidebar] = useState(false),
     [sourcesOpen, setSourcesOpen] = useState(false),
@@ -369,11 +392,18 @@ export default function App() {
       setVoiceState,
       onError,
       setMicrophone,
+      setRecordingProgress,
     );
     return () => {
       void voice.current?.stop();
     };
   }, [handleEvent, onError]);
+  useEffect(
+    () => () => {
+      ++recordingSelection.current;
+    },
+    [],
+  );
   useEffect(() => {
     let current = true;
     void (async () => {
@@ -417,15 +447,31 @@ export default function App() {
       await api(`/conversations/${id}`, { method: "DELETE" }).catch(() => {});
     setCallAccessToken("");
   }
-  async function newConversation() {
+  async function newConversation(expectedAttempt?: number) {
     try {
       await closeCurrentCall();
+      if (
+        expectedAttempt !== undefined &&
+        expectedAttempt !== callAttempt.current
+      )
+        return "";
       const c = await api<Conversation>("/conversations", {
         method: "POST",
         body: JSON.stringify({ title: "New conversation", locale: "en-US" }),
       });
       if (!c.access_token)
         throw new Error("The server did not issue call access");
+      if (
+        expectedAttempt !== undefined &&
+        expectedAttempt !== callAttempt.current
+      ) {
+        setCallAccessToken(c.access_token);
+        await api(`/conversations/${c.id}`, { method: "DELETE" }).catch(
+          () => {},
+        );
+        setCallAccessToken("");
+        return "";
+      }
       setCallAccessToken(c.access_token);
       active.current = c.id;
       epoch.current = 0;
@@ -449,13 +495,18 @@ export default function App() {
       setSidebar(false);
       return c.id;
     } catch (e) {
-      setError((e as Error).message);
+      if (
+        expectedAttempt === undefined ||
+        expectedAttempt === callAttempt.current
+      )
+        setError((e as Error).message);
       return "";
     }
   }
   async function send() {
     const text = draft.trim();
-    if (!text || sending) return;
+    if (!text || textSending.current || callStarting.current) return;
+    textSending.current = true;
     setSending(true);
     setError("");
     try {
@@ -487,16 +538,64 @@ export default function App() {
     } catch (e) {
       setError((e as Error).message);
     } finally {
+      textSending.current = false;
       setSending(false);
     }
   }
-  async function startCall() {
+  async function selectRecording(file?: File) {
+    if (!file) return;
+    const selection = ++recordingSelection.current;
     setError("");
-    const id = await newConversation();
-    if (id) await voice.current?.start(id);
+    setRecording(null);
+    setRecordingProgress(null);
+    setRecordingLoading(true);
+    try {
+      const prepared = await prepareRecording(file);
+      if (selection === recordingSelection.current) setRecording(prepared);
+    } catch (e) {
+      if (selection === recordingSelection.current)
+        setError((e as Error).message);
+    } finally {
+      if (selection === recordingSelection.current) setRecordingLoading(false);
+    }
+  }
+  async function startCall() {
+    if (
+      callStarting.current ||
+      textSending.current ||
+      recordingLoading ||
+      (voiceInput === "file" && !recording)
+    )
+      return;
+    const attempt = ++callAttempt.current;
+    callStarting.current = true;
+    setStartingCall(true);
+    setError("");
+    setMicrophone(null);
+    setRecordingProgress(null);
+    try {
+      const id = await newConversation(attempt);
+      if (!id || attempt !== callAttempt.current) return;
+      if (voiceInput === "file" && recording) {
+        setMuted(false);
+        voice.current?.setMuted(false);
+        await voice.current?.start(id, { kind: "file", recording });
+      } else {
+        await voice.current?.start(id);
+      }
+      if (attempt !== callAttempt.current) await voice.current?.stop();
+    } finally {
+      callStarting.current = false;
+      setStartingCall(false);
+    }
   }
   async function endCall() {
-    if (!active.current || callEnded) return;
+    ++callAttempt.current;
+    if (
+      (!active.current && !callStarting.current) ||
+      (callEnded && !callStarting.current)
+    )
+      return;
     await closeCurrentCall();
     setCallEnded(true);
     setProgress("");
@@ -1018,31 +1117,62 @@ export default function App() {
             )}
             <div className="composer">
               <div className="voice-controls">
+                <Radio.Group
+                  aria-label="Voice input source"
+                  value={voiceInput}
+                  optionType="button"
+                  buttonStyle="solid"
+                  options={[
+                    { label: "Microphone", value: "microphone" },
+                    { label: "Audio file", value: "file" },
+                  ]}
+                  disabled={
+                    startingCall ||
+                    sending ||
+                    voiceState === "connecting" ||
+                    voiceState === "ready" ||
+                    voiceState === "reconnecting"
+                  }
+                  onChange={(event) => {
+                    ++recordingSelection.current;
+                    setRecordingLoading(false);
+                    setVoiceInput(event.target.value);
+                    setRecordingProgress(null);
+                  }}
+                />
                 <Button
-                  aria-label="Start call"
+                  aria-label={
+                    voiceInput === "file" ? "Start file call" : "Start call"
+                  }
                   type="primary"
                   icon={<AudioOutlined />}
                   disabled={
                     !caps?.voice_available ||
+                    startingCall ||
+                    sending ||
+                    recordingLoading ||
+                    (voiceInput === "file" && !recording) ||
                     voiceState === "connecting" ||
                     voiceState === "ready" ||
                     voiceState === "reconnecting"
                   }
                   onClick={() => void startCall()}
                 >
-                  Start call
+                  {voiceInput === "file" ? "Start file call" : "Start call"}
                 </Button>
-                <Button
-                  aria-label={muted ? "Unmute microphone" : "Mute microphone"}
-                  disabled={voiceState !== "ready"}
-                  icon={muted ? <AudioMutedOutlined /> : <AudioOutlined />}
-                  onClick={() => {
-                    setMuted(!muted);
-                    voice.current?.setMuted(!muted);
-                  }}
-                >
-                  {muted ? "Unmute" : "Mute"}
-                </Button>
+                {voiceInput === "microphone" && (
+                  <Button
+                    aria-label={muted ? "Unmute microphone" : "Mute microphone"}
+                    disabled={voiceState !== "ready"}
+                    icon={muted ? <AudioMutedOutlined /> : <AudioOutlined />}
+                    onClick={() => {
+                      setMuted(!muted);
+                      voice.current?.setMuted(!muted);
+                    }}
+                  >
+                    {muted ? "Unmute" : "Mute"}
+                  </Button>
+                )}
                 <Button
                   aria-label="Stop playback"
                   icon={<StopOutlined />}
@@ -1062,12 +1192,76 @@ export default function App() {
                   onClick={() => void checkProgress()}>Check progress</Button>
                 <Button
                   type="text"
-                  disabled={!cid || callEnded}
+                  disabled={
+                    (!cid && !startingCall) || (callEnded && !startingCall)
+                  }
                   onClick={() => void endCall()}
                 >
                   End call
                 </Button>
               </div>
+              {voiceInput === "file" && (
+                <div className="recording-input">
+                  <input
+                    ref={recordingFile}
+                    type="file"
+                    accept=".wav,audio/wav,audio/x-wav"
+                    aria-label="Recorded WAV file"
+                    className="recording-file-input"
+                    disabled={
+                      startingCall ||
+                      voiceState === "connecting" ||
+                      voiceState === "ready" ||
+                      voiceState === "reconnecting"
+                    }
+                    onChange={(event) => {
+                      void selectRecording(event.target.files?.[0]);
+                      event.target.value = "";
+                    }}
+                  />
+                  <Button
+                    icon={<FileTextOutlined />}
+                    loading={recordingLoading}
+                    disabled={
+                      startingCall ||
+                      voiceState === "connecting" ||
+                      voiceState === "ready" ||
+                      voiceState === "reconnecting"
+                    }
+                    onClick={() => recordingFile.current?.click()}
+                  >
+                    Choose WAV
+                  </Button>
+                  <div className="recording-details">
+                    <strong>
+                      {recording?.name || "Choose a recorded voice file"}
+                    </strong>
+                    <span>
+                      {recording
+                        ? `${recording.durationSeconds.toFixed(2)} s · 24000 Hz · mono PCM16`
+                        : "24 kHz mono PCM16 WAV · up to 30 seconds / 2 MiB"}
+                    </span>
+                  </div>
+                  {recordingProgress && (
+                    <div className="recording-progress">
+                      <span role="status">
+                        {recordingStageLabels[recordingProgress.stage]}
+                      </span>
+                      <progress
+                        aria-label="Recording send progress"
+                        max={recordingProgress.totalSamples || 1}
+                        value={recordingProgress.sentSamples}
+                      />
+                      <small>
+                        {(recordingProgress.sentSamples / 24000).toFixed(2)} /{" "}
+                        {recordingProgress.durationSeconds.toFixed(2)} s
+                        {recordingProgress.stage === "incomplete" &&
+                          ` · ${(recordingProgress.unsentSamples / 24000).toFixed(2)} s not sent`}
+                      </small>
+                    </div>
+                  )}
+                </div>
+              )}
               {voiceState === "ready" && (
                 <>
                   <div className="voice-live">
@@ -1078,11 +1272,15 @@ export default function App() {
                       <i />
                     </span>
                     <span>
-                      {muted
-                        ? "Microphone muted"
-                        : inputState === "speaking"
-                          ? "Listening"
-                          : "Voice is ready. You can ask a question."}
+                      {voiceInput === "file"
+                        ? recordingProgress
+                          ? recordingStageLabels[recordingProgress.stage]
+                          : "Recording input is ready"
+                        : muted
+                          ? "Microphone muted"
+                          : inputState === "speaking"
+                            ? "Listening"
+                            : "Voice is ready. You can ask a question."}
                       {progress ? " · " + progress : ""}
                     </span>
                     <label>
@@ -1099,7 +1297,7 @@ export default function App() {
                       />
                     </label>
                   </div>
-                  {microphone && (
+                  {voiceInput === "microphone" && microphone && (
                     <div
                       className={`microphone-status ${microphone.echoCancellation === false ? "warning" : ""}`}
                     >
@@ -1150,7 +1348,7 @@ export default function App() {
                   icon={<SendOutlined />}
                   aria-label="Send question"
                   loading={sending}
-                  disabled={!draft.trim()}
+                  disabled={!draft.trim() || startingCall}
                   onClick={() => void send()}
                 />
               </div>

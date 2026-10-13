@@ -53,6 +53,14 @@ SSE 由持久 Event/server_seq/cursor 支持重放；同进程事务提交后唤
 
 音频为 little-endian PCM16、单声道、24 kHz；每帧 80 ms = 1920 samples = 3840 bytes，无 WAV header。浏览器先从设备采样率重采样；seq 连接内递增，重复丢弃，缺帧/过快/持续停顿明确报错。未知控制事件拒绝，不从文本猜语义；取消查询使用带 revision 的 HTTP 接口。
 
+#### 预录 WAV 输入
+
+门户可在 Microphone / Audio file 间选择。文件只在浏览器内存解析，不新增 API 上传或服务端录音存储；仅接受不超过 30 秒、2 MiB 的 24 kHz 单声道 PCM16 RIFF WAV，并校验 RIFF 长度、chunk 边界/填充、唯一 fmt/data 及 PCM 参数。用户选择文件后仍须点击 Start file call，才创建独立 conversation/capability 和 voice session。
+
+文件经 `AudioBufferSourceNode → 现有 AudioWorklet → portal.audio.append` 按音频时钟实时发送，公开 WS 格式、seq、背压和生产授权规则均不变。音源必须等 `portal.session.ready` 及 Worklet 的未来起点确认后从第一个样本启动；EOF 后继续发送静音，直到 FIR 尾部和不足整帧的有效样本进入一次成功的 `ws.send`，此后显示等待回答。`fileSamples/fileComplete` 只是 Worklet 与 VoiceClient 的本地进度元数据，不进入公开 payload。
+
+文件模式不请求麦克风，运行中不能切换输入源。Stop playback 只清下行播放，不能中断文件上行；End call、错误、断线或 session 轮换停止文件并显示完整/未完整状态，首版不会自动续播或重播。固定文件适合复现同一输入，但不验证麦克风权限、AEC/NS/AGC、真实声学或供应商正确率。
+
 finished=true 只在该 response 收到 audio.done 且 Worklet 对应队列排空后发送；服务端要求未抑制、发送结束且样本数等于 sent_samples。排空不是实际听到，部分样本不能确认完成。
 
 ### 3.2 下行与关联
@@ -96,4 +104,4 @@ finished=true 只在该 response 收到 audio.done 且 Worklet 对应队列排�
 - VOICE_TOOL_REQUIRED 是严格模式未满足工具许可；一般模式合法无工具回答不触发它。未知工具、参数错误、原生回答超时和证据检查失败按各自路径结束，不自动补查或伪造成功。
 - Answer/Turn/来源面板使用一致业务终态；错误响应只公开稳定 code/message/retryable/trace_id，不转发上游原文、密钥或堆栈。完整枚举和验证约束以代码/生成 schema 为准。
 
-修改后按场景查 `tests/contract/test_protocol.py`、`tests/integration/test_voice.py`/`test_live_agent_interactions.py`、`tests/e2e/portal.spec.ts`/`voice-audio.spec.ts` 与 `apps/web/tests/worklet.test.mjs`。真实音频标准归 [验收清单](development/validation.md)，不在接口页复制测试数量。
+修改后按场景查 `tests/contract/test_protocol.py`、`tests/integration/test_voice.py`/`test_live_agent_interactions.py`、`tests/e2e/portal.spec.ts`/`voice-audio.spec.ts`/`voice-file.spec.ts` 与 `apps/web/tests/recorded-audio.test.mjs`/`worklet.test.mjs`。真实音频标准归 [验收清单](development/validation.md)，不在接口页复制测试数量。

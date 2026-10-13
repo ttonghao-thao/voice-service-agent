@@ -29,6 +29,7 @@
 | REL1–REL2 / D08 | 既有镜像构建与隔离 Compose/发布；按日期查验收，不代替生产放行 |
 | DOC1–DOC4 | 既有文档整理；记录保存在历史验收/任务板 |
 | DOC5 | 分层入口、当前设计/历史隔离、按任务检索与维护规则；[本次审计](development/documentation.md#3-2026-10-07-审计与场景验证) |
+| WEB-FILE | 浏览器预录 WAV 输入：本地严格校验、ready 后实时发送、EOF 尾部确认、错误不重播，并复用现有 WS/Worklet；[门户 §3.1](portal-protocol.md#预录-wav-输入) |
 
 ## 3. 待完成与建议顺序
 

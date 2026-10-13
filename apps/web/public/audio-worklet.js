@@ -17,6 +17,8 @@ class PortalAudioProcessor extends AudioWorkletProcessor {
     this.sourceSamples = new Map();
     this.resamplers = new Map();
     this.ended = new Set();
+    this.captureOriginFrame = null;
+    this.file = null;
     this.port.onmessage = ({ data: d }) => {
       if (d.type === "reset") {
         this.epoch = d.epoch;
@@ -30,6 +32,34 @@ class PortalAudioProcessor extends AudioWorkletProcessor {
         this.finished = false;
       }
       if (d.type === "ready" && d.epoch === this.epoch) this.suppressed = false;
+      if (d.type === "file" && d.epoch === this.epoch && !this.file) {
+        if (
+          !Number.isSafeInteger(d.startFrame) ||
+          d.startFrame <= currentFrame ||
+          !Number.isSafeInteger(d.sourceFrames) ||
+          d.sourceFrames <= 0 ||
+          !Number.isSafeInteger(d.totalSamples) ||
+          d.totalSamples <= 0
+        ) {
+          this.port.postMessage({
+            type: "error",
+            code: "AUDIO_FILE_SCHEDULING",
+            epoch: this.epoch,
+          });
+          return;
+        }
+        this.file = {
+          startFrame: d.startFrame,
+          endFrame: d.startFrame + d.sourceFrames,
+          sourceFrames: d.sourceFrames,
+          totalSamples: d.totalSamples,
+        };
+        this.port.postMessage({
+          type: "file.ready",
+          epoch: this.epoch,
+          startFrame: d.startFrame,
+        });
+      }
       if (d.type === "mute") this.muted = d.value;
       if (d.type === "volume") this.volume = d.value;
       if (d.type === "audio" && !this.suppressed && d.epoch === this.epoch) {
@@ -76,18 +106,50 @@ class PortalAudioProcessor extends AudioWorkletProcessor {
     const output = outputs[0][0];
     if (!output) return true;
     const source = inputs[0]?.[0] || new Float32Array(output.length);
+    if (this.captureOriginFrame === null)
+      this.captureOriginFrame =
+        typeof currentFrame === "number" ? currentFrame : 0;
+    const firstPosition = this.capture.position;
     const samples = this.capture.push(
       this.muted ? new Float32Array(source.length) : source,
     );
+    let position = firstPosition;
     for (const value of samples) {
       this.chunk[this.used++] = value;
       if (this.used === 1920) {
         const pcm = pcm16(this.chunk);
-        this.port.postMessage({ type: "capture", pcm, epoch: this.epoch }, [
-          pcm,
-        ]);
+        const centerFrame = this.captureOriginFrame + Math.floor(position);
+        const coveredFrames = this.file
+          ? Math.max(
+              0,
+              Math.min(
+                this.file.sourceFrames,
+                centerFrame - this.capture.half - this.file.startFrame,
+              ),
+            )
+          : 0;
+        const fileComplete =
+          !!this.file && centerFrame >= this.file.endFrame + this.capture.half;
+        const fileSamples = this.file
+          ? fileComplete
+            ? this.file.totalSamples
+            : Math.floor(
+                (coveredFrames * this.file.totalSamples) /
+                  this.file.sourceFrames,
+              )
+          : undefined;
+        this.port.postMessage(
+          {
+            type: "capture",
+            pcm,
+            epoch: this.epoch,
+            ...(this.file ? { fileSamples, fileComplete } : {}),
+          },
+          [pcm],
+        );
         this.used = 0;
       }
+      position += this.capture.ratio;
     }
     if (this.suppressed) output.fill(0);
     else this.ring.read(output, this.volume, this.ended.has(this.ring.items[0]?.response));

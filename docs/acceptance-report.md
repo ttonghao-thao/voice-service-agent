@@ -1,6 +1,6 @@
 # 当前验收证据
 
-2026-10-08 云端自测；该次应用基线 `ee73afb` 加当轮自测修复。2026-10-13 文档设计基于 `codex/q1003@56d7774`，未刷新应用验证。本文只维护最近可用证据及未验证边界；旧流水归档，不累加历史测试数。任务状态归 [任务板](TASK_BOARD.md)，放行目标归 [验收清单](development/validation.md)。
+2026-10-13 已刷新前端、浏览器、独立 API 模拟和 Web 镜像证据；完整 Python 应用回归最近一次仍为 2026-10-08 的 `ee73afb` 加当轮自测修复。本文只维护最近可用证据及未验证边界；旧流水归档，不累加历史测试数。任务状态归 [任务板](TASK_BOARD.md)，放行目标归 [验收清单](development/validation.md)。
 
 ## 0. 当前审计与证据索引
 
@@ -14,6 +14,7 @@
 | 历史代码发布 | 3bb0928 与文档 f498fa4 已推送 codex/q1003 并核对远端 | 这是 2026-10-04 的发布记录；本轮自测执行时 HEAD 为 ee73afb 加工作区修复，未执行部署 |
 | 文档整理 | 2026-10-07 DOC5：仅 Markdown；链接/锚点、历史保留、代码对照和五类读取路径验证 | 方法、实际字节统计与限制见 [文档审计 §3](development/documentation.md#3-2026-10-07-审计与场景验证)，该次整理未重跑应用测试 |
 | q1003 目标设计 | 2026-10-13：基于 `56d7774` 整理业务目标、当前故障、`social_only`/响应隔离、诊断路径、里程碑和离线/真实验收门槛 | 仅 Markdown，执行链接目标、锚点、格式和 Git diff 检查；未编码、未重跑应用测试，未验证真实 VoiceChat/CueKB/GPU/浏览器听音；见 [目标架构](q1003-target-architecture.md) |
+| 预录 WAV 输入 | 2026-10-13：26 项 Web 单测、生产构建和 Web 镜像构建通过；完整 Chromium 14 通过、1 项按条件跳过，其中新增文件输入 5 项全通过；既有独立 API 模拟矩阵 51 项通过 | Chromium 使用实际 AudioContext/AudioBufferSource/AudioWorklet；HTTP/WS 与独立 CueKB/VoiceChat/文本模型均为受控夹具。覆盖格式/大小/时长、ready 前不发送、实时输入/EOF、无麦克风、错误/轮换不重播、启动竞态及文字互斥；未验证真实 VoiceChat/CueKB、GPU、ASR/TTS 或听音 |
 
 本轮环境为 Python 3.12.14、Node 24.19.0、系统 Chromium 和独立 SQLite；CueKB HTTP、VoiceChat WS、兼容文本模型 HTTP 均为 loopback 模拟 API。执行根 README 的 pytest、Ruff、Node 单测、前端构建和契约导出命令，并按 [模拟 §3](simulated-full-flow.md#3-复现步骤) 显式设置 `SIMULATED_FULL_FLOW=1` 运行浏览器；修复后的服务已重启验证并关闭。重连回归另外确认最终 audio.done 和唯一工具结果。
 
