@@ -6,6 +6,8 @@ from ipaddress import ip_address
 from typing import Annotated
 
 import anyio
+import yaml
+from app.agent_runtime.tool_catalog import NativeToolCatalogUpdate, NativeToolReload
 from app.api.auth import principal
 from app.contracts import (
     ConversationInput,
@@ -178,12 +180,13 @@ async def get_capabilities(request: Request):
         scopes=frozenset({"knowledge:read"}),
         knowledge_base_ids=auth.knowledge_base_ids(),
     )
+    snapshot = await request.app.state.coordinator.runtime.catalog.snapshot()
     return {
         **capabilities(request.app.state.settings),
         "available_tools": sorted(await request.app.state.registry.allowed(user)),
-        "native_tools": list(await request.app.state.coordinator.runtime.dispatcher.available(
-            request.app.state.registry, user)) if request.app.state.settings.qa_execution_mode == "dual_tools"
+        "native_tools": list(snapshot.tools) if request.app.state.settings.qa_execution_mode == "dual_tools"
             else ["consult_service_agent"],
+        "native_tool_revision": snapshot.revision,
     }
 
 
@@ -462,6 +465,38 @@ async def voice_stream(ws: WebSocket, sid: str, ticket: str = ""):
 def admin(user):
     if "tools:admin" not in user.scopes:
         raise DomainError("FORBIDDEN", "Tool administration permission is required", 403)
+
+
+@router.get("/admin/voice-tools")
+async def native_tool_list(request: Request, user: User):
+    admin(user)
+    runtime = request.app.state.coordinator.runtime
+    revision, entries = await runtime.catalog.configuration()
+    snapshot = await runtime.catalog.snapshot()
+    return {"revision": revision, "items": [entry.model_dump() for entry in entries],
+            "active_tools": list(snapshot.tools), "definitions": snapshot.definitions,
+            "implementations": [{"name": name, "parameters": tool.arguments.model_json_schema(),
+                "required_tools": sorted(tool.required_tools)} for name, tool in runtime.dispatcher.tools.items()]}
+
+
+@router.put("/admin/voice-tools")
+async def native_tool_update(body: NativeToolCatalogUpdate, request: Request, user: User):
+    admin(user)
+    revision = await request.app.state.coordinator.runtime.catalog.update(
+        body.items, body.expected_revision, user.user_id)
+    return {"revision": revision, "refresh": "reconnect_active_voice_sessions"}
+
+
+@router.post("/admin/voice-tools/reload")
+async def native_tool_reload(body: NativeToolReload, request: Request, user: User):
+    admin(user)
+    catalog = request.app.state.coordinator.runtime.catalog
+    try:
+        entries = catalog.load_file()
+    except (ValueError, KeyError, TypeError, OSError, yaml.YAMLError) as exc:
+        raise DomainError("NATIVE_TOOL_CONFIGURATION", "The voice tool file is invalid", 422) from exc
+    revision = await catalog.update(entries, body.expected_revision, user.user_id, "native_tools.reloaded")
+    return {"revision": revision, "refresh": "reconnect_active_voice_sessions"}
 
 
 @router.get("/admin/tools")

@@ -59,6 +59,8 @@ class VoiceSession:
     answer_policy: str = "knowledge_required"
     registered_tools: tuple[str, ...] = ()
     tool_definitions: list | None = None
+    tool_catalog: dict | None = None
+    catalog_revision: int = 0
     response_turns: dict | None = None
     suppressed_turns: set | None = None
     capabilities: ProviderCapabilities = ProviderCapabilities()
@@ -97,17 +99,17 @@ class VoiceGateway:
                 raise DomainError("VOICE_UNAVAILABLE", "VoiceChat is not configured", 503)
             if len(self.sessions) >= s.max_voice_sessions:
                 raise DomainError("VOICE_CAPACITY_EXCEEDED", "Voice capacity is full. Use text or try again later.", 429, True)
-            registered_tools, tool_definitions = (), None
+            registered_tools, tool_definitions, tool_catalog, catalog_revision = (), None, None, 0
             capabilities = getattr(self.provider_factory, "capabilities", ProviderCapabilities())
             if conversation.qa_execution_mode == "dual_tools":
-                dispatcher = self.coordinator.runtime.dispatcher
-                registered_tools = await dispatcher.available(self.coordinator.runtime.registry, principal)
-                if not registered_tools or (
-                    "reason_over_knowledge" in registered_tools and s.agent_provider != "mock"
+                snapshot = await self.coordinator.runtime.catalog.snapshot(capabilities.wait_interaction)
+                tool_catalog, catalog_revision = snapshot.tools, snapshot.revision
+                registered_tools, tool_definitions = tuple(snapshot.tools), snapshot.definitions
+                if (not registered_tools and conversation.answer_policy == "knowledge_required") or (
+                    any(tool.kind == "reasoned" for tool in tool_catalog.values()) and s.agent_provider != "mock"
                     and (not self.coordinator.runtime.client or not s.agent_model)
                 ):
                     raise DomainError("VOICE_UNAVAILABLE", "The registered knowledge tools are not configured", 503)
-                tool_definitions = dispatcher.definitions(registered_tools, capabilities.wait_interaction)
                 if len(registered_tools) > 5:
                     logger.warning("voice_tool_count_exceeds_recommendation count=%s", len(registered_tools))
             epoch, request_revision = await self.store.rotate_voice(principal, cid)
@@ -141,6 +143,8 @@ class VoiceGateway:
                     suppressed_turns=set(),
                     registered_tools=registered_tools,
                     tool_definitions=tool_definitions,
+                    tool_catalog=tool_catalog,
+                    catalog_revision=catalog_revision,
                     capabilities=capabilities,
                 )
             self.sessions[sid] = session
@@ -238,13 +242,24 @@ class VoiceGateway:
         call_plans, call_owners, call_operations, settlement_calls = {}, {}, {}, set()
         network_done, playback_finished = {}, set()
         latest_input_id = None
-        ack_text = QA_ACK if session.qa_mode == "dual_tools" else BRIDGE_ACK
+        def ack_texts(response_id):
+            call = response_calls.get(response_id) or response_deliveries.get(response_id)
+            tool = (session.tool_catalog or {}).get(call_tools.get(call))
+            return tool.ack_messages if tool else (QA_ACK if session.qa_mode == "dual_tools" else BRIDGE_ACK,)
+
+        def is_ack(response_id, text):
+            return " ".join(text.split()) in ack_texts(response_id)
         seq, client_seq, started = 0, -1, time.monotonic()
         frames, last_input, last_ack, last_playback_stop = 0, started, 0.0, 0.0
         input_state = "quiet"
 
         async def current(tid=None, revision=None):
             await self.coordinator.coordination.check(session.conversation_id)
+            if session.qa_mode == "dual_tools" and (
+                await self.coordinator.runtime.catalog.revision() != session.catalog_revision
+            ):
+                raise DomainError("VOICE_TOOL_CONFIGURATION_CHANGED",
+                    "Voice tools changed. Reconnect to register the updated catalog.", 409, True)
             return not session.stopped and await self.store.current(
                 session.conversation_id, session.epoch, tid, revision
             ) and tid not in session.suppressed_turns
@@ -335,7 +350,7 @@ class VoiceGateway:
                             if await current(tid, revision) and pending.get(call) == "ready":
                                 if session.qa_mode == "dual_tools":
                                     allowed = await self.coordinator.runtime.registry.allowed(session.principal)
-                                    definition = self.coordinator.runtime.dispatcher.tools.get(call_tools.get(call))
+                                    definition = session.tool_catalog.get(call_tools.get(call))
                                     if (not definition or not definition.required_tools <= allowed
                                         or definition.permission_scope not in session.principal.scopes
                                         or (session.principal.expires_at is not None and session.principal.expires_at <= time.time())):
@@ -398,7 +413,7 @@ class VoiceGateway:
                 if session.qa_mode == "dual_tools":
                     decision = self.coordinator.runtime.dispatcher.resolve(
                         payload["name"], payload["arguments"], session.registered_tools,
-                        session.capabilities.wait_interaction)
+                        session.capabilities.wait_interaction, session.tool_catalog)
                     args = decision.arguments
                 elif (
                     payload["name"] != BRIDGE_NAME
@@ -575,7 +590,8 @@ class VoiceGateway:
                     operation = "query"
                     if session.capabilities.wait_interaction and session.qa_mode == "dual_tools":
                         operation = getattr(self.coordinator.runtime.dispatcher.resolve(
-                            event.payload["name"], event.payload["arguments"], session.registered_tools, True).arguments,
+                            event.payload["name"], event.payload["arguments"], session.registered_tools, True,
+                            session.tool_catalog).arguments,
                             "operation", "query")
                     if any(v in ("running", "ready", "settlement_ready") for v in pending.values()):
                         if not session.capabilities.wait_interaction or operation not in ("progress", "revise"):
@@ -584,7 +600,7 @@ class VoiceGateway:
                     call_tools[call] = event.payload.get("name")
                     call_operations[call] = operation
                     if session.qa_mode == "dual_tools":
-                        definition = self.coordinator.runtime.dispatcher.tools[call_tools[call]]
+                        definition = session.tool_catalog[call_tools[call]]
                         call_versions[call] = {name: await self.store.tool_revision(name)
                                                for name in definition.required_tools}
                     tool_responses[call] = response_id or call
@@ -836,7 +852,7 @@ class VoiceGateway:
                         and response_id not in speech_segments
                     ):
                         candidate = ack_prefixes.get(response_id, "") + event.payload["text"]
-                        if ack_text.startswith(candidate):
+                        if any(text.startswith(candidate) for text in ack_texts(response_id)):
                             ack_prefixes[response_id] = candidate
                             continue
                         if response_id in ack_prefixes:
@@ -850,7 +866,7 @@ class VoiceGateway:
                             and pending.get(response_calls[response_id]) != "sent"
                         ) or (
                             event.kind == "speech_text.done"
-                            and " ".join(event.payload["text"].split()) == ack_text
+                            and is_ack(response_id, event.payload["text"])
                         )
                         else "answer",
                     )
@@ -896,7 +912,7 @@ class VoiceGateway:
                         response_texts.setdefault(response_id, []).append(event.payload["text"])
                 if (event.kind == "speech_text.done" and suppressed and turn_owner
                     and turn_owner[0] in evidence_turns
-                    and " ".join(event.payload["text"].split()) != ack_text):
+                    and not is_ack(response_id, event.payload["text"])):
                     # Playback suppression is not task cancellation. Retain the
                     # current task's text for evidence checks without forwarding
                     # speech or recording it as a presented response.
@@ -911,7 +927,7 @@ class VoiceGateway:
                     speech_segment_counts[response_id] = speech_segment_counts.get(response_id, 0) + 1
                     if response_id in initial_responses:
                         initial_text_completed.add(response_id)
-                    if " ".join(event.payload["text"].split()) == ack_text:
+                    if is_ack(response_id, event.payload["text"]):
                         ack_responses.add(response_id)
                     else:
                         ack_responses.discard(response_id)
@@ -1064,6 +1080,11 @@ class VoiceGateway:
         async def watchdog():
             while True:
                 await asyncio.sleep(1)
+                if session.qa_mode == "dual_tools":
+                    snapshot = await self.coordinator.runtime.catalog.snapshot(session.capabilities.wait_interaction)
+                    if snapshot.revision != session.catalog_revision or snapshot.definitions != session.tool_definitions:
+                        raise DomainError("VOICE_TOOL_CONFIGURATION_CHANGED",
+                            "Voice tools changed. Reconnect to register the updated catalog.", 409, True)
                 for response_id, deadline in general_deadlines.items():
                     if response_id in general_inputs and response_id not in completed_responses and time.monotonic() > deadline:
                         await self.store.utterance(session.principal, session.conversation_id,
@@ -1099,6 +1120,8 @@ class VoiceGateway:
         try:
             if getattr(provider, "capabilities", ProviderCapabilities()) != session.capabilities:
                 raise DomainError("VOICE_PROTOCOL_ERROR", "Voice capabilities changed after session creation", 502)
+            if not await current():
+                return
             await provider.connect(session.summary)
             emit(
                 "session.ready",

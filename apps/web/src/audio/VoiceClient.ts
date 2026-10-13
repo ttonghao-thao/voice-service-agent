@@ -420,9 +420,12 @@ export class VoiceClient {
               : undefined,
           );
         if (event.type === "portal.error") {
-          if (event.payload.code === "VOICE_SESSION_ROTATION_REQUIRED") {
+          if (
+            event.payload.code === "VOICE_SESSION_ROTATION_REQUIRED" ||
+            event.payload.code === "VOICE_TOOL_CONFIGURATION_CHANGED"
+          ) {
             this.onEvent(event);
-            void this.rotate(generation);
+            void this.rotate(generation, event.payload.code === "VOICE_TOOL_CONFIGURATION_CHANGED");
             return;
           }
           this.clear();
@@ -489,14 +492,14 @@ export class VoiceClient {
       );
     }
   }
-  private async rotate(expectedGeneration: number) {
+  private async rotate(expectedGeneration: number, toolsChanged = false) {
     if (expectedGeneration !== this.generation || !this.cid) return;
     const cid = this.cid;
     if (this.input.kind === "file") {
       await this.stop();
-      this.onError(
-        "The file call reached its session limit. Start a new file call to run it again.",
-      );
+      this.onError(toolsChanged
+        ? "The voice tools changed. Start a new file call to register them; the recording was not replayed."
+        : "The file call reached its session limit. Start a new file call to run it again.");
       return;
     }
     this.onState("reconnecting");

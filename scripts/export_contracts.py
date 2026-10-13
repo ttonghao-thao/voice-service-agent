@@ -3,6 +3,7 @@
 import json
 from pathlib import Path
 
+from app.agent_runtime.tool_catalog import NativeToolCatalogUpdate, NativeToolEntry
 from app.contracts import (
     AnswerBundle,
     KnowledgeArguments,
@@ -27,6 +28,8 @@ models = {
     "voice-knowledge-arguments": KnowledgeArguments,
     "voice-knowledge-interaction-arguments": KnowledgeInteractionArguments,
     "tool-spec": ToolSpec,
+    "voice-tool-entry": NativeToolEntry,
+    "voice-tool-catalog-update": NativeToolCatalogUpdate,
     "cuekb-tool-query": CueKBSearchInput,
     "cuekb-search-request": CueKBSearchRequest,
     "cuekb-search-response": CueKBSearchResponse,

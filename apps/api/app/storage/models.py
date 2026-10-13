@@ -133,6 +133,14 @@ class Record(Base):
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=now)
 
 
+class NativeToolConfig(Base):
+    __tablename__ = "native_tool_config"
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    revision: Mapped[int] = mapped_column(Integer, nullable=False)
+    items: Mapped[list[dict[str, Any]]] = mapped_column(JSON, nullable=False)
+    updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=now)
+
+
 class ToolConfig(Base):
     __tablename__ = "tool_configs"
     name: Mapped[str] = mapped_column(String(80), primary_key=True)

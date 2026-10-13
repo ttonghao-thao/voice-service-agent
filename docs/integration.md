@@ -26,7 +26,7 @@
 
 API 通过 `VOICECHAT_WS_URL` 连接独立服务的 `/v1/realtime`。受控同主机/隔离网络可用 WS，其它非受控链路使用 WSS；浏览器始终访问本项目同源 HTTPS/WSS。VoiceChat 端口与公网门户端口不能混为一谈。
 
-握手固定为 `session.created → session.update → session.updated`。legacy 注册 `consult_service_agent(user_request)`；dual_tools 按当前授权注册快照，仅有 `lookup_knowledge` / `reason_over_knowledge` 两个默认工具。Adapter 用 flat name/description/parameters/ack_messages 定义及 instructions，验证 `audio/pcm`、24000 Hz；不发送 `tool_choice`、未证实的 response.cancel、动态 TTS 或后台推送字段。工具定义不是每个音频帧重复发送。
+握手固定为 `session.created → session.update → session.updated`。legacy 注册 `consult_service_agent(user_request)`；dual_tools 注册后台配置的全局目录，两个知识工具只是初始配置。Adapter 用 flat name/description/parameters/ack_messages 定义及 instructions，验证 `audio/pcm`、24000 Hz 与工具/指令回显一致性；不发送 `tool_choice`、未证实的 response.cancel、动态 TTS 或后台推送字段。目录与刷新规则见 [原生工具契约](interfaces/voice-tools.md)，不是每个音频帧重复发送。
 
 握手与流事件必须是带有效 `type` 的 JSON 对象；非法结构、音频格式、标识或 PCM16/base64 返回 `VOICE_PROTOCOL_ERROR` 并关闭连接。事件 `response_id` / `item_id` 若出现，须为 1–128 字符的字符串，输出 PCM16 chunk 限 48000 bytes；合法的未知事件类型仍可忽略。这些校验在供应商 Adapter 内完成，不将错误包交给浏览器处理，也不切换到 mock。
 
@@ -89,7 +89,7 @@ D19 上游补丁、适用源码 hash、CPU 测试与发布方式见 [VoiceChat �
 
 2026-09-28 文献复核：[新论文 §7、附录 B](https://arxiv.org/html/2609.21967v1) 记录当时版本在工具执行期间不支持 barge-in；持续收音、字幕或固定 ACK 不代表新音频参与响应生成。当时核对的 backend 工具期限另有帧数/推理批次时间单位风险，不能推定新版本仍相同。详细证据见 [Q05 分析](archive/2026-09-28/voicechat-research-review.md)，不能据此宣称增强能力通过。
 
-当前应用已有 ProviderCapabilities 门槛与进度/修订处理；**生产 NVIDIA 仍全部 false**，默认注册两个工具的旧 schema，不发送 operation/tool_choice/任意播报命令。只有明确验证等待进度、修订、call 关联与旧调用安全结清的可信 Adapter 才使用 operation 扩展；没有 env/browser 绕过。SimulatedWaitAdapter 的 parent_call_id 是独立测试协议扩展，不是 NVIDIA 已公开字段。详细调用状态及真实启用条件见 [Live §3](live-agent-implementation.md#3-等待进度与自然修订)。基础关闭只依据 output_audio.done 与 WS 正常 close handshake；异常关闭仍是 unknown，不等于已播放。
+当前应用已有 ProviderCapabilities 门槛与进度/修订处理；**生产 NVIDIA 仍全部 false**，知识实现不暴露 operation，不发送 tool_choice/任意播报命令；工具数量独立由后台目录决定。只有明确验证等待进度、修订、call 关联与旧调用安全结清的可信 Adapter 才使用 operation 扩展；没有 env/browser 绕过。SimulatedWaitAdapter 的 parent_call_id 是独立测试协议扩展，不是 NVIDIA 已公开字段。详细调用状态及真实启用条件见 [Live §3](live-agent-implementation.md#3-等待进度与自然修订)。基础关闭只依据 output_audio.done 与 WS 正常 close handshake；异常关闭仍是 unknown，不等于已播放。
 
 ## 4. 文本模型与业务 Agent
 
@@ -111,7 +111,7 @@ Runtime、ToolRegistry、CueKB adapter 与 VoiceGateway 记录脱敏阶段日志
 
 | 层次 | 注册与授权 | 当前名称 |
 | --- | --- | --- |
-| VoiceChat 可见业务工具 | agent_runtime/dispatch.py 的 NativeTool；自己的严格 schema、可信 executor、permission_scope、required_tools；会话定义快照 | dual_tools 默认仅 lookup_knowledge / reason_over_knowledge；legacy 单 bridge |
+| VoiceChat 可见业务工具 | NativeTool 可信 schema/执行器 + tool_catalog.py 全局后台元数据；版本化会话快照 | dual_tools 数量由后台配置，对所有客户可见；执行单独授权；legacy 单 bridge |
 | 后台工具能力 | tools/registry.py 的 ToolSpec/adapter；部署白名单、管理员启停、身份范围和版本校验 | 默认 search_knowledge，通过 CueKB /v1/search 执行 |
 
 新增原生工具的注册/schema/executor/scope/依赖规则只在 [知识执行 §2](qa-routing-design.md#2-注册输入与扩展) 维护；本节维护后台 ToolSpec/Registry 的服务接入与启停授权。

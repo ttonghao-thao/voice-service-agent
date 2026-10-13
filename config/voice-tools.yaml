@@ -1,0 +1,29 @@
+# Initial global catalog. Admin API changes are persisted in the database.
+# implementation references trusted NativeTool registrations, never import paths.
+tools:
+  - name: lookup_knowledge
+    implementation: lookup_knowledge
+    description: >-
+      Retrieve authorized company or product documentation for one clear factual question
+      or documented procedure, or an explicit knowledge-base search. General concepts
+      without company sources may be answered directly unless session policy requires evidence.
+      This does not query live account or device state. Preserve the complete request;
+      never guess identifiers. The server may escalate once when evidence requires reasoning.
+    examples:
+      - user_request: What is the documented connection limit for Product AX?
+        product_model: AX
+        software_version: null
+    output_description: Returns authorized evidence with conditions and versions, or a clarification/error. Answer only from returned evidence.
+  - name: reason_over_knowledge
+    implementation: reason_over_knowledge
+    description: >-
+      Reason over authorized company or product documentation for comparisons, multiple
+      versions or sources, conditional applicability, calculations or troubleshooting.
+      Use when company sources or an explicit knowledge-base search are required.
+      This does not query live account or device state. Preserve the complete request
+      and constraints. If unsure one lookup is enough, use this reasoning tool or clarify.
+    examples:
+      - user_request: Compare the documented connection limits for AX versions 1 and 2.
+        product_model: AX
+        software_version: null
+    output_description: Returns a validated answer or clarification/error with an approved short speech_text. Preserve its facts and limitations.

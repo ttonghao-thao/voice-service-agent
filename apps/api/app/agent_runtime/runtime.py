@@ -16,6 +16,7 @@ from agents import (
 )
 from app.agent_runtime.direct import DirectKnowledgeExecutor
 from app.agent_runtime.dispatch import knowledge_tools
+from app.agent_runtime.tool_catalog import NativeToolCatalog
 from app.config import ROOT
 from app.contracts import AgentAnswer, AnswerBundle, now, printable_ascii
 from openai import AsyncOpenAI
@@ -55,6 +56,7 @@ class BusinessRuntime:
         self.client = None
         self.direct = DirectKnowledgeExecutor(settings, registry, self.run)
         self.dispatcher = knowledge_tools(self.direct.run, self.run)
+        self.catalog = NativeToolCatalog(self.dispatcher, registry)
         if settings.openai_api_key.get_secret_value():
             self.client = AsyncOpenAI(
                 api_key=settings.openai_api_key.get_secret_value(),
@@ -84,7 +86,7 @@ class BusinessRuntime:
         if "user_request" in ctx.tool_arguments:
             ctx.tool_arguments["user_request"] = request
         if ctx.task_context:
-            if decision.tool.name not in ("lookup_knowledge", "reason_over_knowledge"):
+            if decision.tool.kind == "custom":
                 return await decision.tool.executor(request, ctx, history, progress)
             if ctx.task_context.get("argument_errors") or ctx.task_context.get("unresolved"):
                 return AnswerBundle(status="needs_clarification",
@@ -92,7 +94,7 @@ class BusinessRuntime:
                     speech_text="Please confirm the product and version.", answer_kind="clarification",
                     reason_code="CONTEXT_NEEDS_CLARIFICATION")
             resolved = ctx.task_context["resolved_request"]
-            if ctx.answer_policy == "knowledge_required" and decision.tool.name == "lookup_knowledge":
+            if ctx.answer_policy == "knowledge_required" and decision.tool.kind == "direct":
                 return await self.run(resolved, ctx, history, progress)
             return await decision.tool.executor(resolved, ctx, history, progress)
         # Identifiers are usable only when present in the final ASR or previously confirmed slots.
@@ -106,7 +108,7 @@ class BusinessRuntime:
                 if key == "product_model" and value != ctx.slots.get(key) and not getattr(decision.arguments, "software_version", None):
                     ctx.slots.pop("software_version", None)
                 ctx.slots[key] = value
-        if ctx.answer_policy == "knowledge_required" and decision.tool.name == "lookup_knowledge":
+        if ctx.answer_policy == "knowledge_required" and decision.tool.kind == "direct":
             # D2 streams before checking the actual speech; strict deployments use the external path.
             ctx.effective_executor = "reasoned"
             return await self.run(request, ctx, history, progress)

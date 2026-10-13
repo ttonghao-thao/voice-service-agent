@@ -584,6 +584,92 @@
         }
       }
     },
+    "/api/v1/admin/voice-tools": {
+      "get": {
+        "summary": "Native Tool List",
+        "operationId": "native_tool_list_api_v1_admin_voice_tools_get",
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {}
+              }
+            }
+          }
+        }
+      },
+      "put": {
+        "summary": "Native Tool Update",
+        "operationId": "native_tool_update_api_v1_admin_voice_tools_put",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/NativeToolCatalogUpdate"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {}
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/v1/admin/voice-tools/reload": {
+      "post": {
+        "summary": "Native Tool Reload",
+        "operationId": "native_tool_reload_api_v1_admin_voice_tools_reload_post",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/NativeToolReload"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {}
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
     "/api/v1/admin/tools": {
       "get": {
         "summary": "Tool List",
@@ -782,6 +868,102 @@
           "text"
         ],
         "title": "MessageInput"
+      },
+      "NativeToolCatalogUpdate": {
+        "properties": {
+          "expected_revision": {
+            "type": "integer",
+            "minimum": 0.0,
+            "title": "Expected Revision"
+          },
+          "items": {
+            "items": {
+              "$ref": "#/components/schemas/NativeToolEntry"
+            },
+            "type": "array",
+            "maxItems": 64,
+            "title": "Items"
+          }
+        },
+        "additionalProperties": false,
+        "type": "object",
+        "required": [
+          "expected_revision",
+          "items"
+        ],
+        "title": "NativeToolCatalogUpdate"
+      },
+      "NativeToolEntry": {
+        "properties": {
+          "name": {
+            "type": "string",
+            "pattern": "^[a-z][a-z0-9_]{0,79}$",
+            "title": "Name"
+          },
+          "implementation": {
+            "type": "string",
+            "pattern": "^[a-z][a-z0-9_]{0,79}$",
+            "title": "Implementation"
+          },
+          "description": {
+            "type": "string",
+            "maxLength": 1600,
+            "minLength": 1,
+            "title": "Description"
+          },
+          "enabled": {
+            "type": "boolean",
+            "title": "Enabled",
+            "default": true
+          },
+          "ack_messages": {
+            "items": {
+              "type": "string"
+            },
+            "type": "array",
+            "maxItems": 2,
+            "minItems": 1,
+            "title": "Ack Messages"
+          },
+          "examples": {
+            "items": {
+              "additionalProperties": true,
+              "type": "object"
+            },
+            "type": "array",
+            "maxItems": 3,
+            "title": "Examples"
+          },
+          "output_description": {
+            "type": "string",
+            "maxLength": 600,
+            "title": "Output Description",
+            "default": ""
+          }
+        },
+        "additionalProperties": false,
+        "type": "object",
+        "required": [
+          "name",
+          "implementation",
+          "description"
+        ],
+        "title": "NativeToolEntry"
+      },
+      "NativeToolReload": {
+        "properties": {
+          "expected_revision": {
+            "type": "integer",
+            "minimum": 0.0,
+            "title": "Expected Revision"
+          }
+        },
+        "additionalProperties": false,
+        "type": "object",
+        "required": [
+          "expected_revision"
+        ],
+        "title": "NativeToolReload"
       },
       "StopPlaybackInput": {
         "properties": {

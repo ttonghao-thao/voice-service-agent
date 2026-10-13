@@ -1,0 +1,57 @@
+{
+  "additionalProperties": false,
+  "properties": {
+    "name": {
+      "pattern": "^[a-z][a-z0-9_]{0,79}$",
+      "title": "Name",
+      "type": "string"
+    },
+    "implementation": {
+      "pattern": "^[a-z][a-z0-9_]{0,79}$",
+      "title": "Implementation",
+      "type": "string"
+    },
+    "description": {
+      "maxLength": 1600,
+      "minLength": 1,
+      "title": "Description",
+      "type": "string"
+    },
+    "enabled": {
+      "default": true,
+      "title": "Enabled",
+      "type": "boolean"
+    },
+    "ack_messages": {
+      "items": {
+        "type": "string"
+      },
+      "maxItems": 2,
+      "minItems": 1,
+      "title": "Ack Messages",
+      "type": "array"
+    },
+    "examples": {
+      "items": {
+        "additionalProperties": true,
+        "type": "object"
+      },
+      "maxItems": 3,
+      "title": "Examples",
+      "type": "array"
+    },
+    "output_description": {
+      "default": "",
+      "maxLength": 600,
+      "title": "Output Description",
+      "type": "string"
+    }
+  },
+  "required": [
+    "name",
+    "implementation",
+    "description"
+  ],
+  "title": "NativeToolEntry",
+  "type": "object"
+}

@@ -105,6 +105,8 @@ export interface Capabilities {
   provider: string;
   voice_session_max_seconds: number;
   qa_execution_mode?: string;
+  native_tools?: string[];
+  native_tool_revision?: number;
   portal_task_progress?: boolean;
 }
 export class ApiError extends Error {

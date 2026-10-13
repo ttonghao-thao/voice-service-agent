@@ -1,5 +1,7 @@
 """Per-call capability identity for the portal and injected test fixtures."""
 
+import secrets
+
 from app.contracts import DomainError, Principal
 from fastapi import Request
 
@@ -34,6 +36,12 @@ class Auth:
         cid = request.path_params.get("cid")
         authorization = request.headers.get("authorization", "")
         scheme, _, token = authorization.partition(" ")
+        if request.url.path.startswith("/api/v1/admin/"):
+            admin_key = s.tools_admin_api_key.get_secret_value()
+            if (not admin_key or scheme.lower() != "bearer" or len(token) > 256
+                or not secrets.compare_digest(token.encode(), admin_key.encode())):
+                raise DomainError("AUTH_REQUIRED", "An operator API credential is required", 401)
+            return Principal(user_id="tools-operator", roles=frozenset({"admin"}), scopes=frozenset({"tools:admin"}))
         if not cid or scheme.lower() != "bearer" or not token or len(token) > 256:
             raise DomainError("AUTH_REQUIRED", "A call access token is required", 401)
         owner_id = await self.store.owner_for_token(cid, token)

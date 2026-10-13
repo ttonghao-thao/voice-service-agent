@@ -13,6 +13,7 @@
 
 - VoiceChat、CueKB 独立部署/API 对接；保留 Gateway → Coordinator → Runtime → Registry。供应商语音结构归 `app/voice`，Agents SDK 归 `app/agent_runtime`。
 - VoiceChat 用 tools/instructions 原生选工具；不加 WS tool_choice、分类模型、独立 Nano 服务或子 Agent 调度。一般问答不是企业证据；真实 Provider 能力不能由模拟推定。
+- 原生工具数量/描述由全局后台目录配置，客户可见目录一致；执行权限另行复核。修改注册/刷新时查 [工具目录](docs/interfaces/voice-tools.md)，不把初始两工具当作固定上限。
 - Coordinator 唯一提交；epoch/revision/Turn/租约与权限在提交和交付时复核。普通发声不取消查询，停止播放与业务取消分开；旧调用结清或关连接，unknown 不重发。
 - 身份/KB/凭据由服务端控制；模型/浏览器不能扩大权限。real 失败不回退 mock；模拟、转写检查、网络发送和实际听音分开记录。
 

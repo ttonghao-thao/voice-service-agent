@@ -14,6 +14,7 @@
 | [门户协议](portal-protocol.md)：HTTP/SSE/WS 与显示语义 | 前端/接口/播放；§1–4 | contracts.py、api/routes.py；apps/web/src、public | 改呈现/恢复读交付，供应商事件读接入 |
 | [外部接入](integration.md)：VoiceChat、文本模型、权限 | Adapter/注册/鉴权；§3/4/5/6 | voice/provider.py、runtime.py、api/auth.py | CueKB 契约或对应交付；故障读排查 |
 | [CueKB 契约](interfaces/cuekb.md)：请求/证据/错误 | 检索 Adapter/映射；§1–3 | tools/adapters.py、tools/schemas.py | 影响证据判定再读知识执行 |
+| [原生工具目录](interfaces/voice-tools.md)：全局配置、schema、注册确认和刷新 | 改工具数量/描述/管理/刷新；§1–2，验证查 §3 | tool_catalog.py、dispatch.py、routes.py、provider.py、gateway.py | 知识执行；迁移/凭据读部署 |
 | [部署](deployment.md)：唯一配置与运维操作 | 改配置、镜像、迁移、租约；按标题 | config.py、migrations；deploy、scripts/deploy-cloud.sh | 排查 → 真实验收 |
 | [故障排查](operations/troubleshooting.md)：症状/日志/时延 | 故障先查 §1；耗时查 §2–3 | Gateway、Runtime、Registry、Store、Web | 表中实际失败边界对应主题 |
 | [模拟全流程](simulated-full-flow.md)：网络夹具与复现 | 新增集成/E2E；§1–3 | scripts/simulate_full_flow.py、tests | 连续序列读上下文 §4–5；命令读根 README |

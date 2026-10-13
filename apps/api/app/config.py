@@ -19,6 +19,7 @@ class Settings(BaseSettings):
     redis_url: str | None = None
     dev_user_id: str = "dev-operator"
     dev_admin: bool = False
+    tools_admin_api_key: SecretStr = SecretStr("")
     knowledge_base_ids: str = "00000000-0000-4000-8000-000000000001"
     agent_provider: Literal["mock", "openai", "compatible"] = "mock"
     agent_model: str = ""
@@ -75,6 +76,8 @@ class Settings(BaseSettings):
 
     @model_validator(mode="after")
     def check(self):
+        if len(self.tools_admin_api_key.get_secret_value()) > 256:
+            raise ValueError("TOOLS_ADMIN_API_KEY must be at most 256 characters")
         if self.agent_deadline_ms < 100 or self.max_voice_sessions < 1 or self.max_agent_runs < 1:
             raise ValueError("Invalid deadline or capacity")
         if not 1 <= self.cuekb_top_k <= 20:

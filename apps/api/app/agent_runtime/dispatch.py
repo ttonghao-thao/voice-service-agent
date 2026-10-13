@@ -1,7 +1,6 @@
 """Trusted, extensible tool registration. No semantic routing or dynamic imports."""
 
 import re
-import time
 from collections.abc import Awaitable, Callable
 from dataclasses import dataclass
 
@@ -16,6 +15,8 @@ class NativeTool:
     executor: Callable[..., Awaitable]
     required_tools: frozenset[str] = frozenset({"search_knowledge"})
     permission_scope: str = "knowledge:read"
+    kind: str = "custom"
+    ack_messages: tuple[str, ...] = ("Please wait while I check that.",)
 
 
 @dataclass(frozen=True)
@@ -33,12 +34,13 @@ class ToolDispatcher:
             raise ValueError("Native tool name must be valid and unique")
         self.tools[tool.name] = tool
 
-    def resolve(self, name, arguments, registered, wait_interaction=False):
-        if name not in registered or name not in self.tools:
+    def resolve(self, name, arguments, registered, wait_interaction=False, catalog=None):
+        tools = self.tools if catalog is None else catalog
+        if name not in registered or name not in tools:
             raise DomainError("VOICE_TOOL_UNKNOWN", "This tool is not registered for this session", 502)
         if not isinstance(arguments, str) or len(arguments) > 12000:
             raise DomainError("VOICE_TOOL_ARGUMENTS", "Invalid tool arguments", 422)
-        tool = self.tools[name]
+        tool = tools[name]
         try:
             schema = KnowledgeInteractionArguments if wait_interaction and tool.arguments is KnowledgeArguments else tool.arguments
             parsed = schema.model_validate_json(arguments)
@@ -46,25 +48,19 @@ class ToolDispatcher:
             raise DomainError("VOICE_TOOL_ARGUMENTS", "Tool arguments violate the schema", 422) from exc
         return ExecutionDecision(tool, parsed)
 
-    def definitions(self, registered, wait_interaction=False):
+    def definitions(self, registered, wait_interaction=False, catalog=None):
+        tools = self.tools if catalog is None else catalog
         return [
-            {"name": name, "description": self.tools[name].description + (
+            {"name": name, "description": tools[name].description + (
                 " While a query is pending, use operation=progress to ask its server-reported status, "
                 "or operation=revise only for an explicit correction of that pending request. "
                 "These operations keep the completed user transcription authoritative. Do not start another query."
-                if wait_interaction and self.tools[name].arguments is KnowledgeArguments else ""),
+                if wait_interaction and tools[name].arguments is KnowledgeArguments else ""),
              "parameters": (KnowledgeInteractionArguments if wait_interaction
-                            and self.tools[name].arguments is KnowledgeArguments else self.tools[name].arguments).model_json_schema()}
+                            and tools[name].arguments is KnowledgeArguments else tools[name].arguments).model_json_schema(),
+             "ack_messages": list(tools[name].ack_messages)}
             for name in registered
         ]
-
-    async def available(self, registry, principal):
-        if principal.expires_at is not None and principal.expires_at <= time.time():
-            return ()
-        allowed = await registry.allowed(principal)
-        return tuple(name for name, tool in self.tools.items()
-                     if tool.required_tools <= allowed and tool.permission_scope in principal.scopes)
-
 
 def knowledge_tools(direct, reasoned):
     dispatcher = ToolDispatcher()
@@ -76,7 +72,7 @@ def knowledge_tools(direct, reasoned):
         "or device state. For comparisons, synthesis, calculations or complex troubleshooting, "
         "use reason_over_knowledge. Preserve the complete request; never guess identifiers. "
         "The server may escalate once when evidence requires reasoning.",
-        KnowledgeArguments, direct,
+        KnowledgeArguments, direct, kind="direct",
     ))
     dispatcher.register(NativeTool(
         "reason_over_knowledge",
@@ -85,6 +81,6 @@ def knowledge_tools(direct, reasoned):
         "Use only when company sources or an explicit knowledge-base search are required. "
         "This does not query live account or device state. Preserve the complete request "
         "and constraints. If unsure one lookup is enough, use this tool or clarify.",
-        KnowledgeArguments, reasoned,
+        KnowledgeArguments, reasoned, kind="reasoned",
     ))
     return dispatcher

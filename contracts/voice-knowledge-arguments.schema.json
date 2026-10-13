@@ -2,6 +2,7 @@
   "additionalProperties": false,
   "properties": {
     "user_request": {
+      "description": "The complete customer request, preserving all constraints and negations. Do not summarize or invent details.",
       "maxLength": 2000,
       "minLength": 1,
       "title": "User Request",
@@ -17,6 +18,7 @@
           "type": "null"
         }
       ],
+      "description": "Product identifier stated or confirmed by the user. This field is required; use null when unknown. Never guess.",
       "title": "Product Model"
     },
     "software_version": {
@@ -29,6 +31,7 @@
           "type": "null"
         }
       ],
+      "description": "Software version stated or confirmed by the user. This field is required; use null when unknown. Never guess.",
       "title": "Software Version"
     }
   },

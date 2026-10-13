@@ -485,6 +485,27 @@ test("Ending a file call during capability issuance closes the late conversation
   expect(fixture.errors).toEqual([]);
 });
 
+test("Tool configuration refresh stops file input without replaying it; explicit rerun creates a new call", async ({ page }) => {
+  const fixture = await filePortal(page);
+  await selectWave(page, 96000);
+  const first = await startFile(page, fixture);
+  await expect.poll(() => first.frames.length).toBeGreaterThan(2);
+  first.emit("portal.error", {
+    code: "VOICE_TOOL_CONFIGURATION_CHANGED",
+    message: "Voice tools changed",
+  });
+  await expect(page.locator(".recording-progress [role=status]")).toHaveText("Recording input interrupted");
+  await expect(page.getByRole("alert")).toContainText("the recording was not replayed");
+  expect(fixture.connections).toHaveLength(1);
+  expect(await page.evaluate(() => (window as typeof window & { __fileTest?: unknown }).__fileTest))
+    .toEqual({ microphone: 0, sourceStarts: 1 });
+  const next = await startFile(page, fixture, 1);
+  await expect.poll(() => next.frames.length).toBeGreaterThan(2);
+  expect(fixture.calls).toEqual(["file-call-1", "file-call-2"]);
+  await page.getByRole("button", { name: "End call", exact: true }).click();
+  expect(fixture.errors).toEqual([]);
+});
+
 test("A pending text submission prevents starting a competing file call", async ({
   page,
 }) => {

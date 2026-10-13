@@ -7,10 +7,10 @@
 | 会话模式 / 策略 | 原生工具 | 执行规则 |
 | --- | --- | --- |
 | legacy（默认） | consult_service_agent | 完整输入进入外置知识链；未经工具授权的实质性输出被拒绝 |
-| dual_tools / general_qa | lookup_knowledge、reason_over_knowledge | 一般问答可无工具回复；企业知识直查或推理 |
-| dual_tools / knowledge_required | 同上两个工具 | 拒绝无工具实质性输出；lookup 也走外置链 |
+| dual_tools / general_qa | 后台配置的全局工具目录 | 一般问答可无工具回复；按注册能力执行；初始知识工具为 lookup/reason |
+| dual_tools / knowledge_required | 同一全局目录 | 拒绝无工具实质性输出；direct 知识实现也走外置链 |
 
-新建 Conversation 快照模式/策略/工具版本，语音 session 冻结原生定义；更改部署配置不会切换活动会话。配置和回退只在 [部署：问答模式](deployment.md#问答模式与预算q07) 维护。后台 `search_knowledge` 是 Registry 能力，不能拿两个原生名称替换部署白名单。
+新建 Conversation 快照模式/策略，语音 session 冻结原生目录及 revision；后台更新目录会关闭旧连接并重新注册，不原地改旧快照。更改部署模式不会切换已有 Conversation。dual_tools 是历史兼容名称，不限制工具数量。配置和回退见 [部署](deployment.md#问答模式与预算q07)；全局目录见 [工具注册契约](interfaces/voice-tools.md)。后台 `search_knowledge` 是 Registry 能力，不能用原生名称替换部署白名单。
 
 VoiceChat 模型通过 tools/instructions 自主选择；不发送 WS tool_choice，也不为分类新增外置 LLM。ToolDispatcher 只按已注册名字、schema/权限分派。外置 SDK 的 required/auto 是另一层检索执行约束。一般回答保存 Utterance/实际字幕，标为 provider_general/provider_only；不建知识 Turn 或伪引用。严格知识策略用于需要拒绝无证据实质性输出的会话；general_qa 的 Prompt 不保证零漏调用。
 
@@ -20,11 +20,11 @@ VoiceChat 模型通过 tools/instructions 自主选择；不发送 WS tool_choic
 
 Gateway 校验 schema 后绑定最终 ASR；模型改写不能替换原话。型号/版本必须有用户输入或确认上下文来源，缺失/矛盾先澄清。跨轮条件、清旧版本、检索完整请求和授权历史归 [上下文 §1–3](task-context-evaluation.md#1-上下文的权威来源)。ASR 解析只提取条件，不凭关键词执行取消/改问。
 
-可信初始化可调用 `runtime.dispatcher.register(NativeTool(...))`：严格参数类型、executor、permission_scope、required_tools。可见工具须满足身份 scope 和后台依赖；executor 从 ctx.tool_arguments 读校验参数，并负责对象权限/结果验证，经 Registry 调后台服务。新增工具可以有自己的 schema，不必携带知识型号字段；没有动态 import 或模型选择 endpoint。后台工具注册/启停权限见 [接入 §5](integration.md#5-第三方扩展d06)。
+可信初始化可调用 `runtime.dispatcher.register(NativeTool(...))`：严格参数类型、executor、kind、permission_scope、required_tools。后台选择可信 implementation 并配置可见名称/描述等元数据，客户可见目录相同，调用时单独复核业务权限。executor 从 ctx.tool_arguments 读校验参数，并负责对象权限/结果验证，经 Registry 调后台服务。新增实现可有自己的 schema，不必携带知识型号字段；没有动态 import 或模型选择 endpoint。配置接口、缺失信息与刷新规则只在 [工具目录](interfaces/voice-tools.md) 维护。
 
 同一 input 的重复 call 幂等处理，不并发跑两条知识链；不支持或无法安全结清的并行调用明确关闭。官方约 5 工具是质量建议，当前超过仅告警；扩展后须测选择质量，不能据此推导并行能力。
 
-**等待交互扩展：**只有可信 Adapter 四项能力全部成立时，为知识工具暴露 KnowledgeInteractionArguments 的 query/progress/revise；当前 NVIDIA 不暴露 operation。修订的 CAS、共享期限/计数和旧调用结清只在 [交付 §3](live-agent-implementation.md#3-等待进度与自然修订) 维护，默认仍仅两个工具名。
+**等待交互扩展：**只有可信 Adapter 四项能力全部成立时，为知识实现暴露 KnowledgeInteractionArguments 的 query/progress/revise；当前 NVIDIA 不暴露 operation。修订的 CAS、共享期限/计数和旧调用结清只在 [交付 §3](live-agent-implementation.md#3-等待进度与自然修订) 维护；扩展不改变后台配置的工具数量。
 
 ## 3. 直查与一次升级
 

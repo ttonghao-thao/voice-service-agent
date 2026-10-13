@@ -103,6 +103,45 @@ test("Synthetic microphone transport, playback stop, rotation and cleanup", asyn
   expect(errors).toEqual([]);
 });
 
+test("Microphone reconnects with a fresh voice session when the tool catalog changes", async ({ page }) => {
+  let conversationId = "";
+  const sessions: string[] = [];
+  const sessionEpochs = new Map<string, number>();
+  const connections: { emit: (type: string, payload: Record<string, unknown>) => void }[] = [];
+  page.on("response", async (response) => {
+    if (response.url().endsWith("/api/v1/conversations") && response.request().method() === "POST") {
+      conversationId = (await response.json()).id;
+    }
+  });
+  await page.route("**/api/v1/conversations/*/voice-sessions", async (route) => {
+    const response = await route.fetch();
+    const body = await response.json();
+    sessions.push(body.voice_session_id);
+    sessionEpochs.set(body.voice_session_id, body.epoch);
+    await route.fulfill({ response });
+  });
+  await page.routeWebSocket("**/api/v1/voice-sessions/**/stream?*", (socket) => {
+    const sessionId = new URL(socket.url()).pathname.split("/").at(-2)!;
+    const epoch = sessionEpochs.get(sessionId)!;
+    const connection = { emit: (type: string, payload: Record<string, unknown>) => socket.send(JSON.stringify({
+      type, event_id: crypto.randomUUID(), conversation_id: conversationId,
+      epoch, request_revision: 0, server_seq: 1, turn_id: null, payload,
+    })) };
+    connections.push(connection);
+    connection.emit("portal.session.ready", { sample_rate: 24000, format: "pcm16", chunk_ms: 80 });
+  });
+  await page.goto("/");
+  await page.getByRole("button", { name: "Start call", exact: true }).click();
+  await expect(page.getByRole("main").getByText("Voice ready", { exact: true })).toBeVisible();
+  await expect.poll(() => connections.length).toBe(1);
+  connections[0].emit("portal.error", { code: "VOICE_TOOL_CONFIGURATION_CHANGED", message: "Voice tools changed" });
+  await expect.poll(() => connections.length).toBe(2);
+  await expect(page.getByRole("main").getByText("Voice ready", { exact: true })).toBeVisible();
+  await expect.poll(() => sessions.length).toBe(2);
+  expect(new Set(sessions).size).toBe(2);
+  await page.getByRole("button", { name: "End call", exact: true }).click();
+});
+
 test("Real AudioWorklet resumes a new reply after stop and rejects late old PCM", async ({
   page,
 }) => {

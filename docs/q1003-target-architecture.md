@@ -210,6 +210,8 @@ VoiceGateway 在收到无 pending tool 的 VoiceChat 文本/音频时，不立�
 - 旧 pending call 必须以结果、取消或连接关闭结清，禁止跨新输入复用 `response_id` 或 `call_id`。
 - `native_tool_phase_barge_in` 在真实验证前保持关闭/未承诺。工具等待阶段的插话若不能安全结清旧调用，必须明确限制，而不是宣称全阶段全双工。
 
+工具注册的当前实现已于 2026-10-13 扩展为后台全局多工具目录、版本化刷新、字段说明与回显确认；两个知识工具是初始配置，数量不固定。其统一契约见 [工具目录](interfaces/voice-tools.md)。本次注册加固不表示本页计划的 `social_only`/quarantine 或现场 function channel 故障已经修复。
+
 ## 6. 两个当前故障的定位与修复路径
 
 ### 6.1 句首 `Hell` 丢失

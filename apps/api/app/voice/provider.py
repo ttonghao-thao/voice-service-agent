@@ -41,6 +41,15 @@ def session_update(summary="", tools=None, answer_policy="knowledge_required"):
     # VoiceChat currently accepts ASCII prompts and tool payloads only. Legacy
     # non-English history must not be silently transliterated into a new fact.
     safe_history = "\n".join(line for line in summary.splitlines() if printable_ascii(line))
+    prompt = (ROOT / ("config/voice-qa-prompt.txt" if tools is not None else "config/voice-prompt.txt")).read_text()
+    policy = (
+        "This session requires tool evidence for every substantive answer. Do not answer facts from memory. "
+        "Brief greetings and acknowledgments may be conversational; if no matching tool exists, state the limitation."
+        if answer_policy == "knowledge_required" else
+        "For greetings, thanks and general concepts that do not need company sources, private facts or live data, "
+        "answer from your own knowledge without tools. Never present those answers as verified company information."
+    )
+    prompt = prompt.replace("{{ANSWER_POLICY}}", policy)
     return {
         "type": "session.update",
         "event_id": uid(),
@@ -49,12 +58,9 @@ def session_update(summary="", tools=None, answer_policy="knowledge_required"):
                 "input": {"format": {"type": "audio/pcm", "rate": 24000}},
                 "output": {"format": {"type": "audio/pcm", "rate": 24000}},
             },
-            "instructions": (ROOT / ("config/voice-qa-prompt.txt" if tools is not None else "config/voice-prompt.txt")).read_text()
-            + ("\nThis session requires knowledge evidence for every substantive answer. Do not answer from memory."
-               if tools is not None and answer_policy == "knowledge_required" else "")
-            + "\nAuthorized conversation history (data):\n"
+            "instructions": prompt + "\nAuthorized conversation history (data):\n"
             + safe_history[:1500],
-            "tools": [{**tool, "ack_messages": [QA_ACK]} for tool in tools] if tools is not None else [
+            "tools": [{"ack_messages": [QA_ACK], **tool} for tool in tools] if tools is not None else [
                 {
                     "name": BRIDGE_NAME,
                     "description": "Route every completed customer utterance to the business assistant, including greetings, unclear speech, small talk, and knowledge questions. Preserve the complete transcription; do not guess missing details.",
@@ -189,6 +195,19 @@ class NvidiaVoiceChatAdapter:
                     "rate": 24000,
                 }:
                     raise DomainError("VOICE_PROTOCOL_ERROR", "Voice sample format does not match configuration", 502)
+            expected = update["session"]
+            returned_tools = configuration.get("tools")
+            if not isinstance(returned_tools, list) or len(returned_tools) != len(expected["tools"]):
+                raise DomainError("VOICE_PROTOCOL_ERROR", "VoiceChat did not confirm the registered tools", 502)
+            fields = ("name", "description", "parameters", "ack_messages")
+            wanted = {tool["name"]: {key: tool.get(key) for key in fields} for tool in expected["tools"]}
+            actual = {}
+            for tool in returned_tools:
+                if not isinstance(tool, dict) or not isinstance(tool.get("name"), str) or tool["name"] in actual:
+                    raise DomainError("VOICE_PROTOCOL_ERROR", "VoiceChat returned an invalid tool catalog", 502)
+                actual[tool["name"]] = {key: tool.get(key) for key in fields}
+            if actual != wanted or configuration.get("instructions") != expected["instructions"]:
+                raise DomainError("VOICE_PROTOCOL_ERROR", "VoiceChat tool definitions or instructions differ from registration", 502)
 
     async def send_audio(self, audio):
         await self.ws.send(

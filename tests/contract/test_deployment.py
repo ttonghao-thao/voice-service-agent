@@ -77,11 +77,15 @@ def test_cloud_environment_template_cannot_enable_development_fallbacks():
         "CUEKB_API_KEY",
         "VOICECHAT_WS_URL",
         "VOICECHAT_API_KEY",
+        "QA_EXECUTION_MODE",
+        "QA_ANSWER_POLICY",
     }
     assert "APP_ENV" not in values
     assert "AUTH_MODE" not in values
     assert values["AGENT_PROVIDER"] == "openai"
     assert values["AGENT_DEADLINE_MS"] == "30000"
+    assert values["QA_EXECUTION_MODE"] == "dual_tools"
+    assert values["QA_ANSWER_POLICY"] == "general_qa"
     assert "CUEKB_MODE" not in values
     assert "ENABLED_TOOLS" not in values
     assert not any(key.startswith("WEATHER_") for key in values)

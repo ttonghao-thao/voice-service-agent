@@ -46,12 +46,15 @@ class MessageInput(StrictModel):
 
 
 class BridgeArguments(StrictModel):
-    user_request: str = Field(min_length=1, max_length=2000)
+    user_request: str = Field(min_length=1, max_length=2000,
+        description="The complete customer request, preserving all constraints and negations. Do not summarize or invent details.")
 
 
 class KnowledgeArguments(BridgeArguments):
-    product_model: str | None = Field(max_length=120)
-    software_version: str | None = Field(max_length=120)
+    product_model: str | None = Field(max_length=120,
+        description="Product identifier stated or confirmed by the user. This field is required; use null when unknown. Never guess.")
+    software_version: str | None = Field(max_length=120,
+        description="Software version stated or confirmed by the user. This field is required; use null when unknown. Never guess.")
 
 
 class KnowledgeInteractionArguments(KnowledgeArguments):

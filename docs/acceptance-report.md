@@ -1,20 +1,21 @@
 # 当前验收证据
 
-2026-10-13 已刷新前端、浏览器、独立 API 模拟和 Web 镜像证据；完整 Python 应用回归最近一次仍为 2026-10-08 的 `ee73afb` 加当轮自测修复。本文只维护最近可用证据及未验证边界；旧流水归档，不累加历史测试数。任务状态归 [任务板](TASK_BOARD.md)，放行目标归 [验收清单](development/validation.md)。
+2026-10-13 已刷新完整 Python、前端、浏览器、独立 API 模拟及 API/Web 镜像证据；本轮基于 `49ef3a3` 实施全局工具目录与注册加固。本文只维护最近可用证据及未验证边界；旧流水归档，不累加历史测试数。任务状态归 [任务板](TASK_BOARD.md)，放行目标归 [验收清单](development/validation.md)。
 
 ## 0. 当前审计与证据索引
 
 | 项目 | 最近实际记录 | 证据与限制 |
 | --- | --- | --- |
-| 应用回归 | 2026-10-08：253 pytest、14 Node、10 Chromium，Ruff/前端构建通过，契约导出无差异 | Python 含 51 项独立 API 网络测试、十组连续序列及新增 20 项回归；有一条既有 Starlette/AnyIO 弃用警告。不是 ASR/TTS/听音或真实选路质量 |
+| 应用回归 | 2026-10-13：全量 pytest 272 通过；工具目录定向 21 通过（含全量收集后新增的 2 个边界用例，不与全量累加）；26 Node、16 Chromium 通过/1 条件跳过；Ruff/前端构建通过 | Python 包含 51 项独立 API 网络测试和十组连续序列；有一条既有 Starlette/AnyIO 弃用警告。契约重新导出包含新管理 API、目录 schema 与字段说明。不是 ASR/TTS/听音或真实选路质量 |
 | 本轮修复 | 拒绝 CueKB 3xx 正文/损坏压缩，部分 HTTP 响应受限重试；VoiceChat 非法握手/事件/音频归协议错误；本地 SQLite WAL | 新增故障用例先复现再修复；基线完整回归曾有两项 SQLite 锁失败，修复后全量通过；未改变生产 PG 配置或启用 NVIDIA 等待能力 |
-| Docker/Compose | 2026-10-04：API/Web build、17 项隔离 Compose 检查通过，PG 迁移 0009 | 历史证据：静态音频资源权限 403 修复；PG/Redis/API/Web 启动与 HTTPS 验证。本轮未重新构建/部署，不证明生产恢复/容量 |
-| 数据迁移 | 2026-10-08：临时 SQLite upgrade head → check → downgrade base → upgrade head → check 全部通过 | 0009；隔离 PostgreSQL/十列检查仍为 2026-10-04 历史证据，未在历史生产数据和真实负载下执行迁移/回滚 |
+| Docker/Compose | 2026-10-13：API/Web Docker build 及 Compose config --quiet 通过 | 本轮未启动生产 Compose 或验证 PG/Redis/TLS/容量；17 项隔离启动检查仍为 2026-10-04 的历史证据 |
+| 数据迁移 | 2026-10-13：SQLite 从 0006 升级 head=0010、Alembic check、降级 0007/0006 后再升级 head 的回归通过，旧会话历史保留 | 0010 增加全局工具目录；隔离 PostgreSQL/十列检查仍为 2026-10-04 历史证据，未在生产数据和真实负载下执行本轮迁移/回滚 |
 | 当前功能范围 | Q07/CTX1/EVAL1/LVA1–LVA3 已本地实现 | NVIDIA 等待期四项能力仍 false；增强模拟的 parent_call_id 不属于生产协议 |
 | 历史代码发布 | 3bb0928 与文档 f498fa4 已推送 codex/q1003 并核对远端 | 这是 2026-10-04 的发布记录；本轮自测执行时 HEAD 为 ee73afb 加工作区修复，未执行部署 |
 | 文档整理 | 2026-10-07 DOC5：仅 Markdown；链接/锚点、历史保留、代码对照和五类读取路径验证 | 方法、实际字节统计与限制见 [文档审计 §3](development/documentation.md#3-2026-10-07-审计与场景验证)，该次整理未重跑应用测试 |
 | q1003 目标设计 | 2026-10-13：基于 `56d7774` 整理业务目标、当前故障、`social_only`/响应隔离、诊断路径、里程碑和离线/真实验收门槛 | 仅 Markdown，执行链接目标、锚点、格式和 Git diff 检查；未编码、未重跑应用测试，未验证真实 VoiceChat/CueKB/GPU/浏览器听音；见 [目标架构](q1003-target-architecture.md) |
 | 预录 WAV 输入 | 2026-10-13：26 项 Web 单测、生产构建和 Web 镜像构建通过；完整 Chromium 14 通过、1 项按条件跳过，其中新增文件输入 5 项全通过；既有独立 API 模拟矩阵 51 项通过 | Chromium 使用实际 AudioContext/AudioBufferSource/AudioWorklet；HTTP/WS 与独立 CueKB/VoiceChat/文本模型均为受控夹具。覆盖格式/大小/时长、ready 前不发送、实时输入/EOF、无麦克风、错误/轮换不重播、启动竞态及文字互斥；未验证真实 VoiceChat/CueKB、GPU、ASR/TTS 或听音 |
+| 全局工具目录与注册 | 2026-10-13：三工具真实应用分派及原始 call_id 回填、六工具无固定数量截断、重启保留、全局可见/调用授权、CAS、启停/reload、活动连接刷新、无效候选和错误回显拒绝均通过；SQLite 0010 升降级及 Alembic check 通过 | 配置更新使麦克风重新注册，文件停止且不重播，新增两个 Chromium 场景通过。API/Web 镜像构建及 Compose config --quiet 通过；未执行生产 Compose 启动、PG 数据迁移、真实 VoiceChat/GPU/模型工具质量验收。统一契约见 [工具目录](interfaces/voice-tools.md) |
 
 本轮环境为 Python 3.12.14、Node 24.19.0、系统 Chromium 和独立 SQLite；CueKB HTTP、VoiceChat WS、兼容文本模型 HTTP 均为 loopback 模拟 API。执行根 README 的 pytest、Ruff、Node 单测、前端构建和契约导出命令，并按 [模拟 §3](simulated-full-flow.md#3-复现步骤) 显式设置 `SIMULATED_FULL_FLOW=1` 运行浏览器；修复后的服务已重启验证并关闭。重连回归另外确认最终 audio.done 和唯一工具结果。
 
