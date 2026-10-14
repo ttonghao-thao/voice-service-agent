@@ -1,3 +1,4 @@
+import asyncio
 import json
 
 import pytest
@@ -150,6 +151,152 @@ def test_voice_response_after_user_speech_requires_business_bridge(tmp_path):
                 error = ws.receive_json()
             assert error["type"] == "portal.error"
             assert error["payload"]["code"] == "VOICE_TOOL_REQUIRED"
+
+
+@pytest.mark.parametrize("after_result", [False, True])
+@pytest.mark.parametrize("qa_mode", ["legacy", "dual_tools"])
+def test_empty_output_does_not_require_or_consume_a_tool_grant(tmp_path, after_result, qa_mode):
+    app = create_app(Settings(_env_file=None, auto_create_schema=True,
+        qa_execution_mode=qa_mode, qa_answer_policy="knowledge_required",
+        database_url=f"sqlite+aiosqlite:///{tmp_path}/empty-output.db"))
+
+    class Scripted(MockVoiceAdapter):
+        async def empty_output(self):
+            await self.queue.put(VoiceEvent("speech_text.delta", {"response_id": "empty", "text": ""}))
+            await self.queue.put(VoiceEvent("speech_text.done", {"response_id": "empty", "text": " "}))
+            await self.queue.put(VoiceEvent("audio.done", {"response_id": "empty"}))
+
+        async def connect(self, summary):
+            await self.queue.put(VoiceEvent("input.state", {"state": "speaking", "item_id": "input-1"}))
+            await self.queue.put(VoiceEvent("transcript.done", {"item_id": "input-1", "text": "Find the integration sample"}))
+            if not after_result:
+                await self.empty_output()
+            await self.queue.put(VoiceEvent("tool", {
+                "response_id": "tool-response", "call_id": "call-1",
+                "name": "lookup_knowledge" if qa_mode == "dual_tools" else "consult_service_agent",
+                "arguments": json.dumps({"user_request": "Find the integration sample", **(
+                    {"product_model": None, "software_version": None} if qa_mode == "dual_tools" else {})}),
+            }))
+
+        async def submit_tool_result(self, call_id, text):
+            if after_result:
+                # Neither an unrelated empty response nor the tool's empty end
+                # can spend the one-response permission for the actual answer.
+                await self.empty_output()
+                await self.queue.put(VoiceEvent("audio.done", {"response_id": "tool-response"}))
+            speech = json.loads(text)["speech_text"]
+            first, rest = speech.split(" ", 1)
+            for chunk in (first, " ", rest):
+                await self.queue.put(VoiceEvent("speech_text.delta", {"response_id": "answer", "text": chunk}))
+            await self.queue.put(VoiceEvent("speech_text.done", {
+                "response_id": "answer", "text": speech,
+            }))
+            await self.queue.put(VoiceEvent("audio.done", {"response_id": "answer"}))
+
+    with TestClient(app) as client:
+        app.state.voice.provider_factory = Scripted
+        cid = client.post("/api/v1/conversations", json={}).json()["id"]
+        issued = client.post(f"/api/v1/conversations/{cid}/voice-sessions", json={}).json()
+        with client.websocket_connect(issued["ws_url"], headers={"Origin": "http://localhost:5173"}) as ws:
+            events = []
+            while not events or events[-1]["type"] not in ("portal.error", "portal.audio.done"):
+                events.append(ws.receive_json())
+            assert events[-1]["type"] == "portal.audio.done", events
+            assert events[-1]["payload"]["response_id"] == "answer"
+            spoken = next(e for e in events if e["type"] == "portal.speech_text.done")
+            assert "".join(e["payload"]["text"] for e in events if e["type"] == "portal.speech_text.delta") == spoken["payload"]["text"]
+            assert not any(e["payload"].get("response_id") == "empty" for e in events)
+
+
+@pytest.mark.parametrize("output_kind", ["speech_text.done", "audio.delta", "session.ended", "disconnect"])
+@pytest.mark.parametrize("qa_mode", ["legacy", "dual_tools"])
+@pytest.mark.parametrize("end_from_portal", [False, True])
+def test_voice_failure_preserves_queued_final_transcript_before_cleanup(tmp_path, output_kind, qa_mode, end_from_portal):
+    app = create_app(Settings(_env_file=None, auto_create_schema=True,
+        qa_execution_mode=qa_mode, qa_answer_policy="knowledge_required",
+        database_url=f"sqlite+aiosqlite:///{tmp_path}/rejection.db"))
+    sending_transcript = asyncio.Event()
+    release_close = asyncio.Event()
+    stream_finished = asyncio.Event()
+    close_started = []
+
+    async def delayed_stream(ws, sid, ticket):
+        original_send = ws.send_json
+
+        async def send(data):
+            if data["type"] == "portal.transcript.done" and not sending_transcript.is_set():
+                sending_transcript.set()
+                await asyncio.Event().wait()  # Cancelled when the unbridged output arrives.
+            if data["type"] == "portal.error":
+                assert not close_started  # Error delivery must precede provider/DB cleanup.
+            await original_send(data)
+
+        ws.send_json = send
+        try:
+            await original_stream(ws, sid, ticket)
+        finally:
+            stream_finished.set()
+
+    class Scripted(MockVoiceAdapter):
+        async def connect(self, summary):
+            await self.queue.put(VoiceEvent("input.state", {"state": "speaking", "item_id": "input-1"}))
+            await self.queue.put(VoiceEvent("transcript.done", {
+                "item_id": "input-1", "text": "o, please introduce MONKEY MOONCAKE products.",
+            }))
+
+        async def events(self):
+            yield await self.queue.get()
+            yield await self.queue.get()
+            await sending_transcript.wait()
+            if output_kind == "disconnect":
+                return
+            if output_kind == "session.ended":
+                yield VoiceEvent(output_kind)
+            else:
+                yield VoiceEvent(output_kind, {"response_id": "unbridged", **(
+                    {"text": "An unsupported product answer."} if output_kind.startswith("speech_text")
+                    else {"audio": "AAAA"})})
+            await asyncio.Event().wait()
+
+        async def close(self):
+            close_started.append(True)
+            if end_from_portal:
+                await release_close.wait()
+            return True
+
+    async def wait_for_cleanup():
+        await asyncio.wait_for(stream_finished.wait(), 2)
+
+    with TestClient(app) as client:
+        original_stream = app.state.voice.stream
+        app.state.voice.stream = delayed_stream
+        app.state.voice.provider_factory = Scripted
+        cid = client.post("/api/v1/conversations", json={}).json()["id"]
+        issued = client.post(f"/api/v1/conversations/{cid}/voice-sessions", json={}).json()
+        with client.websocket_connect(issued["ws_url"], headers={"Origin": "http://localhost:5173"}) as ws:
+            events = []
+            while not events or events[-1]["type"] != "portal.error":
+                events.append(ws.receive_json())
+            assert [e["type"] for e in events] == [
+                "portal.session.ready", "portal.input.state", "portal.transcript.done", "portal.error"]
+            assert events[-2]["payload"]["text"] == "o, please introduce MONKEY MOONCAKE products."
+            assert events[-1]["payload"]["code"] == (
+                "VOICE_UNAVAILABLE" if output_kind in ("session.ended", "disconnect") else "VOICE_TOOL_REQUIRED")
+            assert events[-1]["payload"]["retryable"] is True
+            assert [e["server_seq"] for e in events] == sorted(e["server_seq"] for e in events)
+            if end_from_portal:
+                # VoiceClient.stop sends this DELETE as soon as it receives
+                # portal.error, while the upstream close can still be pending.
+                assert client.delete(f"/api/v1/conversations/{cid}/voice-sessions/{issued['voice_session_id']}").status_code == 200
+                client.portal.call(release_close.set)
+            client.portal.call(wait_for_cleanup)
+            data = client.get(f"/api/v1/conversations/{cid}/messages").json()
+            assert any(r["kind"] == "voice_session_end" for r in data["records"])
+            with pytest.raises(WebSocketDisconnect):
+                ws.receive_json()
+        data = client.get(f"/api/v1/conversations/{cid}/messages").json()
+        assert data["items"] == []
+        assert any(r["kind"] == "user_transcript" for r in data["records"])
 
 
 def test_tool_without_customer_input_is_settled_without_creating_turn(tmp_path):

@@ -83,9 +83,11 @@ D19 上游补丁、适用源码 hash、CPU 测试与发布方式见 [VoiceChat �
 
 基础验收要求每轮 ID/结束、同 call 工具往返、最终 ASR 绑定、英文音频、停止后继续和旧连接隔离。增强能力另测延迟工具期间的新问题、改问、取消和旧结果抑制，固定 ACK 不算新问题回答。
 
-`scripts/probe_voicechat.py` 使用授权 24 kHz WAV、固定 API revision/digest 和可控工具延迟，记录无正文事件时间线，可保存授权输出音频。它的工具结果是合成的，不能代替真实 CueKB 闭环。当前业务总预算默认 30 秒，独立模型源码的工具等待超时是另一预算；必须通过延迟探针核对，不能假定本项目 env 自动改变 GPU 服务。
+`scripts/probe_voicechat.py` 使用授权 24 kHz WAV、实际 session.update 快照、固定 API revision/digest 和可控工具延迟，持续送静音推进等待/续答，记录有界无正文事件时间线，可保存授权输出音频；多工具模式不再默认测试 legacy bridge。命令与静态产物核验见 [部署](deployment.md#voicechat-诊断探针与部署产物核验)，固定上游实现核对见 [源码记录](voicechat-upstream-analysis.md)。它的工具结果是合成的，不能代替真实 CueKB 闭环。当前业务总预算默认 30 秒，独立模型源码的工具等待超时是另一预算；必须通过延迟探针核对，不能假定本项目 env 自动改变 GPU 服务。
 
 公开参考：[API](https://github.com/NVIDIA-NeMo/Speech/blob/nemotron-labs-voicechat/voicechat_realtime_instructions/api-reference.md)、[部署](https://github.com/NVIDIA-NeMo/Speech/blob/nemotron-labs-voicechat/voicechat_realtime_instructions/deploy.md)。原 adapter 文档基线为 NVIDIA revision `097dfe9e2f55baf653b83035868bdc89849f1b47`；实际服务以用户 speech 源码与发布 hash 为准，不能仅由公开文档推断私有镜像行为。
+
+2026-10-13 已重新深读并对比 [论文 v2](https://arxiv.org/html/2609.21967v2)：§2–4、§7 和附录 A–D 与 v1 文本相同，仍明确工具执行期间输入不参与回答条件化，因而不支持该阶段 barge-in；不能因论文版本号更新开启等待能力。共享 encoder、1/1/2 融合、训练与参数指标对本项目的改进见 [v2 设计记录](voicechat-paper-v2-review.md)。
 
 2026-09-28 文献复核：[新论文 §7、附录 B](https://arxiv.org/html/2609.21967v1) 记录当时版本在工具执行期间不支持 barge-in；持续收音、字幕或固定 ACK 不代表新音频参与响应生成。当时核对的 backend 工具期限另有帧数/推理批次时间单位风险，不能推定新版本仍相同。详细证据见 [Q05 分析](archive/2026-09-28/voicechat-research-review.md)，不能据此宣称增强能力通过。
 

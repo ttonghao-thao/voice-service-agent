@@ -102,6 +102,8 @@ finished=true 只在该 response 收到 audio.done 且 Worklet 对应队列排�
 - v1 的已定义字段和音频格式不能暗改；新格式/二进制协议须协商或新版本。可选字段兼容旧数据，未知非关键展示事件可忽略，未知客户端控制必须拒绝。
 - 401/403、429、契约错误、超时和未命中分开处理；不把所有错误显示为无知识。VoiceChat 失败可以显式使用文字入口，不能回退 mock。
 - VOICE_TOOL_REQUIRED 是严格模式未满足工具许可；一般模式合法无工具回答不触发它。未知工具、参数错误、原生回答超时和证据检查失败按各自路径结束，不自动补查或伪造成功。
+- 空音频 delta 和尚无非空输出的 response 结束边界不构成回答，不触发工具许可拒绝，也不消耗后续工具续答许可；结束 ID 仍不可复用。非空输出保持原有授权要求。
+- 语音错误在上游关闭/存储清理前发送，携带递增 server_seq；发送任务被取消时，仅有界补送仍有效的客户 final ASR。门户保留转写、显示 code/message 并清除等待状态；未收到错误的意外 WS close 也显示重试提示。用户主动结束保持正常关闭，重试必须显式操作，不自动重播录音或提交转写。
 - Answer/Turn/来源面板使用一致业务终态；错误响应只公开稳定 code/message/retryable/trace_id，不转发上游原文、密钥或堆栈。完整枚举和验证约束以代码/生成 schema 为准。
 
 修改后按场景查 `tests/contract/test_protocol.py`、`tests/integration/test_voice.py`/`test_live_agent_interactions.py`、`tests/e2e/portal.spec.ts`/`voice-audio.spec.ts`/`voice-file.spec.ts` 与 `apps/web/tests/recorded-audio.test.mjs`/`worklet.test.mjs`。真实音频标准归 [验收清单](development/validation.md)，不在接口页复制测试数量。

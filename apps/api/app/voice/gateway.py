@@ -53,6 +53,7 @@ class VoiceSession:
     task: asyncio.Task | None = None
     used: bool = False
     stopped: bool = False
+    closing: bool = False
     suppress_next_response: bool = False
     suppressed_responses: set[str] | None = None
     qa_mode: str = "legacy"
@@ -161,7 +162,7 @@ class VoiceGateway:
             if session.conversation_id == cid:
                 session.stopped = True
                 self.sessions.pop(sid, None)
-                if session.task and session.task is not asyncio.current_task():
+                if session.task and not session.closing and session.task is not asyncio.current_task():
                     session.task.cancel()
 
     async def suppress_playback(self, cid, epoch, response_id=None):
@@ -188,7 +189,8 @@ class VoiceGateway:
         tasks = []
         for session in list(self.sessions.values()):
             if session.task and session.task is not asyncio.current_task():
-                session.task.cancel()
+                if not session.closing:
+                    session.task.cancel()
                 tasks.append(session.task)
         await asyncio.gather(*tasks, return_exceptions=True)
         self.sessions.clear()
@@ -212,12 +214,14 @@ class VoiceGateway:
         incoming = asyncio.Queue(maxsize=6)  # 480 ms at fixed 80 ms chunks.
         controls = asyncio.Queue(maxsize=16)
         outgoing = asyncio.Queue(maxsize=12)
+        unsent_transcripts = {}  # Bounded by the outgoing queue plus its in-flight event.
         wake = asyncio.Event()
         pending, workers, sent_samples = {}, set(), {}
         input_transcripts = {}
         unbound_inputs = deque()
         consumed_inputs = set()
         authorized_responses = set()
+        responses_with_output = set()
         initial_responses = set()
         initial_text_completed = set()
         tool_responses = {}
@@ -281,6 +285,8 @@ class VoiceGateway:
                 outgoing.put_nowait(e)
             except asyncio.QueueFull as exc:
                 raise DomainError("AUDIO_BACKPRESSURE", "Playback fell behind. Restart voice.", 409, True) from exc
+            if kind == "transcript.done":
+                unsent_transcripts[e["event_id"]] = e
 
         async def writer():
             while True:
@@ -313,6 +319,7 @@ class VoiceGateway:
                                 continue
                         async with asyncio.timeout(2):
                             await ws.send_json(event)
+                        unsent_transcripts.pop(event["event_id"], None)
                         if event["type"] == "portal.audio.delta":
                             sent_samples[response_id] = sent_samples.get(response_id, 0) + len(
                                 base64.b64decode(event["payload"]["audio"], validate=True)) // 2
@@ -667,7 +674,7 @@ class VoiceGateway:
                     task.add_done_callback(workers.discard)
                     continue
                 if event.kind == "session.ended":
-                    return
+                    raise DomainError("VOICE_UNAVAILABLE", "The voice service ended the connection. Restart voice or use text.", 503, True)
                 if event.kind == "input.state":
                     input_state = event.payload["state"]
                     if input_state == "speaking":
@@ -726,6 +733,28 @@ class VoiceGateway:
                     if event.kind == "audio.done":
                         continue  # duplicate terminal signal, never a new output grant
                     raise DomainError("VOICE_PROTOCOL_ERROR", "Voice reused an ended audio response. Restart voice or use text.", 502)
+                has_output = (
+                    event.kind == "audio.delta" and bool(event.payload.get("audio"))
+                    or event.kind.startswith("speech_text") and bool(event.payload.get("text", "").strip())
+                )
+                if event.kind.startswith(("speech_text", "audio")) and not has_output:
+                    if event.kind.endswith(".delta") and (
+                        event.kind == "audio.delta" or not event.payload.get("text")
+                        or response_id not in responses_with_output
+                    ):
+                        continue
+                    if response_id not in responses_with_output:
+                        if event.kind == "audio.done":
+                            # Empty boundaries cannot authorize output or spend
+                            # the continuation grant reserved for a tool answer.
+                            observed_ends.add(response_id)
+                            authorized_responses.discard(response_id)
+                            initial_responses.discard(response_id)
+                            initial_text_completed.discard(response_id)
+                            if response_id in session.suppressed_responses:
+                                session.suppressed_responses.discard(response_id)
+                                session.suppress_next_response = False
+                        continue
                 if event.kind == "speech_text.delta":
                     speech_new_delta.add(response_id)
                 if event.kind == "speech_text.done":
@@ -770,7 +799,7 @@ class VoiceGateway:
                         authorized_followups.discard(parent)
                 if (
                     response_id
-                    and event.kind.startswith(("speech_text", "audio"))
+                    and has_output
                     and response_id not in (session.suppressed_responses or set())
                 ):
                     if response_id not in authorized_responses and authorized_followups:
@@ -808,9 +837,13 @@ class VoiceGateway:
                             authorized_responses.add(response_id)
                     if response_id not in authorized_responses and customer_input_seen:
                         logger.warning(
-                            "voice_unbridged_response_rejected conversation_id=%s response_id=%s",
+                            "voice_unbridged_response_rejected conversation_id=%s epoch=%s input_item_id=%s response_id=%s kind=%s pending_tools=%s",
                             session.conversation_id,
+                            session.epoch,
+                            latest_input_id,
                             response_id,
+                            event.kind,
+                            sum(v in ("running", "ready") for v in pending.values()),
                         )
                         raise DomainError(
                             "VOICE_TOOL_REQUIRED",
@@ -826,6 +859,8 @@ class VoiceGateway:
                             session.conversation_id,
                             response_id,
                         )
+                if has_output:
+                    responses_with_output.add(response_id)
                 if response_id and session.suppress_next_response:
                     session.suppressed_responses.add(response_id)
                 suppressed = bool(
@@ -932,6 +967,7 @@ class VoiceGateway:
                     else:
                         ack_responses.discard(response_id)
                 if event.kind == "audio.done":
+                    responses_with_output.discard(response_id)
                     observed_ends.add(response_id)
                     event.payload = {
                         **event.payload,
@@ -998,6 +1034,8 @@ class VoiceGateway:
                     and not turn_owner and response_id not in general_inputs):
                     continue
                 emit(event.kind, event.payload, turn_owner[0] if turn_owner else None)
+            if await current():
+                raise DomainError("VOICE_UNAVAILABLE", "The voice service disconnected. Restart voice or use text.", 503, True)
 
         async def browser():
             nonlocal client_seq, frames, last_input, last_ack, last_playback_stop
@@ -1145,10 +1183,43 @@ class VoiceGateway:
         except Exception:
             error = DomainError("VOICE_UNAVAILABLE", "Voice connection ended. Restart voice or use text.", 503, True)
         finally:
+            # The client immediately DELETEs its session on portal.error. That
+            # invalidation must not cancel an already-running close/audit.
+            session.closing = True
             with anyio.CancelScope(shield=True):
                 for task in tasks + list(workers):
                     task.cancel()
                 await asyncio.gather(*tasks, *workers, return_exceptions=True)
+                if error:
+                    error_payload = error.payload()
+                    logger.warning("voice_session_failed conversation_id=%s epoch=%s reason_code=%s retryable=%s trace_id=%s",
+                        session.conversation_id, session.epoch, error.code, error.retryable, error_payload["trace_id"])
+                    # Recover only customer final transcripts, never queued
+                    # assistant text/PCM. Recheck ownership before disclosing
+                    # them, and notify before provider or storage cleanup.
+                    try:
+                        async with asyncio.timeout(1):
+                            async with self.coordinator.lock(session.conversation_id):
+                                if (session.principal.expires_at is None or session.principal.expires_at > time.time()) and await current():
+                                    for event in unsent_transcripts.values():
+                                        await ws.send_json(event)
+                    except Exception:
+                        pass
+                    try:
+                        async with asyncio.timeout(1):
+                            seq += 1
+                            event = PortalEvent(
+                                type="portal.error",
+                                conversation_id=session.conversation_id,
+                                epoch=session.epoch,
+                                request_revision=session.request_revision,
+                                server_seq=seq,
+                                payload=error_payload,
+                            ).model_dump(mode="json")
+                            portal_server_event_adapter.validate_python(event)
+                            await ws.send_json(event)
+                    except Exception:
+                        pass
                 end_confirmed = False
                 try:
                     async with asyncio.timeout(3):
@@ -1157,20 +1228,6 @@ class VoiceGateway:
                     pass
                 await self.store.settle_deliveries(session.conversation_id, session.epoch, "connection_closed")
                 await self.store.finish_voice_session(session.conversation_id, session.epoch, session.id, end_confirmed)
-                if error:
-                    try:
-                        async with asyncio.timeout(1):
-                            event = PortalEvent(
-                                    type="portal.error",
-                                    conversation_id=session.conversation_id,
-                                    epoch=session.epoch,
-                                    request_revision=session.request_revision,
-                                    payload=error.payload(),
-                                ).model_dump(mode="json")
-                            portal_server_event_adapter.validate_python(event)
-                            await ws.send_json(event)
-                    except Exception:
-                        pass
                 self.sessions.pop(sid, None)
                 if session.conversation_id in self.coordinator.coordination.leases:
                     try:

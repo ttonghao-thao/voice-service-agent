@@ -39,6 +39,7 @@ interface FileFrame {
 interface FileConnection {
   frames: FileFrame[];
   emit(type: string, payload?: Record<string, unknown>): void;
+  close(): void;
 }
 
 async function filePortal(
@@ -181,6 +182,7 @@ async function filePortal(
       let serverSeq = 0;
       const connection: FileConnection = {
         frames: [],
+        close() { socket.close({ code: 1000 }); },
         emit(type, payload = {}) {
           socket.send(
             JSON.stringify({
@@ -402,7 +404,12 @@ test("Rejection and session rotation end an incomplete file; an explicit rerun c
   first.emit("portal.error", {
     code: "VOICE_TOOL_REQUIRED",
     message: "Rejected recorded input",
+    retryable: true,
   });
+  first.close();
+  await expect(page.getByRole("alert")).toContainText("VOICE_TOOL_REQUIRED");
+  await expect(page.getByRole("alert")).toContainText("Rejected recorded input");
+  await expect(page.locator(".user-message")).toContainText("Previous file input");
   await expect(page.locator(".recording-progress [role=status]")).toHaveText(
     "Recording input interrupted",
   );
@@ -437,6 +444,29 @@ test("Rejection and session rotation end an incomplete file; an explicit rerun c
       () => (window as typeof window & { __fileTest?: unknown }).__fileTest,
     ),
   ).toEqual({ microphone: 0, sourceStarts: 2 });
+  expect(fixture.errors).toEqual([]);
+});
+
+test("An upstream close without an error keeps the transcript and offers an explicit retry", async ({ page }) => {
+  const fixture = await filePortal(page);
+  await selectWave(page, 96000);
+  const first = await startFile(page, fixture);
+  await expect.poll(() => first.frames.length).toBeGreaterThan(2);
+  first.emit("portal.transcript.done", {
+    item_id: "input-1",
+    text: "o, please introduce MONKEY MOONCAKE products.",
+  });
+  first.close();
+  await expect(page.getByRole("alert")).toContainText("Voice connection ended before the call was finished");
+  await expect(page.locator(".user-message")).toContainText("o, please introduce MONKEY MOONCAKE products.");
+  await expect(page.getByRole("button", { name: "Start file call", exact: true })).toBeEnabled();
+  await expect(page.locator(".recording-progress [role=status]")).toHaveText("Recording input interrupted");
+  expect(fixture.connections).toHaveLength(1); // No automatic replay.
+  expect(fixture.textRequests).toHaveLength(0); // No automatic text submission.
+  const second = await startFile(page, fixture, 1);
+  await expect.poll(() => second.frames.length).toBeGreaterThan(0);
+  await page.getByRole("button", { name: "End call", exact: true }).click();
+  await expect(page.getByRole("alert")).toHaveCount(0); // Intentional stop stays silent.
   expect(fixture.errors).toEqual([]);
 });
 

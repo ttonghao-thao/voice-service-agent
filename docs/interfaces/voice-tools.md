@@ -12,7 +12,7 @@
 
 知识参数 `user_request` 保留完整请求；product_model/software_version 为必填可空字段，未知必须传 null，不能省略或猜测。字段级 description、类型、长度和 additionalProperties=false 均发送给模型。系统提示词根据会话策略分别生成，选择规则只引用当前注册目录，不固定要求两个名称必须存在。ACK 按响应绑定的工具识别，不能把某工具的 ACK 当成另一个业务答案。
 
-Adapter 核对 session.updated 的音频格式、工具集合/名称/description/parameters/ack_messages 及 instructions；工具列表顺序可变、额外默认字段可存在，但必要字段必须一致。缺失/被修改时返回 VOICE_PROTOCOL_ERROR，握手不能进入 ready。该回显只证明传输注册一致，不证明最终 Jinja 模板、function head、权重/tokenizer/SOTC/EOTC 或模型真实选择正确。
+Adapter 接受 session.updated.tools 的 JSON 数组回显或官方文档中的 JSON 字符串回显；字符串先解析为数组，随后核对音频格式、工具集合/名称/description/parameters/ack_messages 及 instructions；工具列表顺序可变、额外默认字段可存在，但必要字段必须一致。缺失/被修改时返回 VOICE_PROTOCOL_ERROR，握手不能进入 ready。日志 `voice_registration_confirmed` 记录工具数和回显格式；拒绝时 `voice_registration_rejected` 记录失败字段/原因，不记录 prompt 或参数正文。该回显只证明传输注册一致，不证明最终 Jinja 模板、function head、权重/tokenizer/SOTC/EOTC 或模型真实选择正确。
 
 ## 2. 后台配置与刷新
 

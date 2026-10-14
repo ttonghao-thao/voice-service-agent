@@ -128,6 +128,12 @@ def test_missing_response_identity_is_protocol_error():
         normalize({"type": "response.output_audio.delta", "delta": "AAAA"})
 
 
+def test_empty_audio_delta_is_not_a_protocol_failure():
+    assert normalize({"type": "response.output_audio.delta", "response_id": "empty", "delta": ""}) is None
+    with pytest.raises(DomainError):
+        normalize({"type": "response.output_audio.delta", "response_id": "empty", "delta": None})
+
+
 def test_portal_event_contracts_are_discriminated_and_strict():
     server = portal_server_event_adapter.validate_python(
         {

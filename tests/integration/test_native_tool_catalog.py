@@ -1,5 +1,8 @@
+import asyncio
+import base64
 import copy
 import json
+import logging
 
 import httpx
 import pytest
@@ -227,7 +230,8 @@ async def test_validation_operator_key_cannot_be_replaced_by_customer_call_token
 
 
 @pytest.mark.parametrize("mutation", ["missing_tools", "description", "parameters", "ack", "instructions", "duplicate"])
-async def test_voicechat_registration_mismatch_fails_before_audio(mutation):
+@pytest.mark.parametrize("serialized_echo", [False, True])
+async def test_voicechat_registration_mismatch_fails_before_audio(mutation, serialized_echo):
     received_audio = []
 
     async def server(ws):
@@ -242,6 +246,8 @@ async def test_voicechat_registration_mismatch_fails_before_audio(mutation):
         else:
             field = "ack_messages" if mutation == "ack" else mutation
             update["tools"][0][field] = [] if mutation == "ack" else {} if mutation == "parameters" else "Different scope"
+        if serialized_echo and "tools" in update:
+            update["tools"] = json.dumps(update["tools"])
         await ws.send(json.dumps({"type": "session.updated", "session": update}))
         async for raw in ws:
             received_audio.append(raw)
@@ -263,3 +269,66 @@ def test_strict_prompt_has_no_conflicting_memory_permission():
     assert "Do not answer facts from memory" in instructions
     assert "answer from your own knowledge without tools" not in instructions
     assert "{{ANSWER_POLICY}}" not in instructions
+
+
+@pytest.mark.parametrize("native_tools", [False, True])
+async def test_voicechat_accepts_documented_json_string_tool_echo(native_tools, caplog, monkeypatch):
+    caplog.set_level("INFO", logger="app.voice.provider")
+    monkeypatch.setattr(logging.getLogger("app"), "propagate", True)
+    audio_seen = asyncio.Event()
+    pcm = base64.b64encode(bytes(3840)).decode()
+
+    async def server(ws):
+        await ws.send(json.dumps({"type": "session.created"}))
+        update = json.loads(await ws.recv())["session"]
+        update["tools"] = json.dumps(update["tools"])
+        await ws.send(json.dumps({"type": "session.updated", "session": update}))
+        async for raw in ws:
+            event = json.loads(raw)
+            assert event["type"] == "input_audio_buffer.append" and event["audio"] == pcm
+            audio_seen.set()
+
+    async with serve(server, "127.0.0.1", 0) as endpoint:
+        port = endpoint.sockets[0].getsockname()[1]
+        adapter = NvidiaVoiceChatAdapter(Settings(_env_file=None, voicechat_ws_url=f"ws://127.0.0.1:{port}"))
+        if native_tools:
+            # Dynamic catalog names and ACK must survive parsing, not be replaced with defaults.
+            adapter.configuration = session_update("", [{
+                "name": "lookup_product_manual", "description": "Retrieve documented product instructions.",
+                "parameters": {"type": "object", "properties": {"query": {"type": "string"}},
+                    "required": ["query"], "additionalProperties": False},
+                "ack_messages": ["I will check the product manual."],
+            }])
+        try:
+            await adapter.connect("")
+            assert "voice_registration_confirmed tools_count=1 tools_echo_type=str" in caplog.text
+            assert "Retrieve documented product instructions" not in caplog.text
+            assert "Current session answer policy" not in caplog.text
+            await adapter.send_audio(pcm)
+            await asyncio.wait_for(audio_seen.wait(), 1)
+        finally:
+            await adapter.close()
+
+
+@pytest.mark.parametrize("tool_echo", ['not-json', '{}', 'null', '"[]"', '[]'])
+async def test_invalid_json_string_tool_echo_still_fails_before_audio(tool_echo):
+    received_audio = []
+
+    async def server(ws):
+        await ws.send(json.dumps({"type": "session.created"}))
+        update = json.loads(await ws.recv())["session"]
+        update["tools"] = tool_echo
+        await ws.send(json.dumps({"type": "session.updated", "session": update}))
+        async for raw in ws:
+            received_audio.append(raw)
+
+    async with serve(server, "127.0.0.1", 0) as endpoint:
+        port = endpoint.sockets[0].getsockname()[1]
+        adapter = NvidiaVoiceChatAdapter(Settings(_env_file=None, voicechat_ws_url=f"ws://127.0.0.1:{port}"))
+        try:
+            with pytest.raises(DomainError) as error:
+                await adapter.connect("")
+            assert error.value.code == "VOICE_PROTOCOL_ERROR"
+        finally:
+            await adapter.close()
+    assert received_audio == []

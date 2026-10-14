@@ -1,6 +1,7 @@
 import asyncio
 import base64
 import json
+import logging
 from dataclasses import dataclass, field
 
 from app.config import ROOT
@@ -10,6 +11,7 @@ from websockets.asyncio.client import connect
 BRIDGE_NAME = "consult_service_agent"
 BRIDGE_ACK = "Please wait while I check the knowledge base."
 QA_ACK = "Please wait while I check that."
+logger = logging.getLogger(__name__)
 
 
 @dataclass(frozen=True)
@@ -128,7 +130,9 @@ def normalize(event):
             if not isinstance(value, str) or len(value) > 100000:
                 raise DomainError("VOICE_PROTOCOL_ERROR", "Invalid voice event", 502)
             if target == "audio.delta":
-                if not value or len(value) > 64000:
+                if not value:
+                    return None  # An empty provider chunk contains no PCM to deliver.
+                if len(value) > 64000:
                     raise DomainError("VOICE_PROTOCOL_ERROR", "Invalid voice audio chunk", 502)
                 try:
                     audio = base64.b64decode(value, validate=True)
@@ -197,7 +201,20 @@ class NvidiaVoiceChatAdapter:
                     raise DomainError("VOICE_PROTOCOL_ERROR", "Voice sample format does not match configuration", 502)
             expected = update["session"]
             returned_tools = configuration.get("tools")
+            tools_echo_type = type(returned_tools).__name__
+            if isinstance(returned_tools, str):
+                # NVIDIA documents session.updated.tools as serialized JSON.
+                # Decode its representation, then apply the same exact checks
+                # as an array echo; never substitute our requested tools.
+                try:
+                    returned_tools = json.loads(returned_tools)
+                except ValueError as exc:
+                    logger.warning("voice_registration_rejected field=tools reason=invalid_json echo_type=%s",
+                        tools_echo_type)
+                    raise DomainError("VOICE_PROTOCOL_ERROR", "VoiceChat returned invalid serialized tools", 502) from exc
             if not isinstance(returned_tools, list) or len(returned_tools) != len(expected["tools"]):
+                logger.warning("voice_registration_rejected field=tools reason=count_or_type echo_type=%s expected_count=%s received_count=%s",
+                    tools_echo_type, len(expected["tools"]), len(returned_tools) if isinstance(returned_tools, list) else None)
                 raise DomainError("VOICE_PROTOCOL_ERROR", "VoiceChat did not confirm the registered tools", 502)
             fields = ("name", "description", "parameters", "ack_messages")
             wanted = {tool["name"]: {key: tool.get(key) for key in fields} for tool in expected["tools"]}
@@ -207,7 +224,11 @@ class NvidiaVoiceChatAdapter:
                     raise DomainError("VOICE_PROTOCOL_ERROR", "VoiceChat returned an invalid tool catalog", 502)
                 actual[tool["name"]] = {key: tool.get(key) for key in fields}
             if actual != wanted or configuration.get("instructions") != expected["instructions"]:
+                logger.warning("voice_registration_rejected field=%s reason=content_mismatch echo_type=%s",
+                    "tools" if actual != wanted else "instructions", tools_echo_type)
                 raise DomainError("VOICE_PROTOCOL_ERROR", "VoiceChat tool definitions or instructions differ from registration", 502)
+            logger.info("voice_registration_confirmed tools_count=%s tools_echo_type=%s",
+                len(returned_tools), tools_echo_type)
 
     async def send_audio(self, audio):
         await self.ws.send(

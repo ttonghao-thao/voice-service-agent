@@ -119,7 +119,11 @@ export default function App() {
   const finalAnswers = useRef(
     new Map<string, { epoch: number; revision: number; answer: Answer }>(),
   );
-  const onError = useCallback((message: string) => setError(message), []);
+  const onError = useCallback((message: string) => {
+    setError(message);
+    setProgress("");
+    setInputState("quiet");
+  }, []);
   const refresh = useCallback(async (id: string, older?: string) => {
     const data = await api<{
       items: Turn[];
@@ -317,6 +321,10 @@ export default function App() {
       }
       if (event.type === "portal.input.state") {
         setInputState(String(event.payload.state));
+      }
+      if (event.type === "portal.error") {
+        setProgress("");
+        setInputState("quiet");
       }
       if (event.type === "portal.presentation.updated" && event.payload.response_id) {
         if (event.request_revision < requestRevision.current) return;

@@ -429,7 +429,9 @@ export class VoiceClient {
             return;
           }
           this.clear();
-          this.onError(String(event.payload.message));
+          this.onError(
+            `${String(event.payload.code || "VOICE_UNAVAILABLE")}: ${String(event.payload.message || "Voice failed. Restart the call or use text.")}`,
+          );
           void this.stop();
         }
         this.onEvent(event);
@@ -437,6 +439,9 @@ export class VoiceClient {
       this.ws.onclose = () => {
         if (generation === this.generation) {
           this.clear();
+          this.onError(
+            "Voice connection ended before the call was finished. Restart the call or use text. Received transcripts remain in the chat.",
+          );
           void this.stop();
           this.onState("closed");
         }

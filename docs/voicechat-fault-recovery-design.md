@@ -1,9 +1,10 @@
 # D21：当前测试语音的转写与无回答故障设计
 
-- 状态：故障已复现描述，根因尚未闭合，运行行为修复尚未实施
-- q1003 代码基线：`origin/codex/q1003@1158760`（2026-10-13 核对）
+- 状态：Gateway/门户恢复及工具回显兼容处理已实现并纳入本次发布；ASR 句首丢失与 function channel 根因尚未闭合，待真实服务复测
+- q1003 修复基线：`d0dea88` 开始实施，2026-10-14 同步 `cce8e75` 的用户源码快照；本次提交包含恢复、诊断和握手修复，未执行现场部署
 - 唯一测试语音：`Hello, please introduce MONKEY MOONCAKE products.`
 - 上层目标：[q1003 目标架构](q1003-target-architecture.md)
+- 固定 NVIDIA 源码阅读与实现依据：[上游核对](voicechat-upstream-analysis.md)；已修正探针输入停顿/错误目录并新增 CPU 产物检查，不替代现场根因证据
 
 本文只记录当前测试语音及其同一录音的受控对照，不保留其他语音、旧截图或旧会话的故障描述。一般回归语料和非故障能力验收归 [验收清单](development/validation.md)，不得混入本次根因证据。
 
@@ -64,6 +65,16 @@ o, please introduce MONKEY MOONCAKE products.
 - function channel 持续 PAD 的根因是 loader/head/权重/tokenizer/input 接线、生成窗口还是其他 runtime 行为。
 - 当前通话结束是否由同一 sequence 的 `VOICE_TOOL_REQUIRED` 触发；必须以 Gateway reason code 和 WebSocket close 事件确认。
 - 修复后用户是否实际听到完整答案；`accepted`、生成字幕和 `audio.done` 都不能单独证明播放成功。
+
+### 2.4 2026-10-14 新部署的握手阶段断开
+
+用户提供的文件通话日志对应 client `05f9a925`、sequence `3246057663`：14:46:20.094 收到 session.update（instructions 2019 字符、2 工具），20.095 启动 prompt prefill 后即断开；收到音频块、解码输入样本、音频推理次数均为 0。后台 prefill 在约 902 ms 后完成。此序列尚未进入音频推理，不能用于验证 `Hell` 缺失、function PAD 或 CueKB；7 ms 内关闭也不符合 API 8 秒握手超时。
+
+核对固定官方 API 文档发现 session.updated.tools 示例为 JSON 字符串（如 `"[]"`），此前 Adapter 仅接受 list。独立 WS 夹具在 legacy/自定义原生目录均复现送音前 VOICE_PROTOCOL_ERROR；2026-10-14 已本地修复字符串/数组同等严格校验，并增加无正文格式/拒绝字段日志。用户随后补充同一通话的 API WS session 为 `ba50a8c0-a870-4106-8d9a-7546ecbfde30`，门户消息为 `VoiceChat did not confirm the registered tools`。该消息准确命中 Adapter 的 tools 类型/数量检查，说明音频格式校验已通过、instructions/工具内容比较尚未执行。官方字符串格式是已复现的兼容缺陷，但现场究竟是字符串、缺失 tools 或数量不符仍需实际类型/数量确认。API 仅提供 accepted/open，未提供失败阶段日志；不能以此认定 API 修复已经部署。
+
+2026-10-14 发布前同步用户上传的源码快照 `cce8e75`，确认 `docs/voicechat/s2s/audio_server.py:1729/1757` 实际序列化并回显字符串 tools；新增测试从该快照提取真实会话更新方法，在 CPU/本地 WS 上验证兼容握手、后台 prefill 与首帧 PCM 发送。模板渲染和 Triton 为受控夹具，仍不证明 GPU 已通过。
+
+重测入口：发布修复后的 API，创建新通话，确认 `voice_registration_confirmed` → `portal.session.ready` → VoiceChat received_chunks > 0，再继续原样本 ASR/function 定位。此次修复不需要改变模型参数或延长握手期限。
 
 ## 3. 目标故障链与判定
 
@@ -160,7 +171,8 @@ Browser WAV PCM
 | 证据 | 故障层 | 下一步 |
 | --- | --- | --- |
 | runtime 没有 `function_tokens` 或 shape/step 无效 | loader/vLLM/custom output 契约 | 修注册、加载或输出契约，并增加失败测试 |
-| 有效输入期间持续 PAD | head/权重/tokenizer/input 接线 | 核对加载产物及 PAD/SOTC score/rank，再决定是否修代码 |
+| runtime 缺 function key，上层保留 PAD | runtime output 契约/转换产物 | 先确认 key 存在；不能归因为模型选择 PAD |
+| runtime 有 function key 且有效输入期间持续 PAD | head/权重/tokenizer/input 接线或模型选择 | 核对加载产物及 PAD/SOTC score/rank，再决定是否修代码 |
 | 有 SOTC、没有 EOTC | function generation 状态或观察窗口 | 修结束条件、状态维护或完整输入观察期限 |
 | 有完整 SOTC…EOTC、没有 tool event | parser、JSON 提取或 WS 队列 | 修一次性交付与有界错误回显 |
 | tool event 到达、Gateway 没有 pending tool | 工具目录/schema/调用归属 | 核对当前全局目录版本、注册回显、名字、参数和 response/input 绑定 |
@@ -170,6 +182,12 @@ Browser WAV PCM
 只有 runtime/head/input 契约确认正确后，才允许进行单变量 prompt 对照。工具目录、模型、音频、采样参数和 special ID 必须保持一致；prompt 成功加载不等于模型实际调用工具。
 
 ## 7. 门户失败恢复
+
+2026-10-13 已在 `d0dea88` 基线上实现本节的恢复处理。Gateway 在通知错误前尝试交付尚未发送的客户 final ASR，仅保留发送队列及在途事件对应的有界集合；交付前复核 epoch/租约/有效身份，不排空 assistant 文本或音频。终端错误携带递增 `server_seq`，在 Provider 关闭与存储清理前发送；日志记录相同 `trace_id`、reason code、epoch 和响应/输入关联，不记录语音或文本内容。关闭阶段不会被门户收到错误后发起的 DELETE 再次取消，上游关闭与历史审计继续完成。
+
+空音频 delta、没有非空输出的文本/音频结束边界不触发 `VOICE_TOOL_REQUIRED`，也不消耗工具结果后的续答许可；已开始输出中的空白文本分片仍保留，结束 response ID 仍禁止复用。非空未授权回答继续拒绝，策略和原生工具执行路径保持会话快照。Provider 显式结束或流结束产生可恢复 `VOICE_UNAVAILABLE`。
+
+门户收到错误后保留已接收转写、显示稳定 code/message、清除等待/说话状态并释放当前录音和播放。即使只有 WebSocket close 而没有 `portal.error`，也显示持久断线及重试提示；用户主动 End call 不产生该提示。录音不自动重播，final ASR 不自动提交为文字或工具请求。相关本地验证见 [当前验收证据](acceptance-report.md#0-当前审计与证据索引)。这些修复不证明本次真实 ASR/function 故障已解决。
 
 无合法工具时仍保持 fail-closed，但必须改善用户可见结果：
 
@@ -184,11 +202,11 @@ Browser WAV PCM
 | 阶段 | 内容 | 当前状态 |
 | --- | --- | --- |
 | D21-1 | 固定当前 WAV、版本、ID 关联和 artifact manifest | 待执行 |
-| D21-2 | 语义移植 main 的有界 PCM/RNNT/function capture 与分析器 | 待实现；不能整体 cherry-pick |
+| D21-2 | 语义移植 main 的有界 PCM/RNNT/function capture 与分析器 | 协议探针与静态产物检查已实现；用户快照已有 WS/backend capture，现场启用、hash 与同 sequence 采集仍待复测，不能整体 cherry-pick |
 | D21-3 | 运行原始/500 ms/1 s 同录音对照，确定 ASR 首个差异 | 待真实 VoiceChat/GPU 验证 |
 | D21-4 | 只修复证据命中的 ASR 层 | 待 D21-3 |
 | D21-5 | 定位并修复 loader/head/token/parser/result 中首个 function 差异 | 待真实 VoiceChat/GPU 验证 |
-| D21-6 | 实现门户显式失败恢复 | 可在确认当前事件顺序后独立实施 |
+| D21-6 | 实现门户显式失败恢复 | 已本地实现并通过受控回归；待真实部署 |
 | D21-7 | 与 `social_only`/quarantine 集成 | 待目标架构对应实现 |
 | D21-8 | 真实 CueKB、工具结果、授权口述和人工听音验收 | 待 D07 |
 

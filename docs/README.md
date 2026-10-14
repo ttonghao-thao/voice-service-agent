@@ -10,6 +10,8 @@
 | [q1003 目标架构](q1003-target-architecture.md)：业务目标、当前故障与演进方案 | 修复句首丢失/无回答，或实施 `social_only`、响应隔离和原生工具可靠性；§1、4–10 | voice、sessions、agent_runtime、tools、storage；apps/web、deploy/voicechat | 知识执行、接入、门户协议、真实验收 |
 | [D21 当前语音故障](voicechat-fault-recovery-design.md)：唯一测试语音、证据边界与分层定位 | 复现 `Hello, please introduce MONKEY MOONCAKE products.` 的句首缺失或无回答；§1–6，验证查 §9–10 | voice、Gateway、Web audio；独立 VoiceChat runtime | 目标架构、接入、门户协议、真实验收 |
 | [VoiceChat 修改源码快照](voicechat/README.md)：本地 Speech 最终修改文件与 SHA-256 | 审查或恢复外接 VoiceChat/Speech 修改；先读范围和证据边界 | `docs/voicechat/s2s`、`docs/voicechat/opt` | 补丁应用、构建与验证仍读交付 README |
+| [VoiceChat 论文 v2](voicechat-paper-v2-review.md)：原理、v1/v2 差异及项目改进 | 理解共享 encoder/RNNT/function/TTS，确定 P0–P2 改进与证据；§2–6 | voice、task_context、诊断脚本；独立 runtime | NVIDIA 源码核对、D21、目标架构 |
+| [NVIDIA 源码核对](voicechat-upstream-analysis.md)：固定上游源码事实、缺陷与诊断实现 | 追溯 RNNT/function 接线、探针输入驱动和产物契约；§1–4 | scripts/probe_voicechat.py、inspect_voicechat_artifacts.py；独立 runtime | D21、部署、接入 |
 | [知识执行](qa-routing-design.md)：模式、工具、直查/升级 | 修改选路、注册或证据处理；§1–4 | agent_runtime、tools/registry.py | 上下文 → CueKB；口述变更再读交付 |
 | [上下文与评测](task-context-evaluation.md)：来源条件/跨轮纠正 | 修改参数继承或历史；§1–3；评测查 §4–5 | task_context.py、sessions、storage | 知识执行；等待修订再读交付 §3 |
 | [口述与交付](live-agent-implementation.md)：检查、结束/恢复、等待交互 | 分别查 §1、§2、§3 | evidence.py、voice、sessions、storage；Web audio | 门户协议；真实等待门槛再读接入 |

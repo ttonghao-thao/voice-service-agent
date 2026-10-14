@@ -1,6 +1,6 @@
 # 当前任务板
 
-更新：2026-10-13；当前实现以本文件所在的 `codex/q1003` 提交为准，故障设计核对基线为 `1158760`。状态只在此维护；验证结果归 [验收](acceptance-report.md#0-当前审计与证据索引)，目标方案归 [q1003 目标架构](q1003-target-architecture.md)，当前唯一测试语音的故障证据与定位归 [D21](voicechat-fault-recovery-design.md)。本地实现不意味着现场故障已修复或云端已部署。
+更新：2026-10-14；当前实现以本文件所在的 `codex/q1003` 提交为准，本次发布检查基线为 `cce8e75`，包含此前 d0dea88 起的本地修复。状态只在此维护；验证结果归 [验收](acceptance-report.md#0-当前审计与证据索引)，目标方案归 [q1003 目标架构](q1003-target-architecture.md)，当前唯一测试语音的故障证据与定位归 [D21](voicechat-fault-recovery-design.md)。本地实现不意味着现场故障已修复或云端已部署。
 
 ## 1. 当前结论与审计基线
 
@@ -31,6 +31,9 @@
 | DOC5 | 分层入口、当前设计/历史隔离、按任务检索与维护规则；[本次审计](development/documentation.md#3-2026-10-07-审计与场景验证) |
 | WEB-FILE | 浏览器预录 WAV 输入：本地严格校验、ready 后实时发送、EOF 尾部确认、错误不重播，并复用现有 WS/Worklet；[门户 §3.1](portal-protocol.md#预录-wav-输入) |
 | TOOL-CATALOG | 全局后台多工具目录、动态刷新/重连、可信 schema/执行器、字段说明、策略一致提示词与注册回显确认；[工具目录](interfaces/voice-tools.md) |
+| D21-HANDSHAKE | 2026-10-14：兼容官方 session.updated.tools JSON 字符串/数组回显，内容保持严格校验并增加无正文阶段日志；独立 WS 已复现并修复；已同步 cce8e75 快照并用实际服务握手方法验证字符串回显及首帧发送，待修复后的现场部署复测 |
+| D21-PROBE | NVIDIA 源码与论文 v2 核对、持续送音探针、动态工具快照/schema、异常分类和有界证据、CPU 转换产物及融合权重核验已本地实现；不是 GPU 根因或质量验收；[源码记录](voicechat-upstream-analysis.md) |
+| D21-RECOVERY | 空输出边界不误拒绝/消耗续答许可；拒绝前保留排队 final ASR、提前通知错误、上游结束显式失败、门户断线提示与手动重试；仅本地实现，ASR/function 根因与真实验收未闭合；[D21 §7](voicechat-fault-recovery-design.md#7-门户失败恢复) |
 
 ## 3. 待完成与建议顺序
 
@@ -44,9 +47,9 @@
 | Q03 | 计划中：全阶段指标、语音样本分母/缺测/版本完整性；连续模拟评分已有独立实现 | [保留设计](archive/2026-10-07/architecture.md#103-q03可观测性与报告完整性) |
 | Q04 | 计划中：受权原件下载，须先确认 CueKB 契约 | [接入 §7](integration.md#7-q04原件查看的后续设计) |
 | Q05 / Q07-F | 计划中：独立推理优化、D1/D3、context-only/任意播报/自由交谈、其他 Provider；GPT Live 为可选实验 | [决策 ADR-03/05](decisions/architecture-decisions.md) 与 [历史研究](archive/2026-09-28/voicechat-research-review.md) |
-| Q1003-ARCH | 目标设计已完成；全局工具目录/注册加固已按本轮需求实现，`social_only`/quarantine 及其余故障修复仍未实施 | [目标架构](q1003-target-architecture.md)；[工具目录](interfaces/voice-tools.md) |
-| Q1003-DIAG | 当前测试语音已唯一固定；计划语义移植有界 PCM/RNNT/function 诊断，在 q1003 用同一 sequence 定位句首 `Hell` 丢失与无 SOTC/EOTC/工具事件的首个差异点 | [D21](voicechat-fault-recovery-design.md)；[目标架构 §6](q1003-target-architecture.md#6-两个当前故障的定位与修复路径) |
-| Q1003-SAFE | 计划中：实现启动级 `social_only`、纯规则 ResponseAuthorizationPolicy、有界 quarantine 和门户显式恢复；不得以 `general_qa` 掩盖漏调用 | [目标架构 §5](q1003-target-architecture.md#5-目标架构) |
+| Q1003-ARCH | 目标设计已完成；全局工具目录/注册加固和 D21 恢复处理已本地实现，`social_only`/quarantine 与 ASR/function 根因修复仍未实施 | [目标架构](q1003-target-architecture.md)；[工具目录](interfaces/voice-tools.md) |
+| Q1003-DIAG | 已固定 NVIDIA `097dfe9` 核读源码，修正探针持续送音/目录快照并新增 CPU 产物检查；已取得 cce8e75 的 WS/backend 诊断源码快照；runtime 同 sequence PCM/RNNT/function 捕获及真实首差异定位待实际 hash/原录音 | [D21](voicechat-fault-recovery-design.md)；[目标架构 §6](q1003-target-architecture.md#6-两个当前故障的定位与修复路径) |
+| Q1003-SAFE | 门户显式恢复已本地实现；启动级 `social_only`、纯规则 ResponseAuthorizationPolicy 和有界 quarantine 仍计划中；不得以 `general_qa` 掩盖漏调用 | [目标架构 §5](q1003-target-architecture.md#5-目标架构) |
 | Q1003-VERIFY | 待离线与真实验证：路由/竞态/协议回归、GPU VoiceChat、真实 CueKB/ACL、浏览器麦克风和人工听音；任一企业漏调用或未授权音频泄漏即 no-go | [离线验证](q1003-target-architecture.md#9-离线验证方法)、[真实门槛](q1003-target-architecture.md#10-真实验收与放行门槛) |
 
 先验证真实版本/权限/旧输出/听音，再按能力放行。中文、天气/股票/交易、正式客户认证、多租户、WebRTC/SIP、子 Agent 调度不在已确认实现范围。

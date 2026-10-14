@@ -24,6 +24,8 @@
 
 ## 源码核对与本地测试
 
+2026-10-14 已同步用户保存的 [D19/D21 最终源码快照](../../docs/voicechat/README.md)。该快照包含后续 WS/backend 诊断，最终文件 hash 以其 [snapshot-manifest.json](../../docs/voicechat/snapshot-manifest.json) 为准；本节 source-manifest 的 after hash 仅对应 D19 补丁结果，不能当作带诊断版本的最终 hash。
+
 [source-manifest.json](source-manifest.json) 给出补丁涉及文件的前后 SHA-256。针对原始基线，在 speech 源码目录执行；路径替换为实际值：
 
 ```sh
@@ -77,7 +79,7 @@ VoiceChat 内部工具等待与本项目 30 秒业务预算独立，不能认为
 
 ## Q07 双工具接入与模板核对
 
-Q07 不新增此补丁文件或修改 GPU 推理/权重。本项目 API 按会话选择 config/voice-prompt.txt（legacy 单 bridge）或 config/voice-qa-prompt.txt（dual_tools，仅 lookup_knowledge / reason_over_knowledge）；严格知识模式另追加证据要求。原生 tools/instructions 在 session.update 注册，不发送 tool_choice。
+Q07 不新增此补丁文件或修改 GPU 推理/权重。本项目 API 按会话选择 config/voice-prompt.txt（legacy 单 bridge）或 config/voice-qa-prompt.txt（dual_tools，后台全局多工具目录，初始 lookup_knowledge / reason_over_knowledge）；严格知识模式另追加证据要求。原生 tools/instructions 在 session.update 注册，不发送 tool_choice。
 
 保留上述 Jinja 启动配置并检查镜像内最终模板：只包含本轮授权工具，dual_tools 不残留每句强制 consult_service_agent 的规则，legacy 不追加绕过 bridge 的规则。原生自动选择能力不等于当前工具定义的选择质量；本地 WebSocket/CPU 测试不替代 GPU。
 

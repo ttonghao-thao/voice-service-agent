@@ -1,26 +1,33 @@
 # 当前验收证据
 
-2026-10-13 已刷新完整 Python、前端、浏览器、独立 API 模拟及 API/Web 镜像证据；本轮基于 `49ef3a3` 实施全局工具目录与注册加固。本文只维护最近可用证据及未验证边界；旧流水归档，不累加历史测试数。任务状态归 [任务板](TASK_BOARD.md)，放行目标归 [验收清单](development/validation.md)。
+2026-10-14 发布检查基于 `codex/q1003@cce8e75` 加本次恢复、握手及诊断修复；已保留远端新增的 VoiceChat 源码快照。最新完整结果为 **340 项 Python、26 项 Node、18 项 Chromium 全通过**，Ruff/TypeScript/前端构建/diff 与文档链接检查通过。本轮提交用于推送应用代码，没有构建或发布生产容器。任务状态归 [任务板](TASK_BOARD.md)，放行目标归 [验收清单](development/validation.md)。
+
+用户报告已部署此前版本及 VoiceChat 文件，首次文件通话在送音前断开；门户消息 `VoiceChat did not confirm the registered tools` 已锁定 tools 回显类型/数量检查。本次修复兼容字符串/数组并保持内容校验；同步的服务源码实际以字符串回显，真实方法 CPU/WS 回归通过。实际部署 hash、更新 API 后的送音、ASR/function 和真实 CueKB/听音仍需现场复测，不能以本地回归宣称通过。
 
 ## 0. 当前审计与证据索引
 
 | 项目 | 最近实际记录 | 证据与限制 |
 | --- | --- | --- |
-| 应用回归 | 2026-10-13：全量 pytest 272 通过；工具目录定向 21 通过（含全量收集后新增的 2 个边界用例，不与全量累加）；26 Node、16 Chromium 通过/1 条件跳过；Ruff/前端构建通过 | Python 包含 51 项独立 API 网络测试和十组连续序列；有一条既有 Starlette/AnyIO 弃用警告。契约重新导出包含新管理 API、目录 schema 与字段说明。不是 ASR/TTS/听音或真实选路质量 |
-| 本轮修复 | 拒绝 CueKB 3xx 正文/损坏压缩，部分 HTTP 响应受限重试；VoiceChat 非法握手/事件/音频归协议错误；本地 SQLite WAL | 新增故障用例先复现再修复；基线完整回归曾有两项 SQLite 锁失败，修复后全量通过；未改变生产 PG 配置或启用 NVIDIA 等待能力 |
+| 握手回显兼容 | 2026-10-14：官方 session.updated.tools JSON 字符串场景先复现 legacy/自定义目录 2 项失败；修复后字符串/数组同等校验，篡改/重复/非法 JSON 均仍拒绝，成功后首个 80 ms PCM 可发送；四模块定向 124 项通过，Ruff/diff 检查通过 | `artifacts/voice-recovery/handshake.xml`；模块为 native_tool_catalog、protocol、voicechat_probe、voice。定向数不与此前完整 318 相加；无真实 GPU/CueKB/听音；补丁 `serialized-tools-handshake.patch` 已核对可应用于 d0dea88。门户错误已确认 tools 类型/数量检查；cce8e75 的实际服务源码以字符串回显，新增 CPU/WS 回归已覆盖。124 项是此前定向记录，最终纳入完整 340 项；运行文件 hash 及修复后的送音待现场确认 |
+| 应用回归 | 2026-10-14：最终完整 pytest 340、26 Node、18 Chromium 全通过；Ruff/TypeScript/前端构建/diff 检查通过 | Python 含独立 API 网络、连续序列、全部恢复/握手和静态产物检查，以及 2 项归档真实握手方法回归；JUnit 使用 xunit1，仅 1 条既有 Starlette/AnyIO 弃用警告。Chromium 使用实际 AudioWorklet 与显式模拟 API，未跳过用例。本轮未改 schema，不导出重复契约；不是 GPU/真实选路/听音验收 |
+| 论文 v2 与融合审计 | 2026-10-13：深读 v2 全文/附录并逐节对比 v1；固定 HF commit `443794e` 的配置检查为 1/1/2 matches；新增 7 项融合审计用例，相关 30 项通过，Ruff/diff 检查通过 | 产物为 `artifacts/voicechat-paper/` 的 source-manifest.json、official-fusion-audit.json、diagnostics.xml；本轮只扩展独立诊断脚本，不修改应用运行时/模型，未重跑上一轮完整 318 项或前端测试，不累加计数。没有现场 GPU/模型权重/原始 WAV 验证；见 [v2 设计](voicechat-paper-v2-review.md) |
+| NVIDIA 源码/诊断 | 已克隆并固定 `097dfe9`，核读官方部署/API、模板、转换、wrapper、cache、RNNT、pipeline/Triton 示例；修复探针停供音频及多工具注册不一致，新增 CPU 产物检查；上游真实方法受控执行确认缺失 function key 与实际 token 的不同映射 | 23 项新增回归使用 loopback WS/合成产物，纳入最终 318 项；AST 受控检查无 GPU/tensor 推理；现已取得 cce8e75 的 WS/backend 快照；实际模型产物、运行 hash 与授权测试 WAV 未取得，不能宣称 ASR/function 根因已修复；见 [源码核对](voicechat-upstream-analysis.md) |
+| 本轮修复 | 空输出不触发工具许可拒绝/不消耗续答许可；拒绝或上游断开时补送 final ASR、提前发送错误、保护关闭审计；门户显示错误 code 和断线重试提示，清除等待状态 | 受控用例先复现空边界误拒绝、续答许可丢失、转写发送取消、错误晚于清理、无错误断线和错误后 DELETE 中断关闭。非空未授权文本/PCM 仍拒绝；未自动提交或重播，未改会话策略或启用 NVIDIA 等待能力 |
 | Docker/Compose | 2026-10-13：API/Web Docker build 及 Compose config --quiet 通过 | 本轮未启动生产 Compose 或验证 PG/Redis/TLS/容量；17 项隔离启动检查仍为 2026-10-04 的历史证据 |
 | 数据迁移 | 2026-10-13：SQLite 从 0006 升级 head=0010、Alembic check、降级 0007/0006 后再升级 head 的回归通过，旧会话历史保留 | 0010 增加全局工具目录；隔离 PostgreSQL/十列检查仍为 2026-10-04 历史证据，未在生产数据和真实负载下执行本轮迁移/回滚 |
 | 当前功能范围 | Q07/CTX1/EVAL1/LVA1–LVA3 已本地实现 | NVIDIA 等待期四项能力仍 false；增强模拟的 parent_call_id 不属于生产协议 |
 | 历史代码发布 | 3bb0928 与文档 f498fa4 已推送 codex/q1003 并核对远端 | 这是 2026-10-04 的发布记录；本轮自测执行时 HEAD 为 ee73afb 加工作区修复，未执行部署 |
 | 文档整理 | 2026-10-07 DOC5：仅 Markdown；链接/锚点、历史保留、代码对照和五类读取路径验证 | 方法、实际字节统计与限制见 [文档审计 §3](development/documentation.md#3-2026-10-07-审计与场景验证)，该次整理未重跑应用测试 |
 | q1003 目标设计 | 2026-10-13：目标方案原基线 `56d7774`，按当前实现 `1158760` 刷新工具目录边界；整理业务目标、`social_only`/响应隔离、诊断路径、里程碑和离线/真实门槛 | 仅 Markdown，未编码 `social_only`/quarantine，未验证真实 VoiceChat/CueKB/GPU/浏览器听音；见 [目标架构](q1003-target-architecture.md) |
-| D21 当前语音故障 | 2026-10-13：唯一保留测试语音 `Hello, please introduce MONKEY MOONCAKE products.`，整理句首 `Hell` 缺失、输入后无回答、证据边界、分层定位和放行门槛 | 仅文档收敛；预录 WAV 功能的受控测试不证明真实 ASR、function channel、CueKB 或听音通过；见 [D21](voicechat-fault-recovery-design.md) |
+| D21 当前语音故障 | 2026-10-13：Gateway/门户恢复已本地实现并覆盖 legacy/dual_tools、非空文本/PCM 拒绝、空边界、上游结束/断开、错误后立即停止与手动重试；目标语音与句首缺失描述继续保留 | 现已提供 0 音频块握手日志、门户错误和源码快照；真实测试 WAV、VoiceChat 运行 hash 与同 sequence 音频推理捕获仍缺；ASR/function 根因尚未闭合，未验证真实 CueKB/GPU/听音；见 [D21 §7](voicechat-fault-recovery-design.md#7-门户失败恢复) |
 | 预录 WAV 输入 | 2026-10-13：26 项 Web 单测、生产构建和 Web 镜像构建通过；完整 Chromium 14 通过、1 项按条件跳过，其中新增文件输入 5 项全通过；既有独立 API 模拟矩阵 51 项通过 | Chromium 使用实际 AudioContext/AudioBufferSource/AudioWorklet；HTTP/WS 与独立 CueKB/VoiceChat/文本模型均为受控夹具。覆盖格式/大小/时长、ready 前不发送、实时输入/EOF、无麦克风、错误/轮换不重播、启动竞态及文字互斥；未验证真实 VoiceChat/CueKB、GPU、ASR/TTS 或听音 |
 | 全局工具目录与注册 | 2026-10-13：三工具真实应用分派及原始 call_id 回填、六工具无固定数量截断、重启保留、全局可见/调用授权、CAS、启停/reload、活动连接刷新、无效候选和错误回显拒绝均通过；SQLite 0010 升降级及 Alembic check 通过 | 配置更新使麦克风重新注册，文件停止且不重播，新增两个 Chromium 场景通过。API/Web 镜像构建及 Compose config --quiet 通过；未执行生产 Compose 启动、PG 数据迁移、真实 VoiceChat/GPU/模型工具质量验收。统一契约见 [工具目录](interfaces/voice-tools.md) |
 
-本轮环境为 Python 3.12.14、Node 24.19.0、系统 Chromium 和独立 SQLite；CueKB HTTP、VoiceChat WS、兼容文本模型 HTTP 均为 loopback 模拟 API。执行根 README 的 pytest、Ruff、Node 单测、前端构建和契约导出命令，并按 [模拟 §3](simulated-full-flow.md#3-复现步骤) 显式设置 `SIMULATED_FULL_FLOW=1` 运行浏览器；修复后的服务已重启验证并关闭。重连回归另外确认最终 audio.done 和唯一工具结果。
+上述完整应用回归的 D21 环境为 Python 3.12.14、Node 24.19.0、系统 Chromium 和独立 SQLite；CueKB HTTP、VoiceChat WS、兼容文本模型 HTTP 均为 loopback 模拟 API。执行根 README 的 pytest、Ruff、Node 单测和前端构建命令，并按 [模拟 §3](simulated-full-flow.md#3-复现步骤) 显式设置 `SIMULATED_FULL_FLOW=1` 运行全部浏览器用例；没有真实服务连接或听音验收。
 
-本轮产物在忽略目录 `artifacts/simulation/`：python.xml、network.xml、browser.xml、summary.json（源代码/夹具 hash 与结果）。历史产物曾位于 `artifacts/live-agent/`；不保证新环境保留旧文件。独立服务模拟使用合成 PCM 与脚本转写/工具选择。其他浏览器用例的受控路由范围按各自测试区分。
+最终发布产物在忽略目录 `artifacts/q1003-release/`：python.xml（340 项完整回归）、browser.xml（18 项浏览器回归）。命令为 `.venv/bin/python -m pytest -q --junitxml=artifacts/q1003-release/python.xml -o junit_family=xunit1`；浏览器按 [模拟 §3](simulated-full-flow.md#3-复现步骤) 显式设置 `SIMULATED_FULL_FLOW=1`。主机 Python 3.12.14、Node 24.19.0、Chromium 154；这些文件不提交 Git。
+
+此前 D21 产物在 `artifacts/voice-recovery/`，论文与静态配置证据在 `artifacts/voicechat-paper/`；此前计数不与最新完整结果累加。`test_voicechat_snapshot_handshake.py` 从 hash 核验后的归档源码提取实际会话更新方法，执行其 JSON 字符串回显和后台 prefill 控制流，再用真实 API Adapter 发送首个 80 ms PCM；模板、Triton 和音频内容为受控夹具，无 GPU 推理。源码快照的 8 个文件 hash 均与远端 manifest 一致，本轮没有修改归档源码。
 
 ## 1. 历史证据定位
 

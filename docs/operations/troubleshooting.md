@@ -7,6 +7,7 @@
 | 症状 | 先查什么 | 代码与下一层证据 |
 | --- | --- | --- |
 | 页面正常但无收音 | HTTPS/证书、麦克风权限、worklet/dsp 请求是否 200、设备 Hz 与 sent Hz | `apps/web/src/audio/VoiceClient.ts`、`public/audio-worklet.js`；Web 镜像文件/目录权限，不能只测首页 |
+| Start file call 后立即断开，VoiceChat 收到 0 块音频 | API 的 voice_registration_rejected / voice_session_failed 和门户错误消息；session.updated 的实际回显 | 音频在 portal.session.ready 后才发送；Adapter 同时支持 tools 数组/JSON 字符串，仍核对内容；不先排查 ASR 或增加工具等待超时 |
 | ready、有数据包却无回答 | 最终 ASR → native call → 工具结果 → response/audio.done 的实际事件 | `voice/provider.py` / `gateway.py`；独立 VoiceChat 版本及有序 response 补丁；ready/包数不证明听到 |
 | 文字正确、语音偏离 | presentation 的 mode/status/reason、批准文本、实际 Provider 转写 | `agent_runtime/evidence.py`、`Store.presentation`；再用授权录音核对真实音频，事后检查不能撤回已播内容 |
 | 停止后下一轮不播/旧回答串入 | epoch/revision、response/input/call 关联、clear/suppressed、finished ACK | Gateway → Store → VoiceClient/worklet；不要凭文本相似度或超时猜关联 |

@@ -20,7 +20,7 @@ API 容器内部监听 `0.0.0.0:8000`，不映射宿主端口。浏览器只从 
 
 ## 问答模式与预算（Q07）
 
-以下是当前 Settings 已实现的参数，在同一 `.env` 中配置；模板的 Q07 示例为注释。正常 API 启动仍要求真实文本模型/CueKB/VoiceChat、PG/Redis，不因直查零外置调用而省略部署依赖。后台 ENABLED_TOOLS 固定 search_knowledge；不要改成 lookup_knowledge 或 reason_over_knowledge。
+以下是当前 Settings 已实现的参数，在同一 `.env` 中配置；模板已设置 dual_tools/general_qa，其余可选参数示例为注释。正常 API 启动仍要求真实文本模型/CueKB/VoiceChat、PG/Redis，不因直查零外置调用而省略部署依赖。后台 ENABLED_TOOLS 固定 search_knowledge；不要改成 lookup_knowledge 或 reason_over_knowledge。
 
 | 参数 | 默认 / 允许范围 | 已实现含义 |
 | --- | --- | --- |
@@ -108,7 +108,50 @@ docker compose --env-file .env -f deploy/compose.production.yaml logs --tail=200
 
 `AGENT_MODEL` 是 BusinessRuntime 后台文本 Agent 调用的模型标识，用于理解任务、选择 `search_knowledge` 并组织有依据的答案；它不是 VoiceChat 的实时语音模型。`AGENT_PROVIDER=openai` 时使用官方端点，无需 `AGENT_BASE_URL`；只有接 OpenAI-compatible 服务时才改为 `compatible` 并填写该 HTTP/HTTPS 基地址，两者不需要同时独立部署。`CUEKB_BASE_URL` 是独立 CueKB HTTP/HTTPS 基地址，应用附加 `/v1/search`；HTTP 仅用于已隔离、受控的内部网络。`VOICECHAT_WS_URL` 是 API 到独立语音服务的 WS/WSS endpoint，不由门户域名推断；WS 仅用于同主机或受控隔离内网，且对应端口不得公网暴露。浏览器公网入口仍强制 HTTPS/WSS。本期固定只开放 `search_knowledge`，无需天气配置。数据库/Redis 凭据使用 URL 安全字符，容器内连接串由 Compose 构造。
 
-本期部署直接开放已配置的英文全双工链路，不再用人工填写的“已验证”布尔值阻止启动。部署后用固定 VoiceChat API 版本和镜像 digest 运行 `scripts/probe_voicechat.py --api-version ... --image-digest ... --wav ...`，人工复核输出音频，再通过门户验证实际录音→CueKB→口述。探针报告负责记录证据，运行配置只负责连接服务；真实失败不回退 mock。Web Nginx 直接终止 HTTPS，并处理 SSE buffering、WS upgrade、请求大小和安全头；不得记录凭据或语音票据。
+本期部署直接开放已配置的英文全双工链路，不再用人工填写的“已验证”布尔值阻止启动。部署后按下节以固定 VoiceChat API 版本、镜像 digest 和实际会话快照运行探针，人工复核输出音频，再通过门户验证实际录音→CueKB→口述。探针报告负责记录证据，运行配置只负责连接服务；真实失败不回退 mock。Web Nginx 直接终止 HTTPS，并处理 SSE buffering、WS upgrade、请求大小和安全头；不得记录凭据或语音票据。
+
+## VoiceChat 诊断探针与部署产物核验
+
+源码依据及证据边界见 [NVIDIA 核对记录](voicechat-upstream-analysis.md)。先记录实际镜像 digest、挂载源码和模板 hash；以下脚本不会远程证明版本，不自动开启能力或部署服务。
+
+多工具模式必须提供实际 `session.update` JSON。可使用授权捕获的首次会话配置；也可将同一部署的管理员 `GET /api/v1/admin/voice-tools` 响应保存为忽略目录下的 `artifacts/voice-tools-admin.json`，为**空历史新会话**生成快照（本机代码与 `QA_ANSWER_POLICY` 必须和部署一致）：
+
+```sh
+PYTHONPATH=apps/api .venv/bin/python - <<'PYTHON'
+import json
+from pathlib import Path
+from app.config import Settings
+from app.voice.provider import session_update
+catalog = json.loads(Path("artifacts/voice-tools-admin.json").read_text())
+update = session_update(tools=catalog["definitions"], answer_policy=Settings().answer_policy)
+Path("artifacts/voicechat-session-update.json").write_text(json.dumps(update, ensure_ascii=True))
+print("catalog_revision:", catalog["revision"])
+PYTHON
+
+PYTHONPATH=apps/api .venv/bin/python scripts/probe_voicechat.py \
+  --wav artifacts/authorized-question.wav \
+  --session-update artifacts/voicechat-session-update.json \
+  --api-version ACTUAL_API_REVISION --image-digest ACTUAL_IMAGE_DIGEST \
+  --tool-delay-seconds 5 --tool-wait-timeout 20 --post-result-seconds 20 \
+  --output artifacts/voicechat-probe.json
+```
+
+读取已有 `.env` 中的 `VOICECHAT_WS_URL`/凭据，不把 Key 放入命令或报告。legacy 可不传快照；dual_tools 缺快照直接失败，避免误测 bridge。快照和授权 WAV 不提交 Git。需要听音时显式加 `--output-wav artifacts/authorized-response.wav`；需要插话协议观察时加 `--barge-in-wav`，报告只说明输入时序，不能证明新问题影响了模型回答。
+
+探针在等待工具和回填时持续送静音，默认再观察 20 秒续答，时长参数有上限。合成工具结果不经过 CueKB/业务授权，不是端到端验收。报告 `partial` 表示只完成部分协议观察，不能改写为模型通过；检查 `reason`、`phase`、`pending_call_ids_at_close`、`timeline_dropped` 和 `output_wav_truncated`。输入样本 hash 包含最后一帧补零，静音单独计数；报告不保存转写或工具参数正文。原探针在这些等待阶段停止送音，其“无工具”结果需重测。
+
+在模型产物所在机器，使用普通 Python 执行静态检查（替换为实际转换后 vLLM LLM 路径；每个分片重复传 `--checkpoint`）：
+
+```sh
+python scripts/inspect_voicechat_artifacts.py \
+  --config /actual/converted-llm/config.json \
+  --tokenizer /actual/converted-llm/tokenizer.json \
+  --checkpoint /actual/converted-llm/model.safetensors \
+  --voicechat-config /actual/voicechat-checkpoint/config.json \
+  --output artifacts/voicechat-artifacts.json
+```
+
+该脚本无需 GPU/NeMo，只读配置和 safetensors header。可选 `--voicechat-config` 必须是含 `model.stt.model` 的原始 VoiceChat 配置，不是转换后的 vLLM config；它将声明值/公开 wrapper 缺省值与论文 1/1/2 融合权重比较，返回 `matches/differs/unverified`，不会自动改配置。官方固定 HF 配置本轮为 matches，不能据此推断现场运行配置；见 [论文 v2 核对](voicechat-paper-v2-review.md#6-本轮落地验证与未完成项)。`missing/mismatch/unverified` 定位提供文件的契约差异；`passed` 也不证明权重正确加载、实际 tokenizer 编码、RNNT 或 function 推理正确。它不修改模型，头部 hash 不代表权重内容 hash。真实定位仍需同 sequence 的输入帧、RNNT raw token 和 runtime function key/token 证据。
 
 ## 约 3 秒查询的分段复测
 
