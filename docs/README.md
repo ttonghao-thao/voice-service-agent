@@ -9,6 +9,7 @@
 | [系统架构](architecture.md)：模块与数据流 | 跨模块/架构改动；§2–4 | voice、sessions、agent_runtime、tools、storage | 决策 → 受影响主题 |
 | [q1003 目标架构](q1003-target-architecture.md)：业务目标、当前故障与演进方案 | 修复句首丢失/无回答，或实施 `social_only`、响应隔离和原生工具可靠性；§1、4–10 | voice、sessions、agent_runtime、tools、storage；apps/web、deploy/voicechat | 知识执行、接入、门户协议、真实验收 |
 | [D21 当前语音故障](voicechat-fault-recovery-design.md)：唯一测试语音、证据边界与分层定位 | 复现 `Hello, please introduce MONKEY MOONCAKE products.` 的句首缺失或无回答；§1–6，验证查 §9–10 | voice、Gateway、Web audio；独立 VoiceChat runtime | 目标架构、接入、门户协议、真实验收 |
+| [10 月 14 日部署复测](voicechat-validation-20261014.md)：握手恢复后 ASR/function/结束边界的现场判定 | 15:54 日志仍缺 Hell、function 全 PAD、VOICE_ANSWER_TIMEOUT；§1–5 | voice、Gateway；独立 runtime 与隔离 capture | D21、交付补丁、部署 |
 | [VoiceChat 修改源码快照](voicechat/README.md)：本地 Speech 最终修改文件与 SHA-256 | 审查或恢复外接 VoiceChat/Speech 修改；先读范围和证据边界 | `docs/voicechat/s2s`、`docs/voicechat/opt` | 补丁应用、构建与验证仍读交付 README |
 | [VoiceChat 论文 v2](voicechat-paper-v2-review.md)：原理、v1/v2 差异及项目改进 | 理解共享 encoder/RNNT/function/TTS，确定 P0–P2 改进与证据；§2–6 | voice、task_context、诊断脚本；独立 runtime | NVIDIA 源码核对、D21、目标架构 |
 | [NVIDIA 源码核对](voicechat-upstream-analysis.md)：固定上游源码事实、缺陷与诊断实现 | 追溯 RNNT/function 接线、探针输入驱动和产物契约；§1–4 | scripts/probe_voicechat.py、inspect_voicechat_artifacts.py；独立 runtime | D21、部署、接入 |

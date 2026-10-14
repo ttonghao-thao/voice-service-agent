@@ -31,9 +31,10 @@
 | DOC5 | 分层入口、当前设计/历史隔离、按任务检索与维护规则；[本次审计](development/documentation.md#3-2026-10-07-审计与场景验证) |
 | WEB-FILE | 浏览器预录 WAV 输入：本地严格校验、ready 后实时发送、EOF 尾部确认、错误不重播，并复用现有 WS/Worklet；[门户 §3.1](portal-protocol.md#预录-wav-输入) |
 | TOOL-CATALOG | 全局后台多工具目录、动态刷新/重连、可信 schema/执行器、字段说明、策略一致提示词与注册回显确认；[工具目录](interfaces/voice-tools.md) |
-| D21-HANDSHAKE | 2026-10-14：兼容官方 session.updated.tools JSON 字符串/数组回显，内容保持严格校验并增加无正文阶段日志；独立 WS 已复现并修复；已同步 cce8e75 快照并用实际服务握手方法验证字符串回显及首帧发送，待修复后的现场部署复测 |
+| D21-HANDSHAKE | 2026-10-14：字符串/数组回显修复已发布于 c6bba4e；用户 15:54 现场复测确认 registration 日志 tools_count=2/type=str，并实际收音 202 块。运行文件 hash、ASR/function 和知识执行仍待分层核验 |
 | D21-PROBE | NVIDIA 源码与论文 v2 核对、持续送音探针、动态工具快照/schema、异常分类和有界证据、CPU 转换产物及融合权重核验已本地实现；不是 GPU 根因或质量验收；[源码记录](voicechat-upstream-analysis.md) |
 | D21-RECOVERY | 空输出边界不误拒绝/消耗续答许可；拒绝前保留排队 final ASR、提前通知错误、上游结束显式失败、门户断线提示与手动重试；仅本地实现，ASR/function 根因与真实验收未闭合；[D21 §7](voicechat-fault-recovery-design.md#7-门户失败恢复) |
+| D21-END | 15:54 现场无回答结束边界，默认 10 秒期限触发可恢复超时；默认关闭的 backend PAD 尾部完成补丁已本地实现，46 项 CPU 边界 + 22 项 QA 回归通过；保留原静音预算、工具批次和用户语音证据，GPU/完整听音仍待验证；[本次分析](voicechat-validation-20261014.md) |
 
 ## 3. 待完成与建议顺序
 

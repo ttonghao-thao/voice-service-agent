@@ -2,12 +2,14 @@
 
 2026-10-14 发布检查基于 `codex/q1003@cce8e75` 加本次恢复、握手及诊断修复；已保留远端新增的 VoiceChat 源码快照。最新完整结果为 **340 项 Python、26 项 Node、18 项 Chromium 全通过**，Ruff/TypeScript/前端构建/diff 与文档链接检查通过。本轮提交用于推送应用代码，没有构建或发布生产容器。任务状态归 [任务板](TASK_BOARD.md)，放行目标归 [验收清单](development/validation.md)。
 
-用户报告已部署此前版本及 VoiceChat 文件，首次文件通话在送音前断开；门户消息 `VoiceChat did not confirm the registered tools` 已锁定 tools 回显类型/数量检查。本次修复兼容字符串/数组并保持内容校验；同步的服务源码实际以字符串回显，真实方法 CPU/WS 回归通过。实际部署 hash、更新 API 后的送音、ASR/function 和真实 CueKB/听音仍需现场复测，不能以本地回归宣称通过。
+用户随后报告 c6bba4e 升级后的 15:54 通话已确认字符串 tools 回显、收到 202 音频块；握手故障恢复。句首 Hell 仍缺失、function 200 步全 PAD、普通回答未出现结束边界，页面明确显示 VOICE_ANSWER_TIMEOUT。运行文件 hash、同 sequence 原始 PCM/模型输出与真实 CueKB/听音仍待取得；完整分析与下一轮采集见 [本次复测](voicechat-validation-20261014.md)。
 
 ## 0. 当前审计与证据索引
 
 | 项目 | 最近实际记录 | 证据与限制 |
 | --- | --- | --- |
+| 15:54 现场复测 | 用户提供 API/VoiceChat 日志：注册 tools_count=2/type=str，Triton 100 次、submitted/completed=256000；ASR 最终 44 字符、function PAD=200/SOTC=EOTC=0；40.054 开始回答、50.961 超时；queued=sent=167 | 这是远端日志报告，不是本工作区 GPU/人工听音验证。缺少实际 PCM/权重与目录采集；没有证据证明 classic/Pro 来自 CueKB。已确认超时的直接原因是缺结束边界，ASR/function 具体根因未闭合 |
+| PAD 尾部完成补丁 | 2026-10-14：46 项新 CPU 契约测试 + 22 项 QA 策略/执行回归共 68 项通过；Ruff/diff/文档链接和原始 8 文件 hash 检查通过 | `artifacts/voice-recovery/pad-tail-completion.xml`；先严格 apply/reverse/hash，再执行实际 backend generate/turn/TTS/parser 和 WS 收尾方法，I/O 为受控夹具。默认关闭，仅修既有强制静音与回合结束的缺口；不保证 10 秒内结束、实际 TTS 完整、ASR 或工具选路正确。未部署 GPU/构建生产镜像；68 项不与前次完整 340 相加 |
 | 握手回显兼容 | 2026-10-14：官方 session.updated.tools JSON 字符串场景先复现 legacy/自定义目录 2 项失败；修复后字符串/数组同等校验，篡改/重复/非法 JSON 均仍拒绝，成功后首个 80 ms PCM 可发送；四模块定向 124 项通过，Ruff/diff 检查通过 | `artifacts/voice-recovery/handshake.xml`；模块为 native_tool_catalog、protocol、voicechat_probe、voice。定向数不与此前完整 318 相加；无真实 GPU/CueKB/听音；补丁 `serialized-tools-handshake.patch` 已核对可应用于 d0dea88。门户错误已确认 tools 类型/数量检查；cce8e75 的实际服务源码以字符串回显，新增 CPU/WS 回归已覆盖。124 项是此前定向记录，最终纳入完整 340 项；运行文件 hash 及修复后的送音待现场确认 |
 | 应用回归 | 2026-10-14：最终完整 pytest 340、26 Node、18 Chromium 全通过；Ruff/TypeScript/前端构建/diff 检查通过 | Python 含独立 API 网络、连续序列、全部恢复/握手和静态产物检查，以及 2 项归档真实握手方法回归；JUnit 使用 xunit1，仅 1 条既有 Starlette/AnyIO 弃用警告。Chromium 使用实际 AudioWorklet 与显式模拟 API，未跳过用例。本轮未改 schema，不导出重复契约；不是 GPU/真实选路/听音验收 |
 | 论文 v2 与融合审计 | 2026-10-13：深读 v2 全文/附录并逐节对比 v1；固定 HF commit `443794e` 的配置检查为 1/1/2 matches；新增 7 项融合审计用例，相关 30 项通过，Ruff/diff 检查通过 | 产物为 `artifacts/voicechat-paper/` 的 source-manifest.json、official-fusion-audit.json、diagnostics.xml；本轮只扩展独立诊断脚本，不修改应用运行时/模型，未重跑上一轮完整 318 项或前端测试，不累加计数。没有现场 GPU/模型权重/原始 WAV 验证；见 [v2 设计](voicechat-paper-v2-review.md) |

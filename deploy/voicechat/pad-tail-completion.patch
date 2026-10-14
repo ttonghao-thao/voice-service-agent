@@ -1,0 +1,87 @@
+--- a/opt/tritonserver/backends/nemotron-voicechat/model.py
++++ b/opt/tritonserver/backends/nemotron-voicechat/model.py
+@@ -220,9 +220,13 @@
+             "S2S_INFERENCE_FORCE_SPEECH_SILENCE_ON_PAD", "true"
+         ).lower() not in ("0", "false")
+         self._tts_pad_tail_ratio = float(os.environ.get("S2S_TTS_PAD_TAIL_RATIO", "3"))
+-        logger.log_verbose(
++        # Opt-in completion of a turn whose existing PAD rendering budget is exhausted.
++        self._tts_close_on_pad_tail = os.environ.get(
++            "S2S_INFERENCE_CLOSE_ON_PAD_TAIL", "false"
++        ).lower() in ("1", "true", "yes")
++        logger.log_info(
+             f"TTS PAD-silence — force_silence_on_pad={self._tts_force_silence_on_pad}, "
+-            f"pad_tail_ratio={self._tts_pad_tail_ratio}"
++            f"pad_tail_ratio={self._tts_pad_tail_ratio}, close_on_pad_tail={self._tts_close_on_pad_tail}"
+         )
+ 
+         # Function call tokens
+@@ -735,6 +739,16 @@
+                     )
+                     self._reset_fn_call_state(seq_state.fn_call, seq_state)
+ 
++    def _tts_pad_tail_budget_exhausted(self, seq_state) -> bool:
++        # Read the previous frame's counters, exactly as the TTS substitution does.
++        # Closing must never move the existing first forced-silence frame earlier.
++        return (
++            self._tts_force_silence_on_pad
++            and self._tts_pad_tail_ratio > 0
++            and not seq_state.tts_agent_idle
++            and seq_state.tts_in_turn_pads > self._tts_pad_tail_ratio * seq_state.tts_in_turn_content
++        )
++
+     @_log_time("TTS Forward Pass time")
+     def vllm_tts_step(self, seq_ids_batched: List[int]):
+         # Generate Audio Codes. In NeMo, this is optional. For Riva, this is mandatory always.
+@@ -783,7 +797,7 @@
+                 _idle = seq_state.tts_agent_idle
+                 _c = seq_state.tts_in_turn_content
+                 _p = seq_state.tts_in_turn_pads
+-                _tail_done = self._tts_pad_tail_ratio > 0 and not _idle and _p > self._tts_pad_tail_ratio * _c
++                _tail_done = self._tts_pad_tail_budget_exhausted(seq_state)
+                 if _idle or _tail_done:
+                     step_acoustic_tokens = self._tts_silence_codes.unsqueeze(0)
+                     if _tail_done:
+@@ -1413,6 +1427,42 @@
+             seq_state.rnnt_nonblank_total = 0
+             seq_state.rnnt_agent_talking_frames = 0
+ 
++        # Optional protocol completion on the exact first frame that the existing
++        # TTS PAD-tail policy would replace with codec silence. New user speech or
++        # any native function token keeps the turn available to its normal path.
++        if (
++            self._tts_close_on_pad_tail
++            and current_tok == self.pad_id
++            and seq_state.generated_function_tokens[0, t].item() == self.pad_id
++            # Tool parsing runs after the whole inference batch. Protect native
++            # function tokens from its earlier frame even while state is idle.
++            and (
++                seq_state.generated_function_tokens[
++                    0, max(0, t - self.options.num_chunks_per_inference + 1) : t + 1
++                ] == self.pad_id
++            ).all()
++            and seq_state.rnnt_agent_speaking
++            and seq_state.fn_call["state"] == "idle"
++            and seq_state.rnnt_consecutive_speech_frames == 0
++            and not seq_state.rnnt_user_speaking
++            and seq_state.rnnt_nonblank_total == 0
++            and seq_state.tts_in_turn_content > 0
++            and self._tts_pad_tail_budget_exhausted(seq_state)
++        ):
++            self._voice_diagnostic(
++                seq_state, "agent.eos", source="render_budget",
++                pad_tail_frames=seq_state.tts_in_turn_pads,
++                content_tokens=seq_state.tts_in_turn_content,
++                pad_tail_ratio=self._tts_pad_tail_ratio,
++            )
++            seq_state.generated_text_tokens[0, t] = eos_id
++            seq_state.rnnt_agent_speaking = False
++            seq_state.rnnt_user_speaking = False
++            seq_state.rnnt_nonblank_total = 0
++            seq_state.rnnt_agent_talking_frames = 0
++            seq_state.rnnt_turn_text_tokens = 0
++            return
++
+         # ── noise reset ───────────────────────────────────── NeMo L3006-3008
+         if (
+             seq_state.rnnt_silent_frames >= RNNT_NOISE_RESET_FRAMES

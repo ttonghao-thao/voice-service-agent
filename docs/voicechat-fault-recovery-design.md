@@ -76,6 +76,12 @@ o, please introduce MONKEY MOONCAKE products.
 
 重测入口：发布修复后的 API，创建新通话，确认 `voice_registration_confirmed` → `portal.session.ready` → VoiceChat received_chunks > 0，再继续原样本 ASR/function 定位。此次修复不需要改变模型参数或延长握手期限。
 
+### 2.5 2026-10-14 握手修复后的真实复测
+
+15:54 通话 sequence `3887488407` 已确认 `voice_registration_confirmed tools_count=2 tools_echo_type=str`，收音 202 块、Triton 提交/完成 256000 个 16 kHz 样本，输出 queued=sent=167。句首仍缺 Hell，但 gate 首次从 emitted=0 发布全部累计 17 字符，最终 ASR/model/WS 均为 44；function 在 200 步中全 PAD、无 SOTC/EOTC；普通回答自 15:54:40.054 开始，未见结束边界，50.961 触发 VOICE_ANSWER_TIMEOUT。
+
+这次不再是握手失败，也没有知识执行慢或 WS 丢块证据。源码另确认现有 PAD 尾部渲染保护只替换静音、不结束响应；尚未证明现场已触发该保护。逐层判定、严格策略配置、默认关闭的收尾补丁与同 sequence 采集步骤见 [本次验证分析](voicechat-validation-20261014.md)。不能把文字停止等同实际语音停止，或把预算 EOS 当作原生模型结束能力通过。
+
 ## 3. 目标故障链与判定
 
 若同一 sequence 重现下列顺序，则本次故障链闭合：
@@ -209,6 +215,7 @@ Browser WAV PCM
 | D21-6 | 实现门户显式失败恢复 | 已本地实现并通过受控回归；待真实部署 |
 | D21-7 | 与 `social_only`/quarantine 集成 | 待目标架构对应实现 |
 | D21-8 | 真实 CueKB、工具结果、授权口述和人工听音验收 | 待 D07 |
+| D21-9 | 让既有 PAD 尾部强制静音与回合完成一致 | 已交付默认关闭的独立 backend 补丁，46 项 CPU 边界验证；待实际预算/EOS/完整听音，不修 ASR 或工具漏调用 |
 
 q1003 已实现预录 WAV 输入和全局版本化工具目录。前者用于稳定复现当前录音；后者用于核对工具定义、启停、刷新和注册回显。两者都不证明 VoiceChat 已正确转写或调用工具。
 

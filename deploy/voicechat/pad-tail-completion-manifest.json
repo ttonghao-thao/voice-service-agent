@@ -1,0 +1,11 @@
+{
+  "description": "Opt-in backend completion on the first existing forced-silence PAD-tail frame; archived snapshot remains unchanged.",
+  "environment_variable": "S2S_INFERENCE_CLOSE_ON_PAD_TAIL",
+  "default_enabled": false,
+  "files": {
+    "opt/tritonserver/backends/nemotron-voicechat/model.py": {
+      "before_sha256": "61dd8cd48853f331270256d8db8923a3b9fc9bb5bbdd8925bf1a6b7fcdbaeb9d",
+      "after_sha256": "bc4271093c732beb70d4bce770b4ac06bdc0d31d97d558cb4e87190c365806a8"
+    }
+  }
+}
