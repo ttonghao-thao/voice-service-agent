@@ -37,6 +37,7 @@ def model_harness(enabled=True):
     model.pad_id = 0
     model.sotc_id = 10
     model.eotc_id = 12
+    model._tts_close_on_pad_tail = False  # Match the bundled backend's opt-in default.
     return model, logs
 
 

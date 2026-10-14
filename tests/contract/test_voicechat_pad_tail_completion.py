@@ -1,4 +1,4 @@
-"""Apply the backend patch and execute its actual methods with CPU fixtures.
+"""Validate the bundled backend and execute its actual methods with CPU fixtures.
 
 Token buffers, TTS outputs, codec and resampler are controlled fixtures. These
 tests establish conditional completion and WebSocket ordering, not GPU accuracy,
@@ -33,19 +33,23 @@ def patched_backend(tmp_path_factory):
     archive_manifest = json.loads((ROOT / "docs/voicechat/snapshot-manifest.json").read_text())
     hashes = manifest["files"][BACKEND]
     source = ROOT / "docs/voicechat" / BACKEND
-    assert hashlib.sha256(source.read_bytes()).hexdigest() == hashes["before_sha256"]
-    assert hashes["before_sha256"] == archive_manifest["files"][BACKEND]
+    assert hashlib.sha256(source.read_bytes()).hexdigest() == hashes["after_sha256"]
+    assert hashes["after_sha256"] == archive_manifest["files"][BACKEND]
     temporary = tmp_path_factory.mktemp("voicechat-pad-tail")
     target = temporary / BACKEND
     target.parent.mkdir(parents=True)
     shutil.copyfile(source, target)
     patch = ROOT / "deploy/voicechat/pad-tail-completion.patch"
+    for arguments in (("--reverse", "--check"), ("--reverse",)):
+        subprocess.run(["git", "apply", *arguments, str(patch)], cwd=temporary, check=True,
+                       capture_output=True, text=True)
+    assert hashlib.sha256(target.read_bytes()).hexdigest() == hashes["before_sha256"]
     for arguments in (("--check",), ()):
         subprocess.run(["git", "apply", *arguments, str(patch)], cwd=temporary, check=True,
                        capture_output=True, text=True)
     assert hashlib.sha256(target.read_bytes()).hexdigest() == hashes["after_sha256"]
     compile(target.read_text(), str(target), "exec")
-    assert hashlib.sha256(source.read_bytes()).hexdigest() == hashes["before_sha256"]
+    assert target.read_bytes() == source.read_bytes()
     return target
 
 
@@ -510,4 +514,5 @@ def test_completion_patch_can_be_reversed_to_exact_archived_backend(patched_back
                    capture_output=True, text=True)
     subprocess.run(["git", "apply", "--reverse", str(patch)], cwd=tmp_path, check=True,
                    capture_output=True, text=True)
-    assert target.read_bytes() == (ROOT / "docs/voicechat" / BACKEND).read_bytes()
+    manifest = json.loads((ROOT / "deploy/voicechat/pad-tail-completion-manifest.json").read_text())
+    assert hashlib.sha256(target.read_bytes()).hexdigest() == manifest["files"][BACKEND]["before_sha256"]

@@ -34,7 +34,7 @@
 | D21-HANDSHAKE | 2026-10-14：字符串/数组回显修复已发布于 c6bba4e；用户 15:54 现场复测确认 registration 日志 tools_count=2/type=str，并实际收音 202 块。运行文件 hash、ASR/function 和知识执行仍待分层核验 |
 | D21-PROBE | NVIDIA 源码与论文 v2 核对、持续送音探针、动态工具快照/schema、异常分类和有界证据、CPU 转换产物及融合权重核验已本地实现；不是 GPU 根因或质量验收；[源码记录](voicechat-upstream-analysis.md) |
 | D21-RECOVERY | 空输出边界不误拒绝/消耗续答许可；拒绝前保留排队 final ASR、提前通知错误、上游结束显式失败、门户断线提示与手动重试；仅本地实现，ASR/function 根因与真实验收未闭合；[D21 §7](voicechat-fault-recovery-design.md#7-门户失败恢复) |
-| D21-END | 15:54 现场无回答结束边界，默认 10 秒期限触发可恢复超时；默认关闭的 backend PAD 尾部完成补丁已本地实现，46 项 CPU 边界 + 22 项 QA 回归通过；保留原静音预算、工具批次和用户语音证据，GPU/完整听音仍待验证；[本次分析](voicechat-validation-20261014.md) |
+| D21-END | 15:54 现场无回答结束边界，默认 10 秒期限触发可恢复超时；默认关闭的 backend PAD 尾部完成补丁已本地实现，46 项 CPU 边界 + 22 项 QA 回归通过；完整 model.py 已按用户要求纳入 docs/voicechat，交付方式另通过 56 项定向验证；保留原静音预算、工具批次和用户语音证据，GPU/完整听音仍待验证；[本次分析](voicechat-validation-20261014.md) |
 
 ## 3. 待完成与建议顺序
 

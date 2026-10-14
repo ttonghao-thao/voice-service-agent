@@ -8,6 +8,7 @@
 
 | 项目 | 最近实际记录 | 证据与限制 |
 | --- | --- | --- |
+| 完整 backend 文件交付 | 2026-10-14：按用户要求将修补后的完整 model.py 收录到 docs/voicechat；46 项后端边界、2 项真实 WS 握手与 8 项归档 CPU 诊断测试共 56 项通过；hash、补丁反向/正向应用、编译与 Ruff/diff 检查通过 | `artifacts/voice-recovery/bundled-backend.xml`、`bundled-backend-diagnostics.xml`；model.py hash 为 bc427109…806a8，旧文件保留于 Git b924c72。CPU 诊断使用已有 NumPy 2.3.5，未安装整套独立 Speech 依赖或进行 GPU 验证；只更新完整文件交付方式，不扩展已验证行为 |
 | 15:54 现场复测 | 用户提供 API/VoiceChat 日志：注册 tools_count=2/type=str，Triton 100 次、submitted/completed=256000；ASR 最终 44 字符、function PAD=200/SOTC=EOTC=0；40.054 开始回答、50.961 超时；queued=sent=167 | 这是远端日志报告，不是本工作区 GPU/人工听音验证。缺少实际 PCM/权重与目录采集；没有证据证明 classic/Pro 来自 CueKB。已确认超时的直接原因是缺结束边界，ASR/function 具体根因未闭合 |
 | PAD 尾部完成补丁 | 2026-10-14：46 项新 CPU 契约测试 + 22 项 QA 策略/执行回归共 68 项通过；Ruff/diff/文档链接和原始 8 文件 hash 检查通过 | `artifacts/voice-recovery/pad-tail-completion.xml`；先严格 apply/reverse/hash，再执行实际 backend generate/turn/TTS/parser 和 WS 收尾方法，I/O 为受控夹具。默认关闭，仅修既有强制静音与回合结束的缺口；不保证 10 秒内结束、实际 TTS 完整、ASR 或工具选路正确。未部署 GPU/构建生产镜像；68 项不与前次完整 340 相加 |
 | 握手回显兼容 | 2026-10-14：官方 session.updated.tools JSON 字符串场景先复现 legacy/自定义目录 2 项失败；修复后字符串/数组同等校验，篡改/重复/非法 JSON 均仍拒绝，成功后首个 80 ms PCM 可发送；四模块定向 124 项通过，Ruff/diff 检查通过 | `artifacts/voice-recovery/handshake.xml`；模块为 native_tool_catalog、protocol、voicechat_probe、voice。定向数不与此前完整 318 相加；无真实 GPU/CueKB/听音；补丁 `serialized-tools-handshake.patch` 已核对可应用于 d0dea88。门户错误已确认 tools 类型/数量检查；cce8e75 的实际服务源码以字符串回显，新增 CPU/WS 回归已覆盖。124 项是此前定向记录，最终纳入完整 340 项；运行文件 hash 及修复后的送音待现场确认 |
@@ -29,7 +30,7 @@
 
 最终发布产物在忽略目录 `artifacts/q1003-release/`：python.xml（340 项完整回归）、browser.xml（18 项浏览器回归）。命令为 `.venv/bin/python -m pytest -q --junitxml=artifacts/q1003-release/python.xml -o junit_family=xunit1`；浏览器按 [模拟 §3](simulated-full-flow.md#3-复现步骤) 显式设置 `SIMULATED_FULL_FLOW=1`。主机 Python 3.12.14、Node 24.19.0、Chromium 154；这些文件不提交 Git。
 
-此前 D21 产物在 `artifacts/voice-recovery/`，论文与静态配置证据在 `artifacts/voicechat-paper/`；此前计数不与最新完整结果累加。`test_voicechat_snapshot_handshake.py` 从 hash 核验后的归档源码提取实际会话更新方法，执行其 JSON 字符串回显和后台 prefill 控制流，再用真实 API Adapter 发送首个 80 ms PCM；模板、Triton 和音频内容为受控夹具，无 GPU 推理。源码快照的 8 个文件 hash 均与远端 manifest 一致，本轮没有修改归档源码。
+此前 D21 产物在 `artifacts/voice-recovery/`，论文与静态配置证据在 `artifacts/voicechat-paper/`；此前计数不与最新完整结果累加。`test_voicechat_snapshot_handshake.py` 从 hash 核验后的归档源码提取实际会话更新方法，执行其 JSON 字符串回显和后台 prefill 控制流，再用真实 API Adapter 发送首个 80 ms PCM；模板、Triton 和音频内容为受控夹具，无 GPU 推理。b924c72 交付时未修改原始 8 文件；随后按用户要求更新完整 model.py 与 CPU 诊断夹具，当前 8 文件 hash 以更新后的 snapshot manifest 为准，旧快照可由 Git b924c72 恢复。
 
 ## 1. 历史证据定位
 

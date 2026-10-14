@@ -1,5 +1,5 @@
 {
-  "description": "Opt-in backend completion on the first existing forced-silence PAD-tail frame; archived snapshot remains unchanged.",
+  "description": "Opt-in backend completion on the first existing forced-silence PAD-tail frame; docs/voicechat now bundles the patched backend, with the pre-patch snapshot preserved in Git at b924c72.",
   "environment_variable": "S2S_INFERENCE_CLOSE_ON_PAD_TAIL",
   "default_enabled": false,
   "files": {

@@ -87,13 +87,26 @@ Q07 不新增此补丁文件或修改 GPU 推理/权重。本项目 API 按会�
 
 ## 2026-10-14：独立后端 PAD 尾部完成补丁（默认关闭）
 
-[pad-tail-completion.patch](pad-tail-completion.patch) 基于保存的最终 backend 快照，独立于上述 WebSocket 补丁，仅修改 `opt/tritonserver/backends/nemotron-voicechat/model.py`。历史快照的 8 个文件及其 manifest 保持原样；补丁前后 hash 见 [pad-tail-completion-manifest.json](pad-tail-completion-manifest.json)。本补丁不修改模型权重，不要求重新转换模型。
+[pad-tail-completion.patch](pad-tail-completion.patch) 基于用户保存的 backend 快照，独立于上述 WebSocket 补丁，仅修改运行文件 `opt/tritonserver/backends/nemotron-voicechat/model.py`。按用户要求，本项目 [`docs/voicechat` 中的完整 model.py](../../docs/voicechat/opt/tritonserver/backends/nemotron-voicechat/model.py) 现已包含该补丁，可以直接复制；同步的 snapshot manifest 记录当前 hash，补丁前的完整快照保存在 Git commit `b924c72`。补丁前后 hash 见 [pad-tail-completion-manifest.json](pad-tail-completion-manifest.json)。本补丁不修改模型权重，不要求重新转换模型。
 
 当前后端达到已有 PAD 渲染预算时只替换静音 codec，不关闭回答。新开关 `S2S_INFERENCE_CLOSE_ON_PAD_TAIL` 默认 `false`：开启后，仅在当前 text/function 都是 PAD、最近 `num_chunks_per_inference` 帧 function 全为 PAD、agent 回合活跃、工具状态 idle、没有新的或待处理的用户语音、已有至少一个非特殊内容 token，且已满足原有强制静音条件时，在 TTS 前插入 EOS。用户语音检查要求 `rnnt_consecutive_speech_frames == 0`、`rnnt_user_speaking == false`、`rnnt_nonblank_total == 0`，保留短用户发声后 blank 帧尚未结清的累计。函数解析发生在整批生成之后，因此检查同批前帧，保护尚未解析的 SOTC/EOTC/参数 token。使用原来的上一帧计数及严格 `pads > ratio × content` 判断，当前帧仍使用同一静音 codec。纯 BOS/PAD、工具等待和新用户语音不自动结束。
 
 这让既有渲染预算与响应结束事件一致；它没有证明该预算足够，也没有修复句首 ASR 或漏调用工具。文字停止后 TTS 可能仍在渲染语音，不能按文字停止、PCM 幅值或固定时间提前关闭。原生 EOS、工具和插话路径继续适用。启动日志会打印 `close_on_pad_tail`，预算结束诊断为 `agent.eos source=render_budget`；真实 GPU/WAV 听测完成前仅在隔离环境开启。分析与验收步骤见 [本轮验证分析](../../docs/voicechat-validation-20261014.md)。
 
-在备份好的 speech 源码副本中应用，路径替换为现场实际值：
+**完整文件交付：** 先备份现场修改，再在 speech 源码副本中复制完整文件，路径替换为实际值：
+
+```sh
+voicechat_source='/path/to/speech-copy'
+voicechat_agent_repo='/path/to/voice-service-agent'
+cp "$voicechat_agent_repo/docs/voicechat/opt/tritonserver/backends/nemotron-voicechat/model.py" \
+  "$voicechat_source/opt/tritonserver/backends/nemotron-voicechat/model.py"
+python3.12 -m py_compile "$voicechat_source/opt/tritonserver/backends/nemotron-voicechat/model.py"
+sha256sum "$voicechat_source/opt/tritonserver/backends/nemotron-voicechat/model.py"
+```
+
+hash 应为 manifest 的 after 值 `bc4271093c732beb70d4bce770b4ac06bdc0d31d97d558cb4e87190c365806a8`。`runtime_setup.py` 本次没有更新；测试和文档不需要复制到 GPU 运行目录。复制后的 `model.py` 已含补丁，不再执行下述正向应用。
+
+**仅有旧文件时的补丁交付：** 在备份好的 speech 源码副本中应用，路径替换为实际值：
 
 ```sh
 voicechat_source='/path/to/speech-copy'
@@ -108,7 +121,7 @@ sha256sum opt/tritonserver/backends/nemotron-voicechat/model.py
 
 首个 hash 必须等于 manifest 的 before 值，末个必须等于 after 值；冲突时停止，不使用 `--reject`。本目录现有 [Dockerfile](Dockerfile) **只覆盖 WebSocket 和模板，不包含 backend**，因此执行原来的镜像构建命令不会带入此补丁。沿用现场已有的后端构建或挂载方式，把修补文件发布到 Triton 实际加载路径 `/opt/tritonserver/backends/nemotron-voicechat/model.py`，核对运行文件 hash；保留现场 GPU/模型卷/端口等参数。在 Triton backend 进程启动前配置 `S2S_INFERENCE_CLOSE_ON_PAD_TAIL=true` 并重建验证容器，配置 API 容器中的同名变量不会开启此功能。
 
-CPU 契约测试会先严格应用补丁到临时快照副本，再执行修补后的真实方法；Tensor、TTS 引擎、codec 和 resampler 是受控夹具，没有安装 Torch/NeMo，也没有证明实际语音质量：
+CPU 契约测试会核验完整文件与 snapshot manifest，然后在临时副本严格反向/正向应用补丁，再执行修补后的真实方法；Tensor、TTS 引擎、codec 和 resampler 是受控夹具，没有安装 Torch/NeMo，也没有证明实际语音质量：
 
 ```sh
 .venv/bin/python -m pytest tests/contract/test_voicechat_pad_tail_completion.py -q
