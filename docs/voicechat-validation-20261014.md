@@ -2,13 +2,15 @@
 
 本记录对应用户提供的 15:54:34–15:54:50 通话日志。它确认了故障边界，不代表已取得现场录音、模型配置或 GPU 采集，也不把返回的产品介绍认定为 CueKB 答案。
 
+2026-10-15 整理注：本页保留该次事件事实与可复现采集步骤；新 PAD 版本尚无现场结果。当前诊断分支见 [故障定位](voicechat-fault-recovery-design.md)，架构和实施顺序见 [方案](q1003-target-architecture.md)，不要把本页建议操作当作已执行结果。
+
 ## 1. 本次已确认什么
 
 | 边界 | 现场证据 | 判定 |
 | --- | --- | --- |
 | 工具注册 | `voice_registration_confirmed tools_count=2 tools_echo_type=str` | 字符串 tools 回显修复已生效；不等于模型调用了工具 |
 | 音频输入 | Received 202 块；16 kHz submitted/completed 均为 256000 样本，queue=0 | 持续送音、推理在运行；没有传输丢块证据 |
-| ASR 发布 | step34 首次累计 17、emitted_before=0、delta=17；final/completed 均为 44 字符 | gate 暂存后发出全部累计文本；`Hell` 在首次可观察的 RNNT 累计输出中已缺失 |
+| ASR 发布 | step34 首次累计 17、emitted_before=0、delta=17；final/completed 均为 44 字符 | gate 发布全部累计长度，无发布层裁去前四字符的证据；结合用户转写报告，应继续定位累计形成及其上游，日志长度不提供每帧原始 token |
 | 原生函数输出 | sequence.end：PAD=200、SOTC=0、EOTC=0、other=0，state=idle | 本轮没有原生工具调用；不能归为 CueKB 或外置 LLM 执行慢 |
 | 回答开始 | 15:54:40.054 首次 response/audio/text | 普通回答已经开始 |
 | 回答结束 | BOS 后未见 EOS、transcript.done、audio.done、response.done；16.24 秒连接时长内仍同一 response | 回答回合未正常结束 |

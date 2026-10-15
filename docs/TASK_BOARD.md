@@ -1,60 +1,37 @@
 # 当前任务板
 
-更新：2026-10-14；当前实现以本文件所在的 `codex/q1003` 提交为准，本次发布检查基线为 `cce8e75`，包含此前 d0dea88 起的本地修复。状态只在此维护；验证结果归 [验收](acceptance-report.md#0-当前审计与证据索引)，目标方案归 [q1003 目标架构](q1003-target-architecture.md)，当前唯一测试语音的故障证据与定位归 [D21](voicechat-fault-recovery-design.md)。本地实现不意味着现场故障已修复或云端已部署。
+更新：2026-10-15；核对代码 `63e7059`。本页唯一维护状态；具体实施及依赖见 [方案 §4](q1003-target-architecture.md#4-实施计划与决策门槛)，实际证据见 [验收](acceptance-report.md)。部署准备与真实验证分开记录。
 
 ## 1. 当前结论与审计基线
 
-当前代码是英文实时语音问答，客服为首个场景。模式与执行规则查 [知识执行](qa-routing-design.md#1-模式与工具边界)，运行参数/迁移查部署；不在任务板复制接口。
-
-| 状态 | 使用含义 |
-| --- | --- |
-| 已实现/本地验证 | 有代码及相应测试；不代表真实供应商/生产放行 |
-| 开发中 | 存在正在实施的明确任务；当前没有另行声称已开工的业务功能 |
-| 计划中/待验证 | 有目标但尚未实现，或代码已有而缺真实证据；下面分别列明 |
-| 已替代/历史 | 旧日期方案，不能作为当前规范；旧兼容模式不能因此被误标废弃 |
+应用控制链已有实现；现场确认工具注册恢复、持续送音、门户可见超时。ASR 句首缺失、原生 function 全 PAD、回答缺结束仍未闭合。已交付 PAD 收尾完整 model.py，但尚未收到该版本现场测试结果。严格策略切换目前也是待现场确认，不能把提供命令写成已生效。
 
 ## 2. 已完成的编码里程碑
 
-| ID | 已交付范围 / 主题入口 |
+| 范围 / 旧 ID | 已实现及边界 |
 | --- | --- |
-| Q07-A–D | 两个原生知识工具、可信扩展、一般回答、D2 与外置执行/单次升级；[知识执行](qa-routing-design.md) |
-| CTX1 / EVAL1 | 有来源条件/跨轮上下文与固定连续评测；[上下文](task-context-evaluation.md) |
-| LVA1 / P1 | 批准文本/有限证据约束与实际转写关联、授权记录及警告；[交付 §1](live-agent-implementation.md#1-答案约束与实际口述) |
-| LVA2 / P1 | 音频/工具/控制台账、结束与 unknown 恢复、排空估计和授权摘要；[交付 §2](live-agent-implementation.md#2-结束确认台账与恢复) |
-| LVA3 / P2 | 门户进度；可信 Adapter 下的等待问答/自然修订与旧 call 结清；[交付 §3](live-agent-implementation.md#3-等待进度与自然修订)。真实 NVIDIA 仍关闭 |
-| Q06 / D16–D20 | 最终 ASR 绑定、统一聊天、逐轮响应/ACK/播放控制、预算/SSE；[门户](portal-protocol.md)、[接入](integration.md) |
-| D01–D06 / E01–E03 | 权限、CueKB M3、业务执行和英文适配；[CueKB 契约](interfaces/cuekb.md) |
-| D09–D15 | 单配置、通话 capability、HTTPS 门户/内网接入；[部署](deployment.md) |
-| SIM1–SIM4 | 独立 API 网络夹具和浏览器闭环；[模拟](simulated-full-flow.md) |
-| REL1–REL2 / D08 | 既有镜像构建与隔离 Compose/发布；按日期查验收，不代替生产放行 |
-| DOC1–DOC4 | 既有文档整理；记录保存在历史验收/任务板 |
-| DOC5 | 分层入口、当前设计/历史隔离、按任务检索与维护规则；[本次审计](development/documentation.md#3-2026-10-07-审计与场景验证) |
-| WEB-FILE | 浏览器预录 WAV 输入：本地严格校验、ready 后实时发送、EOF 尾部确认、错误不重播，并复用现有 WS/Worklet；[门户 §3.1](portal-protocol.md#预录-wav-输入) |
-| TOOL-CATALOG | 全局后台多工具目录、动态刷新/重连、可信 schema/执行器、字段说明、策略一致提示词与注册回显确认；[工具目录](interfaces/voice-tools.md) |
-| D21-HANDSHAKE | 2026-10-14：字符串/数组回显修复已发布于 c6bba4e；用户 15:54 现场复测确认 registration 日志 tools_count=2/type=str，并实际收音 202 块。运行文件 hash、ASR/function 和知识执行仍待分层核验 |
-| D21-PROBE | NVIDIA 源码与论文 v2 核对、持续送音探针、动态工具快照/schema、异常分类和有界证据、CPU 转换产物及融合权重核验已本地实现；不是 GPU 根因或质量验收；[源码记录](voicechat-upstream-analysis.md) |
-| D21-RECOVERY | 空输出边界不误拒绝/消耗续答许可；拒绝前保留排队 final ASR、提前通知错误、上游结束显式失败、门户断线提示与手动重试；仅本地实现，ASR/function 根因与真实验收未闭合；[D21 §7](voicechat-fault-recovery-design.md#7-门户失败恢复) |
-| D21-END | 15:54 现场无回答结束边界，默认 10 秒期限触发可恢复超时；默认关闭的 backend PAD 尾部完成补丁已本地实现，46 项 CPU 边界 + 22 项 QA 回归通过；完整 model.py 已按用户要求纳入 docs/voicechat，交付方式另通过 56 项定向验证；保留原静音预算、工具批次和用户语音证据，GPU/完整听音仍待验证；[本次分析](voicechat-validation-20261014.md) |
+| 知识执行 Q07-A–D、CTX1/EVAL1 | 可配置原生多工具、direct/reasoned、单次升级、来源上下文及模拟评测；真实选择质量待验 |
+| 会话/交付 LVA1–LVA3、D01–D20 | capability、证据/权限、epoch/revision/租约、交付台账、播放控制、进度；NVIDIA 等待语音修订仍关闭 |
+| WEB-FILE、TOOL-CATALOG | WAV 实时输入、后台全局目录与刷新重连；dual_tools 不限制工具数量 |
+| D21-HANDSHAKE / RECOVERY | 字符串 tools 回显、空事件边界、错误/转写交付与重试；现场确认注册及可见超时，其余恢复矩阵待验 |
+| D21-PROBE / END | 连续送音探针、静态产物检查、WS/backend 隔离采集、可选 PAD 结束保护；CPU 证据不替代 GPU |
+| VoiceChat 交付规则 | 完整外部修改文件、manifest、容器命令已在 docs/voicechat；AGENTS 要求后续同步 |
 
 ## 3. 待完成与建议顺序
 
-| ID | 状态与剩余范围 | 入口 |
+| 任务 | 当前状态 | 下一步完成条件 |
 | --- | --- | --- |
-| D07-A/B/C、Q07-E | 待真实验证：固定版本、实际 CueKB/ACL/文本模型、英文 ASR/选路/听音 | [验收 §1–3](development/validation.md) |
-| D07-D/E/F | 待真实验证：等待/取消/旧结果、长会话、PG/Redis/容量/drain/备份及放行 | 同上 |
-| LVA3-R | 待真实能力验证：四项能力均通过才启用语音等待交互；无 env 绕过 | 交付 §3 |
-| Q01 剩余 | 计划/待验证：聚合终态报表、真实恢复；统一交付审计已实现 | 交付 §2；[原设计](archive/2026-10-07/architecture.md#101-q01交付记录与恢复语义) |
-| Q02 剩余 | 计划/待验证：完整断言支持、单位换算/复杂否定、实际音频准确性 | [原设计](archive/2026-10-07/architecture.md#102-q02证据充分性与口述质量) |
-| Q03 | 计划中：全阶段指标、语音样本分母/缺测/版本完整性；连续模拟评分已有独立实现 | [保留设计](archive/2026-10-07/architecture.md#103-q03可观测性与报告完整性) |
-| Q04 | 计划中：受权原件下载，须先确认 CueKB 契约 | [接入 §7](integration.md#7-q04原件查看的后续设计) |
-| Q05 / Q07-F | 计划中：独立推理优化、D1/D3、context-only/任意播报/自由交谈、其他 Provider；GPT Live 为可选实验 | [决策 ADR-03/05](decisions/architecture-decisions.md) 与 [历史研究](archive/2026-09-28/voicechat-research-review.md) |
-| Q1003-ARCH | 目标设计已完成；全局工具目录/注册加固和 D21 恢复处理已本地实现，`social_only`/quarantine 与 ASR/function 根因修复仍未实施 | [目标架构](q1003-target-architecture.md)；[工具目录](interfaces/voice-tools.md) |
-| Q1003-DIAG | 已固定 NVIDIA `097dfe9` 核读源码，修正探针持续送音/目录快照并新增 CPU 产物检查；已取得 cce8e75 的 WS/backend 诊断源码快照；runtime 同 sequence PCM/RNNT/function 捕获及真实首差异定位待实际 hash/原录音 | [D21](voicechat-fault-recovery-design.md)；[目标架构 §6](q1003-target-architecture.md#6-两个当前故障的定位与修复路径) |
-| Q1003-SAFE | 门户显式恢复已本地实现；启动级 `social_only`、纯规则 ResponseAuthorizationPolicy 和有界 quarantine 仍计划中；不得以 `general_qa` 掩盖漏调用 | [目标架构 §5](q1003-target-architecture.md#5-目标架构) |
-| Q1003-VERIFY | 待离线与真实验证：路由/竞态/协议回归、GPU VoiceChat、真实 CueKB/ACL、浏览器麦克风和人工听音；任一企业漏调用或未授权音频泄漏即 no-go | [离线验证](q1003-target-architecture.md#9-离线验证方法)、[真实门槛](q1003-target-architecture.md#10-真实验收与放行门槛) |
+| P0-A/B：现场部署与两类验证 | 待现场结果 | hash/策略确认；严格知识闭环与 PAD A/B 分开报告 |
+| P1-A：严格提示与授权一致 | 已确认代码缺口，未编码 | 修 Provider/prompt 提示，保留 ACK/空边界规则并做定向回归 |
+| P1-B：ASR/function 首差异修复 | 待采集，不能指定算子 | 同序列 PCM/encoder/RNNT/head/事件定位，命中后最小修复 |
+| P1-C：响应终态与阶段预算 | PAD 保护已交付；原因贯通/预算设计未实施 | 依据触发、听音及完成事件调整，不把预算结束当正常完成 |
+| P2：Gateway 状态管理提取 | 计划，后于状态语义收敛 | 保持单写入器/提交权；交错、取消、迟到与超时回归 |
+| P3：真实放行 D07 / Q07-E | 未通过 | 知识、口述、完整结束、恢复/权限/并发证据齐全 |
+| social_only / quarantine（旧 Q1003-SAFE） | 推迟评审 | 输入分类不足以放行开放式回答；先验证受控话术/播前输出约束 |
+| 独立 ASR→业务→受控 TTS | 条件性替代方案，未实施 | 原生可靠性或播前口述要求无法满足时单独评审，不自动 fallback |
 
-先验证真实版本/权限/旧输出/听音，再按能力放行。中文、天气/股票/交易、正式客户认证、多租户、WebRTC/SIP、子 Agent 调度不在已确认实现范围。
+后续 Q01/Q02（完整恢复/语义与听音）、Q03（端到端指标）、Q04（原件下载）、D1/D3、其他 Provider 和 LVA3-R 等待能力均不抢占上述故障闭环。详细验收仍保留于 [验证清单](development/validation.md)；范围外能力不得因旧任务 ID 存在而声明已实现。
 
-## 4. 追溯与维护
+## 4. 维护规则
 
-旧任务板见 [2026-10-04 快照](archive/2026-10-04/task-board-before-p1-p2.md)，阶段设计/流水见 [归档索引](archive/README.md)。只在任务状态变化时维护本板；局部实现细节和测试数量各归主题/验收，不要求每次更新所有文档。
+状态变化才更新本板；测试日期/计数只写验收，日志事实只写日期证据，命令只写部署。重复过程和已失效方案从活动文档删除，追溯使用 Git 历史及 [归档](archive/README.md)，不为每次整理再复制一份旧正文。

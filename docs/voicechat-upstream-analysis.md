@@ -2,7 +2,7 @@
 
 2026-10-13，应用基线 `codex/q1003@d0dea88`。实际克隆并核对 `NVIDIA-NeMo/Speech` 的 `nemotron-labs-voicechat` 分支，固定到 **`097dfe9e2f55baf653b83035868bdc89849f1b47`**。以下链接均固定该提交。后续论文 v2 与官方 HF 配置对照见 [原理及改进](voicechat-paper-v2-review.md)。本文记录源码事实和实现依据；现场故障判定、样本和真实退出条件仍由 [D21](voicechat-fault-recovery-design.md) 维护。
 
-2026-10-14 补充：首次部署重测出现 0 音频块的握手关闭，检查发现此前未兼容官方 `session.updated.tools` 的 JSON 字符串表示。本地已修复与数组等价解析后严格验证，用户补充门户错误已锁定 tools 类型/数量检查。随后同步远端 `cce8e75` 中的 [实际源码快照](voicechat/README.md)，`audio_server.py:1729/1757` 明确将 tools 序列化并以字符串回显，实际方法的 CPU/WS 回归也已通过；现场运行文件 hash 与修复后的送音仍须核验；详见 [D21 §2.4](voicechat-fault-recovery-design.md#24-2026-10-14-新部署的握手阶段断开)。
+当前握手结论：Adapter 已兼容 session.updated.tools 的 JSON 字符串并保留严格校验；2026-10-14 15:54 现场确认 tools_count=2/type=str 且持续送音。早期 0 音频块握手关闭已被这次证据更新，不能继续记为当前阻塞；实际文件身份与模型首差异仍待核验，见 [现场证据](voicechat-validation-20261014.md)。
 
 ## 1. 已确认结论与不能越过的边界
 
@@ -71,7 +71,7 @@
 3. ASR 逐层比较 24 kHz PCM → soxr 16 kHz → Triton frame → encoder → RNNT raw token → display → WS final。sample/frame 区间、reset 世代与 sequence ID 一起记录。找出首个缺失 `Hell` 的层，再修改该层。
 4. function 逐层记录实际加载 key、special IDs、prefill 摘要/hash、combined embedding 的 shape/finite/norm、`function_key_present`、PAD/SOTC/EOTC 计数和有界 score/rank，再比对 parser 和原始 call ID。shape 正确不证明融合权重正确，PAD 不等于 key 存在。
 5. 若 runtime 有完整 SOTC…EOTC 但无 WS tool event，修 parser/JSON/队列；若 WS 有 tool 而 Gateway 无 pending，修 Adapter/绑定。若等价 RNNT 解码都丢词，或接线正确仍不选工具，记录模型能力失败，不补写转写或放行无证据口述。
-6. 最后通过门户跑真实 CueKB 检索、结果回填、授权口述、人工听音及失败恢复。这一步通过前，`social_only`/quarantine 的设计、探针通过和静态产物检查都不构成真实放行。
+6. 最后通过门户跑真实 CueKB 检索、结果回填、授权口述、人工听音及失败恢复。方案设计、探针通过和静态产物检查均不构成真实放行；实施依赖以 [当前方案](q1003-target-architecture.md) 为准。
 
 ## 5. 已执行证据
 

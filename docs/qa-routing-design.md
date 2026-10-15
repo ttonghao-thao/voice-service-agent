@@ -1,6 +1,6 @@
 # 当前知识工具与执行流程
 
-2026-10-07 按 `f498fa4` 的 `agent_runtime/{dispatch,direct,runtime,evidence}.py`、Coordinator/Registry 核对。本文维护当前执行语义；原 Q07 长方案、D1/D3 候选设计与依据保存在 [历史方案](archive/2026-10-07/qa-routing-design.md)。状态归任务板，配置归部署。
+本文维护当前执行语义；2026-10-15 复核 Runtime 的严格策略分支与 Gateway 普通回答授权。原 Q07 长方案、D1/D3 候选设计按需查 [历史方案](archive/2026-10-07/qa-routing-design.md)。状态归任务板，配置归部署。
 
 ## 1. 模式与工具边界
 
@@ -13,6 +13,8 @@
 新建 Conversation 快照模式/策略，语音 session 冻结原生目录及 revision；后台更新目录会关闭旧连接并重新注册，不原地改旧快照。更改部署模式不会切换已有 Conversation。dual_tools 是历史兼容名称，不限制工具数量。配置和回退见 [部署](deployment.md#问答模式与预算q07)；全局目录见 [工具注册契约](interfaces/voice-tools.md)。后台 `search_knowledge` 是 Registry 能力，不能用原生名称替换部署白名单。
 
 VoiceChat 模型通过 tools/instructions 自主选择；不发送 WS tool_choice，也不为分类新增外置 LLM。ToolDispatcher 只按已注册名字、schema/权限分派。外置 SDK 的 required/auto 是另一层检索执行约束。一般回答保存 Utterance/实际字幕，标为 provider_general/provider_only；不建知识 Turn 或伪引用。严格知识策略用于需要拒绝无证据实质性输出的会话；general_qa 的 Prompt 不保证零漏调用。
+
+严格模式当前也拒绝用户输入后未授权的非空问候，不存在已实现的社交白名单。Provider 提示仍允许简短 conversational 输出，与该交付规则不一致，修正列入 [实施方案 §3.1](q1003-target-architecture.md#31-策略与提示一致)。两种策略都不保证 VoiceChat 实际口述逐字忠于外置答案。
 
 ## 2. 注册、输入与扩展
 

@@ -1,6 +1,6 @@
 # 当前系统架构
 
-2026-10-07 对照 `f498fa4` 代码核对。本页只维护模块职责、数据流和跨模块不变量；实现状态见 [任务板](TASK_BOARD.md)，原因见 [决策](decisions/architecture-decisions.md)。
+2026-10-15 对照 `63e7059` 核对 Gateway、Provider、Coordinator、Runtime 与部署边界。本页维护已实现架构；改进方案见 [实施设计](q1003-target-architecture.md)，工作状态见 [任务板](TASK_BOARD.md)。
 
 ## 1. 产品与部署边界
 
@@ -30,12 +30,15 @@ flowchart LR
 
 图中 Runtime/Registry 表示代码调用边界，不是新增独立服务。无工具一般回答经过 Gateway/Store，不创建知识 Turn，也不调用 CueKB/外置模型。
 
+VoiceChat 内部并非 ASR 文本驱动 LLM：16 kHz 音频经共享 encoder 分别进入辅助 RNNT 和语音语言主干；后者产生文本与 function 通道，文本再进入持续式 TTS。应用收到原生调用后绑定 final ASR 作为业务请求。这解释了 ASR 错误会影响应用查询，却不能单凭丢字推出模型漏调用的原因。
+
 | 代码模块 | 职责 | 修改时读 |
 | --- | --- | --- |
 | `api/auth.py`、`routes.py` | 通话归属/范围、HTTP/SSE/WS、受权历史、管理隔离 | 门户协议 / 接入 §6 |
 | `voice/provider.py`、`gateway.py` | 供应商事件归一化、最终输入绑定、输出许可、单写入器、背压 | 接入 §3 / 口述与交付 |
 | `sessions/coordinator.py`、`coordination.py` | 唯一业务提交、幂等、epoch/revision、任务/租约、共享期限 | 本页 §3 / 上下文 / 交付 |
 | `agent_runtime/` | 原生工具静态分派、直查或 SDK 推理、证据/呈现检查 | 知识执行 / 交付 §1 |
+| `agent_runtime/tool_catalog.py` | 全局后台目录、可信实现映射、revision；语音连接冻结注册快照 | 工具目录 |
 | `tools/registry.py`、`adapters.py`、`schemas.py` | 后台工具权限、版本、限时、上游契约与证据映射 | CueKB 契约 / 接入 §5 |
 | `task_context.py`、`storage/`、`migrations/` | 来源条件、业务/交付/审计持久化、授权裁剪、迁移/留存 | 上下文 / 交付 §2 / 部署 |
 | `apps/web/src/`、`public/` | 收音/重采样、消息合并、证据显示、独立响应播放/排空估计 | 门户协议 |
@@ -43,6 +46,8 @@ flowchart LR
 供应商原始事件仅在 voice 边界解释，Agents SDK 仅在 agent_runtime 使用。浏览器不持有供应商密钥、私有地址或执行工具的权限。
 
 ## 3. 一轮请求与状态边界
+
+当前实际策略只有 `general_qa` 和 `knowledge_required`。前者允许唯一最新输入绑定的无工具回答，**没有企业事实语义门禁**；后者拒绝未授权非空回答，并将 direct 知识调用转外置链。Settings 未配置时默认 legacy，部署模板显式选择 dual_tools/general_qa；现场策略需独立确认。工具数量由目录决定；social_only 和通用响应隔离均未实现。
 
 1. Start call 创建独立 owner/token 和策略快照，再签发绑定 conversation/epoch/Origin 的一次性语音票据；会话握手确认格式和原生工具。
 2. Gateway 将工具 call 绑定到用户 input item，必要时有界等待最终 ASR。最终原话与有来源的确认条件决定执行输入，不能采用模型猜测的型号/版本。
@@ -69,6 +74,6 @@ flowchart LR
 
 ## 5. 演进与验收入口
 
-能力状态仅在 [任务板 §3](TASK_BOARD.md#3-待完成与建议顺序) 维护。评估架构调整先读对应 ADR，再检查受影响调用方、契约和迁移；不要把历史目标类名当作已实现类。
+当前主要风险是模型不调用工具导致业务无法启动、ASR 错误进入业务输入、生成/渲染/协议结束不一致，以及实际口述仅事后检查。这些是不同边界，不能用放宽授权或延长一个超时一起解决。
 
-Q01/Q02 剩余目标是完整恢复/语义与听音验收；Q03 是全阶段观测与报告完整性；Q04 是受权原件下载；D1/D3/其他 Provider/子 Agent 均需独立设计。原方案细节保存在 [历史架构](archive/2026-10-07/architecture.md#10-演进状态与后续设计)。实际已执行结果归 [验收报告](acceptance-report.md)，放行标准归 [验收清单](development/validation.md)。
+先按 [实施方案](q1003-target-architecture.md) 验证严格知识与 PAD 收尾，再依据首差异修复。Gateway 状态提取是后续维护性改进，不认定为本次模型故障根因。工作顺序见 [任务板 §3](TASK_BOARD.md#3-待完成与建议顺序)，已执行结果见 [验收报告](acceptance-report.md)，放行要求见 [验收清单](development/validation.md)。

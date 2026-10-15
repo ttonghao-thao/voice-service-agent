@@ -4,6 +4,8 @@
 
 ## 1. 按症状定位
 
+当前产品录音故障直接查 [定位分支](../voicechat-fault-recovery-design.md)；最新事实是注册已恢复、句首缺失、function 全 PAD、无回答结束及可见超时。下面为通用排查，不把不同日期通话拼接成一个因果链。
+
 | 症状 | 先查什么 | 代码与下一层证据 |
 | --- | --- | --- |
 | 页面正常但无收音 | HTTPS/证书、麦克风权限、worklet/dsp 请求是否 200、设备 Hz 与 sent Hz | `apps/web/src/audio/VoiceClient.ts`、`public/audio-worklet.js`；Web 镜像文件/目录权限，不能只测首页 |

@@ -1,6 +1,6 @@
 # VoiceChat 论文 v2：原理、项目差距与改进设计
 
-2026-10-13。本文深读 [arXiv:2609.21967v2](https://arxiv.org/html/2609.21967v2) 正文、图 1/2、表 1–7 和附录 A–D，并逐节比较 v1；对照本项目 `codex/q1003@d0dea88` 加当前工作区实现。NVIDIA 源码逐文件核对归 [源码分析](voicechat-upstream-analysis.md)，当前录音故障的首差异定位归 [D21](voicechat-fault-recovery-design.md)。
+研究日期 2026-10-13。本文核读 [arXiv:2609.21967v2](https://arxiv.org/html/2609.21967v2) 正文、图 1/2、表 1–7 和附录 A–D，并逐节比较 v1；当时应用基线为 `codex/q1003@d0dea88`。本文保留模型原理和研究证据，2026-10-15 更新方案引用；当前实施顺序以 [目标方案](q1003-target-architecture.md) 为准，现场结论以 [日期证据](voicechat-validation-20261014.md) 为准，不从论文推定部署行为。
 
 ## 1. 版本与来源核验
 
@@ -92,7 +92,7 @@ function SFT 对 call 内容的 loss 权重为 64，SOTC/EOTC 各 6，EOTR 为 3
 
 ## 4. 对当前故障链的修正
 
-用户观察到“已发音频 → ASR 句首丢失 → 无有效工具 → 普通回答 → Gateway 拒绝 → 关闭 → 无恢复提示”。其中事件先后已知，并不等于每个箭头都是已证实因果。
+早期反馈包含句首缺失、无工具回答、拒绝和无恢复提示。最新现场已确认注册恢复和可见超时；ASR/function/结束边界分别仍待定位。以下机制解释不把旧现象当作当前状态，也不把事件先后当作已证实因果。
 
 | 现象 | 论文/源码支持的判断 | 仍需什么证据 |
 | --- | --- | --- |
@@ -110,8 +110,8 @@ function SFT 对 call 内容的 loss 权重为 64，SOTC/EOTC 各 6，EOTR 为 3
 
 1. **发布工件一致性**：固定原始 checkpoint、转换产物、tokenizer、模板、代码和镜像；除 head/output 检查外增加融合配置检查。本轮已编码，见 §6。若发布配置正确、runtime 错，再定位转换或 override；不直接把 function 权重改为 2 试运气。
 2. **两条链分别捕获**：ASR 对齐输入样本→encoder→RNNT→display；function 对齐 prefill→融合输入→head/runtime key/token→parser→WS。同 sequence、同初态、单变量；原录音/前置静音只用于边界实验，不做文本补词。
-3. **分离模型与应用策略**：保留 Gateway → Coordinator → Runtime → Registry。Prompt 表达意图，服务端判断是否可以交付。`general_qa`、`knowledge_required` 是现状；目标 `social_only`/有界响应隔离仍按 [目标架构](q1003-target-architecture.md#5-目标架构) 实施，不能写成已上线。
-4. **隔离晚到工具的竞态**：无授权的 PCM 不能先播再撤回。计划按 response/input/epoch 隔离并设字节、时长、事件和等待上限；超限返回可恢复错误。只有合法原生 tool event 才发起业务，不由分类或 final ASR 伪造调用。
+3. **分离模型与应用策略**：保留 Gateway → Coordinator → Runtime → Registry。Prompt 表达意图，服务端判断是否可以交付。当前严格知识验证采用已有 knowledge_required；social_only 推迟评审，输入白名单不能授权任意模型回答，见 [当前选择](q1003-target-architecture.md#2-本阶段选择及推迟的方案)。
+4. **隔离晚到工具的竞态**：无授权的 PCM 不能先播再撤回。仅在证实关联/验证等待需要时设计按 response/input/epoch 有界隔离，不以缓冲替代工具可靠性修复。只有合法原生 tool event 才发起业务，不由分类或 final ASR 伪造调用。
 
 退出证据：能指出同一失败样本的首差异层；未授权非空输出零字节交付；错误保留输入且可显式重试。当前本地恢复修复已通过测试，不等于模型首差异已找到。
 
