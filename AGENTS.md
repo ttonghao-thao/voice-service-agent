@@ -22,3 +22,9 @@
 依赖沿用固定 requirements/package-lock；数据库用 Alembic。契约变更运行 `scripts/export_contracts.py`，同步对应客户端并做相关回归；命令见 [README](README.md#本机验证)。不提交密钥、票据、录音、数据库或产物。
 
 只更新受影响的主题；接口字段以代码/生成契约为准。纯文档任务只改 Markdown，检查链接/锚点和差异，无需重跑应用测试。任务状态变化才更新任务板，实际新验证才记验收，不要求每次生成全仓总结。文档职责及维护例子见 [维护规则](docs/development/documentation.md)。
+
+## VoiceChat 外部项目同步与启动
+
+- 修改独立 VoiceChat/NVIDIA Speech 项目的源码或测试时，必须在同一提交中把修改后的完整文件按 Speech 根目录相对路径同步到 `docs/voicechat/`；不能只提交补丁文件或部署说明。同步更新 `docs/voicechat/snapshot-manifest.json` 的日期、文件 SHA-256、修改来源和已应用补丁；未修改的外部文件不得为凑快照而重写。
+- `docs/voicechat/docker-run.md` 是本项目维护的 VoiceChat 验证容器启动命令。涉及 VoiceChat 运行文件、环境变量、GPU、卷挂载、端口、镜像或 entrypoint 的修改，必须在同一提交中更新该命令，并核对宿主文件与容器实际加载路径。新增环境变量或挂载必须通过重新创建容器生效，不能用重启旧容器代替。
+- 推送前核对外部修改文件与 `docs/voicechat/` 完整文件一致，运行受影响的编译/契约测试并检查 manifest hash。GPU、真实音频、原生工具或 CueKB 未实际验证时必须如实标注，不能用 CPU 夹具或容器成功启动替代现场验收。

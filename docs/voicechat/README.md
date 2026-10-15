@@ -4,6 +4,8 @@
 
 当前 `model.py` 已包含补丁，可直接用于更新独立 VoiceChat/Speech 的同路径文件，**不要再对它应用 `pad-tail-completion.patch`**。部署顺序、运行参数和离线验证仍以 [`deploy/voicechat/README.md`](../../deploy/voicechat/README.md) 为准；精确 SHA-256 见 [`snapshot-manifest.json`](snapshot-manifest.json)。更新后仍需在 Triton backend 启动前设置 `S2S_INFERENCE_CLOSE_ON_PAD_TAIL=true` 才开启新逻辑。
 
+当前现场验证容器的完整 `docker run` 命令、宿主文件同步和启动后核对步骤见 [`docker-run.md`](docker-run.md)。以后修改本目录中的 VoiceChat 运行文件、环境变量、挂载、镜像、端口或 entrypoint 时，必须在同一提交中同步更新该命令。
+
 补丁前的完整快照保存在 Git commit `b924c72a295bdca428ea3c841fdfca8a26aac53a`；`model.py` 的 before/after hash 仍由 [`pad-tail-completion-manifest.json`](../../deploy/voicechat/pad-tail-completion-manifest.json) 记录。当前收录文件不是已部署到 GPU 的证明。
 
 ## 快照范围

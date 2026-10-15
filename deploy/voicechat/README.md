@@ -42,6 +42,8 @@ python -m py_compile s2s/audio_server.py
 
 ## 更新运行镜像并启动
 
+当前 q1003 现场验证使用的完整 `docker run`、宿主文件同步和启动后检查命令统一维护在 [`docs/voicechat/docker-run.md`](../../docs/voicechat/docker-run.md)；本节保留派生镜像与通用部署边界。修改 VoiceChat 运行文件或启动参数时，两处说明必须在同一提交中保持一致。
+
 沿用现场已经验证的离线镜像。可使用本目录 [Dockerfile](Dockerfile) 在该镜像之上只覆盖 WebSocket 文件与既有模板（构建上下文必须是应用补丁后的 speech 目录）：
 
 ```sh
