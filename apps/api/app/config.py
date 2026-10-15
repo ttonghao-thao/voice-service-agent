@@ -29,7 +29,7 @@ class Settings(BaseSettings):
     agent_deadline_ms: int = 30000
     qa_execution_mode: Literal["legacy", "dual_tools"] = "legacy"
     qa_answer_policy: Literal["general_qa", "knowledge_required"] | None = None
-    qa_toolset_version: str = "qa-tools-v2"
+    qa_toolset_version: str = "qa-tools-v3"
     qa_external_fallback_enabled: bool = True
     qa_direct_max_hits: int = Field(default=3, ge=1, le=3)
     qa_direct_evidence_max_bytes: int = Field(default=6000, ge=1024, le=6000)

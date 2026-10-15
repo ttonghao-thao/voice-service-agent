@@ -26,8 +26,8 @@ API 容器内部监听 `0.0.0.0:8000`，不映射宿主端口。浏览器只从 
 | --- | --- | --- |
 | QA_EXECUTION_MODE | legacy / dual_tools | 新建 Conversation 时固定模式；legacy 单 bridge，dual_tools 为后台可配置多工具（历史兼容名称） |
 | TOOLS_ADMIN_API_KEY | 可选 Secret | validation 管理 API 的独立操作员 Bearer 凭据；不设置则管理入口关闭，不下发门户 |
-| QA_ANSWER_POLICY | 未填时：legacy 为 knowledge_required，dual_tools 为 general_qa | general_qa 允许输入绑定的一般回答；knowledge_required 拒绝无工具实质性回答并让 lookup 走外置执行；legacy + general_qa 启动配置无效 |
-| QA_TOOLSET_VERSION | qa-tools-v2 | 会话快照的工具集版本标签；变更注册/schema/prompt 时随匹配发布更新，不是模型版本或行为验证标志 |
+| QA_ANSWER_POLICY | 未填时：legacy 为 knowledge_required，dual_tools 为 general_qa | general_qa 允许输入绑定的一般回答；knowledge_required 拒绝未经工具授权的非空回复（包括问候/澄清/限制说明），关联工具的固定 ACK 除外，并让 lookup 走外置执行；legacy + general_qa 启动配置无效 |
+| QA_TOOLSET_VERSION | qa-tools-v3 | 会话快照的工具集版本标签；v3 对齐严格提示与授权；变更注册/schema/prompt 时随匹配发布更新，不是模型版本或行为验证标志 |
 | QA_EXTERNAL_FALLBACK_ENABLED | true | lookup 证据不适合 D2 时允许内部升级一次；false 则明确失败，不绕过权限或编造 |
 | QA_DIRECT_MAX_HITS | 3；1–3 | D2 证据项上限，超限升级/失败，不裸截关键条件 |
 | QA_DIRECT_EVIDENCE_MAX_BYTES | 6000；1024–6000 | 完整 evidence-v1 包 UTF-8 字节上限；非 ASCII 或超限退出 D2 |
@@ -43,6 +43,8 @@ QA_ANSWER_POLICY=general_qa
 ```
 
 若场景要求知识受控回答，将 QA_ANSWER_POLICY 改为 knowledge_required。该策略不保证 VoiceChat 对批准文本逐字朗读；D2 在一般模式中的校验发生在口述后，无法撤回已播内容。
+
+P1-A 提示修正随 API 镜像中的 Provider 与 `config/voice*-prompt.txt` 一起发布，dual_tools 新会话的工具集版本为 `qa-tools-v3`，legacy 仍使用 `legacy` 标签（显式设置旧 QA_TOOLSET_VERSION 的部署需同步更新标签）。结束旧通话后新建 Conversation 和 voice session，重新注册 instructions/tools；核对 `voice_registration_confirmed`，再验证严格知识闭环。此次不修改独立 VoiceChat 文件、工具目录或 PAD 开关；现场对照时仅改变提示版本。无匹配工具时禁止自由口述，可转门户文字入口；尚未新增沉默时的自动文字澄清或响应起始超时。
 
 实施顺序：备份 → API/Web 匹配发布及 Alembic upgrade head（当前 0010）→ 固定 VoiceChat 模型/镜像/模板/补丁 → 在验收部署配置新模式并创建新通话 → 完成 Q07-E 后放行。0008 增加来源条件/任务快照，0009 增加交付审计，0010 增加全局原生工具目录表；旧 slots 保留但不伪造确认来源。已有 Conversation 的模式/策略不随环境变量改变；工具目录更新通过关闭旧连接并重新注册生效，不发送 WS tool_choice 或未经验证的同连接热更新。
 

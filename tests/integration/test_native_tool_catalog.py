@@ -264,11 +264,45 @@ async def test_voicechat_registration_mismatch_fails_before_audio(mutation, seri
     assert received_audio == []
 
 
-def test_strict_prompt_has_no_conflicting_memory_permission():
-    instructions = session_update("", [], "knowledge_required")["session"]["instructions"]
+@pytest.mark.parametrize("answer_policy", ["knowledge_required", "general_qa"])
+@pytest.mark.parametrize("tool_count", [None, 0, 1, 3], ids=["legacy", "no-tools", "one-tool", "three-tools"])
+async def test_prompt_output_policy_matches_gateway_authorization(app, answer_policy, tool_count):
+    catalog = app.state.coordinator.runtime.catalog
+    entries = three_tools([item.model_dump() for item in catalog.defaults])
+    compiled = catalog.compile([NativeToolEntry.model_validate(item) for item in entries])
+    definitions = catalog.dispatcher.definitions(tuple(compiled)[:tool_count], catalog=compiled) if tool_count is not None else None
+    update = session_update("Confirmed model AX", definitions, answer_policy)
+    session = update["session"]
+    instructions = session["instructions"]
+    assert "{{" not in instructions
+    assert json.dumps(update, ensure_ascii=False).isascii()
+    assert "Confirmed model AX" in instructions
+    assert "only the configured fixed ack_messages associated with that tool call" in instructions
+    assert "You may briefly acknowledge" not in instructions
+    if tool_count is not None:
+        assert session["tools"] == definitions  # Preserve custom names, schemas and ACKs.
+        assert "consult_service_agent" not in instructions
+    else:
+        assert [tool["name"] for tool in session["tools"]] == ["consult_service_agent"]
+    if answer_policy == "general_qa" and tool_count is not None:
+        assert "answer from your own knowledge without tools" in instructions
+        assert "explain the limitation or ask for clarification" in instructions
+        assert "Do not speak greetings" not in instructions
+        return
     assert "Do not answer facts from memory" in instructions
     assert "answer from your own knowledge without tools" not in instructions
-    assert "{{ANSWER_POLICY}}" not in instructions
+    assert "Do not speak greetings, thanks, small talk, clarifying questions or limitations without tool authorization" in instructions
+    assert "If no matching tool is available" in instructions
+    assert "leave errors and clarification without tool authorization to the application's text interface" in instructions
+    assert "Never call an unrelated tool to obtain permission to speak" in instructions
+    assert "including a greeting followed by a product question" in instructions
+    for conflicting_permission in (
+        "Brief greetings and acknowledgments may be conversational",
+        "If no matching tool is available, explain",
+        "Ask when a required object is unclear",
+        "If a tool fails or evidence is insufficient, explain",
+    ):
+        assert conflicting_permission not in instructions
 
 
 @pytest.mark.parametrize("native_tools", [False, True])

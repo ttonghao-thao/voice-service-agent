@@ -45,11 +45,18 @@ def session_update(summary="", tools=None, answer_policy="knowledge_required"):
     safe_history = "\n".join(line for line in summary.splitlines() if printable_ascii(line))
     prompt = (ROOT / ("config/voice-qa-prompt.txt" if tools is not None else "config/voice-prompt.txt")).read_text()
     policy = (
-        "This session requires tool evidence for every substantive answer. Do not answer facts from memory. "
-        "Brief greetings and acknowledgments may be conversational; if no matching tool exists, state the limitation."
-        if answer_policy == "knowledge_required" else
+        "Speak only from an authorized tool result, apart from the tool's configured fixed acknowledgment. "
+        "Do not answer facts from memory. "
+        "Do not speak greetings, thanks, small talk, clarifying questions or limitations without tool authorization. "
+        "Use a matching registered tool for every request it covers, including a greeting followed by a product question. "
+        "If no matching tool is available, do not speak; "
+        "leave errors and clarification without tool authorization to the application's text interface. "
+        "Never call an unrelated tool to obtain permission to speak."
+        # Legacy always requires the bridge, even if general_qa was configured.
+        if tools is None or answer_policy == "knowledge_required" else
         "For greetings, thanks and general concepts that do not need company sources, private facts or live data, "
-        "answer from your own knowledge without tools. Never present those answers as verified company information."
+        "answer from your own knowledge without tools. Never present those answers as verified company information. "
+        "If no matching tool is available or a required detail is unclear, explain the limitation or ask for clarification."
     )
     prompt = prompt.replace("{{ANSWER_POLICY}}", policy)
     return {
