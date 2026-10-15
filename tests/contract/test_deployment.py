@@ -4,6 +4,7 @@ import subprocess
 from pathlib import Path
 from urllib.parse import urlparse
 
+import pytest
 import yaml
 
 ROOT = Path(__file__).resolve().parents[2]
@@ -143,6 +144,8 @@ def test_deployment_requires_https_and_readable_tls_files(tmp_path):
         "CUEKB_API_KEY": "cuekb-key",
         "VOICECHAT_WS_URL": "wss://voicechat.test/ws",
         "VOICECHAT_API_KEY": "voice-key",
+        "QA_EXECUTION_MODE": "dual_tools",
+        "QA_ANSWER_POLICY": "general_qa",
         "WEB_TLS_CERT_FILE": "/missing/cert.pem",
         "WEB_TLS_KEY_FILE": "/missing/key.pem",
     }
@@ -180,6 +183,10 @@ def test_deployment_requires_https_and_readable_tls_files(tmp_path):
     values["PUBLIC_ORIGIN"] = "https://voice.test:8087"
     accepted_https = check()
     assert accepted_https.returncode == 0
+    values["QA_ANSWER_POLICY"] = "knowledge_required"
+    rejected_strict = check()
+    assert rejected_strict.returncode != 0
+    assert "QA_ANSWER_POLICY=general_qa" in rejected_strict.stderr
 
 
 def test_deployment_readiness_verifier_requires_real_matching_configuration():
@@ -197,3 +204,19 @@ def test_deployment_readiness_verifier_requires_real_matching_configuration():
         },
         {"search_knowledge"},
     )["enabled_tools"] == ["search_knowledge"]
+
+
+@pytest.mark.parametrize("change", [
+    {}, {"provider": "mock"}, {"qa_execution_mode": "legacy"},
+    {"answer_policy": "knowledge_required"}, {"is_mock": True}, {"voice_available": False},
+])
+def test_autonomous_voice_deployment_checks_actual_capabilities(change):
+    import runpy
+    validate = runpy.run_path(ROOT / "scripts/verify_deployment.py")["validate_voice_policy"]
+    payload = {"provider": "nvidia", "qa_execution_mode": "dual_tools", "answer_policy": "general_qa",
+               "is_mock": False, "voice_available": True, **change}
+    if change:
+        with pytest.raises(ValueError):
+            validate(payload)
+    else:
+        assert validate(payload)["answer_policy"] == "general_qa"

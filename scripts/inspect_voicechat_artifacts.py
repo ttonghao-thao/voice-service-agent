@@ -115,16 +115,23 @@ def inspect(config_path, tokenizer_path, checkpoints, voicechat_config_path=None
     inputs = config.get("custom_input_specs", [])
     combined = [item for item in inputs if isinstance(item, dict) and item.get("name") == "combined_embeds"]
     outputs = config.get("custom_outputs", [])
+    outputs_valid = isinstance(outputs, list) and all(isinstance(value, str) for value in outputs)
+    output_names = set(outputs) if outputs_valid else set()
+    # The deployed backend directly reads these two outputs. function_logits
+    # is optional: capture uses .get() and records unavailable scores separately.
+    missing_required = sorted({"text_logits", "function_tokens"} - output_names) if outputs_valid else None
     return {
         "scope": "supplied_artifacts_only",
         "config_sha256": config_hash, "tokenizer_sha256": tokenizer_hash,
         "checkpoints": headers, "special_token_added_ids": added,
         "voicechat_fusion": inspect_fusion(voicechat_config_path),
+        "function_output_declarations": {"declared": outputs, "missing_required": missing_required},
         "checks": {
             "combined_embeds_contract": "passed" if len(combined) == 1 and combined[0].get("dim") == hidden_size
                 and type(hidden_size) is int and hidden_size > 0 else "mismatch",
-            "function_outputs_contract": "passed" if isinstance(outputs, list)
-                and {"text_logits", "function_tokens", "function_logits"} <= set(outputs) else "mismatch",
+            "function_outputs_contract": "passed" if outputs_valid and not missing_required else "mismatch",
+            "function_scores_declared": ("passed" if "function_logits" in output_names else "missing")
+                if outputs_valid else "unverified",
             "function_head_in_supplied_headers": "present" if heads else "missing",
             "function_head_shape": "passed" if head_shape_ok else "mismatch",
             "atomic_special_token_entries": "passed" if token_ids_ok else "unverified",
@@ -136,6 +143,7 @@ def inspect(config_path, tokenizer_path, checkpoints, voicechat_config_path=None
             "Header hashes are not weight hashes; payload values, trained weights and loading were not verified.",
             "Added token entries do not prove the actual runtime tokenizer or its encode/decode behavior.",
             "This does not test RNNT, audio, live combined_embeds or returned function_tokens.",
+            "function_logits is optional diagnostic output; its declaration does not prove runtime score availability.",
         ],
     }
 

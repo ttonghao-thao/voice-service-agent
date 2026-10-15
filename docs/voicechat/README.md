@@ -13,6 +13,7 @@
 | Speech 相对路径 | 内容 |
 | --- | --- |
 | `s2s/audio_server.py` | WebSocket 响应生命周期、诊断与隔离采集 |
+| `s2s/prompt_template.jinja` | 用户提供的现场完整模板，加入会话策略优先及单工具调用约束；基线来源及 hash 见 manifest |
 | `docs/voicechat-api.md` | 外部 VoiceChat API 说明更新 |
 | `s2s/tests/test_response_lifecycle.py` | 外部 Speech 响应生命周期测试 |
 | `s2s/tests/requirements.txt` | 外部 Speech 测试依赖 |

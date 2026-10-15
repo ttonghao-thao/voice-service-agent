@@ -39,6 +39,14 @@ require_values \
   PUBLIC_ORIGIN AGENT_PROVIDER AGENT_MODEL OPENAI_API_KEY \
   CUEKB_BASE_URL CUEKB_API_KEY VOICECHAT_WS_URL VOICECHAT_API_KEY
 
+# This deployment is for VoiceChat-owned routing, including direct replies.
+# Reject an old strict .env before starting or migrating any container.
+if [ "$(environment_value QA_EXECUTION_MODE)" != "dual_tools" ] || \
+   [ "$(environment_value QA_ANSWER_POLICY)" != "general_qa" ]; then
+  echo "VoiceChat autonomous replies require QA_EXECUTION_MODE=dual_tools and QA_ANSWER_POLICY=general_qa. Create a new conversation after deployment." >&2
+  exit 1
+fi
+
 case "$(environment_value AGENT_PROVIDER)" in
   openai) ;;
   compatible) require_values AGENT_BASE_URL ;;
@@ -85,6 +93,6 @@ done
 compose up -d --no-build --wait --wait-timeout 180 postgres redis
 compose run --rm --no-deps migrate
 compose up -d --no-build --wait --wait-timeout 180 --no-deps api
-compose exec -T api python /app/scripts/verify_deployment.py --base-url http://127.0.0.1:8000
+compose exec -T api python /app/scripts/verify_deployment.py --base-url http://127.0.0.1:8000 --expect-autonomous-voice
 compose up -d --no-build --wait --wait-timeout 60 --no-deps web
 compose ps

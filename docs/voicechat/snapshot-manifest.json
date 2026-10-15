@@ -3,7 +3,7 @@
   "source_branch": "nemotron-labs-voicechat",
   "source_commit": "097dfe9e2f55baf653b83035868bdc89849f1b47",
   "local_source_root": "/Users/snowking/Documents/speech",
-  "snapshot_date": "2026-10-14",
+  "snapshot_date": "2026-10-15",
   "files": {
     "docs/voicechat-api.md": "f760e203e2521e5ca68ab4344480e5a7f62673d919b0a2ff52c4682d00c6dd23",
     "opt/tritonserver/backends/nemotron-voicechat/data_types.py": "416a5ec1bd025685cec2552c2accc992b30b7013b0e0bcad0a2d9c5bb6f04c98",
@@ -12,14 +12,23 @@
     "s2s/audio_server.py": "d879c7fec7b428cb4d6d1318c7a47b6f1559910cf55c418518f9c85d32e98f20",
     "s2s/tests/requirements.txt": "095094833e146be9f5d5aea3b3d41ef662e3f269d5423172de266c71e154102b",
     "s2s/tests/test_response_lifecycle.py": "4afdf6025447b9640713528436c2b440db108e0234c0fc0d78af5370091123b9",
-    "s2s/tests/test_voice_diagnostics.py": "7e0faa6fc38886e87bbd88734f82ccf2064f818ecbf73276602b7fbdf6bfa4fd"
+    "s2s/tests/test_voice_diagnostics.py": "7e0faa6fc38886e87bbd88734f82ccf2064f818ecbf73276602b7fbdf6bfa4fd",
+    "s2s/prompt_template.jinja": "3c77940ffb9d000a3aeb573758ef6b620474d3000d986c76527f84e32ae1ea80"
   },
   "base_snapshot_commit": "b924c72a295bdca428ea3c841fdfca8a26aac53a",
   "updated_in_repository": [
     "opt/tritonserver/backends/nemotron-voicechat/model.py",
-    "s2s/tests/test_voice_diagnostics.py"
+    "s2s/tests/test_voice_diagnostics.py",
+    "s2s/prompt_template.jinja"
   ],
   "applied_patches": [
-    "deploy/voicechat/pad-tail-completion.patch"
-  ]
+    "deploy/voicechat/pad-tail-completion.patch",
+    "strict-session-tool-result-template"
+  ],
+  "file_sources": {
+    "s2s/prompt_template.jinja": {
+      "source": "User-supplied deployed voicechat-prompt-template.jinja; strict session policy and single-call examples updated in this repository",
+      "base_sha256": "e28694b99a2b087ce6b2b9d1abec10878fa54b8c719324c484b1d15a559f6c2b"
+    }
+  }
 }

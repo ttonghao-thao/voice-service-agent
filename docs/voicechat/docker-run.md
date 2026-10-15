@@ -11,6 +11,7 @@ cp docs/voicechat/opt/tritonserver/backends/nemotron-voicechat/model.py /home/th
 cp docs/voicechat/opt/tritonserver/backends/nemotron-voicechat/data_types.py /home/thao/voice/data_types.py
 cp docs/voicechat/opt/tritonserver/backends/nemotron-voicechat/runtime_setup.py /home/thao/voice/runtime_setup.py
 cp docs/voicechat/s2s/audio_server.py /home/thao/voice/audio_server.py
+cp docs/voicechat/s2s/prompt_template.jinja /home/thao/voice/prompt_template.jinja
 
 python3.12 -m py_compile \
   /home/thao/voice/model.py \
@@ -27,7 +28,7 @@ sha256sum /home/thao/voice/model.py
 bc4271093c732beb70d4bce770b4ac06bdc0d31d97d558cb4e87190c365806a8
 ```
 
-`load_utils.py` 和 `prompt_template.jinja` 沿用现场已验证文件；若后续修改，也必须先同步到 `docs/voicechat/` 的相同 Speech 相对路径并更新 snapshot manifest。
+`load_utils.py` 沿用现场文件。本次模板必须使用上面同步的完整 `prompt_template.jinja`，其 SHA-256 为 `3c77940ffb9d000a3aeb573758ef6b620474d3000d986c76527f84e32ae1ea80`。模板加入会话策略优先、禁止同请求重试/并行工具调用、仅按授权结果发声的约束，并将调用示例收敛为单个工具和对象参数。它修复提示冲突，不代表已修复模型全 PAD。
 
 ## 创建容器
 
@@ -67,6 +68,8 @@ docker run -d --name=nemotron-labs-voicechat \
 docker exec nemotron-labs-voicechat \
   sha256sum /opt/tritonserver/backends/nemotron-voicechat/model.py
 
+docker exec nemotron-labs-voicechat sha256sum /s2s/prompt_template.jinja
+
 docker exec nemotron-labs-voicechat printenv \
   S2S_INFERENCE_CLOSE_ON_PAD_TAIL \
   S2S_INFERENCE_FORCE_SPEECH_SILENCE_ON_PAD \
@@ -77,3 +80,5 @@ docker logs nemotron-labs-voicechat 2>&1 | grep 'TTS PAD-silence'
 ```
 
 预期运行文件 hash 与上文一致，环境依次为 `true`、`true`、`3`、`0`，backend 启动日志包含 `force=True`、`pad_tail_ratio=3.0`、`close_on_pad_tail=True`。这些结果只证明新文件和启动配置已加载；回答收尾、ASR、原生工具和真实知识链仍需按 [验证记录](../voicechat-validation-20261014.md) 执行现场测试。
+
+模板在进程启动时加载；同步宿主文件后按上面的命令重新创建验证容器。门户或 API 单独重启不会更新 VoiceChat 进程内的模板。

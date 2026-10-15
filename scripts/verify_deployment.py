@@ -29,9 +29,25 @@ def validate_ready(payload, expected_tools):
     }
 
 
+def validate_voice_policy(payload):
+    """Check the deployed mode, not the model's ability to choose or use tools."""
+    expected = {"provider": "nvidia", "qa_execution_mode": "dual_tools", "answer_policy": "general_qa"}
+    if any(payload.get(key) != value for key, value in expected.items()):
+        raise ValueError(
+            "VoiceChat autonomous answers require provider=nvidia, "
+            "QA_EXECUTION_MODE=dual_tools and QA_ANSWER_POLICY=general_qa. "
+            "knowledge_required rejects replies without a tool call. Create a new conversation after changing policy."
+        )
+    if payload.get("is_mock") is not False or payload.get("voice_available") is not True:
+        raise ValueError("A real configured VoiceChat service is required")
+    return expected
+
+
 def main():
     parser = argparse.ArgumentParser(description="Verify the running validation API readiness contract")
     parser.add_argument("--base-url", default="http://127.0.0.1:8000")
+    parser.add_argument("--expect-autonomous-voice", action="store_true",
+                        help="Require VoiceChat to be allowed to answer directly or call tools")
     args = parser.parse_args()
     from app.config import Settings
 
@@ -43,6 +59,11 @@ def main():
         raise SystemExit("Deployment readiness endpoint is unavailable: " + str(exc)) from exc
     try:
         check = validate_ready(payload, Settings().enabled_tool_names)
+        if args.expect_autonomous_voice:
+            with urlopen(args.base_url.rstrip("/") + "/api/v1/capabilities", timeout=5) as response:  # noqa: S310
+                check["voice_policy"] = validate_voice_policy(json.load(response))
+    except OSError as exc:
+        raise SystemExit("Deployment voice capabilities endpoint is unavailable") from exc
     except ValueError as exc:
         raise SystemExit("Deployment readiness check failed: " + str(exc)) from exc
     print(

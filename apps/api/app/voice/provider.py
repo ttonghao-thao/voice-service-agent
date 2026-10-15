@@ -54,6 +54,8 @@ def session_update(summary="", tools=None, answer_policy="knowledge_required"):
         "Never call an unrelated tool to obtain permission to speak."
         # Legacy always requires the bridge, even if general_qa was configured.
         if tools is None or answer_policy == "knowledge_required" else
+        "Decide whether to answer from your own knowledge or call a registered tool for the customer's request. "
+        "A tool call is not required for every utterance. "
         "For greetings, thanks and general concepts that do not need company sources, private facts or live data, "
         "answer from your own knowledge without tools. Never present those answers as verified company information. "
         "If no matching tool is available or a required detail is unclear, explain the limitation or ask for clarification."

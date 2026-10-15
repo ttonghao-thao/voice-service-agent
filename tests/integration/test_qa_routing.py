@@ -1,4 +1,5 @@
 import asyncio
+import base64
 import json
 import time
 
@@ -10,7 +11,7 @@ from app.agent_runtime.dispatch import NativeTool
 from app.config import Settings
 from app.contracts import AnswerBundle, DomainError, KnowledgeArguments, Principal, StrictModel
 from app.main import create_app
-from app.storage.models import DeliveryAttempt, Utterance
+from app.storage.models import DeliveryAttempt, ToolRun, Utterance
 from app.voice.provider import MockVoiceAdapter, VoiceEvent, session_update
 from fastapi.testclient import TestClient
 from sqlalchemy import select
@@ -364,14 +365,20 @@ def test_evidence_ready_is_not_final_and_native_reply_commits_once(tmp_path, spo
             assert turn["selected_tool"] == "lookup_knowledge"
 
 
-def test_general_answer_has_no_business_turn_or_retrieval(tmp_path):
+@pytest.mark.parametrize("audio_first", [False, True])
+def test_general_answer_has_no_business_turn_or_retrieval(tmp_path, audio_first):
     app = create_app(settings(tmp_path))
+    pcm = base64.b64encode(b"\x01\x00" * 1920).decode()
 
     class Scripted(MockVoiceAdapter):
         async def connect(self, summary):
             await self.queue.put(VoiceEvent("input.state", {"state": "speaking", "item_id": "i1"}))
+            if audio_first:
+                await self.queue.put(VoiceEvent("audio.delta", {"response_id": "r1", "audio": pcm}))
             await self.queue.put(VoiceEvent("transcript.done", {"item_id": "i1", "text": "What is MLO?"}))
             await self.queue.put(VoiceEvent("speech_text.done", {"response_id": "r1", "text": "MLO means multi-link operation."}))
+            if not audio_first:
+                await self.queue.put(VoiceEvent("audio.delta", {"response_id": "r1", "audio": pcm}))
             await self.queue.put(VoiceEvent("audio.done", {"response_id": "r1"}))
 
     with TestClient(app) as client:
@@ -383,6 +390,7 @@ def test_general_answer_has_no_business_turn_or_retrieval(tmp_path):
             while not events or events[-1]["type"] != "portal.audio.done":
                 events.append(ws.receive_json())
             spoken = next(e for e in events if e["type"] == "portal.speech_text.done")
+            assert [e["payload"]["audio"] for e in events if e["type"] == "portal.audio.delta"] == [pcm]
             assert spoken["turn_id"] is None and spoken["payload"]["input_item_id"] == "i1"
             data = client.get(f"/api/v1/conversations/{cid}/messages").json()
             assert data["items"] == []
@@ -395,6 +403,74 @@ def test_general_answer_has_no_business_turn_or_retrieval(tmp_path):
                     assert len(attempts) == 1 and attempts[0].kind == "voice_audio"
                     assert attempts[0].turn_id is None and attempts[0].input_item_id == "i1"
                     assert attempts[0].response_id == "r1"
+                    assert attempts[0].sent_samples == 1920
+                    assert not (await db.execute(select(ToolRun))).scalars().all()
+            client.portal.call(inspect)
+
+
+@pytest.mark.parametrize("tool_name", ["lookup_knowledge", "reason_over_knowledge"])
+def test_voicechat_owns_choice_across_direct_and_tool_audio_turns(tmp_path, tool_name):
+    """Application integration with scripted VoiceChat events, not model quality."""
+    app = create_app(settings(tmp_path))
+    pcm = base64.b64encode(b"\x02\x00" * 1920).decode()
+    received, results = [], []
+
+    class Scripted(MockVoiceAdapter):
+        async def send_audio(self, audio):
+            received.append(audio)
+            n = len(received)
+            await self.queue.put(VoiceEvent("input.state", {"state": "speaking", "item_id": f"i{n}"}))
+            request = "Hello" if n == 1 else "Find the integration sample"
+            await self.queue.put(VoiceEvent("transcript.done", {"item_id": f"i{n}", "text": request}))
+            if n == 1:
+                await self.reply("direct", "Hello. How can I help?")
+            else:
+                call = VoiceEvent("tool", {"call_id": "native-call", "response_id": "tool-response",
+                    "name": tool_name, "arguments": arguments(request)})
+                await self.queue.put(call)
+                await self.queue.put(call)  # Duplicate event must not duplicate execution.
+
+        async def reply(self, response_id, text):
+            await self.queue.put(VoiceEvent("speech_text.done", {"response_id": response_id, "text": text}))
+            await self.queue.put(VoiceEvent("audio.delta", {"response_id": response_id, "audio": pcm}))
+            await self.queue.put(VoiceEvent("audio.done", {"response_id": response_id}))
+
+        async def submit_tool_result(self, call_id, text):
+            result = json.loads(text)
+            results.append((call_id, result))
+            speech = result.get("speech_text") or result["items"][0]["content"]
+            await self.reply("tool-answer", speech)
+
+    with TestClient(app) as client:
+        app.state.voice.provider_factory = Scripted
+        cid = client.post("/api/v1/conversations", json={}).json()["id"]
+        issued = client.post(f"/api/v1/conversations/{cid}/voice-sessions", json={}).json()
+        with client.websocket_connect(issued["ws_url"], headers={"Origin": "http://localhost:5173"}) as ws:
+            assert ws.receive_json()["type"] == "portal.session.ready"
+            for seq in range(2):
+                ws.send_json({"type": "portal.audio.append", "epoch": issued["epoch"], "seq": seq,
+                    "payload": {"format": "pcm16", "sample_rate": 24000, "audio": pcm}})
+                events = []
+                for _ in range(15):
+                    event = ws.receive_json()
+                    events.append(event)
+                    assert event["type"] != "portal.error", event
+                    if event["type"] == "portal.audio.done":
+                        break
+                else:
+                    pytest.fail("Missing audio completion")
+                assert [e["payload"]["audio"] for e in events if e["type"] == "portal.audio.delta"] == [pcm]
+                if seq == 0:
+                    assert not results
+                    assert client.get(f"/api/v1/conversations/{cid}/messages").json()["items"] == []
+            turn = wait_answer(client, cid)
+            assert turn["selected_tool"] == tool_name
+            assert len(results) == 1 and results[0][0] == "native-call"
+            assert received == [pcm, pcm]
+            async def inspect():
+                async with app.state.store.sessions() as db:
+                    runs = (await db.execute(select(ToolRun))).scalars().all()
+                    assert len(runs) == 1
             client.portal.call(inspect)
 
 

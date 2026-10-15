@@ -32,6 +32,26 @@ def test_distinguishes_missing_head_from_missing_runtime_output_contract(tmp_pat
     assert "weight_sha256" not in json.dumps(report)
 
 
+@pytest.mark.parametrize("outputs,contract,scores,missing", [
+    (["text_logits", "function_tokens"], "passed", "missing", []),
+    (["text_logits", "function_logits"], "mismatch", "passed", ["function_tokens"]),
+    (["function_tokens", "function_logits"], "mismatch", "passed", ["text_logits"]),
+    (None, "mismatch", "unverified", None),
+    ({}, "mismatch", "unverified", None),
+    ([{"name": "function_tokens"}], "mismatch", "unverified", None),
+    ("text_logits,function_tokens", "mismatch", "unverified", None),
+])
+def test_runtime_outputs_are_separate_from_optional_scores(tmp_path, outputs, contract, scores, missing):
+    config, tokenizer, checkpoints = artifacts(tmp_path)
+    values = json.loads(config.read_text())
+    values["custom_outputs"] = outputs
+    config.write_text(json.dumps(values))
+    report = inspect(config, tokenizer, checkpoints)
+    assert report["checks"]["function_outputs_contract"] == contract
+    assert report["checks"]["function_scores_declared"] == scores
+    assert report["function_output_declarations"] == {"declared": outputs, "missing_required": missing}
+
+
 @pytest.mark.parametrize("ids", [[20, 20, 22], [20, 21, 999], [20, 21]])
 def test_special_token_mismatch_is_not_reported_healthy(tmp_path, ids):
     config, tokenizer, checkpoints = artifacts(tmp_path)

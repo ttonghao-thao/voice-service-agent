@@ -27,7 +27,7 @@ API 容器内部监听 `0.0.0.0:8000`，不映射宿主端口。浏览器只从 
 | QA_EXECUTION_MODE | legacy / dual_tools | 新建 Conversation 时固定模式；legacy 单 bridge，dual_tools 为后台可配置多工具（历史兼容名称） |
 | TOOLS_ADMIN_API_KEY | 可选 Secret | validation 管理 API 的独立操作员 Bearer 凭据；不设置则管理入口关闭，不下发门户 |
 | QA_ANSWER_POLICY | 未填时：legacy 为 knowledge_required，dual_tools 为 general_qa | general_qa 允许输入绑定的一般回答；knowledge_required 拒绝未经工具授权的非空回复（包括问候/澄清/限制说明），关联工具的固定 ACK 除外，并让 lookup 走外置执行；legacy + general_qa 启动配置无效 |
-| QA_TOOLSET_VERSION | qa-tools-v3 | 会话快照的工具集版本标签；v3 对齐严格提示与授权；变更注册/schema/prompt 时随匹配发布更新，不是模型版本或行为验证标志 |
+| QA_TOOLSET_VERSION | qa-tools-v4 | 会话快照的工具集版本标签；v4 明确 VoiceChat 自主决策，并配套会话策略优先的 Jinja 模板；变更注册/schema/prompt 时随匹配发布更新，不是模型版本或行为验证标志 |
 | QA_EXTERNAL_FALLBACK_ENABLED | true | lookup 证据不适合 D2 时允许内部升级一次；false 则明确失败，不绕过权限或编造 |
 | QA_DIRECT_MAX_HITS | 3；1–3 | D2 证据项上限，超限升级/失败，不裸截关键条件 |
 | QA_DIRECT_EVIDENCE_MAX_BYTES | 6000；1024–6000 | 完整 evidence-v1 包 UTF-8 字节上限；非 ASCII 或超限退出 D2 |
@@ -42,9 +42,13 @@ QA_EXECUTION_MODE=dual_tools
 QA_ANSWER_POLICY=general_qa
 ```
 
-若场景要求知识受控回答，将 QA_ANSWER_POLICY 改为 knowledge_required。该策略不保证 VoiceChat 对批准文本逐字朗读；D2 在一般模式中的校验发生在口述后，无法撤回已播内容。
+当前需求必须保留 general_qa：由 VoiceChat 自主决定用自身知识直接回答，还是调用注册工具。knowledge_required 会拒绝无工具的直接回答，不适用于本次功能目标；代码保留它用于其他显式策略及回归。D2 的口述核验仍发生在音频之后，直接回答也不会被标为知识库已验证答案。
 
-P1-A 提示修正随 API 镜像中的 Provider 与 `config/voice*-prompt.txt` 一起发布，dual_tools 新会话的工具集版本为 `qa-tools-v3`，legacy 仍使用 `legacy` 标签（显式设置旧 QA_TOOLSET_VERSION 的部署需同步更新标签）。结束旧通话后新建 Conversation 和 voice session，重新注册 instructions/tools；核对 `voice_registration_confirmed`，再验证严格知识闭环。此次不修改独立 VoiceChat 文件、工具目录或 PAD 开关；现场对照时仅改变提示版本。无匹配工具时禁止自由口述，可转门户文字入口；尚未新增沉默时的自动文字澄清或响应起始超时。
+本次 API 提示版本为 `qa-tools-v4`；若显式配置 QA_TOOLSET_VERSION，应同步更新。部署前将旧 `.env` 中的严格策略改成上面的两项，并按 [VoiceChat 容器命令](voicechat/docker-run.md) 同步完整 Jinja 模板、重新创建 VoiceChat 容器。模板加入会话策略优先、禁止重复/并行调用、只按策略及结果发声三句约束，不修改模型权重或引入其他 ASR/TTS。
+
+`scripts/deploy-cloud.sh` 会在迁移和启动容器前拒绝不符合上述策略的环境文件；启动后的 `verify_deployment.py --expect-autonomous-voice` 再读取实际 `/api/v1/capabilities`，检查 nvidia / dual_tools / general_qa / is_mock=false / voice_available=true。手动 docker build/run 部署也应运行此检查，不能只查看本地 .env。
+
+**结束旧通话后必须新建 Conversation，再启动语音。** 旧会话保持创建时的 knowledge_required 快照，单独刷新页面、重连语音或修改环境变量不会更新它。先验证无工具的问候/一般问题能够播放完整回复，再验证明确的知识库请求产生原生调用、真实 CueKB 执行、原 call_id 回填及完整语音回复。模板修正与模式切换不等于模型全 PAD 问题已修复。
 
 实施顺序：备份 → API/Web 匹配发布及 Alembic upgrade head（当前 0010）→ 固定 VoiceChat 模型/镜像/模板/补丁 → 在验收部署配置新模式并创建新通话 → 完成 Q07-E 后放行。0008 增加来源条件/任务快照，0009 增加交付审计，0010 增加全局原生工具目录表；旧 slots 保留但不伪造确认来源。已有 Conversation 的模式/策略不随环境变量改变；工具目录更新通过关闭旧连接并重新注册生效，不发送 WS tool_choice 或未经验证的同连接热更新。
 
@@ -158,6 +162,8 @@ python scripts/inspect_voicechat_artifacts.py \
 ```
 
 该脚本无需 GPU/NeMo，只读配置和 safetensors header。可选 `--voicechat-config` 必须是含 `model.stt.model` 的原始 VoiceChat 配置，不是转换后的 vLLM config；它将声明值/公开 wrapper 缺省值与论文 1/1/2 融合权重比较，返回 `matches/differs/unverified`，不会自动改配置。官方固定 HF 配置本轮为 matches，不能据此推断现场运行配置；见 [论文 v2 核对](voicechat-paper-v2-review.md#6-本轮落地验证与未完成项)。`missing/mismatch/unverified` 定位提供文件的契约差异；`passed` 也不证明权重正确加载、实际 tokenizer 编码、RNNT 或 function 推理正确。它不修改模型，头部 hash 不代表权重内容 hash。真实定位仍需同 sequence 的输入帧、RNNT raw token 和 runtime function key/token 证据。
+
+`function_outputs_contract` 仅检查当前 backend 必需的 `text_logits`、`function_tokens`；`function_output_declarations` 保存实际声明及缺失的必需字段。可选的 `function_logits` 单独报告为 `function_scores_declared`，缺失只代表没有声明诊断分数，不能据此判定原生工具不可用。早期脚本将三者合并，只有前两项的现场配置会被误报为运行契约 mismatch；不要为消除该旧告警直接修改模型配置。即使声明了分数，仍需验证运行时实际返回。
 
 ## 约 3 秒查询的分段复测
 
