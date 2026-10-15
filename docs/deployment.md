@@ -88,7 +88,11 @@ python3.12 -m venv .venv
 python -m pip install --disable-pip-version-check -r requirements-dev.txt
 ```
 
-Docker 先复制 `requirements.txt` 再复制应用源码，因此仅修改业务代码不会重新安装依赖。
+Docker 先复制 `requirements.txt` 再复制应用源码，因此在同一个保留缓存的 builder 上，仅修改业务代码、配置或镜像标签不会重新安装依赖；安装步骤应显示 `CACHED`。API 的 pip 下载/构建缓存另存于 BuildKit cache mount，不进入最终镜像。依赖清单变化而安装层重跑时，可以复用该 builder 已缓存的兼容包；仍需解析依赖并安装，新包和未缓存的索引响应仍可能访问网络。
+
+排查每次下载时，用 `docker build --progress=plain -f deploy/Dockerfile.api -t "voice-service-agent-api:$release_tag" .` 查看依赖层是否命中。日常构建不使用 `--no-cache`，不在构建间执行 `docker builder prune`，并复用同一个 builder；换机器、重建临时 builder 或缓存被回收后仍是冷构建。`--no-cache` 会强制重跑安装层，但不会自行清空 cache mount，两者不能混为一谈。需要代理 CA 时继续传入前述 secret。
+
+当前 slim 镜像没有安装编译工具链或 VoiceChat/GPU 模型。换成完整版 Python 系统镜像不会预装本项目锁定的 FastAPI、Agents SDK、数据库驱动等 Python 包，反而增加基础镜像拉取量。若构建机经常更换，应在构建基础设施中导入/导出 BuildKit 层缓存，或维护按 Python/平台/requirements 版本发布的依赖基础镜像；仅依赖本地 pip cache mount 不能跨机器复用，普通层缓存导出也不自动携带 cache mount 内容。
 
 把相同标签的镜像和仓库发布目录送到部署机，填写 `.env` 的单个 `IMAGE_TAG`，然后部署：
 

@@ -1,6 +1,6 @@
 # 当前验收证据
 
-更新日期：2026-10-15；本次 P1-A 基于 `codex/q1003` 的 `92da334`。**真实知识语音闭环尚未放行。**现场最新报告仍是 2026-10-14 15:54 通话；新 PAD 收尾版本及 knowledge_required 切换尚无新结果。状态见 [任务板](TASK_BOARD.md)，要求见 [验证清单](development/validation.md)。
+更新日期：2026-10-15；本次 API 构建缓存修正基于 `codex/q1003` 的 `aa5c558`。**真实知识语音闭环尚未放行。**现场最新报告仍是 2026-10-14 15:54 通话；新 PAD 收尾版本及 knowledge_required 切换尚无新结果。状态见 [任务板](TASK_BOARD.md)，要求见 [验证清单](development/validation.md)。
 
 ## 0. 当前审计与证据索引
 
@@ -8,6 +8,7 @@
 
 | 日期 / 版本 | 实际结果 | 限制与证据位置 |
 | --- | --- | --- |
+| 2026-10-15 / API 构建缓存（基于 `aa5c558`） | 3 次实际 Docker 构建成功：冷构建；仅应用目录变更时依赖层 CACHED；requirements 仅追加注释时 56 个 wheel 全部 Using cached、零 wheel 下载。容器内 pip check、UID 10001/只读文件系统下 API 导入、镜像内无 pip 缓存内容检查通过；5 项部署契约测试通过 | 托管 Linux amd64、Docker 28.4.0/vfs、基础镜像 digest 不变；artifacts/api-build-cache/{cold-build,source-change,requirements-cache}.log。只验证本地构建缓存与导入，不是现场速度基准、服务启动或真实知识/语音验收 |
 | 2026-10-15 / P1-A（`92da334` 上的提示修正，qa-tools-v3） | 221 项定向 pytest 通过；Ruff、Provider/Settings 编译、Markdown 本地链接与 diff 检查通过 | Python 3.12.14、Ruff 0.16.6；legacy/dual_tools、两种策略、0/1/3 工具、未授权问候/混合请求/无匹配工具/固定 ACK、非空 PCM 拒绝、重连恢复、空边界及 ACK 竞态。模拟网络/SQLite 夹具；报告 artifacts/p1-a/strict-voice-policy.xml；未运行真实 VoiceChat、CueKB、GPU、容器、浏览器或听音 |
 | 2026-10-14 / c6bba4e | 应用完整回归：340 Python、26 Node、18 Chromium；Ruff、TypeScript、前端构建通过 | API/VoiceChat/CueKB/文本模型为受控网络夹具；artifacts/q1003-release/{python,browser}.xml。Python 3.12.14、Node 24.19、Chromium 154；非 GPU/真实知识/听音 |
 | 2026-10-14 / 用户现场日志 | tools_count=2/type=str；202 输入块；function PAD=200；最终转写缺 Hell；无结束事件后 VOICE_ANSWER_TIMEOUT，门户显示错误 | [完整判定](voicechat-validation-20261014.md)。无本轮 CueKB 调用证据；未取得实际 PCM、权重和运行 hash |
