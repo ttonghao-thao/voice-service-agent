@@ -1,6 +1,6 @@
 # Voice Service Agent — Codex 工作入口
 
-英文实时语音问答，客服为首个场景。Python 3.12/FastAPI/Agents SDK；React/TypeScript/AudioWorklet；PostgreSQL/Redis。默认中文沟通。
+英文全双工知识客服。Python 3.12/FastAPI/Agents SDK；React/TypeScript/AudioWorklet；PostgreSQL/Redis。开发协作默认中文沟通，不代表产品支持中文；中文扩展先验证后端全双工模型能力，再适配应用语言约束。
 
 ## 按需读取
 

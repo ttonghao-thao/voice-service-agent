@@ -4,7 +4,7 @@
 
 ## 1. 产品与部署边界
 
-英文实时语音问答，客服是首个场景；当前为单组织、只读知识与每通话临时 capability。VoiceChat-11B + nemotron-labs-voicechat + WS 是独立语音系统，CueKB 是独立知识系统。本项目控制授权、任务、知识执行与交付，不训练模型、管理 GPU 或直连 CueKB 索引。
+当前系统是英文全双工知识客服，支持并行收音与播放；工具等待阶段的语音交互能力单独验证。当前为单组织、只读知识与每通话临时 capability。VoiceChat-11B + nemotron-labs-voicechat + WS 是独立语音系统，CueKB 是独立知识系统。本项目控制授权、任务、知识执行与交付，不训练模型、管理 GPU 或直连 CueKB 索引。中文扩展取决于后端模型/运行时能力及应用语言约束适配，不属于当前已支持能力。
 
 Python/FastAPI/Agents SDK 与 React/TypeScript/AudioWorklet；生产状态为 PostgreSQL，租约为 Redis。Web 镜像内 Nginx 提供 HTTPS，同源代理到 API。端口、参数、镜像和迁移只看 [部署](deployment.md)，字段与客户端行为只看 [门户协议](portal-protocol.md)。
 
