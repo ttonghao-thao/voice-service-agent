@@ -15,6 +15,8 @@ from app.voice.provider import MockVoiceAdapter, NvidiaVoiceChatAdapter, VoiceEv
 from fastapi.testclient import TestClient
 from websockets.asyncio.server import serve
 
+pytestmark = pytest.mark.usefixtures("legacy_native_catalog")
+
 
 def configured(tmp_path, **extra):
     return Settings(_env_file=None, auto_create_schema=True, qa_execution_mode="dual_tools",

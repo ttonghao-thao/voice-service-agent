@@ -21,7 +21,7 @@ class Settings(BaseSettings):
     dev_admin: bool = False
     tools_admin_api_key: SecretStr = SecretStr("")
     knowledge_base_ids: str = "00000000-0000-4000-8000-000000000001"
-    agent_provider: Literal["mock", "openai", "compatible"] = "mock"
+    agent_provider: Literal["disabled", "mock", "openai", "compatible"] = "mock"
     agent_model: str = ""
     agent_base_url: str | None = None
     openai_api_key: SecretStr = SecretStr("")
@@ -29,7 +29,7 @@ class Settings(BaseSettings):
     agent_deadline_ms: int = 30000
     qa_execution_mode: Literal["legacy", "dual_tools"] = "legacy"
     qa_answer_policy: Literal["general_qa", "knowledge_required"] | None = None
-    qa_toolset_version: str = "qa-tools-v4"
+    qa_toolset_version: str = "cuekb-native-v1"
     qa_external_fallback_enabled: bool = True
     qa_direct_max_hits: int = Field(default=3, ge=1, le=3)
     qa_direct_evidence_max_bytes: int = Field(default=6000, ge=1024, le=6000)
@@ -110,8 +110,13 @@ class Settings(BaseSettings):
             )
         if not self.database_url.startswith("postgresql+asyncpg:") or not self.redis_url:
             raise ValueError("Deployment requires PostgreSQL and Redis")
-        if not self.agent_model or not self.openai_api_key.get_secret_value():
+        if self.agent_provider != "disabled" and (not self.agent_model or not self.openai_api_key.get_secret_value()):
             raise ValueError("Deployment requires a configured text model")
+        if self.agent_provider == "disabled" and (
+            self.qa_execution_mode != "dual_tools" or self.answer_policy != "general_qa"
+            or self.enabled_tool_names != {"search_knowledge"}
+        ):
+            raise ValueError("Native CueKB deployment requires dual_tools, general_qa and only search_knowledge")
         if self.agent_provider == "compatible" and not self.agent_base_url:
             raise ValueError("Compatible text model requires AGENT_BASE_URL")
         if "search_knowledge" in self.enabled_tool_names and (

@@ -15,6 +15,8 @@ from websockets.exceptions import InvalidStatus
 
 from scripts.simulate_full_flow import KB, PortalCall, SimulationHarness, VoicePlan
 
+pytestmark = pytest.mark.usefixtures("legacy_native_catalog")
+
 
 @pytest.fixture
 async def simulation(tmp_path):
@@ -339,7 +341,7 @@ async def test_native_missing_end_times_out(tmp_path, tool):
 @pytest.mark.parametrize(
     "tool,args,code,results",
     [
-        ("unregistered_tool", None, "VOICE_PROTOCOL_ERROR", 0),
+        ("unregistered_tool", None, "VOICE_TOOL_UNKNOWN", 0),
         ("lookup_knowledge", {"user_request": "x", "kb_ids": [KB]}, "VOICE_TOOL_REQUIRED", 1),
     ],
 )
@@ -354,7 +356,10 @@ async def test_gateway_rejects_invalid_native_calls(simulation, tool, args, code
     assert len(simulation.services.outputs) == results
     if results:
         assert simulation.services.outputs[0]["result"]["status"] == "failed"
-    assert (await call.history())["items"] == []
+    history = await call.history()
+    assert history["items"] == []
+    audit = next(r for r in history["records"] if r["kind"] == "native_tool_error")
+    assert audit["payload"]["stage"] == ("selection" if results == 0 else "arguments")
     assert not any(
         event["type"] == "portal.audio.delta" and event["payload"]["response_id"] == plan.response_id
         for event in call.events

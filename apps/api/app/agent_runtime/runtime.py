@@ -16,6 +16,7 @@ from agents import (
 )
 from app.agent_runtime.direct import DirectKnowledgeExecutor
 from app.agent_runtime.dispatch import knowledge_tools
+from app.agent_runtime.native_cuekb import NativeCueKBExecutor
 from app.agent_runtime.tool_catalog import NativeToolCatalog
 from app.config import ROOT
 from app.contracts import AgentAnswer, AnswerBundle, now, printable_ascii
@@ -55,9 +56,10 @@ class BusinessRuntime:
         self.prompt = (ROOT / "config/agent-prompt.txt").read_text()
         self.client = None
         self.direct = DirectKnowledgeExecutor(settings, registry, self.run)
-        self.dispatcher = knowledge_tools(self.direct.run, self.run)
+        self.native_cuekb = NativeCueKBExecutor(settings, registry)
+        self.dispatcher = knowledge_tools(self.direct.run, self.run, self.native_cuekb.run)
         self.catalog = NativeToolCatalog(self.dispatcher, registry)
-        if settings.openai_api_key.get_secret_value():
+        if settings.agent_provider != "disabled" and settings.openai_api_key.get_secret_value():
             self.client = AsyncOpenAI(
                 api_key=settings.openai_api_key.get_secret_value(),
                 base_url=settings.agent_base_url,
@@ -115,6 +117,8 @@ class BusinessRuntime:
         return await decision.tool.executor(request, ctx, history, progress)
 
     async def run(self, request, ctx, history, progress=None):
+        if self.settings.agent_provider == "disabled":
+            return self.failure("TEXT_UNAVAILABLE", "Text answers are disabled. Please use the voice call.")
         if ctx.task_context:
             if ctx.task_context.get("unresolved"):
                 return AnswerBundle(status="needs_clarification", display_text="Please confirm the product and version.",

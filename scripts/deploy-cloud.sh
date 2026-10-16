@@ -36,7 +36,7 @@ export DEPLOY_ENV_FILE=$environment_file
 require_values \
   IMAGE_TAG POSTGRES_PASSWORD REDIS_PASSWORD KNOWLEDGE_BASE_IDS \
   WEB_TLS_CERT_FILE WEB_TLS_KEY_FILE \
-  PUBLIC_ORIGIN AGENT_PROVIDER AGENT_MODEL OPENAI_API_KEY \
+  PUBLIC_ORIGIN AGENT_PROVIDER \
   CUEKB_BASE_URL CUEKB_API_KEY VOICECHAT_WS_URL VOICECHAT_API_KEY
 
 # This deployment is for VoiceChat-owned routing, including direct replies.
@@ -48,9 +48,8 @@ if [ "$(environment_value QA_EXECUTION_MODE)" != "dual_tools" ] || \
 fi
 
 case "$(environment_value AGENT_PROVIDER)" in
-  openai) ;;
-  compatible) require_values AGENT_BASE_URL ;;
-  *) echo "AGENT_PROVIDER must be openai or compatible." >&2; exit 1 ;;
+  disabled) ;;
+  *) echo "Phase-1 native Function Calling requires AGENT_PROVIDER=disabled; VoiceChat generates answers." >&2; exit 1 ;;
 esac
 for key in WEB_TLS_CERT_FILE WEB_TLS_KEY_FILE; do
   path=$(environment_value "$key")
@@ -92,7 +91,8 @@ for image in "$api_image" "$web_image"; do
 done
 compose up -d --no-build --wait --wait-timeout 180 postgres redis
 compose run --rm --no-deps migrate
+compose run --rm --no-deps api python /app/scripts/configure_native_cuekb.py --apply
 compose up -d --no-build --wait --wait-timeout 180 --no-deps api
-compose exec -T api python /app/scripts/verify_deployment.py --base-url http://127.0.0.1:8000 --expect-autonomous-voice
+compose exec -T api python /app/scripts/verify_deployment.py --base-url http://127.0.0.1:8000 --expect-cuekb-native
 compose up -d --no-build --wait --wait-timeout 60 --no-deps web
 compose ps

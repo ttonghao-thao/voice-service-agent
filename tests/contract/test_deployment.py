@@ -71,20 +71,26 @@ def test_cloud_environment_template_cannot_enable_development_fallbacks():
         "REDIS_PASSWORD",
         "KNOWLEDGE_BASE_IDS",
         "AGENT_PROVIDER",
-        "AGENT_MODEL",
         "AGENT_DEADLINE_MS",
-        "OPENAI_API_KEY",
         "CUEKB_BASE_URL",
         "CUEKB_API_KEY",
         "VOICECHAT_WS_URL",
         "VOICECHAT_API_KEY",
         "QA_EXECUTION_MODE",
         "QA_ANSWER_POLICY",
+        "QA_TOOLSET_VERSION",
+        "QA_EXTERNAL_FALLBACK_ENABLED",
+        "QA_MAX_RETRIEVAL_CALLS",
+        "QA_PROVIDER_ANSWER_TIMEOUT_MS",
     }
     assert "APP_ENV" not in values
     assert "AUTH_MODE" not in values
-    assert values["AGENT_PROVIDER"] == "openai"
-    assert values["AGENT_DEADLINE_MS"] == "30000"
+    assert values["AGENT_PROVIDER"] == "disabled"
+    assert values["AGENT_DEADLINE_MS"] == "60000"
+    assert values["QA_TOOLSET_VERSION"] == "cuekb-native-v1"
+    assert values["QA_EXTERNAL_FALLBACK_ENABLED"] == "false"
+    assert values["QA_MAX_RETRIEVAL_CALLS"] == "1"
+    assert not {"AGENT_MODEL", "OPENAI_API_KEY", "AGENT_BASE_URL"} & values.keys()
     assert values["QA_EXECUTION_MODE"] == "dual_tools"
     assert values["QA_ANSWER_POLICY"] == "general_qa"
     assert "CUEKB_MODE" not in values
@@ -101,7 +107,6 @@ def test_cloud_environment_template_cannot_enable_development_fallbacks():
     for key in (
         "POSTGRES_PASSWORD",
         "REDIS_PASSWORD",
-        "OPENAI_API_KEY",
         "CUEKB_API_KEY",
         "VOICECHAT_API_KEY",
     ):
@@ -118,6 +123,9 @@ def test_cloud_deployment_uses_prebuilt_images():
     assert "IMAGE_TAG" in script
     assert "LOCAL_USERS_JSON" not in script and "API_BIND_ADDRESS" not in script
     assert "APP_ENV" not in script
+    dockerfile = (ROOT / "deploy/Dockerfile.api").read_text()
+    assert "COPY scripts/configure_native_cuekb.py scripts/configure_native_cuekb.py" in dockerfile
+    assert "configure_native_cuekb.py --apply" in script
     nginx = (ROOT / "deploy/nginx.conf").read_text()
     assert "listen 8087 ssl;" in nginx
     assert "ssl_certificate /etc/nginx/tls/tls.crt;" in nginx
@@ -136,9 +144,7 @@ def test_deployment_requires_https_and_readable_tls_files(tmp_path):
         "POSTGRES_PASSWORD": "postgres-pass",
         "REDIS_PASSWORD": "redis-pass",
         "KNOWLEDGE_BASE_IDS": "00000000-0000-4000-8000-000000000001",
-        "AGENT_PROVIDER": "openai",
-        "AGENT_MODEL": "model",
-        "OPENAI_API_KEY": "key",
+        "AGENT_PROVIDER": "disabled",
         "PUBLIC_ORIGIN": "https://voice.test:8087",
         "CUEKB_BASE_URL": "https://cuekb.test",
         "CUEKB_API_KEY": "cuekb-key",
@@ -164,8 +170,8 @@ def test_deployment_requires_https_and_readable_tls_files(tmp_path):
     values["AGENT_PROVIDER"] = "compatible"
     rejected_model = check()
     assert rejected_model.returncode != 0
-    assert "AGENT_BASE_URL" in rejected_model.stderr
-    values["AGENT_PROVIDER"] = "openai"
+    assert "AGENT_PROVIDER=disabled" in rejected_model.stderr
+    values["AGENT_PROVIDER"] = "disabled"
     rejected_cert = check()
     assert rejected_cert.returncode != 0
     assert "WEB_TLS_CERT_FILE must point to a readable file" in rejected_cert.stderr
@@ -220,3 +226,19 @@ def test_autonomous_voice_deployment_checks_actual_capabilities(change):
             validate(payload)
     else:
         assert validate(payload)["answer_policy"] == "general_qa"
+
+
+def test_native_cuekb_readiness_allows_no_text_model_but_requires_single_tool():
+    import runpy
+    functions = runpy.run_path(ROOT / "scripts/verify_deployment.py")
+    ready = {"status": "ready", "is_mock": False, "enabled_tools": ["search_knowledge"],
+             "text_configured": False, "voice_configured": True}
+    assert functions["validate_ready"](ready, {"search_knowledge"}, require_text=False)["text_configured"] is False
+    with pytest.raises(ValueError):
+        functions["validate_ready"](ready, {"search_knowledge"})
+    caps = {"provider": "nvidia", "qa_execution_mode": "dual_tools", "answer_policy": "general_qa",
+            "is_mock": False, "voice_available": True, "agent_provider": "disabled", "native_tools": ["search_cuekb"]}
+    assert functions["validate_voice_policy"](caps, cuekb_only=True)
+    for change in ({"agent_provider": "openai"}, {"native_tools": ["lookup_knowledge", "reason_over_knowledge"]}):
+        with pytest.raises(ValueError):
+            functions["validate_voice_policy"]({**caps, **change}, cuekb_only=True)

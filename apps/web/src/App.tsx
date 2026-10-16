@@ -513,7 +513,7 @@ export default function App() {
   }
   async function send() {
     const text = draft.trim();
-    if (!text || textSending.current || callStarting.current) return;
+    if (!text || !caps?.text_configured || textSending.current || callStarting.current) return;
     textSending.current = true;
     setSending(true);
     setError("");
@@ -1334,11 +1334,14 @@ export default function App() {
               )}
               <div className="text-composer">
                 <Input.TextArea
+                  disabled={!caps?.text_configured}
                   value={draft}
                   onChange={(e) => setDraft(e.target.value)}
                   maxLength={2000}
                   autoSize={{ minRows: 2, maxRows: 5 }}
-                  placeholder="Type your question; Shift + Enter for a new line"
+                  placeholder={caps?.text_configured
+                    ? "Type your question; Shift + Enter for a new line"
+                    : "Please ask your question in the voice call"}
                   aria-label="Your question"
                   onKeyDown={(e) => {
                     if (
@@ -1356,13 +1359,15 @@ export default function App() {
                   icon={<SendOutlined />}
                   aria-label="Send question"
                   loading={sending}
-                  disabled={!draft.trim() || startingCall}
+                  disabled={!caps?.text_configured || !draft.trim() || startingCall}
                   onClick={() => void send()}
                 />
               </div>
               <div className="composer-foot">
                 <span>
-                  Sending a text question ends the current voice connection.
+                  {caps?.text_configured
+                    ? "Sending a text question ends the current voice connection."
+                    : "Questions are handled in the voice call."}
                 </span>
                 <span>{draft.length} / 2000</span>
               </div>

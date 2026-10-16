@@ -121,7 +121,7 @@ def _event_for_principal(payload, user, settings):
 def _record_for_principal(record, user, settings):
     payload = dict(record.payload)
     scope = payload.pop("_authorized_kb_ids", None)
-    if record.kind in ("voicechat_transcript", "speech_validation"):
+    if record.kind in ("voicechat_transcript", "speech_validation", "native_cuekb_result"):
         current = set(user.knowledge_base_ids)
         configured = _configured_kbs(settings)
         if (scope is None and ("customer" in user.roles or current != configured)) or (
@@ -151,7 +151,7 @@ def capabilities(s):
         "enabled_tools": sorted(s.enabled_tool_names),
         "voice_available": voice_configured,
         "text_configured": s.agent_provider == "mock"
-        or bool(s.agent_model and s.openai_api_key.get_secret_value()),
+        or (s.agent_provider != "disabled" and bool(s.agent_model and s.openai_api_key.get_secret_value())),
         "streaming_audio": s.voice_provider in ("mock", "nvidia"),
         "native_full_duplex": voice_configured,
         "function_result_return": voice_configured,
@@ -308,6 +308,8 @@ async def send_message(
     user: User,
     idempotency_key: str = Header(min_length=1, max_length=128),
 ):
+    if request.app.state.settings.agent_provider == "disabled":
+        raise DomainError("TEXT_UNAVAILABLE", "Please ask your question in the voice call.", 409)
     await limited(request, user)
     turn, _ = await request.app.state.coordinator.submit(user, cid, "text:" + idempotency_key, body.text)
     return {
@@ -597,7 +599,7 @@ async def services(request: Request, user: User):
     voice = "configured" if s.voice_provider == "nvidia" and s.voicechat_ws_url else s.voice_provider
     return {
         "voice_health": voice,
-        "text_model": "mock"
+        "text_model": "disabled" if s.agent_provider == "disabled" else "mock"
         if s.agent_provider == "mock"
         else ("configured" if s.agent_model and s.openai_api_key.get_secret_value() else "unconfigured"),
         "text_note": "Configuration status does not verify real inference",

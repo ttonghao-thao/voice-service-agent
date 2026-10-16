@@ -4,12 +4,15 @@
 
 当前用户目标已改为 VoiceChat 自主决定直接回答或调用工具，部署采用 general_qa。qa-tools-v4 已修正模板冲突并补充部署策略检查；以下严格模式现场结果保留为历史证据，不能当作新模式的验收结果。
 
+本期 `cuekb-native-v1` 进一步限定为唯一的 search_cuekb(query)，由 VoiceChat 直接消费检索证据，不调用额外答案模型；代码及本地验证已完成，真实 VoiceChat/CueKB 录音验收尚未执行。步骤和判定见 [原生单工具验证](native-cuekb-validation.md)。
+
 ## 0. 当前审计与证据索引
 
 以下是分别执行的验证，不累加成一个“当前全量通过数”，也不更新历史测试的执行日期。
 
 | 日期 / 版本 | 实际结果 | 限制与证据位置 |
 | --- | --- | --- |
+| 2026-10-16 / cuekb-native-v1 | 477 项 Python 全量回归通过；最后补充检索审计后 44 项定向回归通过；26 项 Node 音频单测、8 项 Chromium 文件通话测试及前端构建通过。API 实际镜像构建成功，依赖层 CACHED；只读容器/UID 10001 下配置目录及 query-only/client=None 检查通过；Ruff/编译/manifest/链接检查通过 | Python 3.12、SQLite、独立监听的本项目 HTTP/VoiceChat WS/CueKB HTTP 协议夹具，其他错误注入使用 MockTransport；artifacts/native-cuekb/python.xml。覆盖单工具注册、无额外模型、实际 query、服务端鉴权/过滤、错误分层、证据预算/ASCII、同 call 回填、音频结束及旧目录升级。容器检查使用临时 SQLite，不是生产 PostgreSQL 启动、GPU 或真实英文听音；不宣称模型选择率、实际口述忠实性或工具等待打断已验收 |
 | 2026-10-16（北京时间）/ qa-tools-v4 自主回答与模板 | 218 项定向 pytest 通过；全目录 Ruff、Python 编译、shell 语法、模板 manifest hash、相关 Markdown 链接与 diff 检查通过 | Python 3.12、Jinja2 3.1.6；受控 VoiceChat 事件、SQLite/mock CueKB 和本地 WS。覆盖音频先于/晚于 final ASR、同会话直接回答→两种原生工具分别调用→同 call 回填→音频结束、重复调用幂等、严格策略拒绝及部署策略不匹配。未访问真实 VoiceChat/CueKB、GPU 或浏览器听音，不能声称全 PAD 或现场语音已修复 |
 | 2026-10-16 / vLLM 模型源码报告 | registry 匹配 NemotronHForCausalLM；function_head→asr_head 映射存在；forward 实际返回两个自定义输出，与配置一致 | [源码复核](voicechat-validation-20261015.md#11-vllm-模型源码报告复核)。发现 combined_embeds 缺失时回退 token embedding 的分支，尚无现场触发证据；实际权重装载、forward 接收值及头部分数未验证。仅附件审阅，无 GPU 测试或外部源码改动 |
 | 2026-10-16 / loader 与完整静态报告 | 核对 loader 路径：nano-v2-vllm、共享 tokenizer、独立 embeddings；报告函数头 [131072,4480] 与融合声明 1/1/2；源码已配置 PIECEWISE | [加载复核](voicechat-validation-20261015.md#10-2026-10-16-loader-与完整静态报告复核)。仅源码/AST/报告检查；perception/RNNT 等非严格加载未检查缺失键，vLLM 实际函数头映射和 embedding 数值一致性未验证；无新 GPU 测试或外部源码改动 |

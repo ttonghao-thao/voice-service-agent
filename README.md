@@ -39,6 +39,8 @@ PLAYWRIGHT_CHROMIUM_EXECUTABLE=/usr/bin/chromium \
 
 夹具监听独立 CueKB HTTP、VoiceChat WS、兼容模型 HTTP，本项目使用实际网络适配器和 Alembic。ASR、工具决策、口述与 PCM 由脚本生成，不是模型正确率或实际听音。浏览器启动/命令见 [模拟 §3](docs/simulated-full-flow.md#3-复现步骤)；真实探针及授权录音步骤见 [接入 §3.4](docs/integration.md#34-语言版本和能力验证)。产物只留忽略目录。
 
+一期验证使用 `VoiceChat → search_cuekb(query) → CueKB → VoiceChat`，直接回答与工具选择均由 VoiceChat 完成，AGENT_PROVIDER=disabled，不需要独立文本答案模型。真实录音的运行命令和结果分类见 [原生单工具验证](docs/native-cuekb-validation.md)。旧四端点模拟脚本保留双工具工作流兼容测试，不能作为一期模型验收。
+
 ## 云端部署
 
 API/Web 独立镜像；仅一套验证 env/Compose。按 [部署](docs/deployment.md) 准备镜像、TLS、真实服务配置和数据库备份后运行：

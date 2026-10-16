@@ -8,6 +8,8 @@ from sqlalchemy import select, text
 
 from scripts.simulate_full_flow import PortalCall, SimulationHarness, VoicePlan
 
+pytestmark = pytest.mark.usefixtures("legacy_native_catalog")
+
 
 @pytest.fixture
 async def simulation(tmp_path):

@@ -47,6 +47,7 @@ async function filePortal(
   options: {
     beforeConversation?: () => Promise<void>;
     beforeText?: () => Promise<void>;
+    textConfigured?: boolean;
   } = {},
 ) {
   const calls: string[] = [];
@@ -102,7 +103,7 @@ async function filePortal(
         json: {
           is_mock: true,
           voice_available: true,
-          text_configured: true,
+          text_configured: options.textConfigured ?? true,
           agent_provider: "compatible",
           cuekb_mode: "mock",
           weather_mode: "mock",
@@ -250,6 +251,18 @@ async function startFile(
   ).toBeVisible();
   return fixture.connections[callIndex];
 }
+
+test("Native VoiceChat calls remain available when no extra text model is configured", async ({ page }) => {
+  const fixture = await filePortal(page, { textConfigured: false });
+  await expect(page.getByRole("textbox", { name: "Your question" })).toBeDisabled();
+  await expect(page.getByRole("button", { name: "Send question", exact: true })).toBeDisabled();
+  await selectWave(page, 2400);
+  const connection = await startFile(page, fixture);
+  await expect.poll(() => connection.frames.length).toBeGreaterThan(0);
+  expect(fixture.textRequests).toEqual([]);
+  await page.getByRole("button", { name: "End call", exact: true }).click();
+  expect(fixture.errors).toEqual([]);
+});
 
 test("Invalid or excessive recorded WAV files cannot create a call or upload audio", async ({
   page,

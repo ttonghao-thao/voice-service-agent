@@ -1,58 +1,68 @@
 # 部署与运行
 
-> 2026-10-07：按应用基线 f498fa4 核对运行方式；本页只维护配置、构建、迁移及运行操作，不代表真实服务已经验收。本期 Compose 使用每次通话独立的临时 capability、真实 CueKB、`search_knowledge` 和 NVIDIA VoiceChat，不需要天气代理配置。真实验收仍须按 [任务板](TASK_BOARD.md) D07 执行。最终系统边界见 [架构](architecture.md)。
+> 本页维护一期原生 Function Calling 的配置、构建、迁移及运行操作。VoiceChat 决定直接回答或调用唯一工具 search_cuekb，不配置额外答案模型。真实语音验收见 [单工具验证](native-cuekb-validation.md)。
 
 ## 部署方式边界
 
-本阶段只有一套功能验证部署配置：`.env.example` 是唯一模板，实际 `.env` 不提交；`deploy/compose.production.yaml` 是唯一 Compose 拓扑，无需逐项修改 Compose。PostgreSQL、Redis、迁移、API、Web 是当前业务链路的必要容器；VoiceChat、CueKB 仍独立部署。应用代码保留显式注入的 fixture 设置供自动化测试使用；正常 API 启动会执行严格部署校验，拒绝 fixture 身份、mock、自动建表，以及缺少真实文本模型、CueKB 或 NVIDIA VoiceChat WS/WSS 配置的部署。
-
-门户只用于受控测试，可从公网直接访问 `https://<域名>:8087`。Nginx 已打包在 Web 镜像中，直接终止 TLS 并提供静态门户，无需外层反向代理。它在容器内监听 `0.0.0.0:8087`，Compose 同端口公开映射；`PUBLIC_ORIGIN` 必须与浏览器实际使用的 HTTPS origin 完全一致。证书和私钥通过只读挂载提供，证书链、域名匹配、浏览器信任及麦克风授权必须在 D07 实机验证。
-
-API 容器内部监听 `0.0.0.0:8000`，不映射宿主端口。浏览器只从 Web 同源 `/api/` 调用，Web 容器内的 Nginx 将请求转到 Compose `app` 网络的 `api:8000`。PostgreSQL、Redis 也只在容器网络中；公网仅开放 Web 的 `8087`。独立 API 客户端与正式系统间鉴权不属于本期核心验证。
-
-早期编码环境没有 Docker，仅运行契约、静态与夹具测试。当前用户要求的 Docker 检查可在已有 Docker 的环境中执行隔离构建与 Compose 验证；真实 CueKB/VoiceChat、GPU、公网浏览器及听音仍归 D07，不能以容器启动或 `/health/ready` 冒充通过。隔离检查的外部服务地址和凭据均为测试值，不调用真实供应商。
-
-## 配置与独立测试通话
-
-复制 `.env.example` 为 `.env`；模板中的 `voice.example.com`、`cuekb.example.com`、证书路径、镜像标签和 KB UUID 仅演示填写格式。替换示例值和所有 `REPLACE_` 值，并将 `WEB_TLS_CERT_FILE`、`WEB_TLS_KEY_FILE` 指向部署机上的可读绝对路径。Compose 固定 `AUTH_MODE=validation`、`CUEKB_MODE=real`、`ENABLED_TOOLS=search_knowledge`、`VOICE_PROVIDER=nvidia`；容量、语言和检索条数沿用代码默认值；整轮业务预算由 `AGENT_DEADLINE_MS` 显式配置，默认 30000 毫秒。不需要 tenant、账号 JSON、密码哈希、Cookie 密钥、能力开关、服务 revision、健康地址、OIDC、`APP_ENV` 或第二份 env 文件。
-
-每通话 capability 的创建/撤销、KB 范围及历史裁剪见 [接入 §6](integration.md#6-独立通话与知识范围d02d13)。配置中的 KNOWLEDGE_BASE_IDS 由服务端固定，不能由浏览器或模型扩大；本阶段不是正式客户认证。
+本阶段只有一套原生 Function Calling 验证配置：`.env.example` 是唯一模板，`deploy/compose.production.yaml` 是唯一 Compose 拓扑。VoiceChat、CueKB 独立部署；本项目提供门户、原生工具注册、鉴权、Knowledge Adapter 和结果交付。VoiceChat 自主直接回答或调用工具，不增加 ASR/TTS、意图分类器或额外答案模型。
 
 ## 问答模式与预算（Q07）
 
-以下是当前 Settings 已实现的参数，在同一 `.env` 中配置；模板已设置 dual_tools/general_qa，其余可选参数示例为注释。正常 API 启动仍要求真实文本模型/CueKB/VoiceChat、PG/Redis，不因直查零外置调用而省略部署依赖。后台 ENABLED_TOOLS 固定 search_knowledge；不要改成 lookup_knowledge 或 reason_over_knowledge。
-
-| 参数 | 默认 / 允许范围 | 已实现含义 |
-| --- | --- | --- |
-| QA_EXECUTION_MODE | legacy / dual_tools | 新建 Conversation 时固定模式；legacy 单 bridge，dual_tools 为后台可配置多工具（历史兼容名称） |
-| TOOLS_ADMIN_API_KEY | 可选 Secret | validation 管理 API 的独立操作员 Bearer 凭据；不设置则管理入口关闭，不下发门户 |
-| QA_ANSWER_POLICY | 未填时：legacy 为 knowledge_required，dual_tools 为 general_qa | general_qa 允许输入绑定的一般回答；knowledge_required 拒绝未经工具授权的非空回复（包括问候/澄清/限制说明），关联工具的固定 ACK 除外，并让 lookup 走外置执行；legacy + general_qa 启动配置无效 |
-| QA_TOOLSET_VERSION | qa-tools-v4 | 会话快照的工具集版本标签；v4 明确 VoiceChat 自主决策，并配套会话策略优先的 Jinja 模板；变更注册/schema/prompt 时随匹配发布更新，不是模型版本或行为验证标志 |
-| QA_EXTERNAL_FALLBACK_ENABLED | true | lookup 证据不适合 D2 时允许内部升级一次；false 则明确失败，不绕过权限或编造 |
-| QA_DIRECT_MAX_HITS | 3；1–3 | D2 证据项上限，超限升级/失败，不裸截关键条件 |
-| QA_DIRECT_EVIDENCE_MAX_BYTES | 6000；1024–6000 | 完整 evidence-v1 包 UTF-8 字节上限；非 ASCII 或超限退出 D2 |
-| QA_MAX_RETRIEVAL_CALLS | 2；1–2 | 原生知识执行的同轮逻辑检索上限，直查与升级共享 |
-| QA_PROVIDER_ANSWER_TIMEOUT_MS | 10000；100–30000 | D2 原生续答上限，取剩余总预算较小值；一般回答仅从已开始响应后计结束期限 |
-| AGENT_DEADLINE_MS | 30000 | 整个知识 Turn 总预算；直查、升级、检索、外置模型和 D2 回收不重置期限 |
-
-新模式在受控真实验收部署中使用：
+一期配置：
 
 ```dotenv
+AGENT_PROVIDER=disabled
 QA_EXECUTION_MODE=dual_tools
 QA_ANSWER_POLICY=general_qa
+QA_TOOLSET_VERSION=cuekb-native-v1
+QA_EXTERNAL_FALLBACK_ENABLED=false
+QA_MAX_RETRIEVAL_CALLS=1
+AGENT_DEADLINE_MS=60000
+QA_PROVIDER_ANSWER_TIMEOUT_MS=30000
 ```
 
-当前需求必须保留 general_qa：由 VoiceChat 自主决定用自身知识直接回答，还是调用注册工具。knowledge_required 会拒绝无工具的直接回答，不适用于本次功能目标；代码保留它用于其他显式策略及回归。D2 的口述核验仍发生在音频之后，直接回答也不会被标为知识库已验证答案。
+不需要 AGENT_MODEL、OPENAI_API_KEY 或 AGENT_BASE_URL。disabled 表示关闭独立文本答案模型，不能用 mock 代替。`/health/ready` 允许 text_configured=false；页面关闭文字提交，但仍提供麦克风和 WAV 语音通话。
 
-本次 API 提示版本为 `qa-tools-v4`；若显式配置 QA_TOOLSET_VERSION，应同步更新。部署前将旧 `.env` 中的严格策略改成上面的两项，并按 [VoiceChat 容器命令](voicechat/docker-run.md) 同步完整 Jinja 模板、重新创建 VoiceChat 容器。模板加入会话策略优先、禁止重复/并行调用、只按策略及结果发声三句约束，不修改模型权重或引入其他 ASR/TTS。
+`dual_tools` 为兼容模式名称；一期实际只注册 `search_cuekb(query)`。后台仍通过 Registry 的内部 `search_knowledge` 调用 CueKB `/v1/search`，不要把原生名称填进 ENABLED_TOOLS。KB UUID、凭据、访问范围和可信过滤条件只在服务端设置。VoiceChat 原生调用决定是否执行业务，最终转写用于关联和审计，不自动触发查询。
 
-`scripts/deploy-cloud.sh` 会在迁移和启动容器前拒绝不符合上述策略的环境文件；启动后的 `verify_deployment.py --expect-autonomous-voice` 再读取实际 `/api/v1/capabilities`，检查 nvidia / dual_tools / general_qa / is_mock=false / voice_available=true。手动 docker build/run 部署也应运行此检查，不能只查看本地 .env。
+| 配置 | 一期值 / 用途 |
+| --- | --- |
+| VOICECHAT_WS_URL / VOICECHAT_API_KEY | 现有 VoiceChat 完整 /v1/realtime 地址及服务凭据 |
+| CUEKB_BASE_URL / CUEKB_API_KEY | 独立 CueKB 基地址和授权检索凭据 |
+| KNOWLEDGE_BASE_IDS | 服务端允许的真实 KB UUID；不下放给模型 |
+| QA_DIRECT_MAX_HITS | 默认 3；完整证据项数量上限 |
+| QA_DIRECT_EVIDENCE_MAX_BYTES | 默认 6000；完整 ASCII 证据包上限 |
+| AGENT_DEADLINE_MS | 示例 60000；检索和原生续答共享的总预算，字段名为兼容名称 |
+| QA_PROVIDER_ANSWER_TIMEOUT_MS | 示例 30000；VoiceChat 原生回答结束期限，仍受剩余总预算限制 |
 
-**结束旧通话后必须新建 Conversation，再启动语音。** 旧会话保持创建时的 knowledge_required 快照，单独刷新页面、重连语音或修改环境变量不会更新它。先验证无工具的问候/一般问题能够播放完整回复，再验证明确的知识库请求产生原生调用、真实 CueKB 执行、原 call_id 回填及完整语音回复。模板修正与模式切换不等于模型全 PAD 问题已修复。
+### 更新已有工具目录
 
-实施顺序：备份 → API/Web 匹配发布及 Alembic upgrade head（当前 0010）→ 固定 VoiceChat 模型/镜像/模板/补丁 → 在验收部署配置新模式并创建新通话 → 完成 Q07-E 后放行。0008 增加来源条件/任务快照，0009 增加交付审计，0010 增加全局原生工具目录表；旧 slots 保留但不伪造确认来源。已有 Conversation 的模式/策略不随环境变量改变；工具目录更新通过关闭旧连接并重新注册生效，不发送 WS tool_choice 或未经验证的同连接热更新。
+工具目录首次保存后持久化在数据库，改 YAML 不会覆盖旧的 lookup/reason 配置。部署脚本在 Alembic 0010 之后、API 启动之前，运行：
 
-回退 QA_EXECUTION_MODE=legacy 用于新会话，需同时清除 general_qa 策略或设为 knowledge_required；活动会话先结束或 drain。新增记录保留，旧二进制与数据库回滚分别验证。QA_DIRECT_COMPOSITION、QA_MAX_ROUTE_ESCALATIONS、QA_ACK_POLICY 未加入 Settings，不能通过填写它们启用 D1/D3 或额外升级。原生目录可后台修改/刷新，ACK 也来自目录；具体字段、权限和操作见 [工具目录](interfaces/voice-tools.md)。新业务执行能力仍需可信代码接入和独立验收。
+```sh
+python /app/scripts/configure_native_cuekb.py --apply
+```
+
+该命令使用既有 CAS/revision 和 AdminAudit，把当前原生目录替换为仓库的一期单工具目录；不删除历史 Turn/证据。重复执行不产生无意义 revision。省略 --apply 只预览名称和 revision，不写数据库，也不运行应用恢复或模型。正常部署无需管理员 API Key。
+
+手工 docker 部署在迁移完成后，先用新 API 镜像的相同数据库环境运行这条命令，再启动 API。已有旧目录且 AGENT_PROVIDER=disabled 时，API 会明确提示先应用目录，而不是静默注册双工具。
+
+### 启动及新会话检查
+
+同步 [完整 VoiceChat 模板](voicechat/docker-run.md)，重新创建 VoiceChat 容器。新模板包含 search_cuekb(query) 单调用示例及会话策略优先/禁止重复并行/只按授权结果发声约束；不修改模型权重、融合参数或引入其他语音模型。
+
+部署脚本会检查实际 capabilities。手工部署也可执行：
+
+```sh
+docker compose --env-file .env -f deploy/compose.production.yaml exec -T api \
+  python /app/scripts/verify_deployment.py --base-url http://127.0.0.1:8000 --expect-cuekb-native
+```
+
+必须看到 nvidia / dual_tools / general_qa、native_tools=[search_cuekb]、agent_provider=disabled、is_mock=false、voice_available=true。text_configured=false 在本期是预期状态。握手和配置检查不证明模型选工具正确。
+
+**结束旧通话并新建 Conversation。** 模式/策略在创建时快照，旧 knowledge_required 会话不会因重连或刷新页面变成 general_qa。
+
+现场录音、连续追问、失败归类和输出听音步骤见 [原生单工具验证](native-cuekb-validation.md)。knowledge_required、双工具及外置 SDK 的兼容实现保留，但不属于本期部署或自动 fallback。
 
 ## 镜像构建与部署
 

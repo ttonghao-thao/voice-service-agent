@@ -57,6 +57,20 @@ class KnowledgeArguments(BridgeArguments):
         description="Software version stated or confirmed by the user. This field is required; use null when unknown. Never guess.")
 
 
+class CueKBArguments(StrictModel):
+    query: str = Field(min_length=1, max_length=2000, description=
+        "The user's complete knowledge question in English. Preserve the original meaning, exact product names, "
+        "model numbers, version identifiers, and technical terms. Resolve references such as 'this product' using "
+        "known conversation context. Do not invent missing information.")
+
+    @field_validator("query")
+    @classmethod
+    def ascii_query(cls, value):
+        if not printable_ascii(value):
+            raise ValueError("VoiceChat queries must be English ASCII text")
+        return value
+
+
 class KnowledgeInteractionArguments(KnowledgeArguments):
     # Exposed only by a trusted adapter that verifies tool-wait interaction.
     operation: Literal["query", "progress", "revise"] = "query"

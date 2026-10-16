@@ -16,6 +16,8 @@ from sqlalchemy import select
 
 from scripts.simulate_full_flow import KB, PCM, PortalCall, SimulationHarness, VoicePlan
 
+pytestmark = pytest.mark.usefixtures("legacy_native_catalog")
+
 
 async def wait_for(check):
     async with asyncio.timeout(5):

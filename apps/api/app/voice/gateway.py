@@ -106,6 +106,11 @@ class VoiceGateway:
                 snapshot = await self.coordinator.runtime.catalog.snapshot(capabilities.wait_interaction)
                 tool_catalog, catalog_revision = snapshot.tools, snapshot.revision
                 registered_tools, tool_definitions = tuple(snapshot.tools), snapshot.definitions
+                if s.agent_provider == "disabled" and (
+                    any(name != "search_cuekb" or tool.kind != "cuekb" for name, tool in tool_catalog.items())
+                ):
+                    raise DomainError("VOICE_TOOL_CONFIGURATION_CHANGED",
+                        "Apply the phase-1 search_cuekb catalog before starting voice.", 409, True)
                 if (not registered_tools and conversation.answer_policy == "knowledge_required") or (
                     any(tool.kind == "reasoned" for tool in tool_catalog.values()) and s.agent_provider != "mock"
                     and (not self.coordinator.runtime.client or not s.agent_model)
@@ -463,8 +468,13 @@ class VoiceGateway:
                     session.conversation_id,
                     call_id,
                     input_item_id,
-                    request == getattr(args, "user_request", "").strip(),
+                    request == getattr(args, "query", getattr(args, "user_request", "")).strip(),
                 )
+                if decision and decision.tool.kind == "cuekb":
+                    await self.store.record(session.conversation_id, session.epoch,
+                        "native_tool_arguments", call_id, {"name": payload["name"],
+                            "arguments": args.model_dump(), "input_item_id": input_item_id,
+                            "matches_final_transcript": request == args.query})
                 turn, task = await self.coordinator.submit(
                     session.principal,
                     session.conversation_id,
@@ -545,6 +555,7 @@ class VoiceGateway:
             except asyncio.CancelledError:
                 raise
             except Exception as exc:
+                failure_code = exc.code if isinstance(exc, DomainError) else "VOICE_TOOL_ARGUMENTS"
                 logger.error(
                     "voice_bridge_failed conversation_id=%s turn_id=%s call_id=%s exception_type=%s",
                     session.conversation_id,
@@ -552,9 +563,14 @@ class VoiceGateway:
                     call_id,
                     type(exc).__name__,
                 )
+                await self.store.record(session.conversation_id, session.epoch,
+                    "native_tool_error", call_id, {"name": payload.get("name"),
+                        "input_item_id": input_item_id, "reason_code": failure_code,
+                        "stage": "arguments" if tid is None else "execution"})
                 text = json.dumps(
                     {
                         "status": "failed",
+                        "reason_code": failure_code,
                         "speech_text": "I could not confirm the completed request. Please ask again.",
                         "language": "en-US",
                     },
@@ -587,8 +603,17 @@ class VoiceGateway:
                         or not isinstance(event.payload.get("arguments"), str)
                         or len(event.payload["arguments"]) > 12000
                     ):
+                        unknown = event.payload.get("name") not in (
+                            session.registered_tools if session.qa_mode == "dual_tools" else (BRIDGE_NAME,))
+                        reason_code = "VOICE_TOOL_UNKNOWN" if unknown else "VOICE_TOOL_ARGUMENTS"
+                        name = event.payload.get("name")
+                        await self.store.record(session.conversation_id, session.epoch,
+                            "native_tool_error", call, {
+                                "name": name if isinstance(name, str) and len(name) <= 128 else "<invalid>",
+                                "input_item_id": latest_input_id, "reason_code": reason_code,
+                                "stage": "selection" if unknown else "arguments"})
                         raise DomainError(
-                            "VOICE_PROTOCOL_ERROR",
+                            reason_code,
                             "Voice requested an unsupported business tool",
                             502,
                         )

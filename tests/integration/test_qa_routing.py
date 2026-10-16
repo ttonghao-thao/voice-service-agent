@@ -16,6 +16,8 @@ from app.voice.provider import MockVoiceAdapter, VoiceEvent, session_update
 from fastapi.testclient import TestClient
 from sqlalchemy import select
 
+pytestmark = pytest.mark.usefixtures("legacy_native_catalog")
+
 KB = "00000000-0000-4000-8000-000000000001"
 
 
@@ -70,7 +72,7 @@ def test_two_native_tools_and_extensible_registration(tmp_path):
         dispatcher = app.state.coordinator.runtime.dispatcher
         definitions = dispatcher.definitions(tuple(dispatcher.tools))
         config = session_update("", definitions, "general_qa")
-        assert [t["name"] for t in config["session"]["tools"]] == ["lookup_knowledge", "reason_over_knowledge"]
+        assert [t["name"] for t in config["session"]["tools"]] == ["search_cuekb", "lookup_knowledge", "reason_over_knowledge"]
         assert set(config["session"]) == {"tools", "instructions", "audio"}
         assert "consult_service_agent" not in config["session"]["instructions"]
         assert config["session"]["tools"][0]["parameters"]["additionalProperties"] is False

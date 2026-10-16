@@ -1,0 +1,17 @@
+{
+  "additionalProperties": false,
+  "properties": {
+    "query": {
+      "description": "The user's complete knowledge question in English. Preserve the original meaning, exact product names, model numbers, version identifiers, and technical terms. Resolve references such as 'this product' using known conversation context. Do not invent missing information.",
+      "maxLength": 2000,
+      "minLength": 1,
+      "title": "Query",
+      "type": "string"
+    }
+  },
+  "required": [
+    "query"
+  ],
+  "title": "CueKBArguments",
+  "type": "object"
+}

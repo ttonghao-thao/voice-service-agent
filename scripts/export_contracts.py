@@ -6,6 +6,7 @@ from pathlib import Path
 from app.agent_runtime.tool_catalog import NativeToolCatalogUpdate, NativeToolEntry
 from app.contracts import (
     AnswerBundle,
+    CueKBArguments,
     KnowledgeArguments,
     KnowledgeInteractionArguments,
     portal_client_event_adapter,
@@ -26,6 +27,7 @@ root = Path(__file__).resolve().parents[1]
 models = {
     "answer-bundle": AnswerBundle,
     "voice-knowledge-arguments": KnowledgeArguments,
+    "voice-cuekb-arguments": CueKBArguments,
     "voice-knowledge-interaction-arguments": KnowledgeInteractionArguments,
     "tool-spec": ToolSpec,
     "voice-tool-entry": NativeToolEntry,

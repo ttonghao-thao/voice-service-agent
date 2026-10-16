@@ -8,6 +8,7 @@ import pytest
 from app.config import ROOT
 from app.voice.provider import session_update
 from jinja2 import Environment, StrictUndefined
+from jsonschema import validate
 
 POLICY = (
     "Follow the session instructions and tool contracts when handling tool results.",
@@ -49,3 +50,13 @@ def test_deployed_template_keeps_policy_schema_and_separate_ack(count, nested, p
     example = json.loads(re.search(r"<TOOLCALL>(.*?)</TOOLCALL>", rendered, re.S)[1])
     assert len(example) == 1 and isinstance(example[0]["arguments"], dict)
     assert isinstance(json.loads(re.search(r"<TOOL_RESPONSE>(.*?)</TOOL_RESPONSE>", rendered, re.S)[1]), list)
+
+
+def test_single_cuekb_call_example_matches_registered_query_schema():
+    from app.contracts import CueKBArguments
+    path = ROOT / "docs/voicechat/s2s/prompt_template.jinja"
+    rendered = Environment(undefined=StrictUndefined).from_string(path.read_text()).render(
+        system_message="Answer in English.", tools=[{"name": "search_cuekb", "parameters": CueKBArguments.model_json_schema()}])
+    example = json.loads(re.search(r"<TOOLCALL>(.*?)</TOOLCALL>", rendered, re.S)[1])
+    assert len(example) == 1 and example[0]["name"] == "search_cuekb"
+    validate(example[0]["arguments"], CueKBArguments.model_json_schema())

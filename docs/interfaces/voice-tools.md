@@ -1,16 +1,16 @@
 # 全局 VoiceChat 工具目录
 
-2026-10-13 实现。入口：`agent_runtime/tool_catalog.py`、`dispatch.py`、`api/routes.py`、`voice/provider.py`/`gateway.py`。工具数量由后台配置决定，两个知识工具只是初始目录。`dual_tools` 保留为兼容模式名称，含义是原生可配置多工具；`legacy` 仍是显式单 bridge 兼容路径。配置与迁移命令见 [部署](../deployment.md)，执行规则见 [知识执行](../qa-routing-design.md)。
+2026-10-13 实现。入口：`agent_runtime/tool_catalog.py`、`dispatch.py`、`api/routes.py`、`voice/provider.py`/`gateway.py`。一期默认目录只有 search_cuekb；旧 lookup/reason 实现仅保留兼容覆盖。`dual_tools` 保留为兼容模式名称，含义是原生可配置多工具；`legacy` 仍是显式单 bridge 兼容路径。配置与迁移命令见 [部署](../deployment.md)，执行规则见 [知识执行](../qa-routing-design.md)。
 
 ## 1. 信息归属与注册契约
 
 可信代码注册 `NativeTool` 的参数模型、执行器、执行种类、后台依赖和权限 scope。后台全局目录决定哪些名称启用，以及 description、examples、output_description、ack_messages；可用不同名称引用同一个可信 implementation。配置不能指定 Python import、任意 URL/凭据或覆盖参数 schema。新业务 API 需要先接入可信执行器；仅添加名称不会凭空产生执行能力。
 
-初始目录来自 `config/voice-tools.yaml`。首次管理员保存后，以数据库 `native_tool_config` 单行配置及 revision 为准，多副本共享同一数据库；文件不会自动覆盖已保存配置。目录对所有客户可见，不按客户 scope 隐藏。部署或管理员关闭后台依赖时，对应原生工具全局不可用；执行仍检查当前 scope、KB 范围、epoch/revision、租约及依赖版本，可见不授予额外数据权限。
+初始目录来自 `config/voice-tools.yaml`；一期部署用 `configure_native_cuekb.py --apply` 显式将已保存旧目录切换为单工具（CAS 更新并审计）。首次管理员保存后，以数据库 `native_tool_config` 单行配置及 revision 为准，多副本共享同一数据库；文件不会自动覆盖已保存配置。目录对所有客户可见，不按客户 scope 隐藏。部署或管理员关闭后台依赖时，对应原生工具全局不可用；执行仍检查当前 scope、KB 范围、epoch/revision、租约及依赖版本，可见不授予额外数据权限。
 
 注册顺序：`session.created → session.update → session.updated → portal.session.ready → 用户音频`。`session.update.session` 提供 audio、instructions、tools；每个工具提供 name、description、parameters、ack_messages。参数 schema 从可信模型生成，examples 先通过该模型校验，再附于 description；output_description 说明结果语义，不是协议新增的输出 schema。工具调用和回填使用供应商原始 call_id，不发送 tool_choice。
 
-知识参数 `user_request` 保留完整请求；product_model/software_version 为必填可空字段，未知必须传 null，不能省略或猜测。字段级 description、类型、长度和 additionalProperties=false 均发送给模型。系统提示词根据会话策略分别生成，选择规则只引用当前注册目录，不固定要求两个名称必须存在。ACK 按响应绑定的工具识别，不能把某工具的 ACK 当成另一个业务答案。
+一期参数只有 `query`，由 [CueKBArguments](../../apps/api/app/contracts.py) 生成，额外参数全部拒绝。模型负责保留完整语义、名称、型号和版本，使用可信会话上下文解析指代；服务器保留实际 query 与最终转写的关联审计，不把 query 偷换为原话。KB、凭据、权限及结构化过滤条件来自服务端。旧工具的 user_request/product_model/software_version schema 仅用于兼容模式。字段级 description、类型、长度和 additionalProperties=false 均发送给模型。系统提示词根据会话策略分别生成，选择规则只引用当前注册目录，不固定要求两个名称必须存在。ACK 按响应绑定的工具识别，不能把某工具的 ACK 当成另一个业务答案。
 
 Adapter 接受 session.updated.tools 的 JSON 数组回显或官方文档中的 JSON 字符串回显；字符串先解析为数组，随后核对音频格式、工具集合/名称/description/parameters/ack_messages 及 instructions；工具列表顺序可变、额外默认字段可存在，但必要字段必须一致。缺失/被修改时返回 VOICE_PROTOCOL_ERROR，握手不能进入 ready。日志 `voice_registration_confirmed` 记录工具数和回显格式；拒绝时 `voice_registration_rejected` 记录失败字段/原因，不记录 prompt 或参数正文。该回显只证明传输注册一致，不证明最终 Jinja 模板、function head、权重/tokenizer/SOTC/EOTC 或模型真实选择正确。
 

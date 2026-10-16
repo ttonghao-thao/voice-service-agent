@@ -4,7 +4,13 @@ import re
 from collections.abc import Awaitable, Callable
 from dataclasses import dataclass
 
-from app.contracts import DomainError, KnowledgeArguments, KnowledgeInteractionArguments, StrictModel
+from app.contracts import (
+    CueKBArguments,
+    DomainError,
+    KnowledgeArguments,
+    KnowledgeInteractionArguments,
+    StrictModel,
+)
 
 
 @dataclass(frozen=True)
@@ -62,8 +68,15 @@ class ToolDispatcher:
             for name in registered
         ]
 
-def knowledge_tools(direct, reasoned):
+def knowledge_tools(direct, reasoned, cuekb=None):
     dispatcher = ToolDispatcher()
+    if cuekb is not None:
+        dispatcher.register(NativeTool(
+            "search_cuekb",
+            "Search authorized product or company documentation. Do not use for greetings, casual conversation "
+            "or general knowledge. Preserve product names, models and technical terms; clarify missing essentials.",
+            CueKBArguments, cuekb, kind="cuekb", ack_messages=("Let me check the documentation.",),
+        ))
     dispatcher.register(NativeTool(
         "lookup_knowledge",
         "Retrieve authorized company or product documentation for one clear factual question "

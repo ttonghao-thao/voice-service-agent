@@ -9,6 +9,8 @@ from app.voice.provider import BRIDGE_ACK, QA_ACK, MockVoiceAdapter, VoiceEvent
 from fastapi.testclient import TestClient
 from starlette.websockets import WebSocketDisconnect
 
+pytestmark = pytest.mark.usefixtures("legacy_native_catalog")
+
 
 def test_native_bridge_dedup_tool_before_transcript_and_ticket(tmp_path):
     app = create_app(

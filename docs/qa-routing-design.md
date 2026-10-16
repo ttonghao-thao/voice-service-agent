@@ -7,14 +7,24 @@
 | 会话模式 / 策略 | 原生工具 | 执行规则 |
 | --- | --- | --- |
 | legacy（默认） | consult_service_agent | 完整输入进入外置知识链；未经工具授权的实质性输出被拒绝 |
-| dual_tools / general_qa | 后台配置的全局工具目录 | 一般问答可无工具回复；按注册能力执行；初始知识工具为 lookup/reason |
+| dual_tools / general_qa | 后台配置的全局工具目录 | 一般问答可无工具回复；按注册能力执行；一期默认仅 search_cuekb(query)；旧 lookup/reason 保留兼容 |
 | dual_tools / knowledge_required | 同一全局目录 | 拒绝无工具实质性输出；direct 知识实现也走外置链 |
 
 新建 Conversation 快照模式/策略，语音 session 冻结原生目录及 revision；后台更新目录会关闭旧连接并重新注册，不原地改旧快照。更改部署模式不会切换已有 Conversation。dual_tools 是历史兼容名称，不限制工具数量。配置和回退见 [部署](deployment.md#问答模式与预算q07)；全局目录见 [工具注册契约](interfaces/voice-tools.md)。后台 `search_knowledge` 是 Registry 能力，不能用原生名称替换部署白名单。
 
 VoiceChat 模型通过 tools/instructions 自主选择；不发送 WS tool_choice，也不为分类新增外置 LLM。ToolDispatcher 只按已注册名字、schema/权限分派。外置 SDK 的 required/auto 是另一层检索执行约束。一般回答保存 Utterance/实际字幕，标为 provider_general/provider_only；不建知识 Turn 或伪引用。严格知识策略用于需要拒绝无证据实质性输出的会话；general_qa 的 Prompt 不保证零漏调用。
 
-严格模式当前也拒绝用户输入后未授权的非空问候，不存在已实现的社交白名单。Provider 提示仍允许简短 conversational 输出，与该交付规则不一致，修正列入 [实施方案 §3.1](q1003-target-architecture.md#31-策略与提示一致)。两种策略都不保证 VoiceChat 实际口述逐字忠于外置答案。
+严格模式当前也拒绝用户输入后未授权的非空问候，不存在已实现的社交白名单。严格 Provider 提示已与该交付规则对齐；当前一期部署采用 general_qa，见 [实施方案 §3.1](q1003-target-architecture.md#31-策略与提示一致)。两种策略都不保证 VoiceChat 实际口述逐字忠于外置答案。
+
+## 一期原生单工具路径
+
+默认注册 `search_cuekb(query)`，由 `NativeCueKBExecutor` 经既有 Registry/CueKBAdapter 调 `/v1/search`。query 不会被最终转写覆盖；最终转写仍作为请求归属和可信上下文来源。原生参数/异常记录供区分选择、参数、检索和语音问题，不自动做语义正确性判定。
+
+该执行器没有外置模型或升级分支。检索失败、无结果、澄清、insufficient/conflicting 分别返回明确状态；有可用证据时，选取完整 ASCII 来源及必要 context，在项数/字节预算内形成 `cuekb-evidence-v1`。不截断句子或音译技术事实；无法保留完整英文证据则返回受控不足结果。scope/degraded/省略项标记 partial，不能推导为完整知识不存在。unassessed 保留原标签，由 VoiceChat 只根据实际证据作答，不冒充服务已经证明其充分。
+
+证据保留 citation/document/chunk/version/trace 信息；经同 call_id 回填后由 VoiceChat 生成语音。Coordinator 复用既有 EvidenceReady/after_audio 检查和唯一提交；播后文字规则不是语义真实性证明或实际听音保证。AGENT_PROVIDER=disabled 时不构建额外模型客户端，文字提交关闭。
+
+下文直查升级与外置 SDK 为旧模式兼容说明，不属于一期路径。
 
 ## 2. 注册、输入与扩展
 

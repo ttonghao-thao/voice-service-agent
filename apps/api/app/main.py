@@ -45,6 +45,11 @@ def create_app(settings=None):
             runtime = BusinessRuntime(settings, registry)
             if runtime.client:
                 cleanup.push_async_callback(runtime.client.close)
+            if settings.agent_provider == "disabled":
+                _, entries = await runtime.catalog.configuration()
+                tools = runtime.catalog.compile(entries)
+                if list(tools) != ["search_cuekb"] or tools["search_cuekb"].kind != "cuekb":
+                    raise ValueError("Native CueKB requires only search_cuekb. Apply scripts/configure_native_cuekb.py first.")
             coordinator = SessionCoordinator(store, runtime, coordination, settings)
             cleanup.push_async_callback(coordinator.close)
             voice = VoiceGateway(settings, coordinator, store)
@@ -135,7 +140,7 @@ def create_app(settings=None):
             return JSONResponse({"status": "unavailable"}, status_code=503)
         caps = capabilities(settings)
         return {
-            "status": "ready" if caps["text_configured"] else "degraded",
+            "status": "ready" if caps["text_configured"] or settings.agent_provider == "disabled" else "degraded",
             "text_configured": caps["text_configured"],
             "voice_configured": caps["voice_available"],
             "is_mock": caps["is_mock"],

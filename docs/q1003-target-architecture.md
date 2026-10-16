@@ -1,19 +1,19 @@
 # q1003 架构改进与实施方案
 
-当前需求以用户最后确认的边界为准：后端必须是 VoiceChat；由 VoiceChat 自主决定使用自身知识回答或调用工具；不引入其他 ASR/TTS，不根据转写自动启动业务。先完成语音输入、工具执行和语音回复，时延优化后置。代码分支 `codex/q1003`；状态见 [任务板](TASK_BOARD.md)，现场证据见 [验收](acceptance-report.md)。
+当前需求以一期单工具原生验证为准：后端必须是 VoiceChat；由 VoiceChat 自主决定使用自身知识回答或调用 search_cuekb(query)；不引入其他 ASR/TTS、意图分类器或额外答案生成模型，不根据转写自动启动业务。先完成语音输入、工具执行和语音回复，时延优化后置。代码分支 `codex/q1003`；状态见 [任务板](TASK_BOARD.md)，现场证据见 [验收](acceptance-report.md)。
 
 ## 1. 目标与架构判断
 
-保留 `门户 ↔ Gateway ↔ VoiceChat` 的全双工音频连接，以及 `Gateway → Coordinator → BusinessRuntime → Registry → CueKB` 的工具执行链。
+保留 `门户 ↔ Gateway ↔ VoiceChat` 的全双工音频连接，以及 `Gateway → Coordinator → NativeCueKBExecutor → Registry → CueKB` 的工具执行链。
 
 - 直接回答：VoiceChat 生成文字/音频；Gateway 关联当前输入后交付，记录为 provider_general / provider_only，不标为知识库验证结果。
-- 工具回答：VoiceChat 原生发出工具名、参数、call_id；应用验证目录、权限和最终输入，执行业务，按原 call_id 回填；VoiceChat 继续生成回复。
+- 工具回答：VoiceChat 原生发出工具名、参数、call_id；应用验证目录、权限和最终输入关联，保留模型 query，直连 CueKB 并精简证据，按原 call_id 回填；VoiceChat 继续生成回复。
 - 应用不选择是否调用工具、不伪造原生调用、不增加分类模型或强制 WS tool_choice。
 - 原生调用不可靠、ASR 句首缺失等历史问题尚未证明修复；提示或应用回归通过不能代替真实模型测试。
 
 ## 2. 本阶段选择及推迟的方案
 
-目标部署采用 `dual_tools + general_qa`，VoiceChat 是唯一语音 Provider。dual_tools 为兼容名称，目录可配置，不限制为两个工具。保留 knowledge_required 的显式策略实现及回归，但它会拒绝没有工具授权的直接回答，不能用于当前自主回答部署。
+目标部署采用 `dual_tools + general_qa` 和 `AGENT_PROVIDER=disabled`，VoiceChat 是唯一语音 Provider 和答案生成模型。dual_tools 为兼容名称，一期只注册 search_cuekb(query)；旧双工具实现仅保留兼容测试。保留 knowledge_required 的显式策略实现及回归，但它会拒绝没有工具授权的直接回答，不能用于当前自主回答部署。
 
 此前推荐的独立 ASR→业务→TTS 方案已撤回，相关未提交应用代码已撤销；应用根据转写自动发起检索也不在当前实现范围。最终转写只用于绑定和校验已发生的原生调用。
 
@@ -33,15 +33,15 @@ Do not retry the same tool request or issue multiple tool calls simultaneously.
 Speak only as permitted by the session answer policy and the returned tool result.
 ```
 
-工具调用示例使用单个工具和对象参数；保留完整 schema 及独立 ACK 元数据。不再在模板尾部通用授权额外调用/错误重试。新提示版本为 qa-tools-v4；完整文件、来源/hash 和运行挂载见 [VoiceChat 部署](voicechat/docker-run.md)。
+工具调用示例使用单个工具和对象参数；保留完整 schema 及独立 ACK 元数据。不再在模板尾部通用授权额外调用/错误重试。一期提示版本为 cuekb-native-v1；完整文件、来源/hash 和运行挂载见 [VoiceChat 部署](voicechat/docker-run.md)。
 
 ### 3.2 显式响应终态
 
-保留输入、工具任务、回答和播放的分别关联。语音回答需要实际音频及结束事件；工具返回成功、字幕正确不等于声音已播放。保持已有终态、交付审计和停止播放规则，本次不调整 PAD 预算或新增全局缓冲。
+保留输入、工具任务、回答和播放的分别关联。语音回答需要实际音频及结束事件；工具返回成功、字幕正确不等于声音已播放。保持已有终态、交付审计和停止播放规则，本次不调整 PAD 算法或新增全局缓冲。
 
 ### 3.3 分阶段预算
 
-沿用现有业务和回答期限；不以无限延长超时掩盖缺少结束事件。功能链完成前不启动时延优化，也不改变模型融合/采样参数。
+沿用既有业务和回答期限机制，部署例值分别为 60/30 秒；不以无限延长超时掩盖缺少结束事件。功能链完成前不启动时延优化，也不改变模型融合/采样参数。
 
 ### 3.4 输入与原生工具契约
 
@@ -51,10 +51,10 @@ Speak only as permitted by the session answer policy and the returned tool resul
 
 | 工作 | 本次内容 | 完成依据 |
 | --- | --- | --- |
-| 模式与部署 | 明确 general_qa；部署脚本拒绝错误策略，启动后检查实际 capabilities | 旧严格 .env 被拒绝；正确模式通过；用户新建会话 |
+| 模式与部署 | general_qa、disabled、单 search_cuekb；迁移后 CAS 应用目录并检查实际 capabilities | 无需文本模型 key；旧目录可显式升级；新会话生效 |
 | 提示与模板 | 明确自主决策；用户指定三句约束、单调用示例、完整模板和 manifest | 渲染保留各策略、0/1/2/3 工具 schema 及 ACK；容器模板 hash 一致 |
-| 应用双路径 | 原生直接回答与工具路径沿用现有实现，扩展音频回归 | 音频先于/晚于最终转写均正常；同会话直接回答后可调用工具；重复事件只执行一次且同 call 回填 |
-| 现场验收 | 固定 VoiceChat、真实 CueKB，分别验证两条路径 | 实际收音、原生工具事件、业务执行、完整回复和听音均可关联 |
+| 应用双路径 | 直接回答不检索；query-only 原生工具只检索/整理完整 ASCII 证据，不升级答案模型 | 追问 query 保留、服务端 KB/鉴权、同 call 回填、重复幂等、失败不冒充无事实、音频及结束 |
+| 现场验收 | 固定 VoiceChat、真实 CueKB；用门户麦克风/WAV 或 validate_native_cuekb.py | 选择、参数、检索和口述分别判定；实际听音单独确认 |
 
 自动化测试用受控上游事件验证应用接线，不能声明模型实际完成工具决策。没有现场通过结果时，原生选工具及完整听音继续标为未验证。
 

@@ -5,7 +5,7 @@
 ## 最小读取路径
 
 - 了解系统： [当前架构](architecture.md)；要安排工作再读 [任务板](TASK_BOARD.md)。
-- 继续当前工作： [任务板](TASK_BOARD.md) → [方案重评](q1003-target-architecture.md#2-本阶段选择及推迟的方案)；原生模式排查暂停为主线，需要历史诊断时再查 [故障定位](voicechat-fault-recovery-design.md) 与日期证据。
+- 继续当前工作： [单工具原生验证](native-cuekb-validation.md) → [任务板](TASK_BOARD.md)；需要历史严格模式诊断时再查 [故障定位](voicechat-fault-recovery-design.md) 与日期证据。
 - 架构/编码规划： [实施方案](q1003-target-architecture.md)；确认受影响的接口和代码后再扩读主题。
 - 现场更新： [VoiceChat 启动](voicechat/docker-run.md) 或 [应用部署](deployment.md)；完成后对照 [验收](acceptance-report.md)。
 

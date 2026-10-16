@@ -8,6 +8,7 @@ RUN --mount=type=cache,id=voice-service-agent-api-pip,target=/root/.cache/pip,sh
 COPY apps/api apps/api
 COPY config config
 COPY scripts/verify_deployment.py scripts/verify_deployment.py
+COPY scripts/configure_native_cuekb.py scripts/configure_native_cuekb.py
 ENV PYTHONPATH=/app/apps/api PYTHONUNBUFFERED=1
 RUN chmod -R u=rwX,go=rX apps/api config scripts \
     && groupadd --gid 10001 service \

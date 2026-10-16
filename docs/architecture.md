@@ -2,6 +2,8 @@
 
 2026-10-15 对照 `63e7059` 核对 Gateway、Provider、Coordinator、Runtime 与部署边界。本页维护已实现架构；改进方案见 [实施设计](q1003-target-architecture.md)，工作状态见 [任务板](TASK_BOARD.md)。
 
+当前一期部署为 VoiceChat 原生单工具验证：只注册 search_cuekb(query)，通过 NativeCueKBExecutor→Registry→CueKBAdapter 检索，直接回填精简证据，由 VoiceChat 生成语音。AGENT_PROVIDER=disabled，不运行额外答案模型；外置 SDK/文本模型路径仅保留兼容实现，不在下图的一期数据流中。原生工具选择、连续追问与实际口述验收见 [验证步骤](native-cuekb-validation.md)。
+
 ## 1. 产品与部署边界
 
 当前系统是英文全双工知识客服，支持并行收音与播放；工具等待阶段的语音交互能力单独验证。当前为单组织、只读知识与每通话临时 capability。VoiceChat-11B + nemotron-labs-voicechat + WS 是独立语音系统，CueKB 是独立知识系统。本项目控制授权、任务、知识执行与交付，不训练模型、管理 GPU 或直连 CueKB 索引。中文扩展取决于后端模型/运行时能力及应用语言约束适配，不属于当前已支持能力。
@@ -18,8 +20,7 @@ flowchart LR
     Adapter <--> Voice[独立 VoiceChat]
     API --> C[SessionCoordinator]
     C --> R[BusinessRuntime / ToolDispatcher]
-    R --> D[DirectKnowledgeExecutor]
-    R <--> L[外置文本模型 / SDK]
+    R --> D[NativeCueKBExecutor]
     D --> T[ToolRegistry]
     R --> T
     T --> K[CueKBAdapter / 独立 CueKB]
@@ -30,7 +31,7 @@ flowchart LR
 
 图中 Runtime/Registry 表示代码调用边界，不是新增独立服务。无工具一般回答经过 Gateway/Store，不创建知识 Turn，也不调用 CueKB/外置模型。
 
-VoiceChat 内部并非 ASR 文本驱动 LLM：16 kHz 音频经共享 encoder 分别进入辅助 RNNT 和语音语言主干；后者产生文本与 function 通道，文本再进入持续式 TTS。应用收到原生调用后绑定 final ASR 作为业务请求。这解释了 ASR 错误会影响应用查询，却不能单凭丢字推出模型漏调用的原因。
+VoiceChat 内部并非 ASR 文本驱动 LLM：16 kHz 音频经共享 encoder 分别进入辅助 RNNT 和语音语言主干；后者产生文本与 function 通道，文本再进入持续式 TTS。应用收到原生调用后绑定 final ASR 确定输入归属；一期以模型 query 结合可信上下文检索，不用转写替换 query。这解释了 ASR 错误会影响应用查询，却不能单凭丢字推出模型漏调用的原因。
 
 | 代码模块 | 职责 | 修改时读 |
 | --- | --- | --- |

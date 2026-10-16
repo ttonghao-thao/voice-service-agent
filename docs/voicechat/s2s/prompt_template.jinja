@@ -33,7 +33,12 @@
     {{- ']</AVAILABLE_TOOLS>\n\n' -}}
 
     {{- 'When the session instructions require a tool, call one matching registered tool. Use this format with arguments matching its schema:\n' -}}
-    {{- '<TOOLCALL>[{"name": "registered_tool_name", "arguments": {"argument_name": "argument_value"}}]' -}}
+    {%- set _first = (tools[0].function if tools[0].function is defined else tools[0]) -%}
+    {%- if _first.name == 'search_cuekb' -%}
+        {{- '<TOOLCALL>[{"name": "search_cuekb", "arguments": {"query": "What does the Product AX manual say about its connection limit?"}}]' -}}
+    {%- else -%}
+        {{- '<TOOLCALL>[{"name": "registered_tool_name", "arguments": {"argument_name": "argument_value"}}]' -}}
+    {%- endif -%}
     {{- '</TOOLCALL>\n\n' -}}
 
     {{- 'The user will execute tool-calls and return responses from tool(s) in this format:\n' -}}

@@ -22,6 +22,7 @@ from uuid import uuid4
 
 import httpx
 import uvicorn
+from app.agent_runtime.tool_catalog import NativeToolEntry
 from app.config import Settings
 from app.main import create_app
 from app.voice.provider import NvidiaVoiceChatAdapter, ProviderCapabilities, normalize
@@ -466,6 +467,15 @@ class SimulationHarness:
             self.app.add_api_route("/__simulation/plan", self.plan, methods=["POST"])
             self.app.add_api_route("/__simulation/state", self.state, methods=["GET"])
             self.url = await self.stack.enter_async_context(http_server(self.app, self.port))
+            # This harness explicitly covers the legacy two-tool + answer-model
+            # workflow. The deployed phase-1 profile is search_cuekb only.
+            self.app.state.coordinator.runtime.catalog.defaults = [
+                NativeToolEntry(name=name, implementation=name, description=description)
+                for name, description in (
+                    ("lookup_knowledge", "Retrieve authorized documented product facts."),
+                    ("reason_over_knowledge", "Reason over authorized product documentation."),
+                )
+            ]
             if self.wait_interaction:
                 self.app.state.voice.provider_factory = SimulatedWaitAdapter
             if self.origin is None:
