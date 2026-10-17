@@ -12,6 +12,8 @@
 
 一期参数只有 `query`，由 [CueKBArguments](../../apps/api/app/contracts.py) 生成，额外参数全部拒绝。模型负责保留完整语义、名称、型号和版本，使用可信会话上下文解析指代；服务器保留实际 query 与最终转写的关联审计，不把 query 偷换为原话。KB、凭据、权限及结构化过滤条件来自服务端。旧工具的 user_request/product_model/software_version schema 仅用于兼容模式。字段级 description、类型、长度和 additionalProperties=false 均发送给模型。系统提示词根据会话策略分别生成，选择规则只引用当前注册目录，不固定要求两个名称必须存在。ACK 按响应绑定的工具识别，不能把某工具的 ACK 当成另一个业务答案。
 
+`search_cuekb` 的一期描述覆盖公司/品牌/产品事实，不限于技术手册；价格、尺寸、重量、成分、包装、运输、存储、保质期和食用/使用方式同样属于需要企业证据的请求。明确询问公司或产品文档时必须调用该工具，不能在工具已注册时直接声称无权访问文档。问候、闲聊及不依赖企业资料的通用科学/技术概念仍由 general_qa 直接回答。
+
 Adapter 接受 session.updated.tools 的 JSON 数组回显或官方文档中的 JSON 字符串回显；字符串先解析为数组，随后核对音频格式、工具集合/名称/description/parameters/ack_messages 及 instructions；工具列表顺序可变、额外默认字段可存在，但必要字段必须一致。缺失/被修改时返回 VOICE_PROTOCOL_ERROR，握手不能进入 ready。日志 `voice_registration_confirmed` 记录工具数和回显格式；拒绝时 `voice_registration_rejected` 记录失败字段/原因，不记录 prompt 或参数正文。该回显只证明传输注册一致，不证明最终 Jinja 模板、function head、权重/tokenizer/SOTC/EOTC 或模型真实选择正确。
 
 ## 2. 后台配置与刷新

@@ -28,7 +28,7 @@ sha256sum /home/thao/voice/model.py
 bc4271093c732beb70d4bce770b4ac06bdc0d31d97d558cb4e87190c365806a8
 ```
 
-`load_utils.py` 沿用现场文件。本次模板必须使用上面同步的完整 `prompt_template.jinja`，其 SHA-256 为 `2d54199a895ecd610fc55ca7fe586a2bf191de3b1b14afa5abce3df4612cc0c4`。模板加入会话策略优先、禁止同请求重试/并行工具调用、仅按授权结果发声的约束，并将调用示例收敛为单个工具和对象参数；单工具 search_cuekb 使用真实工具名和 query 示例。它修复提示冲突，不代表已修复模型全 PAD。
+`load_utils.py` 沿用现场文件。本次模板必须使用上面同步的完整 `prompt_template.jinja`，其 SHA-256 为 `1bcab28d15d343297de76e5109786532fe602f3350d4e475ece1716bd67029f7`。模板加入会话策略优先、禁止同请求重试/并行工具调用、仅按授权结果发声的约束，并将调用示例收敛为单个工具和对象参数；单工具 search_cuekb 使用真实工具名和覆盖价格、重量、存储及保质期的 query 示例。已注册工具覆盖请求时，模板要求调用工具，不能直接声称无权访问资料。它修复提示冲突，不代表已修复模型全 PAD。
 
 ## 创建容器
 

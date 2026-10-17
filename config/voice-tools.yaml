@@ -4,19 +4,24 @@ tools:
   - name: search_cuekb
     implementation: search_cuekb
     description: >-
-      Search the authorized CueKB knowledge base for product-specific or company-specific
-      information. Use this tool for questions about product features, specifications,
-      user manuals, installation, configuration, troubleshooting, error codes, firmware
-      versions, and documented procedures. Also use it for follow-up questions about
-      products discussed earlier in the conversation. Do not use this tool for greetings,
-      casual conversation, jokes, general science, general technology concepts, or common
-      knowledge that does not depend on product documentation. Never invent product-specific
-      facts when documentation is required. If essential product information cannot be
-      resolved from trusted conversation context, ask the user to clarify it.
+      Search the authorized CueKB knowledge base for organization-specific, brand-specific,
+      or product-specific information that must come from company documentation. Use this
+      tool for product names, features, specifications, prices, sizes, weights, ingredients,
+      materials, packaging, availability, shipping, storage, shelf life, preparation, usage,
+      installation, configuration, troubleshooting, error codes, user manuals, documented
+      procedures, firmware versions, and version differences. Also use it for follow-up
+      questions about products discussed earlier in the conversation. If the user explicitly
+      asks what company or product documentation says, always use this tool. Do not use this
+      tool for greetings, casual conversation, jokes, general science, general technology
+      concepts, or common knowledge that does not depend on company documentation. Never
+      invent organization-specific or product-specific facts when documentation is required,
+      and do not say that you lack access to product documentation while this tool is
+      registered. If essential product information cannot be resolved from trusted
+      conversation context, ask the user to clarify it.
     ack_messages:
       - Let me check the documentation.
     examples:
-      - query: What are the documented connection limits for Product AX firmware version 2?
+      - query: What does the company documentation say about the price, weight, storage requirements, and shelf life of Product AX?
     output_description: >-
       Returns short, traceable evidence excerpts for VoiceChat to answer from, or an explicit
       search failure, insufficient-evidence result or clarification. A failed or limited

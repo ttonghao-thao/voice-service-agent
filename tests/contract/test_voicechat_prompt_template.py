@@ -12,6 +12,7 @@ from jsonschema import validate
 
 POLICY = (
     "Follow the session instructions and tool contracts when handling tool results.",
+    "If a registered tool covers the request, call it instead of saying that you lack access to the information.",
     "Do not retry the same tool request or issue multiple tool calls simultaneously.",
     "Speak only as permitted by the session answer policy and the returned tool result.",
 )
@@ -60,3 +61,5 @@ def test_single_cuekb_call_example_matches_registered_query_schema():
     example = json.loads(re.search(r"<TOOLCALL>(.*?)</TOOLCALL>", rendered, re.S)[1])
     assert len(example) == 1 and example[0]["name"] == "search_cuekb"
     validate(example[0]["arguments"], CueKBArguments.model_json_schema())
+    query = example[0]["arguments"]["query"].lower()
+    assert all(value in query for value in ("company documentation", "price", "weight", "storage", "shelf life"))

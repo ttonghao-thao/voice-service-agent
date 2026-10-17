@@ -36,6 +36,7 @@
 | 科学常识 | Why does water boil? → 直接回答，无工具 |
 | 通用技术 | What is the difference between TCP and UDP? → 直接回答，无工具 |
 | 产品文档 | What does the manual say about the connection limit for Product AX? → search_cuekb |
+| 消费品规格 | What does the company documentation say about its price, weight, storage requirements and shelf life? → search_cuekb |
 | 混合表达 | Hello, please explain the documented configuration steps for Product AX. → search_cuekb |
 | 连续追问 | 同通话先说产品名，再问 How do I configure this product? → query 应保留已知产品 |
 | 缺失必要产品 | 新通话问 How do I configure that device? → 自然澄清，不得编造型号 |

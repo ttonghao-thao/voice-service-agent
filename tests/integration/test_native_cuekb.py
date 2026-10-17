@@ -103,6 +103,16 @@ async def test_native_query_reaches_cuekb_without_an_answer_model(tmp_path, monk
         definition = snapshot.definitions[0]
         assert definition["ack_messages"] == ["Let me check the documentation."]
         assert set(definition["parameters"]["properties"]) == {"query"}
+        description = definition["description"].lower()
+        expected_routing_terms = (
+            "price",
+            "weight",
+            "shipping",
+            "storage",
+            "shelf life",
+            "lack access",
+        )
+        assert all(value in description for value in expected_routing_terms)
         p = Principal(user_id="dev-operator", scopes=frozenset({"knowledge:read"}), knowledge_base_ids=(KB,))
         async with app.state.store.transaction() as db:
             from app.storage.models import Conversation

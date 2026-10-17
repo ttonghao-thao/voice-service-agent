@@ -1,6 +1,6 @@
 # 当前验收证据
 
-更新日期：2026-10-16；最新附件分析基于 `codex/q1003` 的 `b7a04d6`。**真实知识语音闭环尚未放行。**现场日志已验证严格拒绝保护及预算 EOS 分支触发；原生工具仍未调用，正常知识回答及完整听音未通过。新提示文件复核确认严格指令与完整工具 schema 保留，发现模板结果处理措辞冲突但尚不能归为全 PAD 根因。状态见 [任务板](TASK_BOARD.md)，要求见 [验证清单](development/validation.md)。
+更新日期：2026-10-17。**真实知识语音闭环尚未放行。**现场日志已验证提示预填充、工具注册及 ASR，但消费品文档问题在旧技术手册导向元数据下 20/20 漏调用；原生检索、正常知识回答及完整听音未通过。状态见 [任务板](TASK_BOARD.md)，要求见 [验证清单](development/validation.md)。
 
 当前用户目标已改为 VoiceChat 自主决定直接回答或调用工具，部署采用 general_qa。qa-tools-v4 已修正模板冲突并补充部署策略检查；以下严格模式现场结果保留为历史证据，不能当作新模式的验收结果。
 
@@ -12,6 +12,8 @@
 
 | 日期 / 版本 | 实际结果 | 限制与证据位置 |
 | --- | --- | --- |
+| 2026-10-17 / cuekb-native-v1 消费品路由修正 | 扩展 `search_cuekb` 目录及会话提示，覆盖价格、重量、成分、包装、运输、存储、保质期等企业产品事实；VoiceChat 单工具示例改为消费品规格问题，并要求已注册工具覆盖请求时不得直接声称无权访问。76 项目录/模板/原生 CueKB 定向回归及 477 项 Python 全量回归通过；Ruff、manifest 9 文件 hash 与 diff 检查通过 | 本地配置、受控协议夹具和模板渲染验证；未部署真实 VoiceChat/CueKB，不能据此宣称模型选择率、检索相关性或口述忠实性已通过。模板 SHA-256 为 `1bcab28d15d343297de76e5109786532fe602f3350d4e475ece1716bd67029f7` |
+| 2026-10-17 / cuekb-native-v1 消费品路由基线 | 同一合成英文产品文档问题连续 20 轮均 `selection=failed`、直接口述无权访问文档、未调用 CueKB；数据库窗口内 18 条产品转写逐字稳定，另两条为问候/通用技术控制；此前单轮曾生成错误名称 `search_cueb`。VoiceChat 21/21 会话均 tools=1、Jinja 渲染及 Triton prompt prefill 成功，prefill 失败为 0；API 工具回显确认通过 | 用户现场真实 NVIDIA VoiceChat、dual_tools/general_qa、单 search_cuekb；输入为本仓库合成 PCM16 WAV，不是真人录音。结果证明旧目录/示例对消费品事实选择失败，不证明新元数据有效，也未进入 CueKB 参数、检索、来源或实际知识口述阶段；直接回答未编造产品数字但不满足工具选择要求 |
 | 2026-10-16 / cuekb-native-v1 | 477 项 Python 全量回归通过；最后补充检索审计后 44 项定向回归通过；26 项 Node 音频单测、8 项 Chromium 文件通话测试及前端构建通过。API 实际镜像构建成功，依赖层 CACHED；只读容器/UID 10001 下配置目录及 query-only/client=None 检查通过；Ruff/编译/manifest/链接检查通过 | Python 3.12、SQLite、独立监听的本项目 HTTP/VoiceChat WS/CueKB HTTP 协议夹具，其他错误注入使用 MockTransport；artifacts/native-cuekb/python.xml。覆盖单工具注册、无额外模型、实际 query、服务端鉴权/过滤、错误分层、证据预算/ASCII、同 call 回填、音频结束及旧目录升级。容器检查使用临时 SQLite，不是生产 PostgreSQL 启动、GPU 或真实英文听音；不宣称模型选择率、实际口述忠实性或工具等待打断已验收 |
 | 2026-10-16（北京时间）/ qa-tools-v4 自主回答与模板 | 218 项定向 pytest 通过；全目录 Ruff、Python 编译、shell 语法、模板 manifest hash、相关 Markdown 链接与 diff 检查通过 | Python 3.12、Jinja2 3.1.6；受控 VoiceChat 事件、SQLite/mock CueKB 和本地 WS。覆盖音频先于/晚于 final ASR、同会话直接回答→两种原生工具分别调用→同 call 回填→音频结束、重复调用幂等、严格策略拒绝及部署策略不匹配。未访问真实 VoiceChat/CueKB、GPU 或浏览器听音，不能声称全 PAD 或现场语音已修复 |
 | 2026-10-16 / vLLM 模型源码报告 | registry 匹配 NemotronHForCausalLM；function_head→asr_head 映射存在；forward 实际返回两个自定义输出，与配置一致 | [源码复核](voicechat-validation-20261015.md#11-vllm-模型源码报告复核)。发现 combined_embeds 缺失时回退 token embedding 的分支，尚无现场触发证据；实际权重装载、forward 接收值及头部分数未验证。仅附件审阅，无 GPU 测试或外部源码改动 |
