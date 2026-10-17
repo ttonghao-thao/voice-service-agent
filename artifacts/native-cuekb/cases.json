@@ -1,0 +1,28 @@
+[
+  {
+    "case_id": "greeting",
+    "wav": "hello.wav",
+    "expected_tool": null
+  },
+  {
+    "case_id": "general_tech",
+    "wav": "tcp_udp.wav",
+    "expected_tool": null
+  },
+  {
+    "case_id": "black_pig_crisp_heart",
+    "wav": "black_pig_crisp_heart.wav",
+    "expected_tool": "search_cuekb",
+    "query_terms": [
+      "Black Pig Crisp Heart"
+    ]
+  },
+  {
+    "case_id": "golden_yolk",
+    "wav": "golden_yolk.wav",
+    "expected_tool": "search_cuekb",
+    "query_terms": [
+      "Golden Yolk"
+    ]
+  }
+]
