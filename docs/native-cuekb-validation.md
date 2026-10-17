@@ -79,7 +79,7 @@ base-url 使用实际门户 origin，沿用可信 TLS 校验；本机直连 API 
 | --- | --- |
 | 输入 | 实际转写与录音是否一致；丢词、型号/版本错误单独记录，不直接归为选工具错误 |
 | 工具选择 | 是否产生期望的原生工具；普通问题多调用、专业问题漏调用、未知工具分别记录 |
-| 参数 | native_tool_arguments 保留 query 和输入关联；schema 失败为 VOICE_TOOL_ARGUMENTS；query_terms 仅做字面检查，不证明语义等价 |
+| 参数 | native_tool_arguments 保留 query 和输入关联；一期单工具兼容别名时另保留 emitted_name/normalized_name，报告仍使用规范名称 search_cuekb；schema 失败为 VOICE_TOOL_ARGUMENTS；query_terms 仅做字面检查，不证明语义等价 |
 | 知识检索 | ToolRun/CueKB trace/来源；鉴权、超时、格式失败不等同于无命中，insufficient/conflicting 不得生成肯定事实 |
 | 语音回答 | 同 call 回填、音频/结束事件、实际口述与证据、数字/单位/否定/版本条件及听音；与工具选择单独判定 |
 

@@ -15,6 +15,7 @@ from app.config import ROOT, Settings
 from app.contracts import CueKBArguments, Principal
 from app.main import create_app
 from app.tools.adapters import CueKBAdapter
+from app.voice.gateway import normalize_native_tool_name
 from fastapi import FastAPI, Request
 from fastapi.testclient import TestClient
 from pydantic import ValidationError
@@ -38,6 +39,21 @@ def evidence(**overrides):
                   "version_id": "00000000-0000-4000-8000-000000000103", "rank": 1,
                   "source_text": "Product AX supports 10 connections.", "metadata": {"product_model": "AX"}}],
         **overrides}
+
+
+def test_provider_alias_is_limited_to_single_native_cuekb_catalog():
+    assert normalize_native_tool_name(
+        "search_cueb", "dual_tools", ("search_cuekb",)
+    ) == "search_cuekb"
+    assert normalize_native_tool_name(
+        "search_cueb", "legacy", ("search_cuekb",)
+    ) == "search_cueb"
+    assert normalize_native_tool_name(
+        "search_cueb", "dual_tools", ("search_cuekb", "lookup_product_manual")
+    ) == "search_cueb"
+    assert normalize_native_tool_name(
+        "search_cue", "dual_tools", ("search_cuekb",)
+    ) == "search_cue"
 
 
 def test_query_only_schema_rejects_authority_and_preserves_identifiers():
@@ -149,7 +165,10 @@ async def test_native_query_reaches_cuekb_without_an_answer_model(tmp_path, monk
     ("Product AX supports 10 connections.", None),
     ("Product AX supports 99 connections.", "VOICE_UNSUPPORTED_NUMBER"),
 ])
-def test_pcm_through_real_adapter_native_call_cuekb_and_voice_reply(tmp_path, spoken, reason):
+@pytest.mark.parametrize("emitted_tool", ["search_cuekb", "search_cueb"])
+def test_pcm_through_real_adapter_native_call_cuekb_and_voice_reply(
+    tmp_path, spoken, reason, emitted_tool
+):
     s = configuration(tmp_path, voice_provider="nvidia", voicechat_api_key="fixture-voice-key")
     app = create_app(s)
     pcm = base64.b64encode(b"\x01\x00" * 1920).decode()
@@ -181,7 +200,7 @@ def test_pcm_through_real_adapter_native_call_cuekb_and_voice_reply(tmp_path, sp
                     await ws.send(json.dumps({"type": "response.output_audio.done", "response_id": "direct"}))
                 else:
                     call = {"type": "response.function_call_arguments.done", "response_id": "tool",
-                        "call_id": "native-call", "name": "search_cuekb",
+                        "call_id": "native-call", "name": emitted_tool,
                         "arguments": json.dumps({"query": "How many connections does Product AX support?"})}
                     await ws.send(json.dumps(call))
                     await ws.send(json.dumps(call))
@@ -244,6 +263,21 @@ def test_pcm_through_real_adapter_native_call_cuekb_and_voice_reply(tmp_path, sp
                 audit = next(r for r in records if r["kind"] == "native_tool_arguments")
                 assert audit["payload"]["matches_final_transcript"] is False
                 assert audit["payload"]["arguments"] == {"query": "How many connections does Product AX support?"}
+                assert audit["payload"]["name"] == "search_cuekb"
+                normalized = [r for r in records if r["kind"] == "native_tool_name_normalized"]
+                if emitted_tool == "search_cueb":
+                    assert audit["payload"]["emitted_name"] == "search_cueb"
+                    assert audit["payload"]["normalized_name"] == "search_cuekb"
+                    assert len(normalized) == 1
+                    assert normalized[0]["payload"] == {
+                        "emitted_name": "search_cueb",
+                        "normalized_name": "search_cuekb",
+                        "input_item_id": "i2",
+                        "normalization_reason": "known_provider_alias",
+                    }
+                else:
+                    assert "emitted_name" not in audit["payload"]
+                    assert normalized == []
                 source = next(r for r in records if r["kind"] == "native_cuekb_result")
                 assert source["payload"]["status"] == "ok" and source["payload"]["trace_id"].endswith("111")
                 assert "_authorized_kb_ids" not in source["payload"]

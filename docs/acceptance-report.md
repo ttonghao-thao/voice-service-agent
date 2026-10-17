@@ -1,6 +1,6 @@
 # 当前验收证据
 
-更新日期：2026-10-17。**真实知识语音闭环尚未放行。**现场日志已验证提示预填充、工具注册及 ASR，但消费品文档问题在旧技术手册导向元数据下 20/20 漏调用；原生检索、正常知识回答及完整听音未通过。状态见 [任务板](TASK_BOARD.md)，要求见 [验证清单](development/validation.md)。
+更新日期：2026-10-18。**真实知识语音闭环尚未放行。**现场日志已验证提示预填充、工具注册及 ASR；新元数据已使消费品文档问题进入工具选择，但供应商发出 `search_cueb`，在 Gateway 名称校验阶段被拒绝。原生检索、正常知识回答及完整听音仍未通过。状态见 [任务板](TASK_BOARD.md)，要求见 [验证清单](development/validation.md)。
 
 当前用户目标已改为 VoiceChat 自主决定直接回答或调用工具，部署采用 general_qa。qa-tools-v4 已修正模板冲突并补充部署策略检查；以下严格模式现场结果保留为历史证据，不能当作新模式的验收结果。
 
@@ -12,6 +12,7 @@
 
 | 日期 / 版本 | 实际结果 | 限制与证据位置 |
 | --- | --- | --- |
+| 2026-10-18（北京时间）/ cuekb-native-v1 名称兼容 | 部署消费品路由元数据后，问候及通用技术控制通过；产品问题进入原生工具选择，但数据库记录 `emitted_tool=search_cueb`、`reason_code=VOICE_TOOL_UNKNOWN`、`stage=selection`，尚未进入参数或检索。Gateway 已增加严格别名兼容：仅一期单 `search_cuekb` 目录接受精确 `search_cueb`，下游统一规范名称并保留双名称审计；21 项原生 CueKB、92 项目录/未知工具定向回归及 480 项 Python 全量回归通过，Ruff、文档链接与 diff 检查通过 | 用户现场真实 NVIDIA VoiceChat 与 API 记录；修复后仅通过本地真实 Adapter/CueKB 协议夹具，现场复测待执行。问候录音首词转写问题按当前安排另行处理，不属于本次名称兼容修复 |
 | 2026-10-17 / cuekb-native-v1 消费品路由修正 | 扩展 `search_cuekb` 目录及会话提示，覆盖价格、重量、成分、包装、运输、存储、保质期等企业产品事实；VoiceChat 单工具示例改为消费品规格问题，并要求已注册工具覆盖请求时不得直接声称无权访问。76 项目录/模板/原生 CueKB 定向回归及 477 项 Python 全量回归通过；Ruff、manifest 9 文件 hash 与 diff 检查通过 | 本地配置、受控协议夹具和模板渲染验证；未部署真实 VoiceChat/CueKB，不能据此宣称模型选择率、检索相关性或口述忠实性已通过。模板 SHA-256 为 `1bcab28d15d343297de76e5109786532fe602f3350d4e475ece1716bd67029f7` |
 | 2026-10-17 / cuekb-native-v1 消费品路由基线 | 同一合成英文产品文档问题连续 20 轮均 `selection=failed`、直接口述无权访问文档、未调用 CueKB；数据库窗口内 18 条产品转写逐字稳定，另两条为问候/通用技术控制；此前单轮曾生成错误名称 `search_cueb`。VoiceChat 21/21 会话均 tools=1、Jinja 渲染及 Triton prompt prefill 成功，prefill 失败为 0；API 工具回显确认通过 | 用户现场真实 NVIDIA VoiceChat、dual_tools/general_qa、单 search_cuekb；输入为本仓库合成 PCM16 WAV，不是真人录音。结果证明旧目录/示例对消费品事实选择失败，不证明新元数据有效，也未进入 CueKB 参数、检索、来源或实际知识口述阶段；直接回答未编造产品数字但不满足工具选择要求 |
 | 2026-10-16 / cuekb-native-v1 | 477 项 Python 全量回归通过；最后补充检索审计后 44 项定向回归通过；26 项 Node 音频单测、8 项 Chromium 文件通话测试及前端构建通过。API 实际镜像构建成功，依赖层 CACHED；只读容器/UID 10001 下配置目录及 query-only/client=None 检查通过；Ruff/编译/manifest/链接检查通过 | Python 3.12、SQLite、独立监听的本项目 HTTP/VoiceChat WS/CueKB HTTP 协议夹具，其他错误注入使用 MockTransport；artifacts/native-cuekb/python.xml。覆盖单工具注册、无额外模型、实际 query、服务端鉴权/过滤、错误分层、证据预算/ASCII、同 call 回填、音频结束及旧目录升级。容器检查使用临时 SQLite，不是生产 PostgreSQL 启动、GPU 或真实英文听音；不宣称模型选择率、实际口述忠实性或工具等待打断已验收 |

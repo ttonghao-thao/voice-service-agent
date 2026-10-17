@@ -14,6 +14,8 @@
 
 `search_cuekb` 的一期描述覆盖公司/品牌/产品事实，不限于技术手册；价格、尺寸、重量、成分、包装、运输、存储、保质期和食用/使用方式同样属于需要企业证据的请求。明确询问公司或产品文档时必须调用该工具，不能在工具已注册时直接声称无权访问文档。问候、闲聊及不依赖企业资料的通用科学/技术概念仍由 general_qa 直接回答。
 
+现场 NVIDIA VoiceChat 曾在一期单工具目录中发出精确名称 `search_cueb`。Gateway 仅在 `dual_tools` 且当前注册目录严格等于单个 `search_cuekb` 时接受这个已知供应商别名，并在调度、Turn、报告和结果回填中统一使用规范名称 `search_cuekb`。审计 `native_tool_name_normalized` 及 `native_tool_arguments` 同时保留 `emitted_name=search_cueb`、`normalized_name=search_cuekb`；多工具目录、legacy 模式、其他拼写仍返回 `VOICE_TOOL_UNKNOWN`，不做模糊纠错。
+
 Adapter 接受 session.updated.tools 的 JSON 数组回显或官方文档中的 JSON 字符串回显；字符串先解析为数组，随后核对音频格式、工具集合/名称/description/parameters/ack_messages 及 instructions；工具列表顺序可变、额外默认字段可存在，但必要字段必须一致。缺失/被修改时返回 VOICE_PROTOCOL_ERROR，握手不能进入 ready。日志 `voice_registration_confirmed` 记录工具数和回显格式；拒绝时 `voice_registration_rejected` 记录失败字段/原因，不记录 prompt 或参数正文。该回显只证明传输注册一致，不证明最终 Jinja 模板、function head、权重/tokenizer/SOTC/EOTC 或模型真实选择正确。
 
 ## 2. 后台配置与刷新
