@@ -35,7 +35,10 @@ def load_cases(path):
             raise ValueError("Case IDs must be nonempty and unique")
         seen.add(case["case_id"])
         if "expected_tool" not in case or case["expected_tool"] not in (None, "search_knowledge_base"):
-            raise ValueError("Each expected_tool must be null or search_knowledge_base")
+            raise ValueError(
+                f"Case {case['case_id']!r}: expected_tool must be null or "
+                f"search_knowledge_base; got {case.get('expected_tool')!r}"
+            )
         terms = case.get("query_terms", [])
         if not isinstance(terms, list) or any(not isinstance(term, str) or not term.strip() for term in terms):
             raise ValueError("query_terms must contain nonempty strings")

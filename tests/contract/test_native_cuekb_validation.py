@@ -1,8 +1,31 @@
 """Acceptance reporting must not conflate routing, arguments, sources and speech."""
 
+import json
+from pathlib import Path
+
 import pytest
 
-from scripts.validate_native_cuekb import assess
+from scripts.validate_native_cuekb import assess, load_cases
+
+
+def test_committed_cases_use_current_public_tool_name():
+    root = Path(__file__).parents[2]
+    cases = json.loads((root / "artifacts/native-cuekb/cases.json").read_text())
+
+    assert {case["expected_tool"] for case in cases} <= {None, "search_knowledge_base"}
+
+
+def test_case_validation_identifies_legacy_tool_name(tmp_path):
+    path = tmp_path / "cases.json"
+    path.write_text(json.dumps([
+        {"case_id": "legacy", "wav": "unused.wav", "expected_tool": "search_cuekb"}
+    ]))
+
+    with pytest.raises(
+        ValueError,
+        match="Case 'legacy': expected_tool must be null or search_knowledge_base; got 'search_cuekb'",
+    ):
+        load_cases(path)
 
 
 @pytest.mark.parametrize("scenario,expected", [

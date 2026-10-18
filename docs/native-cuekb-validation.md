@@ -174,6 +174,17 @@ for wav in "$HOST_CASE_DIR"/*.wav; do
   write_to_api "$wav" "/tmp/native-cuekb/cases/$filename"
 done
 
+docker exec -i "$API_CONTAINER" python - <<'PY'
+import json
+from pathlib import Path
+
+path = Path("/tmp/native-cuekb/cases/cases.json")
+cases = json.loads(path.read_text())
+values = [(case["case_id"], case.get("expected_tool")) for case in cases]
+print(values)
+assert all(value in (None, "search_knowledge_base") for _, value in values), values
+PY
+
 docker exec "$API_CONTAINER" sh -c '
   test -r /tmp/native-cuekb/scripts/validate_native_cuekb.py &&
   test -r /tmp/native-cuekb/scripts/probe_voicechat.py &&
@@ -183,7 +194,24 @@ docker exec "$API_CONTAINER" sh -c '
 '
 ```
 
-每次 `write_to_api` 都应打印一个 SHA-256，且函数已验证宿主机源文件与容器目标文件逐字节相同。最后至少列出三个 Python 文件、`cases.json` 和其中引用的全部 WAV。任何命令非零都停止验证；不要再改用宿主机到容器的 `docker cp`。
+每次 `write_to_api` 都应打印一个 SHA-256，且函数已验证宿主机源文件与容器目标文件逐字节相同。配置预检应显示问候和通用问题对应 `None`，所有产品问题对应 `search_knowledge_base`；该字段只是验证期望值，不会修改 CueKB 后端名称。最后至少列出三个 Python 文件、`cases.json` 和其中引用的全部 WAV。任何命令非零都停止验证；不要再改用宿主机到容器的 `docker cp`。
+
+若验证脚本报告 `expected_tool must be null or search_knowledge_base`，说明复制进去的是旧 `cases.json`。从宿主机重新执行第 3.1 节预检和本节的 `write_to_api "$HOST_CASE_DIR/cases.json" ...`，然后在容器内确认：
+
+```sh
+docker exec -i "$API_CONTAINER" python - <<'PY'
+import json
+from pathlib import Path
+
+path = Path("/tmp/native-cuekb/cases/cases.json")
+cases = json.loads(path.read_text())
+values = [(case["case_id"], case["expected_tool"]) for case in cases]
+print(values)
+assert all(value in (None, "search_knowledge_base") for _, value in values)
+PY
+```
+
+预期问候和通用问题对应 `None`，所有产品问题对应 `search_knowledge_base`。
 
 ### 3.4 在 API 容器内执行端到端验证
 

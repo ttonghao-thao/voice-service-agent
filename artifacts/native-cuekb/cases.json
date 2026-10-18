@@ -12,7 +12,7 @@
   {
     "case_id": "black_pig_crisp_heart",
     "wav": "black_pig_crisp_heart.wav",
-    "expected_tool": "search_cuekb",
+    "expected_tool": "search_knowledge_base",
     "query_terms": [
       "Black Pig Crisp Heart"
     ]
@@ -20,7 +20,7 @@
   {
     "case_id": "golden_yolk",
     "wav": "golden_yolk.wav",
-    "expected_tool": "search_cuekb",
+    "expected_tool": "search_knowledge_base",
     "query_terms": [
       "Golden Yolk"
     ]
