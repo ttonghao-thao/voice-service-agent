@@ -70,13 +70,13 @@ preflight=passed provider=nvidia mode=dual_tools policy=general_qa tools=search_
 window_start=... window_end=... conversation_id=... report=/tmp/native-cuekb/report.json
 case=greeting expected=- actual=- selection=passed arguments=not_applicable retrieval=not_applicable cuekb_evidence=- voice_evidence=not_applicable evidence_filter=- speech=passed reason=- portal_error=- elapsed_ms=... input_ids=... trace_ids=-
 case=general_tech expected=- actual=- selection=passed arguments=not_applicable retrieval=not_applicable cuekb_evidence=- voice_evidence=not_applicable evidence_filter=- speech=passed reason=- portal_error=- elapsed_ms=... input_ids=... trace_ids=-
-case=black_pig_crisp_heart expected=search_knowledge_base actual=search_knowledge_base selection=passed arguments=passed retrieval=passed cuekb_evidence=sufficient voice_evidence=passed evidence_filter=candidates:5,selected:N,context:0,non_ascii:0,limit:L,budget:B speech=passed reason=- portal_error=- elapsed_ms=... input_ids=... trace_ids=...
-case=golden_yolk expected=search_knowledge_base actual=search_knowledge_base selection=passed arguments=passed retrieval=passed cuekb_evidence=sufficient voice_evidence=passed evidence_filter=candidates:5,selected:N,context:0,non_ascii:0,limit:L,budget:B speech=passed reason=- portal_error=- elapsed_ms=... input_ids=... trace_ids=...
+case=black_pig_crisp_heart expected=search_knowledge_base actual=search_knowledge_base selection=passed arguments=passed retrieval=passed cuekb_evidence=sufficient voice_evidence=passed evidence_filter=candidates:5,selected:N,truncated_ok:T,truncated_rejected:R,omitted_ok:O,omitted_rejected:M,non_ascii:0,limit:L,budget:B speech=passed reason=- portal_error=- elapsed_ms=... input_ids=... trace_ids=...
+case=golden_yolk expected=search_knowledge_base actual=search_knowledge_base selection=passed arguments=passed retrieval=passed cuekb_evidence=sufficient voice_evidence=passed evidence_filter=candidates:5,selected:N,truncated_ok:T,truncated_rejected:R,omitted_ok:O,omitted_rejected:M,non_ascii:0,limit:L,budget:B speech=passed reason=- portal_error=- elapsed_ms=... input_ids=... trace_ids=...
 validation=passed fault=PASS focus=human_transcription_and_spoken_faithfulness error_type=- exit_code=0
 host_exit_code=0
 ```
 
-`arguments=manual_review_required` 代表已有 query、但固定词项不足以自动判定语义；这种状态本身允许通过。产品用例必须同时满足 `retrieval=passed` 和 `voice_evidence=passed`。`cuekb_evidence` 直接显示 CueKB 的 `evidence_status`；仅省略周边 context 时，`sufficient` 可证明保留的主命中足以进入语音证据，`unassessed` 仍需完整命中块证明。示例中的 `N` 必须至少为 1；`L` 和 `B` 由命中长度及固定条数/字节预算决定。`evidence_filter` 只给出候选、选中及四类拒绝计数，不输出证据正文。脚本保持 80 ms 送帧，单 case 上限 90 秒，不用提高超时掩盖结束边界故障。
+`arguments=manual_review_required` 代表已有 query、但固定词项不足以自动判定语义；这种状态本身允许通过。产品用例必须同时满足 `retrieval=passed` 和 `voice_evidence=passed`。`cuekb_evidence` 直接显示 CueKB 的 `evidence_status`；仅省略周边 context 时，`sufficient` 可证明保留的主命中足以进入语音证据，`unassessed` 仍需完整命中块证明。`truncated_ok` 只统计由 chunk ID 与正文精确回显证明完整、且已从语音包移除截断 context 的主命中；`truncated_rejected` 是缺少该证明的截断命中。`omitted_ok/rejected` 对应应用省略周边 context 的准入结果。示例中的 `N` 必须至少为 1；`L` 和 `B` 由命中长度及固定条数/字节预算决定。脚本不输出证据正文，保持 80 ms 送帧，单 case 上限 90 秒。
 
 失败时只提供脚本实际输出，不先提供完整报告或全量日志。最终 `fault/focus` 的含义为：
 
@@ -89,7 +89,7 @@ host_exit_code=0
 | `UNKNOWN_TOOL_NAME` | 失败 case 行，再查该 `input_ids` 对应的 `emitted_tool/reason_code/stage` |
 | `TOOL_ARGUMENTS` | 失败 case 行和对应 input ID 的参数校验结果，不提供 query 正文 |
 | `CUEKB_RETRIEVAL` | 失败 case 行及对应 `trace_ids` 的一行 `cuekb_response_validated` |
-| `CUEKB_VOICE_EVIDENCE` | 失败 case 行中的 `cuekb_evidence` 与 `evidence_filter`；`context>0` 且 `cuekb_evidence=unassessed` 时先核对 CueKB 充分性或完整命中块，其余按 non_ascii、limit、budget 的非零计数处理 |
+| `CUEKB_VOICE_EVIDENCE` | 失败 case 行中的 `cuekb_evidence` 与 `evidence_filter`；`truncated_rejected>0` 表示缺少精确完整块证明，`omitted_rejected>0` 表示应用省略后既无充分性也无完整块证明，其余按 non_ascii、limit、budget 的非零计数处理 |
 | `VOICE_RESPONSE_COMPLETION` | 时间窗口、失败 case 行，以及同窗口 VoiceChat 的工具结果接收与 audio done/EOS 行 |
 | `PASS` | Python 七行及 `host_exit_code=0`；需要口述复核时只导出相关 case WAV |
 

@@ -14,10 +14,12 @@ from app.agent_runtime.direct import EvidenceReady
 from app.config import ROOT, Settings
 from app.contracts import CueKBArguments, DomainError, Principal
 from app.main import create_app
+from app.storage.models import Record
 from app.tools.adapters import CueKBAdapter
 from fastapi import FastAPI, Request
 from fastapi.testclient import TestClient
 from pydantic import ValidationError
+from sqlalchemy import select
 from websockets.asyncio.server import serve
 
 KB = "00000000-0000-4000-8000-000000000001"
@@ -58,6 +60,7 @@ def test_query_only_schema_rejects_authority_and_preserves_identifiers():
     ("needs_clarification", "CUEKB_NEEDS_CLARIFICATION"), ("auth", "CUEKB_AUTH_FAILED"),
     ("timeout", "TOOL_UNAVAILABLE"), ("non_ascii", "CUEKB_VOICE_EVIDENCE_UNAVAILABLE"),
     ("truncated_context", "CUEKB_VOICE_EVIDENCE_UNAVAILABLE"),
+    ("truncated_context_with_source_part", None),
     ("budget", "CUEKB_VOICE_EVIDENCE_UNAVAILABLE"), ("partial", None),
     ("typographic_ascii", None),
     ("duplicate_context", None), ("bounded_source_part", None),
@@ -122,8 +125,19 @@ async def test_native_query_reaches_cuekb_without_an_answer_model(tmp_path, monk
                 data["evidence_status"] = "unassessed"
         if scenario == "oversized":
             data["hits"][0]["source_text"] = "No. " * 2000
-        if scenario == "truncated_context":
+        if scenario in ("truncated_context", "truncated_context_with_source_part"):
             data["hits"][0]["context_truncated"] = True
+        if scenario == "truncated_context_with_source_part":
+            source = data["hits"][0]["source_text"]
+            data["hits"][0].update(
+                context=source + "\n\nPartial surrounding context",
+                context_parts=[{
+                    "chunk_id": data["hits"][0]["chunk_id"],
+                    "source_text": source,
+                    "anchor": {},
+                    "title_path": [],
+                }],
+            )
         if scenario == "partial":
             data["scope_limited"] = True
         return httpx.Response(200, json=data)
@@ -191,11 +205,25 @@ async def test_native_query_reaches_cuekb_without_an_answer_model(tmp_path, monk
             assert result.envelope["items"][0]["text"] == expected_text
             assert result.envelope["items"][0]["document_id"].endswith("101")
             assert result.envelope["trace_id"].endswith("111")
+            if scenario == "truncated_context_with_source_part":
+                assert result.envelope["items"][0]["context"] is None
             assert len(json.dumps(result.envelope).encode()) <= s.qa_direct_evidence_max_bytes
             assert json.dumps(result.envelope, ensure_ascii=False).isascii()
             assert result.envelope["partial"] is (scenario == "partial")
         assert ctx.effective_executor == "native_cuekb" and ctx.escalation_reason is None
         assert ctx.retrieval_calls == 1
+        if scenario in ("truncated_context", "truncated_context_with_source_part"):
+            async with app.state.store.sessions() as db:
+                audit = (await db.execute(select(Record).where(
+                    Record.conversation_id == "cid",
+                    Record.kind == "native_cuekb_voice_evidence",
+                ))).scalar_one().payload
+            if scenario == "truncated_context":
+                assert audit["rejected_truncated_context_count"] == 1
+                assert audit["accepted_truncated_source_count"] == 0
+            else:
+                assert audit["rejected_truncated_context_count"] == 0
+                assert audit["accepted_truncated_source_count"] == 1
 
 
 @pytest.mark.parametrize("spoken,reason", [

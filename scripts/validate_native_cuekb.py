@@ -99,6 +99,8 @@ def assess(case, history, seen_inputs, output_samples):
             "voice_evidence": voice_evidence_status,
             "voice_evidence_filter": ({key: evidence_audit.get(key) for key in (
                 "candidate_count", "selected_count", "rejected_context_count",
+                "rejected_truncated_context_count", "rejected_omitted_context_count",
+                "accepted_truncated_source_count", "accepted_omitted_source_count",
                 "rejected_non_ascii_count", "rejected_limit_count", "rejected_budget_count",
             )} if evidence_audit else None), "reason_code": reason,
             "speech_transport": "passed" if output_samples else "failed",

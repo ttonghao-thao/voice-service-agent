@@ -72,6 +72,7 @@ def test_console_summary_is_bounded_and_exit_requires_product_retrieval():
             "status": "observed", "selection": "passed",
             "actual_tools": ["search_knowledge_base"], "arguments": "manual_review_required",
             "retrieval": "passed", "reason_code": None, "speech_transport": "passed",
+            "cuekb_evidence_status": "sufficient",
             "elapsed_ms": 1200, "input_items_observed": 1, "output_samples": 1920,
             "source_trace_ids": ["trace-1"],
         }],
@@ -114,6 +115,29 @@ def test_single_entrypoint_classifies_missing_native_tool_with_bounded_evidence(
         "speech=passed reason=- "
         "portal_error=- elapsed_ms=1200 input_ids=input-1 trace_ids=-"
     )
+
+
+def test_evidence_filter_summary_splits_truncated_and_omitted_context():
+    line = case_line({
+        "case_id": "product", "expected_tool": "search_knowledge_base",
+        "actual_tools": ["search_knowledge_base"], "selection": "passed",
+        "arguments": "manual_review_required", "retrieval": "passed",
+        "cuekb_evidence_status": "sufficient", "voice_evidence": "passed",
+        "voice_evidence_filter": {
+            "candidate_count": 5, "selected_count": 2,
+            "accepted_truncated_source_count": 1,
+            "rejected_truncated_context_count": 1,
+            "accepted_omitted_source_count": 1,
+            "rejected_omitted_context_count": 2,
+            "rejected_non_ascii_count": 0, "rejected_limit_count": 0,
+            "rejected_budget_count": 0,
+        },
+        "speech_transport": "passed", "reason_code": None, "portal_error": None,
+        "elapsed_ms": 1200, "input_item_ids": ["input-1"], "source_trace_ids": ["trace-1"],
+    })
+
+    assert "truncated_ok:1,truncated_rejected:1" in line
+    assert "omitted_ok:1,omitted_rejected:2" in line
 
 
 @pytest.mark.parametrize(("row", "fault"), [

@@ -93,31 +93,45 @@ class NativeCueKBExecutor:
         }
         selected = []
         rejected_context = 0
+        rejected_truncated = 0
+        rejected_omitted = 0
+        accepted_truncated = 0
+        accepted_omitted = 0
         rejected_non_ascii = 0
         rejected_limit = 0
         rejected_budget = 0
         for citation in ctx.evidence.values():
             # A missing/truncated context can remove a qualification. Do not cut
             # individual passages to fit the voice payload or transliterate facts.
-            # Surrounding context may be omitted when CueKB explicitly judged
-            # the bounded primary excerpt sufficient, or when an independently
-            # anchored complete part proves that the primary excerpt is intact.
-            # A truly truncated context is never admitted.
+            # Never send a truncated context string. Its bounded primary source
+            # can still be used when an exact context part proves that source
+            # chunk is intact. Application-omitted surrounding context is safe
+            # when CueKB judged the primary evidence sufficient or the same
+            # exact source-part proof is present.
             complete_source_part = any(
                 str(part.get("chunk_id")) == citation.chunk_id
                 and part.get("source_text") == citation.content
                 for part in citation.context_parts
             )
-            context_omission_safe = (
-                result.get("evidence_status") == "sufficient" or complete_source_part
-            )
-            if citation.context_truncated or (
-                citation.context_omitted and not context_omission_safe
-            ):
-                rejected_context += 1
-                continue
+            voice_context = citation.context
+            if citation.context_truncated:
+                if not complete_source_part:
+                    rejected_context += 1
+                    rejected_truncated += 1
+                    continue
+                voice_context = None
+                accepted_truncated += 1
+            elif citation.context_omitted:
+                if not (
+                    result.get("evidence_status") == "sufficient" or complete_source_part
+                ):
+                    rejected_context += 1
+                    rejected_omitted += 1
+                    continue
+                voice_context = None
+                accepted_omitted += 1
             item = {"citation_id": citation.citation_id, "text": citation.content,
-                    "context": citation.context, "title": citation.title,
+                    "context": voice_context, "title": citation.title,
                     "document_id": citation.document_id, "chunk_id": citation.chunk_id,
                     "version_id": citation.version_id, "conditions": citation.metadata}
             item = normalize_voice_punctuation(item)
@@ -144,6 +158,10 @@ class NativeCueKBExecutor:
                 "candidate_count": len(ctx.evidence),
                 "selected_count": len(selected),
                 "rejected_context_count": rejected_context,
+                "rejected_truncated_context_count": rejected_truncated,
+                "rejected_omitted_context_count": rejected_omitted,
+                "accepted_truncated_source_count": accepted_truncated,
+                "accepted_omitted_source_count": accepted_omitted,
                 "rejected_non_ascii_count": rejected_non_ascii,
                 "rejected_limit_count": rejected_limit,
                 "rejected_budget_count": rejected_budget,

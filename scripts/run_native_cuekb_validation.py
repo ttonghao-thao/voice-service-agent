@@ -89,7 +89,10 @@ def evidence_filter_summary(row):
     return ",".join((
         f"candidates:{value.get('candidate_count', 0)}",
         f"selected:{value.get('selected_count', 0)}",
-        f"context:{value.get('rejected_context_count', 0)}",
+        f"truncated_ok:{value.get('accepted_truncated_source_count', 0)}",
+        f"truncated_rejected:{value.get('rejected_truncated_context_count', 0)}",
+        f"omitted_ok:{value.get('accepted_omitted_source_count', 0)}",
+        f"omitted_rejected:{value.get('rejected_omitted_context_count', 0)}",
         f"non_ascii:{value.get('rejected_non_ascii_count', 0)}",
         f"limit:{value.get('rejected_limit_count', 0)}",
         f"budget:{value.get('rejected_budget_count', 0)}",
