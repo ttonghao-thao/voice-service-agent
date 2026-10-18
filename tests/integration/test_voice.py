@@ -657,7 +657,8 @@ def test_fast_tool_result_during_ack_preserves_exactly_one_answer_permission(
 
 
 @pytest.mark.parametrize("qa_mode", ["legacy", "dual_tools"])
-def test_repeated_tool_ack_returns_the_answer_permission(tmp_path, qa_mode):
+@pytest.mark.parametrize("ack_count", [1, 2])
+def test_repeated_tool_ack_has_one_bounded_answer_permission(tmp_path, qa_mode, ack_count):
     app = create_app(Settings(
         _env_file=None, auto_create_schema=True,
         qa_execution_mode=qa_mode, qa_answer_policy="knowledge_required",
@@ -682,19 +683,22 @@ def test_repeated_tool_ack_returns_the_answer_permission(tmp_path, qa_mode):
             speech = json.loads(text)["speech_text"]
             # VoiceChat coalesced a repeated model function call, replayed the
             # cached result, and emitted the fixed ACK under a new response ID.
-            await self.queue.put(VoiceEvent("speech_text.done", {
-                "response_id": "repeated-ack", "text": ack,
-            }))
-            await self.queue.put(VoiceEvent("audio.done", {"response_id": "repeated-ack"}))
+            for index in range(ack_count):
+                response_id = f"repeated-ack-{index}"
+                await self.queue.put(VoiceEvent("speech_text.done", {
+                    "response_id": response_id, "text": ack,
+                }))
+                await self.queue.put(VoiceEvent("audio.done", {"response_id": response_id}))
             await self.queue.put(VoiceEvent("speech_text.done", {
                 "response_id": "answer", "text": speech,
             }))
             await self.queue.put(VoiceEvent("audio.done", {"response_id": "answer"}))
-            # The answer consumes the restored grant. No further response is
-            # authorized by the same tool result.
-            await self.queue.put(VoiceEvent("speech_text.delta", {
-                "response_id": "unrelated", "text": "An unbridged answer.",
-            }))
+            # One repeated ACK returns the grant for the answer. A second ACK
+            # consumes it permanently, so the following answer is rejected.
+            if ack_count == 1:
+                await self.queue.put(VoiceEvent("speech_text.delta", {
+                    "response_id": "unrelated", "text": "An unbridged answer.",
+                }))
 
     with TestClient(app) as client:
         app.state.voice.provider_factory = Scripted
@@ -716,7 +720,9 @@ def test_repeated_tool_ack_returns_the_answer_permission(tmp_path, qa_mode):
         spoken = [record["payload"]["text"] for record in records
                   if record["kind"] == "voicechat_transcript"]
         assert ack not in spoken
-        assert len(spoken) == 1 and "synthetic integration result" in spoken[0].lower()
+        assert bool(spoken) is (ack_count == 1)
+        if spoken:
+            assert len(spoken) == 1 and "synthetic integration result" in spoken[0].lower()
 
 
 

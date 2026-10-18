@@ -1,6 +1,6 @@
 # VoiceChat 本地修改源码快照
 
-本目录最初保存 `/Users/snowking/Documents/speech` 中为本项目 D19/D21 故障定位与恢复而实际修改的 VoiceChat/Speech 文件。2026-10-18 更新完整 `audio_server.py`、`model.py` 和 Prompt 模板：保留默认关闭的 PAD 尾部完成补丁，公开工具名改为完整英文，增加不含 Prompt/参数正文的跨层名称与 hash 诊断，并按用户输入合并重复规范工具调用、复用首个 API 结果。目录结构保持相对于 Speech 源码根目录不变。参考上游为 `NVIDIA-NeMo/Speech` 的 `nemotron-labs-voicechat` 分支，审计基线 commit 为 `097dfe9e2f55baf653b83035868bdc89849f1b47`。
+本目录最初保存 `/Users/snowking/Documents/speech` 中为本项目 D19/D21 故障定位与恢复而实际修改的 VoiceChat/Speech 文件。2026-10-19 更新完整 `audio_server.py`、`model.py` 和 Prompt 模板：保留默认关闭的 PAD 尾部完成补丁，公开工具名改为完整英文，增加不含 Prompt/参数正文的跨层名称与 hash 诊断，按用户输入合并重复规范工具调用、复用首个 API 结果，并把缓存结果重放限制为一次。目录结构保持相对于 Speech 源码根目录不变。参考上游为 `NVIDIA-NeMo/Speech` 的 `nemotron-labs-voicechat` 分支，审计基线 commit 为 `097dfe9e2f55baf653b83035868bdc89849f1b47`。
 
 当前 `model.py` 已包含补丁，可直接用于更新独立 VoiceChat/Speech 的同路径文件，**不要再对它应用 `pad-tail-completion.patch`**。部署顺序、运行参数和离线验证仍以 [`deploy/voicechat/README.md`](../../deploy/voicechat/README.md) 为准；精确 SHA-256 见 [`snapshot-manifest.json`](snapshot-manifest.json)。更新后仍需在 Triton backend 启动前设置 `S2S_INFERENCE_CLOSE_ON_PAD_TAIL=true` 才开启新逻辑。
 
@@ -14,7 +14,7 @@
 
 | Speech 相对路径 | 内容 |
 | --- | --- |
-| `s2s/audio_server.py` | WebSocket 响应生命周期、隔离采集、最终 Prompt 工具名/hash 诊断，以及同输入重复工具调用合并/结果复用 |
+| `s2s/audio_server.py` | WebSocket 响应生命周期、隔离采集、最终 Prompt 工具名/hash 诊断，以及同输入重复工具调用合并、一次结果复用和重放上限 |
 | `s2s/prompt_template.jinja` | 用户提供的现场完整模板，加入会话策略优先、search_knowledge_base 单工具调用约束及消费品/商业事实检索示例；基线来源及 hash 见 manifest |
 | `docs/voicechat-api.md` | 外部 VoiceChat API 说明更新 |
 | `s2s/tests/test_response_lifecycle.py` | 外部 Speech 响应生命周期测试 |

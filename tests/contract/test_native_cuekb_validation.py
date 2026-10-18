@@ -213,7 +213,8 @@ def test_voicechat_log_summary_compares_prompt_chain_without_printing_raw_log():
     )
     assert lines[3] == (
         "voicechat_events function_parsed=1 new_calls=1 new_call_inputs=1 function_result=1 "
-        "duplicates_coalesced=0 results_replayed=0 response_timeouts=0 audio_done=1"
+        "duplicates_coalesced=0 results_replayed=0 replay_limit=0 "
+        "response_timeouts=0 audio_done=1"
     )
     assert "private" not in "\n".join(lines)
 
@@ -329,8 +330,54 @@ def test_voicechat_log_summary_filters_other_sequences_and_trailing_log_quote():
     )
     assert lines[3].startswith(
         "voicechat_events function_parsed=2 new_calls=1 new_call_inputs=1 "
-        "function_result=1 duplicates_coalesced=0 results_replayed=1"
+        "function_result=1 duplicates_coalesced=0 results_replayed=1 replay_limit=0"
     )
+
+
+def test_voicechat_log_summary_fails_after_one_cached_result_replay():
+    digest = "1" * 64
+    log = "\n".join((
+        "Prompt prepared: tools_count=1 tool_names=search_knowledge_base "
+        f"prompt_chars=7000 prompt_sha256={digest}",
+        "System prompt received for sequence 42: tool_names=search_knowledge_base "
+        f"chars=7000 sha256={digest}",
+        *["Function call decoded from model for sequence 42: tool_names=search_knowledge_base"] * 3,
+        'voice_ws_diagnostic {"sequence_id":42,"event":"function.parsed"}',
+        'voice_ws_diagnostic {"sequence_id":42,"event":"function.call",'
+        '"action":"queued","input_item_id":"i1"}',
+        'voice_ws_diagnostic {"sequence_id":42,"event":"function.result"}',
+        'voice_ws_diagnostic {"sequence_id":42,"event":"function.parsed"}',
+        'voice_ws_diagnostic {"sequence_id":42,"event":"function.duplicate",'
+        '"action":"replayed_result"}',
+        'voice_ws_diagnostic {"sequence_id":42,"event":"function.parsed"}',
+        'voice_ws_diagnostic {"sequence_id":42,"event":"function.duplicate",'
+        '"action":"replay_limit"}',
+    ))
+
+    lines, ok = summarize_voicechat_log(log, "search_knowledge_base")
+
+    assert not ok
+    assert "results_replayed=1 replay_limit=1" in lines[3]
+    assert lines[-1] == "voicechat_diagnostic=failed fault=FUNCTION_REPLAY_LIMIT"
+
+
+def test_api_log_summary_rejects_multiple_ack_grant_restores_for_one_call():
+    log = "\n".join((
+        "voice_tool_call_received conversation_id=c1 call_id=k1 "
+        "tool=search_knowledge_base input_item_id=i1",
+        "voice_bridge_started conversation_id=c1 call_id=k1",
+        "cuekb_response_validated conversation_id=c1 turn_id=u1 trace_id=t1 "
+        "retrieval_status=ok hit_count=3 duration_ms=20",
+        "voice_tool_result_submitted conversation_id=c1 turn_id=u1 call_id=k1",
+        "voice_tool_ack_continuation_restored conversation_id=c1 call_id=k1 response_id=r1",
+        "voice_tool_ack_continuation_restored conversation_id=c1 call_id=k1 response_id=r2",
+    ))
+
+    lines, ok = summarize_api_log(log)
+
+    assert not ok
+    assert "ack_grants_restored=2" in lines[0]
+    assert lines[-1] == "api_diagnostic=failed fault=ACK_GRANT_INVARIANT"
 
 
 def test_api_log_summary_reports_only_lifecycle_counts_and_trace():

@@ -212,6 +212,9 @@ def summarize_voicechat_log(text, expected_tool):
     replayed_count = len(diagnostic_matches(
         diagnostics, event="function.duplicate", action="replayed_result"
     ))
+    replay_limit_count = len(diagnostic_matches(
+        diagnostics, event="function.duplicate", action="replay_limit"
+    ))
     duplicate_count = coalesced_count + replayed_count
     audio_done_count = len(diagnostic_matches(
         diagnostics, event="output.sent", kind="response.output_audio.done"
@@ -240,6 +243,7 @@ def summarize_voicechat_log(text, expected_tool):
             f"new_calls={new_call_count} new_call_inputs={new_call_input_count} "
             f"function_result={result_count} "
             f"duplicates_coalesced={coalesced_count} results_replayed={replayed_count} "
+            f"replay_limit={replay_limit_count} "
             f"response_timeouts={text.count('Function call response timed out')} "
             f"audio_done={audio_done_count}"
         ),
@@ -252,6 +256,8 @@ def summarize_voicechat_log(text, expected_tool):
         result = ("failed", "FUNCTION_EVENT_NOT_PARSED")
     elif new_call_count == 0:
         result = ("failed", "FUNCTION_CALL_NOT_QUEUED")
+    elif replay_limit_count:
+        result = ("failed", "FUNCTION_REPLAY_LIMIT")
     elif new_call_count != new_call_input_count or new_call_count + duplicate_count != parsed_count:
         result = ("failed", "FUNCTION_DEDUPE_GAP")
     elif result_count == 0:
@@ -324,6 +330,8 @@ def summarize_api_log(text):
         result = ("failed", "CUEKB_RESPONSE_ABSENT")
     elif not submitted:
         result = ("failed", "TOOL_RESULT_NOT_SUBMITTED")
+    elif len(ack_restored) > len(received) or len({row[1] for row in ack_restored}) != len(ack_restored):
+        result = ("failed", "ACK_GRANT_INVARIANT")
     elif duplicate_inputs or unbound:
         result = ("failed", "DUPLICATE_TOOL_EVENTS")
     else:

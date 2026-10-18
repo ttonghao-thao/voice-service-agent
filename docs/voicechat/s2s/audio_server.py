@@ -1672,6 +1672,13 @@ class AudioSession:
                 continue
             if state == "delivered":
                 cached = self._function_result_cache[signature]
+                replay_count = cached.get("replay_count", 0)
+                if replay_count >= 1:
+                    self._voice_diagnostic(
+                        "function.duplicate", action="replay_limit", state=state
+                    )
+                    raise ValueError("Repeated tool call exceeded the cached result replay limit")
+                cached["replay_count"] = replay_count + 1
                 self.function_call_output.append({
                     "call_id": cached["call_id"],
                     "output": cached["output"],
@@ -1847,6 +1854,7 @@ class AudioSession:
                 self._function_result_cache[signature] = {
                     "call_id": call_id,
                     "output": output,
+                    "replay_count": 0,
                 }
                 self._function_signature_states[signature] = "queued"
                 item = {**item, "_signature": signature}

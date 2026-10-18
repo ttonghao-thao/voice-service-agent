@@ -251,13 +251,18 @@ async def test_duplicate_tool_call_reuses_one_api_call_and_cached_result_per_inp
     assert len(session.function_call_output) == 1
     assert session.function_call_output[0]["output"] == '{"status":"evidence_ready"}'
 
+    session.function_call_output.clear()
+    session._function_signature_states[signature] = "delivered"
+    with pytest.raises(ValueError, match="cached result replay limit"):
+        await session._process_function_text(call_text)
+
     await session._emit_speech_started()
     pending(session)
     await session._process_function_text(call_text)
     next_turn = [event for event in pending(session)
                  if event["type"] == "response.function_call_arguments.done"]
     assert len(next_turn) == 1 and next_turn[0]["call_id"] != calls[0]["call_id"]
-    assert json.loads(event["arguments"]) == {"query": "Product AX storage requirements"}
+    assert json.loads(next_turn[0]["arguments"]) == {"query": "Black Pig Crisp Heart details"}
 
 
 def test_pcm16_clips_full_scale_and_flushes_partial_little_endian_frame():

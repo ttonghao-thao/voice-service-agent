@@ -239,6 +239,7 @@ class VoiceGateway:
         last_speech_done = {}
         speech_new_delta = set()
         authorized_followups = set()
+        restored_ack_calls = set()
         ack_responses = set()
         general_inputs = {}
         general_deadlines = {}
@@ -1011,8 +1012,13 @@ class VoiceGateway:
                         # authorized; there is still only one outstanding grant.
                         call = response_deliveries[response_id]
                         parent_response = tool_responses.get(call)
-                        if parent_response and pending.get(call) == "sent":
+                        if (
+                            parent_response
+                            and pending.get(call) == "sent"
+                            and call not in restored_ack_calls
+                        ):
                             authorized_followups.add(parent_response)
+                            restored_ack_calls.add(call)
                             logger.info(
                                 "voice_tool_ack_continuation_restored "
                                 "conversation_id=%s call_id=%s response_id=%s",

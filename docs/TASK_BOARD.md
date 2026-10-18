@@ -4,7 +4,7 @@
 
 ## 1. 当前结论与审计基线
 
-应用控制链已有实现。2026-10-19 最新现场轮次已证明原生语音 top_k 对齐、截断证据准入、单输入工具去重、真实 CueKB 和结果回送均正常：`candidates=selected=3 limit=0`，VoiceChat 只向 API 发出一个新调用，API `received=inputs=unique_calls=1 unbound=0`。剩余故障发生在结果回送后：模型重复 function call 产生新的固定 ACK response，该 ACK 消耗了预留给最终知识回答的 continuation grant，结束时未归还；真正答案因此被拒绝为 `VOICE_TOOL_REQUIRED`，验证端随后记录 `VOICE_ANSWER_TIMEOUT`。Gateway 已在已绑定工具结果的精确 ACK 结束后恢复同一个 grant，并把等待合并与缓存结果重放拆分诊断，等待重建 API 现场验证。故障二是 `hello.wav` 句首 `Hello` 丢失，已确认独立存在并暂缓定位。真实知识语音链路仍未放行，详见 [VoiceChat 工具选择定位](voicechat/native-tool-selection-validation.md)。
+应用控制链已有实现。2026-10-19 最新现场轮次已证明原生语音 top_k 对齐、截断证据准入、单输入工具去重、真实 CueKB 和结果回送均正常：`candidates=selected=3 limit=0`，VoiceChat 只向 API 发出一个新调用，API `received=inputs=unique_calls=1 unbound=0`。剩余故障发生在结果回送后：模型重复 function call 产生新的固定 ACK response，该 ACK 消耗了预留给最终知识回答的 continuation grant，结束时未归还；真正答案因此被拒绝为 `VOICE_TOOL_REQUIRED`，验证端随后记录 `VOICE_ANSWER_TIMEOUT`。最终实现已同时收口两端：Gateway 只允许已绑定工具结果的精确 ACK 归还一次同一 grant，VoiceChat 每个输入只执行一次工具、结果后最多重放一次，继续重调则明确失败，避免回到早期 15 次循环。等待重建 API 与 VoiceChat 现场验证。故障二是 `hello.wav` 句首 `Hello` 丢失，已确认独立存在并暂缓定位。真实知识语音链路仍未放行，详见 [VoiceChat 工具选择定位](voicechat/native-tool-selection-validation.md)。
 
 当前需求已确认：VoiceChat 自主决定直接回答或调用工具，后端只使用 VoiceChat，不引入独立 ASR/TTS，不根据最终转写自动启动业务。本次实现以 dual_tools/general_qa 为部署目标；旧 knowledge_required 现场证据属于严格模式，不能作为当前目标配置。先打通功能再优化时延，详见 [实施顺序](q1003-target-architecture.md#4-实施计划与决策门槛)。
 
@@ -27,7 +27,7 @@
 
 | 任务 | 当前状态 | 下一步完成条件 |
 | --- | --- | --- |
-| VoiceChat 一期原生单工具 | 工具名、Prompt、模型 function、CueKB、截断证据准入、3 项检索及单输入去重均已通过现场验证。重复工具 ACK 消耗最终回答授权的问题已在 Gateway 修复；公开名称统一为 search_knowledge_base(query)，旧拼写严格拒绝。问候首词故障暂缓 | 只重建 API 后运行单入口及两份摘要；产品 case 需 `candidates=selected=3 limit=0`、无 timeout/tool-required，每个产品 input 只对应一个新工具调用，完整四用例退出 0 |
+| VoiceChat 一期原生单工具 | 工具名、Prompt、模型 function、CueKB、截断证据准入、3 项检索及单输入去重均已通过现场验证。重复工具 ACK 只可归还一次回答授权，缓存结果最多重放一次；公开名称统一为 search_knowledge_base(query)，旧拼写严格拒绝。问候首词故障暂缓 | 重建 API 与 VoiceChat 后运行单入口及两份摘要；产品 case 需 `candidates=selected=3 limit=0`、`replay_limit=0`、无 timeout/tool-required，每个产品 input 只对应一个新工具调用，完整四用例退出 0 |
 | P0-A/B：现场部署与两类验证 | 严格配置已确认；两类现场日志已分析 | 补运行 hash；严格知识闭环与 PAD A/B 分开报告 |
 | P1-A：严格提示与授权一致 | 编码及本地回归完成；现场拒绝保护生效 | 保留显式严格模式；当前自主回答部署改用 general_qa，不要求每次先调用工具 |
 | P1-B：ASR/function 首差异修复 | 原生路径追加排查暂停；算子未确定 | 仅在重新投入原生路径时恢复，不阻塞提示与应用契约修正 |

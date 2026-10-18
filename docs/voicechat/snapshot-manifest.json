@@ -9,9 +9,9 @@
     "opt/tritonserver/backends/nemotron-voicechat/data_types.py": "416a5ec1bd025685cec2552c2accc992b30b7013b0e0bcad0a2d9c5bb6f04c98",
     "opt/tritonserver/backends/nemotron-voicechat/model.py": "c91b3af5b41f515fc1dbfaf7fdbec4ae528a4989f90a144829d2491a9b805990",
     "opt/tritonserver/backends/nemotron-voicechat/runtime_setup.py": "f89b36f66222b3384791b5eecc98d82ae54fe7dd01f086224d4dfc1514fa28cc",
-    "s2s/audio_server.py": "f28ada577f84956c46b3ce04f4cbebf9c0e6405773ce4486105aef97958bb17b",
+    "s2s/audio_server.py": "6a87b5e8121b44667278e9cc75fc4d663d91705cd7cf0929bdf26d1496fd1a21",
     "s2s/tests/requirements.txt": "095094833e146be9f5d5aea3b3d41ef662e3f269d5423172de266c71e154102b",
-    "s2s/tests/test_response_lifecycle.py": "7804c663bc1a13546bde77daf486679d34a0db38b77f527c68ef575ea924707b",
+    "s2s/tests/test_response_lifecycle.py": "6bda19bead2974b420356b48f6cc17b7953e7e14fde906a48ee3801f60ac3b7a",
     "s2s/tests/test_voice_diagnostics.py": "7e0faa6fc38886e87bbd88734f82ccf2064f818ecbf73276602b7fbdf6bfa4fd",
     "s2s/prompt_template.jinja": "a71230010295a363a0fde0e0d86c4786aeb4ef5f458cf4d75ddf0926895bcdb7"
   },
@@ -31,11 +31,12 @@
     "full-knowledge-base-tool-name",
     "prompt-and-model-tool-name-diagnostics",
     "per-input-tool-call-result-replay",
-    "single-tool-argument-variant-coalescing"
+    "single-tool-argument-variant-coalescing",
+    "bounded-cached-result-replay"
   ],
   "file_sources": {
     "s2s/audio_server.py": {
-      "source": "NVIDIA Speech snapshot with repository-maintained response lifecycle diagnostics and per-input tool-call coalescing; a single registered tool is keyed by tool name so argument restatements reuse the first API result without logging arguments or result content"
+      "source": "NVIDIA Speech snapshot with repository-maintained response lifecycle diagnostics and per-input tool-call coalescing; a single registered tool is keyed by tool name so argument restatements reuse the first API result without logging arguments or result content, with at most one cached-result replay before an explicit protocol failure"
     },
     "s2s/prompt_template.jinja": {
       "source": "User-supplied deployed voicechat-prompt-template.jinja; strict session policy and single-call examples updated in this repository; search_knowledge_base(query) example covers consumer and business product facts and forbids lack-of-access responses when a registered tool covers the request",
