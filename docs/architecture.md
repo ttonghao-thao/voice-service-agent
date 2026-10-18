@@ -2,7 +2,7 @@
 
 2026-10-15 对照 `63e7059` 核对 Gateway、Provider、Coordinator、Runtime 与部署边界。本页维护已实现架构；改进方案见 [实施设计](q1003-target-architecture.md)，工作状态见 [任务板](TASK_BOARD.md)。
 
-当前一期部署为 VoiceChat 原生单工具验证：只注册 search_cuekb(query)，通过 NativeCueKBExecutor→Registry→CueKBAdapter 检索，直接回填精简证据，由 VoiceChat 生成语音。AGENT_PROVIDER=disabled，不运行额外答案模型；外置 SDK/文本模型路径仅保留兼容实现，不在下图的一期数据流中。原生工具选择、连续追问与实际口述验收见 [验证步骤](native-cuekb-validation.md)。
+当前一期部署为 VoiceChat 原生单工具验证：只向模型注册 search_knowledge_base(query)，通过内部 NativeCueKBExecutor→Registry→CueKBAdapter 检索，直接回填精简证据，由 VoiceChat 生成语音。AGENT_PROVIDER=disabled，不运行额外答案模型；外置 SDK/文本模型路径仅保留兼容实现，不在下图的一期数据流中。原生工具选择、连续追问与实际口述验收见 [验证步骤](native-cuekb-validation.md)。
 
 ## 1. 产品与部署边界
 

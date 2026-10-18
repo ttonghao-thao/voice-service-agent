@@ -34,8 +34,8 @@
 
     {{- 'When the session instructions require a tool, call one matching registered tool. Use this format with arguments matching its schema:\n' -}}
     {%- set _first = (tools[0].function if tools[0].function is defined else tools[0]) -%}
-    {%- if _first.name == 'search_cuekb' -%}
-        {{- '<TOOLCALL>[{"name": "search_cuekb", "arguments": {"query": "What does the company documentation say about the price, weight, storage requirements, and shelf life of Product AX?"}}]' -}}
+    {%- if _first.name == 'search_knowledge_base' -%}
+        {{- '<TOOLCALL>[{"name": "search_knowledge_base", "arguments": {"query": "What does the company documentation say about the price, weight, storage requirements, and shelf life of Product AX?"}}]' -}}
     {%- else -%}
         {{- '<TOOLCALL>[{"name": "registered_tool_name", "arguments": {"argument_name": "argument_value"}}]' -}}
     {%- endif -%}

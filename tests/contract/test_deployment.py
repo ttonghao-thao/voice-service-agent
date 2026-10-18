@@ -237,7 +237,8 @@ def test_native_cuekb_readiness_allows_no_text_model_but_requires_single_tool():
     with pytest.raises(ValueError):
         functions["validate_ready"](ready, {"search_knowledge"})
     caps = {"provider": "nvidia", "qa_execution_mode": "dual_tools", "answer_policy": "general_qa",
-            "is_mock": False, "voice_available": True, "agent_provider": "disabled", "native_tools": ["search_cuekb"]}
+            "is_mock": False, "voice_available": True, "agent_provider": "disabled",
+            "native_tools": ["search_knowledge_base"]}
     assert functions["validate_voice_policy"](caps, cuekb_only=True)
     for change in ({"agent_provider": "openai"}, {"native_tools": ["lookup_knowledge", "reason_over_knowledge"]}):
         with pytest.raises(ValueError):

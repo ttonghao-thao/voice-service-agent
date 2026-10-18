@@ -8,7 +8,7 @@
 
 当前需求已确认：VoiceChat 自主决定直接回答或调用工具，后端只使用 VoiceChat，不引入独立 ASR/TTS，不根据最终转写自动启动业务。本次实现以 dual_tools/general_qa 为部署目标；旧 knowledge_required 现场证据属于严格模式，不能作为当前目标配置。先打通功能再优化时延，详见 [实施顺序](q1003-target-architecture.md#4-实施计划与决策门槛)。
 
-本期进一步收敛到一个原生业务工具 search_cuekb(query)。默认目录、执行器和录音验证脚本已编码；AGENT_PROVIDER=disabled，不需外置模型配置。旧 lookup/reason、SDK 工作流仅保留兼容覆盖，不能用于本期放行。部署及错误分界见 [单工具验证](native-cuekb-validation.md)。
+本期进一步收敛到一个原生业务工具 search_knowledge_base(query)，内部可信 implementation 仍为 search_cuekb/CueKB。默认目录、执行器和录音验证脚本已编码；AGENT_PROVIDER=disabled，不需外置模型配置。旧 lookup/reason、SDK 工作流仅保留兼容覆盖，不能用于本期放行。部署及错误分界见 [单工具验证](native-cuekb-validation.md)。
 
 ## 2. 已完成的编码里程碑
 
@@ -26,7 +26,7 @@
 
 | 任务 | 当前状态 | 下一步完成条件 |
 | --- | --- | --- |
-| VoiceChat 一期原生单工具 | search_cuekb(query)、无外置模型、证据回填、目录升级、录音验证已编码；新元数据部署后现场已进入工具选择，但 NVIDIA 连续发出 search_cueb，Gateway 严格单工具别名兼容已编码；问候首词转写问题按当前安排另行处理 | 仅重建 API 后先做 5 次合成产品录音，确认规范名称、参数、检索和口述，再以真人英文录音验收 |
+| VoiceChat 一期原生单工具 | 公开名称改为 search_knowledge_base(query)，内部仍走 CueKB；旧缩写/错误名称不再接受。VoiceChat 已增加最终 Prompt 工具名/hash、backend 接收 hash 和模型函数名称诊断；问候首词转写问题按当前安排另行处理 | 重建 API 和 VoiceChat 后先核对两层 Prompt hash，再做 5 次合成产品录音确认模型原始名称、参数、检索和口述，最后以真人英文录音验收 |
 | P0-A/B：现场部署与两类验证 | 严格配置已确认；两类现场日志已分析 | 补运行 hash；严格知识闭环与 PAD A/B 分开报告 |
 | P1-A：严格提示与授权一致 | 编码及本地回归完成；现场拒绝保护生效 | 保留显式严格模式；当前自主回答部署改用 general_qa，不要求每次先调用工具 |
 | P1-B：ASR/function 首差异修复 | 原生路径追加排查暂停；算子未确定 | 仅在重新投入原生路径时恢复，不阻塞提示与应用契约修正 |

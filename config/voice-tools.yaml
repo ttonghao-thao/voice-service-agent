@@ -1,7 +1,7 @@
 # Phase 1: one native VoiceChat tool. Executable code remains trusted.
 # Apply this file to an existing persisted catalog with configure_native_cuekb.py.
 tools:
-  - name: search_cuekb
+  - name: search_knowledge_base
     implementation: search_cuekb
     description: >-
       Search the authorized CueKB knowledge base for organization-specific, brand-specific,

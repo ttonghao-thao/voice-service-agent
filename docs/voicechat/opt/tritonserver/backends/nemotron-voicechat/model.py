@@ -1907,7 +1907,13 @@ class TritonPythonModel:
         if function_text and "<TOOLCALL>" in function_text and "</TOOLCALL>" in function_text:
             function_text = function_text.split("<TOOLCALL>")[1].split("</TOOLCALL>")[0]
             try:
-                json.loads(function_text)
+                parsed = json.loads(function_text)
+                calls = parsed if isinstance(parsed, list) else [parsed]
+                names = [call.get("name") for call in calls if isinstance(call, dict)]
+                logger.log_info(
+                    "Function call decoded from model: tool_names="
+                    + (",".join(name for name in names if isinstance(name, str)) or "none")
+                )
                 return function_text
             except json.JSONDecodeError:
                 logger.log_error(f"Failed to parse function text as JSON: chars={len(function_text)}")
@@ -2297,6 +2303,24 @@ class TritonPythonModel:
                         arr = pb_utils.get_input_tensor_by_name(request, "system_prompt").as_numpy()
                         system_prompt = arr.ravel()[0].decode("utf-8").strip()
                         self._seq_mgr[sequence_id].system_prompt = system_prompt
+                        available_tools = _re_available_tools_pattern.search(system_prompt)
+                        prompt_tool_names = []
+                        if available_tools:
+                            try:
+                                definitions = json.loads(available_tools.group(1))
+                                prompt_tool_names = [
+                                    definition.get("name") for definition in definitions
+                                    if isinstance(definition, dict)
+                                    and isinstance(definition.get("name"), str)
+                                ]
+                            except json.JSONDecodeError:
+                                prompt_tool_names = ["<invalid_json>"]
+                        logger.log_info(
+                            f"System prompt received for sequence {sequence_id}: "
+                            f"tool_names={','.join(prompt_tool_names) or 'none'} "
+                            f"chars={len(system_prompt)} "
+                            f"sha256={hashlib.sha256(system_prompt.encode('utf-8')).hexdigest()}"
+                        )
                         if self._capture_enabled(sequence_id):
                             decoding = getattr(self.model.rnnt_decoder, "decoding", None)
                             joint = getattr(decoding, "joint", None)

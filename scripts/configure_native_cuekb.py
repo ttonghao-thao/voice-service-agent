@@ -23,8 +23,12 @@ async def configure(settings, apply=False):
             runtime = BusinessRuntime(settings, ToolRegistry(settings, client, store))
             revision, current = await runtime.catalog.configuration()
             target = runtime.catalog.load_file()
-            if len(target) != 1 or (target[0].name, target[0].implementation) != ("search_cuekb", "search_cuekb"):
-                raise ValueError("The checked-in phase-1 catalog must contain only search_cuekb")
+            if len(target) != 1 or (
+                target[0].name, target[0].implementation
+            ) != ("search_knowledge_base", "search_cuekb"):
+                raise ValueError(
+                    "The checked-in phase-1 catalog must expose only search_knowledge_base via search_cuekb"
+                )
             changed = [entry.model_dump() for entry in current] != [entry.model_dump() for entry in target]
             if apply and changed:
                 revision = await runtime.catalog.update(target, revision, "deployment",

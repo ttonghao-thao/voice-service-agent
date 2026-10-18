@@ -7,7 +7,7 @@
 | 会话模式 / 策略 | 原生工具 | 执行规则 |
 | --- | --- | --- |
 | legacy（默认） | consult_service_agent | 完整输入进入外置知识链；未经工具授权的实质性输出被拒绝 |
-| dual_tools / general_qa | 后台配置的全局工具目录 | 一般问答可无工具回复；按注册能力执行；一期默认仅 search_cuekb(query)；旧 lookup/reason 保留兼容 |
+| dual_tools / general_qa | 后台配置的全局工具目录 | 一般问答可无工具回复；按注册能力执行；一期默认仅 search_knowledge_base(query)；旧 lookup/reason 保留兼容 |
 | dual_tools / knowledge_required | 同一全局目录 | 拒绝无工具实质性输出；direct 知识实现也走外置链 |
 
 新建 Conversation 快照模式/策略，语音 session 冻结原生目录及 revision；后台更新目录会关闭旧连接并重新注册，不原地改旧快照。更改部署模式不会切换已有 Conversation。dual_tools 是历史兼容名称，不限制工具数量。配置和回退见 [部署](deployment.md#问答模式与预算q07)；全局目录见 [工具注册契约](interfaces/voice-tools.md)。后台 `search_knowledge` 是 Registry 能力，不能用原生名称替换部署白名单。
@@ -18,7 +18,7 @@ VoiceChat 模型通过 tools/instructions 自主选择；不发送 WS tool_choic
 
 ## 一期原生单工具路径
 
-默认注册 `search_cuekb(query)`，由 `NativeCueKBExecutor` 经既有 Registry/CueKBAdapter 调 `/v1/search`。query 不会被最终转写覆盖；最终转写仍作为请求归属和可信上下文来源。原生参数/异常记录供区分选择、参数、检索和语音问题，不自动做语义正确性判定。
+默认向 VoiceChat 注册 `search_knowledge_base(query)`，其可信 implementation 为 `search_cuekb`，由 `NativeCueKBExecutor` 经既有 Registry/CueKBAdapter 调 `/v1/search`。query 不会被最终转写覆盖；最终转写仍作为请求归属和可信上下文来源。原生参数/异常记录供区分选择、参数、检索和语音问题，不自动做语义正确性判定。
 
 该执行器没有外置模型或升级分支。检索失败、无结果、澄清、insufficient/conflicting 分别返回明确状态；有可用证据时，选取完整 ASCII 来源及必要 context，在项数/字节预算内形成 `cuekb-evidence-v1`。不截断句子或音译技术事实；无法保留完整英文证据则返回受控不足结果。scope/degraded/省略项标记 partial，不能推导为完整知识不存在。unassessed 保留原标签，由 VoiceChat 只根据实际证据作答，不冒充服务已经证明其充分。
 

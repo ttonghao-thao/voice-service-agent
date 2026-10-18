@@ -106,7 +106,7 @@ python3.12 -m py_compile "$voicechat_source/opt/tritonserver/backends/nemotron-v
 sha256sum "$voicechat_source/opt/tritonserver/backends/nemotron-voicechat/model.py"
 ```
 
-hash 应为 manifest 的 after 值 `bc4271093c732beb70d4bce770b4ac06bdc0d31d97d558cb4e87190c365806a8`。`runtime_setup.py` 本次没有更新；测试和文档不需要复制到 GPU 运行目录。复制后的 `model.py` 已含补丁，不再执行下述正向应用。
+hash 应为 manifest 的 after 值 `c94892232a194b570b0fa3851a6cc6fdbbe8ea9c54104872eebe5deec554693d`。当前完整文件同时包含安全的 Prompt/模型工具名诊断；`runtime_setup.py` 本次没有更新，测试和文档不需要复制到 GPU 运行目录。复制后的 `model.py` 已含补丁，不再执行下述正向应用。
 
 **仅有旧文件时的补丁交付：** 在备份好的 speech 源码副本中应用，路径替换为实际值：
 

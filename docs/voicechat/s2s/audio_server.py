@@ -1336,6 +1336,7 @@ class AudioSession:
             The rendered prompt string to send to Triton.
         """
         prompt = ""
+        tools_list = []
         if USE_JINJA_TEMPLATE_PROMPT:
             logger.info("Preparing prompt using jinja template")
             try:
@@ -1370,6 +1371,19 @@ class AudioSession:
                         "\n<TOOL_ACK_MESSAGES>" + json.dumps(ack_list, ensure_ascii=False) + "</TOOL_ACK_MESSAGES>"
                     )
 
+        tool_names = []
+        for tool in tools_list:
+            definition = tool.get("function", tool) if isinstance(tool, dict) else {}
+            name = definition.get("name") if isinstance(definition, dict) else None
+            if isinstance(name, str):
+                tool_names.append(name)
+        logger.info(
+            "Prompt prepared: tools_count=%s tool_names=%s prompt_chars=%s prompt_sha256=%s",
+            len(tool_names),
+            ",".join(tool_names) or "none",
+            len(prompt),
+            hashlib.sha256(prompt.encode("utf-8")).hexdigest(),
+        )
         return prompt
 
     async def process_audio_chunk_with_triton(self, audio_float32: np.ndarray, event_id: str = None):

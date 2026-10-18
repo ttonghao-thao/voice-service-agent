@@ -13,16 +13,16 @@ from scripts.validate_native_cuekb import assess
     ("speech_failed", ("passed", "passed", "unverified", "passed")),
 ])
 def test_diagnostic_stages_do_not_masquerade_as_tool_selection_failure(scenario, expected):
-    case = {"expected_tool": "search_cuekb", "query_terms": ["AX"]}
-    records = [{"kind": "native_tool_arguments", "payload": {"name": "search_cuekb",
+    case = {"expected_tool": "search_knowledge_base", "query_terms": ["AX"]}
+    records = [{"kind": "native_tool_arguments", "payload": {"name": "search_knowledge_base",
         "input_item_id": "i1", "arguments": {"query": "Configure Product AX"}}}]
-    turn = {"input_item_id": "i1", "selected_tool": "search_cuekb", "answer": None}
+    turn = {"input_item_id": "i1", "selected_tool": "search_knowledge_base", "answer": None}
     history = {"records": records, "items": [turn]}
     samples = 1920
     if scenario == "missing_call":
         history = {"records": [], "items": []}
     elif scenario == "bad_arguments":
-        records[0] = {"kind": "native_tool_error", "payload": {"name": "search_cuekb",
+        records[0] = {"kind": "native_tool_error", "payload": {"name": "search_knowledge_base",
             "input_item_id": "i1", "reason_code": "VOICE_TOOL_ARGUMENTS"}}
         history["items"] = []
         samples = 0

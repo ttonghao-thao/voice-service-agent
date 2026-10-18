@@ -209,15 +209,21 @@ def test_pcm16_clips_full_scale_and_flushes_partial_little_endian_frame():
 
 
 @pytest.mark.parametrize("use_jinja", [False, True])
-def test_jinja_preserves_application_routing_and_legacy_default_is_explicit(monkeypatch, use_jinja):
+def test_jinja_preserves_application_routing_and_legacy_default_is_explicit(
+    monkeypatch, caplog, use_jinja
+):
     monkeypatch.setattr(server, "USE_JINJA_TEMPLATE_PROMPT", use_jinja)
-    tools = [{"name": "consult_service_agent", "ack_messages": [ACK], "parameters": {"type": "object"}}]
-    instruction = "Every completed customer utterance must call consult_service_agent."
+    caplog.set_level("INFO", logger=server.__name__)
+    tools = [{"name": "search_knowledge_base", "ack_messages": [ACK],
+              "parameters": {"type": "object"}}]
+    instruction = "Use search_knowledge_base for company documentation."
     prompt = server.AudioSession.build_prompt(instruction, json.dumps(tools))
     assert instruction in prompt
     assert ("answer directly from your own knowledge" not in prompt) == use_jinja
     assert "<AVAILABLE_TOOLS>" in prompt and "<TOOLCALL>" in prompt
     assert "<TOOL_ACK_MESSAGES>" in prompt and ACK in prompt
+    assert "tool_names=search_knowledge_base" in caplog.text
+    assert f"prompt_sha256={hashlib.sha256(prompt.encode()).hexdigest()}" in caplog.text
 
 
 @pytest.mark.asyncio

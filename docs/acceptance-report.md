@@ -4,7 +4,7 @@
 
 当前用户目标已改为 VoiceChat 自主决定直接回答或调用工具，部署采用 general_qa。qa-tools-v4 已修正模板冲突并补充部署策略检查；以下严格模式现场结果保留为历史证据，不能当作新模式的验收结果。
 
-本期 `cuekb-native-v1` 进一步限定为唯一的 search_cuekb(query)，由 VoiceChat 直接消费检索证据，不调用额外答案模型；代码及本地验证已完成，真实 VoiceChat/CueKB 录音验收尚未执行。步骤和判定见 [原生单工具验证](native-cuekb-validation.md)。
+本期 `cuekb-native-v1` 进一步限定为唯一公开工具 search_knowledge_base(query)，内部仍由 CueKB 执行检索，VoiceChat 直接消费证据，不调用额外答案模型；真实 VoiceChat/CueKB 录音验收尚未执行。步骤和判定见 [原生单工具验证](native-cuekb-validation.md)。
 
 ## 0. 当前审计与证据索引
 
@@ -12,6 +12,7 @@
 
 | 日期 / 版本 | 实际结果 | 限制与证据位置 |
 | --- | --- | --- |
+| 2026-10-18（北京时间）/ 完整工具名与跨层诊断 | 公开工具名迁移为 `search_knowledge_base`，可信 implementation 保持 `search_cuekb`；旧缩写及错误拼写恢复严格拒绝。VoiceChat WebSocket 和 Triton backend 增加最终 Prompt 工具名/hash及模型函数通道名称日志，用于区分注册/转换错误与模型生成错误。101 项名称/CueKB/模板定向、117 项目录/语音状态机、478 项 Python 全量及独立 VoiceChat 环境 24 项完整文件测试通过；Ruff、编译、manifest、文档链接与 diff 检查通过 | SQLite、受控 WS/CueKB 与 CPU VoiceChat 夹具；尚未部署真实 GPU。诊断不记录 Prompt、query 或参数正文，且必须以实际容器文件 hash、两层 Prompt hash 和同 sequence 模型日志联合判断 |
 | 2026-10-18（北京时间）/ cuekb-native-v1 名称兼容 | 部署消费品路由元数据后，问候及通用技术控制通过；产品问题进入原生工具选择，但数据库记录 `emitted_tool=search_cueb`、`reason_code=VOICE_TOOL_UNKNOWN`、`stage=selection`，尚未进入参数或检索。Gateway 已增加严格别名兼容：仅一期单 `search_cuekb` 目录接受精确 `search_cueb`，下游统一规范名称并保留双名称审计；21 项原生 CueKB、92 项目录/未知工具定向回归及 480 项 Python 全量回归通过，Ruff、文档链接与 diff 检查通过 | 用户现场真实 NVIDIA VoiceChat 与 API 记录；修复后仅通过本地真实 Adapter/CueKB 协议夹具，现场复测待执行。问候录音首词转写问题按当前安排另行处理，不属于本次名称兼容修复 |
 | 2026-10-17 / cuekb-native-v1 消费品路由修正 | 扩展 `search_cuekb` 目录及会话提示，覆盖价格、重量、成分、包装、运输、存储、保质期等企业产品事实；VoiceChat 单工具示例改为消费品规格问题，并要求已注册工具覆盖请求时不得直接声称无权访问。76 项目录/模板/原生 CueKB 定向回归及 477 项 Python 全量回归通过；Ruff、manifest 9 文件 hash 与 diff 检查通过 | 本地配置、受控协议夹具和模板渲染验证；未部署真实 VoiceChat/CueKB，不能据此宣称模型选择率、检索相关性或口述忠实性已通过。模板 SHA-256 为 `1bcab28d15d343297de76e5109786532fe602f3350d4e475ece1716bd67029f7` |
 | 2026-10-17 / cuekb-native-v1 消费品路由基线 | 同一合成英文产品文档问题连续 20 轮均 `selection=failed`、直接口述无权访问文档、未调用 CueKB；数据库窗口内 18 条产品转写逐字稳定，另两条为问候/通用技术控制；此前单轮曾生成错误名称 `search_cueb`。VoiceChat 21/21 会话均 tools=1、Jinja 渲染及 Triton prompt prefill 成功，prefill 失败为 0；API 工具回显确认通过 | 用户现场真实 NVIDIA VoiceChat、dual_tools/general_qa、单 search_cuekb；输入为本仓库合成 PCM16 WAV，不是真人录音。结果证明旧目录/示例对消费品事实选择失败，不证明新元数据有效，也未进入 CueKB 参数、检索、来源或实际知识口述阶段；直接回答未编造产品数字但不满足工具选择要求 |

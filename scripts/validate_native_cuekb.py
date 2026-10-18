@@ -34,8 +34,8 @@ def load_cases(path):
         if not isinstance(case.get("case_id"), str) or not case["case_id"] or case["case_id"] in seen:
             raise ValueError("Case IDs must be nonempty and unique")
         seen.add(case["case_id"])
-        if "expected_tool" not in case or case["expected_tool"] not in (None, "search_cuekb"):
-            raise ValueError("Each expected_tool must be null or search_cuekb")
+        if "expected_tool" not in case or case["expected_tool"] not in (None, "search_knowledge_base"):
+            raise ValueError("Each expected_tool must be null or search_knowledge_base")
         terms = case.get("query_terms", [])
         if not isinstance(terms, list) or any(not isinstance(term, str) or not term.strip() for term in terms):
             raise ValueError("query_terms must contain nonempty strings")

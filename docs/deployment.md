@@ -1,6 +1,6 @@
 # 部署与运行
 
-> 本页维护一期原生 Function Calling 的配置、构建、迁移及运行操作。VoiceChat 决定直接回答或调用唯一工具 search_cuekb，不配置额外答案模型。真实语音验收见 [单工具验证](native-cuekb-validation.md)。
+> 本页维护一期原生 Function Calling 的配置、构建、迁移及运行操作。VoiceChat 决定直接回答或调用唯一工具 search_knowledge_base，不配置额外答案模型；服务端仍通过 CueKB 执行检索。真实语音验收见 [单工具验证](native-cuekb-validation.md)。
 
 ## 部署方式边界
 
@@ -23,7 +23,7 @@ QA_PROVIDER_ANSWER_TIMEOUT_MS=30000
 
 不需要 AGENT_MODEL、OPENAI_API_KEY 或 AGENT_BASE_URL。disabled 表示关闭独立文本答案模型，不能用 mock 代替。`/health/ready` 允许 text_configured=false；页面关闭文字提交，但仍提供麦克风和 WAV 语音通话。
 
-`dual_tools` 为兼容模式名称；一期实际只注册 `search_cuekb(query)`。后台仍通过 Registry 的内部 `search_knowledge` 调用 CueKB `/v1/search`，不要把原生名称填进 ENABLED_TOOLS。KB UUID、凭据、访问范围和可信过滤条件只在服务端设置。VoiceChat 原生调用决定是否执行业务，最终转写用于关联和审计，不自动触发查询。
+`dual_tools` 为兼容模式名称；一期实际只注册 `search_knowledge_base(query)`，目录将它映射到可信 implementation `search_cuekb`。后台仍通过 Registry 的内部 `search_knowledge` 调用 CueKB `/v1/search`，不要把原生名称填进 ENABLED_TOOLS。KB UUID、凭据、访问范围和可信过滤条件只在服务端设置。VoiceChat 原生调用决定是否执行业务，最终转写用于关联和审计，不自动触发查询。
 
 | 配置 | 一期值 / 用途 |
 | --- | --- |
@@ -49,7 +49,7 @@ python /app/scripts/configure_native_cuekb.py --apply
 
 ### 启动及新会话检查
 
-同步 [完整 VoiceChat 模板](voicechat/docker-run.md)，重新创建 VoiceChat 容器。新模板包含 search_cuekb(query) 单调用示例及会话策略优先/禁止重复并行/只按授权结果发声约束；不修改模型权重、融合参数或引入其他语音模型。
+同步 [完整 VoiceChat 模板](voicechat/docker-run.md)，重新创建 VoiceChat 容器。新模板包含 search_knowledge_base(query) 单调用示例及会话策略优先/禁止重复并行/只按授权结果发声约束；不修改模型权重、融合参数或引入其他语音模型。
 
 部署脚本会检查实际 capabilities。手工部署也可执行：
 
@@ -58,7 +58,7 @@ docker compose --env-file .env -f deploy/compose.production.yaml exec -T api \
   python /app/scripts/verify_deployment.py --base-url http://127.0.0.1:8000 --expect-cuekb-native
 ```
 
-必须看到 nvidia / dual_tools / general_qa、native_tools=[search_cuekb]、agent_provider=disabled、is_mock=false、voice_available=true。text_configured=false 在本期是预期状态。握手和配置检查不证明模型选工具正确。
+必须看到 nvidia / dual_tools / general_qa、native_tools=[search_knowledge_base]、agent_provider=disabled、is_mock=false、voice_available=true。text_configured=false 在本期是预期状态。握手和配置检查不证明模型选工具正确。
 
 **结束旧通话并新建 Conversation。** 模式/策略在创建时快照，旧 knowledge_required 会话不会因重连或刷新页面变成 general_qa。
 

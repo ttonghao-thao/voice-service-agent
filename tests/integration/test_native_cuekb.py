@@ -12,10 +12,9 @@ import pytest
 from app.agent_runtime.context import RunContext
 from app.agent_runtime.direct import EvidenceReady
 from app.config import ROOT, Settings
-from app.contracts import CueKBArguments, Principal
+from app.contracts import CueKBArguments, DomainError, Principal
 from app.main import create_app
 from app.tools.adapters import CueKBAdapter
-from app.voice.gateway import normalize_native_tool_name
 from fastapi import FastAPI, Request
 from fastapi.testclient import TestClient
 from pydantic import ValidationError
@@ -39,21 +38,6 @@ def evidence(**overrides):
                   "version_id": "00000000-0000-4000-8000-000000000103", "rank": 1,
                   "source_text": "Product AX supports 10 connections.", "metadata": {"product_model": "AX"}}],
         **overrides}
-
-
-def test_provider_alias_is_limited_to_single_native_cuekb_catalog():
-    assert normalize_native_tool_name(
-        "search_cueb", "dual_tools", ("search_cuekb",)
-    ) == "search_cuekb"
-    assert normalize_native_tool_name(
-        "search_cueb", "legacy", ("search_cuekb",)
-    ) == "search_cueb"
-    assert normalize_native_tool_name(
-        "search_cueb", "dual_tools", ("search_cuekb", "lookup_product_manual")
-    ) == "search_cueb"
-    assert normalize_native_tool_name(
-        "search_cue", "dual_tools", ("search_cuekb",)
-    ) == "search_cue"
 
 
 def test_query_only_schema_rejects_authority_and_preserves_identifiers():
@@ -115,7 +99,16 @@ async def test_native_query_reaches_cuekb_without_an_answer_model(tmp_path, monk
         monkeypatch.setattr(runtime.direct, "reasoned", forbidden)
         app.state.registry.adapters["cuekb_http"] = CueKBAdapter(s, http)
         snapshot = await runtime.catalog.snapshot()
-        assert list(snapshot.tools) == ["search_cuekb"]
+        assert list(snapshot.tools) == ["search_knowledge_base"]
+        for old_name in ("search_cuekb", "search_cueb"):
+            with pytest.raises(DomainError) as rejected:
+                runtime.dispatcher.resolve(
+                    old_name,
+                    json.dumps({"query": "Product AX"}),
+                    tuple(snapshot.tools),
+                    catalog=snapshot.tools,
+                )
+            assert rejected.value.code == "VOICE_TOOL_UNKNOWN"
         definition = snapshot.definitions[0]
         assert definition["ack_messages"] == ["Let me check the documentation."]
         assert set(definition["parameters"]["properties"]) == {"query"}
@@ -138,7 +131,7 @@ async def test_native_query_reaches_cuekb_without_an_answer_model(tmp_path, monk
         ctx = RunContext(p, "cid", turn.id, 0, request_revision=turn.request_revision,
                          answer_policy="general_qa", deadline=time.monotonic() + 5)
         query = "How do I configure Product AX firmware version 2?"
-        decision = runtime.dispatcher.resolve("search_cuekb", json.dumps({"query": query}),
+        decision = runtime.dispatcher.resolve("search_knowledge_base", json.dumps({"query": query}),
             tuple(snapshot.tools), catalog=snapshot.tools)
         result = await runtime.run_selected(decision, "Configure it", ctx, [])
         body = json.loads(calls[0].content)
@@ -165,10 +158,7 @@ async def test_native_query_reaches_cuekb_without_an_answer_model(tmp_path, monk
     ("Product AX supports 10 connections.", None),
     ("Product AX supports 99 connections.", "VOICE_UNSUPPORTED_NUMBER"),
 ])
-@pytest.mark.parametrize("emitted_tool", ["search_cuekb", "search_cueb"])
-def test_pcm_through_real_adapter_native_call_cuekb_and_voice_reply(
-    tmp_path, spoken, reason, emitted_tool
-):
+def test_pcm_through_real_adapter_native_call_cuekb_and_voice_reply(tmp_path, spoken, reason):
     s = configuration(tmp_path, voice_provider="nvidia", voicechat_api_key="fixture-voice-key")
     app = create_app(s)
     pcm = base64.b64encode(b"\x01\x00" * 1920).decode()
@@ -200,7 +190,7 @@ def test_pcm_through_real_adapter_native_call_cuekb_and_voice_reply(
                     await ws.send(json.dumps({"type": "response.output_audio.done", "response_id": "direct"}))
                 else:
                     call = {"type": "response.function_call_arguments.done", "response_id": "tool",
-                        "call_id": "native-call", "name": emitted_tool,
+                        "call_id": "native-call", "name": "search_knowledge_base",
                         "arguments": json.dumps({"query": "How many connections does Product AX support?"})}
                     await ws.send(json.dumps(call))
                     await ws.send(json.dumps(call))
@@ -220,7 +210,7 @@ def test_pcm_through_real_adapter_native_call_cuekb_and_voice_reply(
         s.voicechat_ws_url = f"ws://127.0.0.1:{server.sockets[0].getsockname()[1]}"
         try:
             caps = client.get("/api/v1/capabilities").json()
-            assert caps["native_tools"] == ["search_cuekb"] and caps["text_configured"] is False
+            assert caps["native_tools"] == ["search_knowledge_base"] and caps["text_configured"] is False
             assert client.get("/health/ready").json()["status"] == "ready"
             cid = client.post("/api/v1/conversations", json={}).json()["id"]
             issued = client.post(f"/api/v1/conversations/{cid}/voice-sessions", json={}).json()
@@ -248,7 +238,7 @@ def test_pcm_through_real_adapter_native_call_cuekb_and_voice_reply(
                     if turn["answer"]:
                         break
                     time.sleep(0.01)
-                assert turn["selected_tool"] == "search_cuekb"
+                assert turn["selected_tool"] == "search_knowledge_base"
                 assert turn["effective_executor"] == "native_cuekb"
                 assert turn["answer"]["reason_code"] == reason
                 assert turn["answer"]["verification_timing"] == "after_audio"
@@ -258,26 +248,12 @@ def test_pcm_through_real_adapter_native_call_cuekb_and_voice_reply(
                 query = json.loads(requests[0].content)
                 assert "How many connections does Product AX support?" in query["query"]
                 assert query["filters"]["product_model"] == "AX"
-                assert [t["name"] for t in registrations[0]["tools"]] == ["search_cuekb"]
+                assert [t["name"] for t in registrations[0]["tools"]] == ["search_knowledge_base"]
                 records = client.get(f"/api/v1/conversations/{cid}/messages").json()["records"]
                 audit = next(r for r in records if r["kind"] == "native_tool_arguments")
                 assert audit["payload"]["matches_final_transcript"] is False
                 assert audit["payload"]["arguments"] == {"query": "How many connections does Product AX support?"}
-                assert audit["payload"]["name"] == "search_cuekb"
-                normalized = [r for r in records if r["kind"] == "native_tool_name_normalized"]
-                if emitted_tool == "search_cueb":
-                    assert audit["payload"]["emitted_name"] == "search_cueb"
-                    assert audit["payload"]["normalized_name"] == "search_cuekb"
-                    assert len(normalized) == 1
-                    assert normalized[0]["payload"] == {
-                        "emitted_name": "search_cueb",
-                        "normalized_name": "search_cuekb",
-                        "input_item_id": "i2",
-                        "normalization_reason": "known_provider_alias",
-                    }
-                else:
-                    assert "emitted_name" not in audit["payload"]
-                    assert normalized == []
+                assert audit["payload"]["name"] == "search_knowledge_base"
                 source = next(r for r in records if r["kind"] == "native_cuekb_result")
                 assert source["payload"]["status"] == "ok" and source["payload"]["trace_id"].endswith("111")
                 assert "_authorized_kb_ids" not in source["payload"]
@@ -301,7 +277,7 @@ async def test_catalog_upgrade_is_explicit_atomic_and_idempotent(tmp_path):
         assert (await runtime.catalog.snapshot()).revision == 1
         applied = await configure(s, apply=True)
         assert applied["revision"] == 2
-        assert list((await runtime.catalog.snapshot()).tools) == ["search_cuekb"]
+        assert list((await runtime.catalog.snapshot()).tools) == ["search_knowledge_base"]
         assert (await configure(s, apply=True))["changed"] is False
         assert (await runtime.catalog.snapshot()).revision == 2
 
@@ -333,7 +309,7 @@ async def test_recording_validator_uses_portal_business_results_not_synthetic_re
                 await ws.send(json.dumps({"type": "conversation.item.input_audio_transcription.completed",
                     "item_id": "input", "transcript": "What is the connection limit for Product AX?"}))
                 await ws.send(json.dumps({"type": "response.function_call_arguments.done", "response_id": "tool",
-                    "call_id": "call", "name": "search_cuekb",
+                    "call_id": "call", "name": "search_knowledge_base",
                     "arguments": json.dumps({"query": "What is the connection limit for Product AX?"})}))
             elif event["type"] == "conversation.item.create":
                 received.append(event["item"])
@@ -347,7 +323,8 @@ async def test_recording_validator_uses_portal_business_results_not_synthetic_re
         wav.setparams((1, 2, 24000, 0, "NONE", "not compressed"))
         wav.writeframes(pcm)
     cases = tmp_path / "cases.json"
-    cases.write_text(json.dumps([{"case_id": "fixture", "wav": "input.wav", "expected_tool": "search_cuekb", "query_terms": ["AX"]}]))
+    cases.write_text(json.dumps([{"case_id": "fixture", "wav": "input.wav",
+        "expected_tool": "search_knowledge_base", "query_terms": ["AX"]}]))
     async with serve(voicechat, "127.0.0.1", 0) as endpoint, http_server(cuekb) as cuekb_url:
         s = configuration(tmp_path, voice_provider="nvidia", voicechat_api_key="fixture",
             voicechat_ws_url=f"ws://127.0.0.1:{endpoint.sockets[0].getsockname()[1]}")

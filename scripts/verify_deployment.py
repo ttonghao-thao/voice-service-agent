@@ -40,8 +40,13 @@ def validate_voice_policy(payload, *, cuekb_only=False):
         )
     if payload.get("is_mock") is not False or payload.get("voice_available") is not True:
         raise ValueError("A real configured VoiceChat service is required")
-    if cuekb_only and (payload.get("native_tools") != ["search_cuekb"] or payload.get("agent_provider") != "disabled"):
-        raise ValueError("Phase-1 requires only search_cuekb and AGENT_PROVIDER=disabled; apply the native catalog")
+    if cuekb_only and (
+        payload.get("native_tools") != ["search_knowledge_base"]
+        or payload.get("agent_provider") != "disabled"
+    ):
+        raise ValueError(
+            "Phase-1 requires only search_knowledge_base and AGENT_PROVIDER=disabled; apply the native catalog"
+        )
     return expected
 
 
@@ -51,7 +56,7 @@ def main():
     parser.add_argument("--expect-autonomous-voice", action="store_true",
                         help="Require VoiceChat to be allowed to answer directly or call tools")
     parser.add_argument("--expect-cuekb-native", action="store_true",
-                        help="Require only search_cuekb and no extra answer model")
+                        help="Require only search_knowledge_base and no extra answer model")
     args = parser.parse_args()
     from app.config import Settings
 

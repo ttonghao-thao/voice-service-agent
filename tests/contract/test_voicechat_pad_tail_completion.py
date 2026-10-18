@@ -164,6 +164,30 @@ def model_harness(source, *, enabled=True, ratio=3.0, force_silence=True):
     return model
 
 
+def test_model_logs_decoded_tool_name_before_websocket_processing(patched_backend):
+    tree = ast.parse(patched_backend.read_text())
+    original = next(node for node in tree.body if isinstance(node, ast.ClassDef)
+                    and node.name == "TritonPythonModel")
+    method = next(node for node in original.body if isinstance(node, ast.FunctionDef)
+                  and node.name == "sanitize_function_text")
+    messages = []
+    module = ast.Module(body=[
+        ast.ClassDef(name="Model", bases=[], keywords=[], body=[method],
+                     decorator_list=[], type_params=[]),
+    ], type_ignores=[])
+    namespace = {
+        "json": json,
+        "pb_utils": SimpleNamespace(Logger=SimpleNamespace(
+            log_info=messages.append,
+            log_error=messages.append,
+        )),
+    }
+    exec(compile(ast.fix_missing_locations(module), str(patched_backend), "exec"), namespace)
+    value = '<TOOLCALL>[{"name":"search_knowledge_base","arguments":{"query":"AX"}}]</TOOLCALL>'
+    assert json.loads(namespace["Model"]().sanitize_function_text(value))[0]["name"] == "search_knowledge_base"
+    assert messages == ["Function call decoded from model: tool_names=search_knowledge_base"]
+
+
 def sequence(*, seq_id=42, text=PAD, function=PAD, previous_function=PAD, pads=7, content=2,
              function_state="idle", speaking=True, user_speech=0):
     return SimpleNamespace(

@@ -53,13 +53,15 @@ def test_deployed_template_keeps_policy_schema_and_separate_ack(count, nested, p
     assert isinstance(json.loads(re.search(r"<TOOL_RESPONSE>(.*?)</TOOL_RESPONSE>", rendered, re.S)[1]), list)
 
 
-def test_single_cuekb_call_example_matches_registered_query_schema():
+def test_single_knowledge_base_call_example_matches_registered_query_schema():
     from app.contracts import CueKBArguments
     path = ROOT / "docs/voicechat/s2s/prompt_template.jinja"
     rendered = Environment(undefined=StrictUndefined).from_string(path.read_text()).render(
-        system_message="Answer in English.", tools=[{"name": "search_cuekb", "parameters": CueKBArguments.model_json_schema()}])
+        system_message="Answer in English.",
+        tools=[{"name": "search_knowledge_base", "parameters": CueKBArguments.model_json_schema()}],
+    )
     example = json.loads(re.search(r"<TOOLCALL>(.*?)</TOOLCALL>", rendered, re.S)[1])
-    assert len(example) == 1 and example[0]["name"] == "search_cuekb"
+    assert len(example) == 1 and example[0]["name"] == "search_knowledge_base"
     validate(example[0]["arguments"], CueKBArguments.model_json_schema())
     query = example[0]["arguments"]["query"].lower()
     assert all(value in query for value in ("company documentation", "price", "weight", "storage", "shelf life"))

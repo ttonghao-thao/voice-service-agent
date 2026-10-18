@@ -468,7 +468,7 @@ class SimulationHarness:
             self.app.add_api_route("/__simulation/state", self.state, methods=["GET"])
             self.url = await self.stack.enter_async_context(http_server(self.app, self.port))
             # This harness explicitly covers the legacy two-tool + answer-model
-            # workflow. The deployed phase-1 profile is search_cuekb only.
+            # workflow. The deployed phase-1 profile exposes search_knowledge_base only.
             self.app.state.coordinator.runtime.catalog.defaults = [
                 NativeToolEntry(name=name, implementation=name, description=description)
                 for name, description in (

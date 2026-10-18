@@ -1,6 +1,6 @@
 # q1003 架构改进与实施方案
 
-当前需求以一期单工具原生验证为准：后端必须是 VoiceChat；由 VoiceChat 自主决定使用自身知识回答或调用 search_cuekb(query)；不引入其他 ASR/TTS、意图分类器或额外答案生成模型，不根据转写自动启动业务。先完成语音输入、工具执行和语音回复，时延优化后置。代码分支 `codex/q1003`；状态见 [任务板](TASK_BOARD.md)，现场证据见 [验收](acceptance-report.md)。
+当前需求以一期单工具原生验证为准：后端必须是 VoiceChat；由 VoiceChat 自主决定使用自身知识回答或调用 search_knowledge_base(query)，内部仍执行 CueKB 检索；不引入其他 ASR/TTS、意图分类器或额外答案生成模型，不根据转写自动启动业务。先完成语音输入、工具执行和语音回复，时延优化后置。代码分支 `codex/q1003`；状态见 [任务板](TASK_BOARD.md)，现场证据见 [验收](acceptance-report.md)。
 
 ## 1. 目标与架构判断
 
@@ -13,7 +13,7 @@
 
 ## 2. 本阶段选择及推迟的方案
 
-目标部署采用 `dual_tools + general_qa` 和 `AGENT_PROVIDER=disabled`，VoiceChat 是唯一语音 Provider 和答案生成模型。dual_tools 为兼容名称，一期只注册 search_cuekb(query)；旧双工具实现仅保留兼容测试。保留 knowledge_required 的显式策略实现及回归，但它会拒绝没有工具授权的直接回答，不能用于当前自主回答部署。
+目标部署采用 `dual_tools + general_qa` 和 `AGENT_PROVIDER=disabled`，VoiceChat 是唯一语音 Provider 和答案生成模型。dual_tools 为兼容名称，一期只注册 search_knowledge_base(query)；旧双工具实现仅保留兼容测试。保留 knowledge_required 的显式策略实现及回归，但它会拒绝没有工具授权的直接回答，不能用于当前自主回答部署。
 
 此前推荐的独立 ASR→业务→TTS 方案已撤回，相关未提交应用代码已撤销；应用根据转写自动发起检索也不在当前实现范围。最终转写只用于绑定和校验已发生的原生调用。
 
@@ -51,7 +51,7 @@ Speak only as permitted by the session answer policy and the returned tool resul
 
 | 工作 | 本次内容 | 完成依据 |
 | --- | --- | --- |
-| 模式与部署 | general_qa、disabled、单 search_cuekb；迁移后 CAS 应用目录并检查实际 capabilities | 无需文本模型 key；旧目录可显式升级；新会话生效 |
+| 模式与部署 | general_qa、disabled、单 search_knowledge_base；迁移后 CAS 应用目录并检查实际 capabilities | 无需文本模型 key；旧目录可显式升级；新会话生效 |
 | 提示与模板 | 明确自主决策；用户指定三句约束、单调用示例、完整模板和 manifest | 渲染保留各策略、0/1/2/3 工具 schema 及 ACK；容器模板 hash 一致 |
 | 应用双路径 | 直接回答不检索；query-only 原生工具只检索/整理完整 ASCII 证据，不升级答案模型 | 追问 query 保留、服务端 KB/鉴权、同 call 回填、重复幂等、失败不冒充无事实、音频及结束 |
 | 现场验收 | 固定 VoiceChat、真实 CueKB；用门户麦克风/WAV 或 validate_native_cuekb.py | 选择、参数、检索和口述分别判定；实际听音单独确认 |

@@ -37,19 +37,6 @@ from app.voice.provider import (
 
 logger = logging.getLogger(__name__)
 TRANSCRIPT_FINAL_TIMEOUT_SECONDS = 5
-NATIVE_CUEKB_TOOL = "search_cuekb"
-NATIVE_CUEKB_PROVIDER_ALIAS = "search_cueb"
-
-
-def normalize_native_tool_name(name, qa_mode, registered_tools):
-    """Accept one observed provider typo only for the phase-1 single-tool catalog."""
-    if (
-        qa_mode == "dual_tools"
-        and registered_tools == (NATIVE_CUEKB_TOOL,)
-        and name == NATIVE_CUEKB_PROVIDER_ALIAS
-    ):
-        return NATIVE_CUEKB_TOOL
-    return name
 
 
 @dataclass
@@ -120,10 +107,11 @@ class VoiceGateway:
                 tool_catalog, catalog_revision = snapshot.tools, snapshot.revision
                 registered_tools, tool_definitions = tuple(snapshot.tools), snapshot.definitions
                 if s.agent_provider == "disabled" and (
-                    any(name != "search_cuekb" or tool.kind != "cuekb" for name, tool in tool_catalog.items())
+                    any(name != "search_knowledge_base" or tool.kind != "cuekb"
+                        for name, tool in tool_catalog.items())
                 ):
                     raise DomainError("VOICE_TOOL_CONFIGURATION_CHANGED",
-                        "Apply the phase-1 search_cuekb catalog before starting voice.", 409, True)
+                        "Apply the phase-1 search_knowledge_base catalog before starting voice.", 409, True)
                 if (not registered_tools and conversation.answer_policy == "knowledge_required") or (
                     any(tool.kind == "reasoned" for tool in tool_catalog.values()) and s.agent_provider != "mock"
                     and (not self.coordinator.runtime.client or not s.agent_model)
@@ -484,16 +472,10 @@ class VoiceGateway:
                     request == getattr(args, "query", getattr(args, "user_request", "")).strip(),
                 )
                 if decision and decision.tool.kind == "cuekb":
-                    audit_payload = {"name": payload["name"],
-                        "arguments": args.model_dump(), "input_item_id": input_item_id,
-                        "matches_final_transcript": request == args.query}
-                    if payload.get("emitted_name"):
-                        audit_payload.update({
-                            "emitted_name": payload["emitted_name"],
-                            "normalized_name": payload["name"],
-                        })
                     await self.store.record(session.conversation_id, session.epoch,
-                        "native_tool_arguments", call_id, audit_payload)
+                        "native_tool_arguments", call_id, {"name": payload["name"],
+                            "arguments": args.model_dump(), "input_item_id": input_item_id,
+                            "matches_final_transcript": request == args.query})
                 turn, task = await self.coordinator.submit(
                     session.principal,
                     session.conversation_id,
@@ -582,16 +564,10 @@ class VoiceGateway:
                     call_id,
                     type(exc).__name__,
                 )
-                error_payload = {"name": payload.get("name"),
-                    "input_item_id": input_item_id, "reason_code": failure_code,
-                    "stage": "arguments" if tid is None else "execution"}
-                if payload.get("emitted_name"):
-                    error_payload.update({
-                        "emitted_name": payload["emitted_name"],
-                        "normalized_name": payload.get("name"),
-                    })
                 await self.store.record(session.conversation_id, session.epoch,
-                    "native_tool_error", call_id, error_payload)
+                    "native_tool_error", call_id, {"name": payload.get("name"),
+                        "input_item_id": input_item_id, "reason_code": failure_code,
+                        "stage": "arguments" if tid is None else "execution"})
                 text = json.dumps(
                     {
                         "status": "failed",
@@ -622,58 +598,22 @@ class VoiceGateway:
                     call = event.payload["call_id"]
                     if call in pending:
                         continue
-                    emitted_name = event.payload.get("name")
-                    normalized_name = normalize_native_tool_name(
-                        emitted_name, session.qa_mode, session.registered_tools
-                    )
-                    tool_payload = event.payload
-                    if normalized_name != emitted_name:
-                        tool_payload = {
-                            **event.payload,
-                            "name": normalized_name,
-                            "emitted_name": emitted_name,
-                        }
-                        await self.store.record(
-                            session.conversation_id,
-                            session.epoch,
-                            "native_tool_name_normalized",
-                            call,
-                            {
-                                "emitted_name": emitted_name,
-                                "normalized_name": normalized_name,
-                                "input_item_id": latest_input_id,
-                                "normalization_reason": "known_provider_alias",
-                            },
-                        )
-                        logger.warning(
-                            "voice_tool_name_normalized conversation_id=%s call_id=%s emitted_tool=%s normalized_tool=%s",
-                            session.conversation_id,
-                            call,
-                            emitted_name,
-                            normalized_name,
-                        )
                     allowed_tools = (
                         session.registered_tools if session.qa_mode == "dual_tools" else (BRIDGE_NAME,)
                     )
                     if (
-                        tool_payload.get("name") not in allowed_tools
-                        or not isinstance(tool_payload.get("arguments"), str)
-                        or len(tool_payload["arguments"]) > 12000
+                        event.payload.get("name") not in allowed_tools
+                        or not isinstance(event.payload.get("arguments"), str)
+                        or len(event.payload["arguments"]) > 12000
                     ):
-                        unknown = tool_payload.get("name") not in allowed_tools
+                        unknown = event.payload.get("name") not in allowed_tools
                         reason_code = "VOICE_TOOL_UNKNOWN" if unknown else "VOICE_TOOL_ARGUMENTS"
-                        name = tool_payload.get("name")
-                        error_payload = {
+                        name = event.payload.get("name")
+                        await self.store.record(session.conversation_id, session.epoch,
+                            "native_tool_error", call, {
                                 "name": name if isinstance(name, str) and len(name) <= 128 else "<invalid>",
                                 "input_item_id": latest_input_id, "reason_code": reason_code,
-                                "stage": "selection" if unknown else "arguments"}
-                        if tool_payload.get("emitted_name"):
-                            error_payload.update({
-                                "emitted_name": tool_payload["emitted_name"],
-                                "normalized_name": tool_payload.get("name"),
-                            })
-                        await self.store.record(session.conversation_id, session.epoch,
-                            "native_tool_error", call, error_payload)
+                                "stage": "selection" if unknown else "arguments"})
                         raise DomainError(
                             reason_code,
                             "Voice requested an unsupported business tool",
@@ -684,14 +624,14 @@ class VoiceGateway:
                     operation = "query"
                     if session.capabilities.wait_interaction and session.qa_mode == "dual_tools":
                         operation = getattr(self.coordinator.runtime.dispatcher.resolve(
-                            tool_payload["name"], tool_payload["arguments"], session.registered_tools, True,
+                            event.payload["name"], event.payload["arguments"], session.registered_tools, True,
                             session.tool_catalog).arguments,
                             "operation", "query")
                     if any(v in ("running", "ready", "settlement_ready") for v in pending.values()):
                         if not session.capabilities.wait_interaction or operation not in ("progress", "revise"):
                             raise DomainError("VOICE_PROTOCOL_ERROR", "Parallel cloud tool calls are unsupported. Please ask again.", 502)
                     response_id = event.payload.get("response_id")
-                    call_tools[call] = tool_payload.get("name")
+                    call_tools[call] = event.payload.get("name")
                     call_operations[call] = operation
                     if session.qa_mode == "dual_tools":
                         definition = session.tool_catalog[call_tools[call]]
@@ -746,13 +686,13 @@ class VoiceGateway:
                         "voice_tool_call_received conversation_id=%s call_id=%s tool=%s input_item_id=%s",
                         session.conversation_id,
                         call,
-                        tool_payload.get("name"),
+                        event.payload.get("name"),
                         input_item_id,
                     )
                     pending[call] = "running"
                     task = asyncio.create_task(
                         bridge(
-                            tool_payload,
+                            event.payload,
                             input_item_id,
                             final_transcript,
                         )

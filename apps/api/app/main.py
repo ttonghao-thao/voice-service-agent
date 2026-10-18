@@ -48,8 +48,11 @@ def create_app(settings=None):
             if settings.agent_provider == "disabled":
                 _, entries = await runtime.catalog.configuration()
                 tools = runtime.catalog.compile(entries)
-                if list(tools) != ["search_cuekb"] or tools["search_cuekb"].kind != "cuekb":
-                    raise ValueError("Native CueKB requires only search_cuekb. Apply scripts/configure_native_cuekb.py first.")
+                if list(tools) != ["search_knowledge_base"] or tools["search_knowledge_base"].kind != "cuekb":
+                    raise ValueError(
+                        "Native CueKB requires only search_knowledge_base. "
+                        "Apply scripts/configure_native_cuekb.py first."
+                    )
             coordinator = SessionCoordinator(store, runtime, coordination, settings)
             cleanup.push_async_callback(coordinator.close)
             voice = VoiceGateway(settings, coordinator, store)
