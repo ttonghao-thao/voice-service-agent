@@ -184,8 +184,8 @@ def test_model_logs_decoded_tool_name_before_websocket_processing(patched_backen
     }
     exec(compile(ast.fix_missing_locations(module), str(patched_backend), "exec"), namespace)
     value = '<TOOLCALL>[{"name":"search_knowledge_base","arguments":{"query":"AX"}}]</TOOLCALL>'
-    assert json.loads(namespace["Model"]().sanitize_function_text(value))[0]["name"] == "search_knowledge_base"
-    assert messages == ["Function call decoded from model: tool_names=search_knowledge_base"]
+    assert json.loads(namespace["Model"]().sanitize_function_text(42, value))[0]["name"] == "search_knowledge_base"
+    assert messages == ["Function call decoded from model for sequence 42: tool_names=search_knowledge_base"]
 
 
 def sequence(*, seq_id=42, text=PAD, function=PAD, previous_function=PAD, pads=7, content=2,

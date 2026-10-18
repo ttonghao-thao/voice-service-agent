@@ -100,7 +100,7 @@ async def test_native_query_reaches_cuekb_without_an_answer_model(tmp_path, monk
         app.state.registry.adapters["cuekb_http"] = CueKBAdapter(s, http)
         snapshot = await runtime.catalog.snapshot()
         assert list(snapshot.tools) == ["search_knowledge_base"]
-        for old_name in ("search_cuekb", "search_cueb"):
+        for old_name in ("search_cueb", "search_company_documents"):
             with pytest.raises(DomainError) as rejected:
                 runtime.dispatcher.resolve(
                     old_name,

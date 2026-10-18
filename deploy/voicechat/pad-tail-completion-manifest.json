@@ -4,8 +4,8 @@
   "default_enabled": false,
   "files": {
     "opt/tritonserver/backends/nemotron-voicechat/model.py": {
-      "before_sha256": "a002f0383e30391d9e16ae61d543234527d67c4405a2cb7e5b3582f8e0820605",
-      "after_sha256": "c94892232a194b570b0fa3851a6cc6fdbbe8ea9c54104872eebe5deec554693d"
+      "before_sha256": "851a65692da1824f82a61160266b8624b768bb390f63d86550e226762c107e08",
+      "after_sha256": "c91b3af5b41f515fc1dbfaf7fdbec4ae528a4989f90a144829d2491a9b805990"
     }
   }
 }

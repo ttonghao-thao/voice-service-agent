@@ -200,6 +200,19 @@ async def test_tool_argument_object_and_json_string_have_one_wire_encoding(argum
     assert json.loads(event["arguments"]) == {"user_request": "hello"}
 
 
+@pytest.mark.asyncio
+async def test_function_channel_forwards_registered_tool_name_without_rewriting():
+    session = server.AudioSession("test", Socket())
+    await session._process_function_text(json.dumps([{
+        "name": "search_knowledge_base",
+        "arguments": {"query": "Product AX storage requirements"},
+    }]))
+    event = pending(session)[-1]
+    assert event["type"] == "response.function_call_arguments.done"
+    assert event["name"] == "search_knowledge_base"
+    assert json.loads(event["arguments"]) == {"query": "Product AX storage requirements"}
+
+
 def test_pcm16_clips_full_scale_and_flushes_partial_little_endian_frame():
     codec = server.PCM16Codec(chunk_size=2)
     codec.encode(np.array([-2., 1., 2.], dtype=np.float32))

@@ -1775,7 +1775,7 @@ class TritonPythonModel:
                 seq_state.decoder_global_step += 1
 
                 if fn_token == self.eotc_id:
-                    sanitized = self.sanitize_function_text(fn_call["request"])
+                    sanitized = self.sanitize_function_text(seq_id, fn_call["request"])
                     if sanitized:
                         fn_call["request"] = sanitized
                         fn_call["pending_function_text"] = sanitized
@@ -1897,7 +1897,7 @@ class TritonPythonModel:
                 f"({current} -> {min_samples}) after fast path"
             )
 
-    def sanitize_function_text(self, function_text):
+    def sanitize_function_text(self, seq_id, function_text):
         """
         Sanitize tool calling tokens.
         """
@@ -1911,7 +1911,7 @@ class TritonPythonModel:
                 calls = parsed if isinstance(parsed, list) else [parsed]
                 names = [call.get("name") for call in calls if isinstance(call, dict)]
                 logger.log_info(
-                    "Function call decoded from model: tool_names="
+                    f"Function call decoded from model for sequence {seq_id}: tool_names="
                     + (",".join(name for name in names if isinstance(name, str)) or "none")
                 )
                 return function_text
@@ -1966,7 +1966,7 @@ class TritonPythonModel:
                 if fn_call["state"] != "waiting_for_request":
                     logger.log_error("Not in waiting for request state, skipping EOTC token")
                     continue
-                sanitized_function_text = self.sanitize_function_text(fn_call["request"])
+                sanitized_function_text = self.sanitize_function_text(seq_id, fn_call["request"])
                 if sanitized_function_text:
                     fn_call["request"] = sanitized_function_text
                     fn_call["state"] = "request_received"

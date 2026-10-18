@@ -1,6 +1,6 @@
 # VoiceChat + CueKB 一期原生 Function Calling 验证
 
-目标是验证 VoiceChat 自主区分普通对话/通用知识与产品/企业文档请求。实际路径只有直接语音回答，或 `search_knowledge_base(query) → Knowledge Adapter → CueKB /v1/search → 精简证据 → VoiceChat 语音回答`。公开工具名采用完整英文，服务端 implementation 仍为 `search_cuekb`。没有前置 ASR、分类器、额外答案模型或应用强制工具路由。
+目标是验证 VoiceChat 自主区分普通对话/通用知识与产品/企业文档请求。实际路径只有直接语音回答，或 `search_knowledge_base(query) → Knowledge Adapter → CueKB /v1/search → 精简证据 → VoiceChat 语音回答`。公开工具名和服务端可信 implementation 统一为 `search_knowledge_base`；CueKB 只表示后端知识库系统。没有前置 ASR、分类器、额外答案模型或应用强制工具路由。
 
 ## 1. 部署配置与已有目录
 
@@ -102,10 +102,26 @@ base-url 使用实际门户 origin，沿用可信 TLS 校验；本机直连 API 
 ```text
 Prompt prepared: tools_count=1 tool_names=search_knowledge_base prompt_chars=... prompt_sha256=...
 System prompt received for sequence ...: tool_names=search_knowledge_base chars=... sha256=...
-Function call decoded from model: tool_names=search_knowledge_base
+Function call decoded from model for sequence ...: tool_names=search_knowledge_base
 ```
 
-前两行的工具名、字符数和 SHA-256 必须一致。这证明 WebSocket 层用正确工具渲染的最终 Prompt 已逐字节到达 Triton backend；第三行来自 backend 对模型函数通道的解码，发生在 WebSocket JSON 解析和转发之前。若前两行是 `search_knowledge_base` 且 hash 相同，而第三行是其他名称，错误来自模型函数输出；若前两行已不同，则检查 VoiceChat 模板、挂载文件和 system_prompt 传输。
+前两行的工具名、字符数和 SHA-256 必须一致。这证明 WebSocket 层用正确工具渲染的最终 Prompt 已逐字节到达 Triton backend；第三行来自 backend 对同一 sequence 的模型函数通道解码，发生在 WebSocket JSON 解析和转发之前。顺序执行验证时，用 `System prompt received` 和 `Function call decoded` 的 sequence 号锁定同一轮。
+
+| 观察结果 | 故障位置 |
+| --- | --- |
+| `Prompt prepared` 已是错误名称 | API 注册内容、挂载模板或 WebSocket Prompt 构造 |
+| `Prompt prepared` 正确，但 backend 名称或 hash 不同 | VoiceChat 到 Triton 的 Prompt 传输/转换 |
+| 两层 Prompt 都是 `search_knowledge_base` 且 hash 相同，模型解码行是其他名称 | Nano 9B/function decoder 输出 |
+| 模型解码行正确，但客户端 JSONL 或 API 审计名称不同 | VoiceChat WebSocket 事件封装/转发 |
+
+容器重建后先清出一段可控日志窗口，再顺序执行一条产品录音：
+
+```sh
+docker logs --since 1m nemotron-labs-voicechat 2>&1 \
+  | grep -E 'Prompt prepared:|System prompt received for sequence|Function call decoded from model for sequence'
+```
+
+若现场存在并发会话，先停止其他验证流量；`Prompt prepared` 行本身不带 sequence，不能跨并发会话用时间猜测配对。两层 hash 一致后，以 backend 两行的相同 sequence 判断模型收到的名称和模型实际输出的名称。
 
 NVIDIA `NeMo-Speech.cpp` 的独立客户端 `clients/voicechat/nemotron-voicechat-client.py` 支持 `--function-text-output`。它把收到的 `response.function_call_arguments.done` 保存为 JSONL，可用于旁路确认 VoiceChat 服务对外发出的名称：
 

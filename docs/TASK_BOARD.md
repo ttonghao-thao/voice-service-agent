@@ -8,7 +8,7 @@
 
 当前需求已确认：VoiceChat 自主决定直接回答或调用工具，后端只使用 VoiceChat，不引入独立 ASR/TTS，不根据最终转写自动启动业务。本次实现以 dual_tools/general_qa 为部署目标；旧 knowledge_required 现场证据属于严格模式，不能作为当前目标配置。先打通功能再优化时延，详见 [实施顺序](q1003-target-architecture.md#4-实施计划与决策门槛)。
 
-本期进一步收敛到一个原生业务工具 search_knowledge_base(query)，内部可信 implementation 仍为 search_cuekb/CueKB。默认目录、执行器和录音验证脚本已编码；AGENT_PROVIDER=disabled，不需外置模型配置。旧 lookup/reason、SDK 工作流仅保留兼容覆盖，不能用于本期放行。部署及错误分界见 [单工具验证](native-cuekb-validation.md)。
+本期进一步收敛到一个原生业务工具 search_knowledge_base(query)，公开名称和内部可信 implementation 完全同名，后端由 CueKB 提供检索。默认目录、执行器和录音验证脚本已编码；AGENT_PROVIDER=disabled，不需外置模型配置。旧 lookup/reason、SDK 工作流仅保留兼容覆盖，不能用于本期放行。部署及错误分界见 [单工具验证](native-cuekb-validation.md)。
 
 ## 2. 已完成的编码里程碑
 

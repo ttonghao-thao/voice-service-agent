@@ -72,7 +72,7 @@ def knowledge_tools(direct, reasoned, cuekb=None):
     dispatcher = ToolDispatcher()
     if cuekb is not None:
         dispatcher.register(NativeTool(
-            "search_cuekb",
+            "search_knowledge_base",
             "Search authorized product or company documentation. Do not use for greetings, casual conversation "
             "or general knowledge. Preserve product names, models and technical terms; clarify missing essentials.",
             CueKBArguments, cuekb, kind="cuekb", ack_messages=("Let me check the documentation.",),

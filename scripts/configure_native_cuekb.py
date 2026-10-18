@@ -25,9 +25,9 @@ async def configure(settings, apply=False):
             target = runtime.catalog.load_file()
             if len(target) != 1 or (
                 target[0].name, target[0].implementation
-            ) != ("search_knowledge_base", "search_cuekb"):
+            ) != ("search_knowledge_base", "search_knowledge_base"):
                 raise ValueError(
-                    "The checked-in phase-1 catalog must expose only search_knowledge_base via search_cuekb"
+                    "The checked-in phase-1 catalog must use search_knowledge_base as both name and implementation"
                 )
             changed = [entry.model_dump() for entry in current] != [entry.model_dump() for entry in target]
             if apply and changed:

@@ -18,7 +18,7 @@ VoiceChat 模型通过 tools/instructions 自主选择；不发送 WS tool_choic
 
 ## 一期原生单工具路径
 
-默认向 VoiceChat 注册 `search_knowledge_base(query)`，其可信 implementation 为 `search_cuekb`，由 `NativeCueKBExecutor` 经既有 Registry/CueKBAdapter 调 `/v1/search`。query 不会被最终转写覆盖；最终转写仍作为请求归属和可信上下文来源。原生参数/异常记录供区分选择、参数、检索和语音问题，不自动做语义正确性判定。
+默认向 VoiceChat 注册 `search_knowledge_base(query)`，服务端可信 implementation 使用同名 `search_knowledge_base`，由 `NativeCueKBExecutor` 经既有 Registry/CueKBAdapter 调 CueKB `/v1/search`。query 不会被最终转写覆盖；最终转写仍作为请求归属和可信上下文来源。原生参数/异常记录供区分选择、参数、检索和语音问题，不自动做语义正确性判定。
 
 该执行器没有外置模型或升级分支。检索失败、无结果、澄清、insufficient/conflicting 分别返回明确状态；有可用证据时，选取完整 ASCII 来源及必要 context，在项数/字节预算内形成 `cuekb-evidence-v1`。不截断句子或音译技术事实；无法保留完整英文证据则返回受控不足结果。scope/degraded/省略项标记 partial，不能推导为完整知识不存在。unassessed 保留原标签，由 VoiceChat 只根据实际证据作答，不冒充服务已经证明其充分。
 

@@ -25,14 +25,14 @@ sha256sum /home/thao/voice/model.py
 当前运行文件预期 SHA-256：
 
 ```text
-model.py          c94892232a194b570b0fa3851a6cc6fdbbe8ea9c54104872eebe5deec554693d
+model.py          c91b3af5b41f515fc1dbfaf7fdbec4ae528a4989f90a144829d2491a9b805990
 audio_server.py   0579d3713e28193f6c329a69b90c7a6d3d4e2c82b82d9dd4cc3ec7bee92fe984
 prompt_template   a71230010295a363a0fde0e0d86c4786aeb4ef5f458cf4d75ddf0926895bcdb7
 ```
 
 `load_utils.py` 沿用现场文件。本次模板必须使用上面同步的完整 `prompt_template.jinja`。模板加入会话策略优先、禁止同请求重试/并行工具调用、仅按授权结果发声的约束，并将调用示例收敛为单个工具和对象参数；单工具 search_knowledge_base 使用完整英文工具名和覆盖价格、重量、存储及保质期的 query 示例。已注册工具覆盖请求时，模板要求调用工具，不能直接声称无权访问资料。它修复提示冲突，不代表已修复模型全 PAD。
 
-`audio_server.py` 在模板渲染后记录工具名、Prompt 字符数和 SHA-256；backend `model.py` 在接收 Triton system_prompt 时再次记录工具名、字符数和 SHA-256，并在函数通道形成有效 JSON 后记录模型解码出的工具名。日志不写 Prompt 正文、query 或参数。两层 Prompt hash 相同且工具名均为 `search_knowledge_base`，才证明注册名称未在 VoiceChat 转换链路中被改写。
+`audio_server.py` 在模板渲染后记录工具名、Prompt 字符数和 SHA-256；backend `model.py` 在接收 Triton system_prompt 时再次记录工具名、字符数和 SHA-256，并在函数通道形成有效 JSON 后按 sequence 记录模型解码出的工具名。日志不写 Prompt 正文、query 或参数。两层 Prompt hash 相同且工具名均为 `search_knowledge_base`，才证明注册名称未在 VoiceChat 转换链路中被改写。
 
 ## 创建容器
 
@@ -87,6 +87,6 @@ docker logs nemotron-labs-voicechat 2>&1 \
   | grep -E 'Prompt prepared:|System prompt received|Function call decoded from model'
 ```
 
-预期运行文件 hash 与上文一致，环境依次为 `true`、`true`、`3`、`0`，backend 启动日志包含 `force=True`、`pad_tail_ratio=3.0`、`close_on_pad_tail=True`。一次新会话应出现相同 Prompt SHA-256 的 `Prompt prepared` 与 `System prompt received`，两行均列出 `search_knowledge_base`；模型触发工具时还应出现 `Function call decoded from model: tool_names=search_knowledge_base`。这些结果只证明新文件、启动配置和该轮工具名称链路；回答收尾、ASR、原生工具执行和真实知识链仍需按 [验证记录](../voicechat-validation-20261014.md) 执行现场测试。
+预期运行文件 hash 与上文一致，环境依次为 `true`、`true`、`3`、`0`，backend 启动日志包含 `force=True`、`pad_tail_ratio=3.0`、`close_on_pad_tail=True`。一次新会话应出现相同 Prompt SHA-256 的 `Prompt prepared` 与 `System prompt received`，两行均列出 `search_knowledge_base`；模型触发工具时还应出现同一 sequence 的 `Function call decoded from model for sequence ...: tool_names=search_knowledge_base`。这些结果只证明新文件、启动配置和该轮工具名称链路；回答收尾、ASR、原生工具执行和真实知识链仍需按 [验证记录](../voicechat-validation-20261014.md) 执行现场测试。
 
 模板在进程启动时加载；同步宿主文件后按上面的命令重新创建验证容器。门户或 API 单独重启不会更新 VoiceChat 进程内的模板。

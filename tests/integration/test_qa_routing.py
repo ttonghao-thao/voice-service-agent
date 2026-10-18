@@ -72,7 +72,9 @@ def test_two_native_tools_and_extensible_registration(tmp_path):
         dispatcher = app.state.coordinator.runtime.dispatcher
         definitions = dispatcher.definitions(tuple(dispatcher.tools))
         config = session_update("", definitions, "general_qa")
-        assert [t["name"] for t in config["session"]["tools"]] == ["search_cuekb", "lookup_knowledge", "reason_over_knowledge"]
+        assert [t["name"] for t in config["session"]["tools"]] == [
+            "search_knowledge_base", "lookup_knowledge", "reason_over_knowledge",
+        ]
         assert set(config["session"]) == {"tools", "instructions", "audio"}
         assert "consult_service_agent" not in config["session"]["instructions"]
         assert config["session"]["tools"][0]["parameters"]["additionalProperties"] is False

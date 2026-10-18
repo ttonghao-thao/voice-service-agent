@@ -1,6 +1,6 @@
 # 全局 VoiceChat 工具目录
 
-2026-10-13 实现。入口：`agent_runtime/tool_catalog.py`、`dispatch.py`、`api/routes.py`、`voice/provider.py`/`gateway.py`。一期默认目录只有 search_knowledge_base，可信 implementation 仍是 search_cuekb；旧 lookup/reason 实现仅保留兼容覆盖。`dual_tools` 保留为兼容模式名称，含义是原生可配置多工具；`legacy` 仍是显式单 bridge 兼容路径。配置与迁移命令见 [部署](../deployment.md)，执行规则见 [知识执行](../qa-routing-design.md)。
+2026-10-13 实现。入口：`agent_runtime/tool_catalog.py`、`dispatch.py`、`api/routes.py`、`voice/provider.py`/`gateway.py`。一期默认目录的公开名称和可信 implementation 都是 search_knowledge_base；旧 lookup/reason 实现仅保留兼容覆盖。`dual_tools` 保留为兼容模式名称，含义是原生可配置多工具；`legacy` 仍是显式单 bridge 兼容路径。配置与迁移命令见 [部署](../deployment.md)，执行规则见 [知识执行](../qa-routing-design.md)。
 
 ## 1. 信息归属与注册契约
 
@@ -14,7 +14,7 @@
 
 `search_knowledge_base` 的一期描述覆盖公司/品牌/产品事实，不限于技术手册；价格、尺寸、重量、成分、包装、运输、存储、保质期和食用/使用方式同样属于需要企业证据的请求。明确询问公司或产品文档时必须调用该工具，不能在工具已注册时直接声称无权访问文档。问候、闲聊及不依赖企业资料的通用科学/技术概念仍由 general_qa 直接回答。
 
-现场 NVIDIA VoiceChat 曾在旧目录中发出 `search_cueb`，因此公开名称改为完整英文 `search_knowledge_base`。Gateway 只接受当前会话精确注册的名称；旧 `search_cuekb`、`search_cueb` 及其他拼写都返回 `VOICE_TOOL_UNKNOWN`，不做模糊纠错。目录中的 implementation `search_cuekb` 只用于服务端绑定 CueKB 执行器，不会作为工具名发送给模型。
+现场 NVIDIA VoiceChat 曾在旧目录中发出 `search_cueb`，因此工具名称全面改为完整英文 `search_knowledge_base`。目录、可信执行器注册、VoiceChat 会话和审计统一使用该名称；CueKB 只作为后端系统名称。Gateway 只接受当前会话精确注册的名称，错误拼写及其他名称都返回 `VOICE_TOOL_UNKNOWN`，不做模糊纠错。
 
 Adapter 接受 session.updated.tools 的 JSON 数组回显或官方文档中的 JSON 字符串回显；字符串先解析为数组，随后核对音频格式、工具集合/名称/description/parameters/ack_messages 及 instructions；工具列表顺序可变、额外默认字段可存在，但必要字段必须一致。缺失/被修改时返回 VOICE_PROTOCOL_ERROR，握手不能进入 ready。日志 `voice_registration_confirmed` 记录工具数和回显格式；拒绝时 `voice_registration_rejected` 记录失败字段/原因，不记录 prompt 或参数正文。该回显只证明传输注册一致，不证明最终 Jinja 模板、function head、权重/tokenizer/SOTC/EOTC 或模型真实选择正确。
 

@@ -23,7 +23,7 @@ QA_PROVIDER_ANSWER_TIMEOUT_MS=30000
 
 不需要 AGENT_MODEL、OPENAI_API_KEY 或 AGENT_BASE_URL。disabled 表示关闭独立文本答案模型，不能用 mock 代替。`/health/ready` 允许 text_configured=false；页面关闭文字提交，但仍提供麦克风和 WAV 语音通话。
 
-`dual_tools` 为兼容模式名称；一期实际只注册 `search_knowledge_base(query)`，目录将它映射到可信 implementation `search_cuekb`。后台仍通过 Registry 的内部 `search_knowledge` 调用 CueKB `/v1/search`，不要把原生名称填进 ENABLED_TOOLS。KB UUID、凭据、访问范围和可信过滤条件只在服务端设置。VoiceChat 原生调用决定是否执行业务，最终转写用于关联和审计，不自动触发查询。
+`dual_tools` 为兼容模式名称；一期实际只注册 `search_knowledge_base(query)`，目录和可信 implementation 使用同一个名称。后台仍通过 Registry 的内部 `search_knowledge` 调用 CueKB `/v1/search`，不要把原生名称填进 ENABLED_TOOLS。KB UUID、凭据、访问范围和可信过滤条件只在服务端设置。VoiceChat 原生调用决定是否执行业务，最终转写用于关联和审计，不自动触发查询。
 
 | 配置 | 一期值 / 用途 |
 | --- | --- |
