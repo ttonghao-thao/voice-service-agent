@@ -14,7 +14,8 @@
 | 一次已进入 CueKB 的现场轮次 | 产品 case 曾出现 `selection=passed`、`actual_tools=['search_knowledge_base']`、CueKB trace；随后因语音证据过滤/结束边界超时未完成 | 至少一个部署轮次曾从原生选择进入真实 CueKB | 该结果不能覆盖当前“未触发”的部署和新轮次，也不能证明选择稳定 |
 | 2026-10-18 现场轮次 | 最终 Prompt 与 Triton 收到的 Prompt 均为 `search_knowledge_base`、7082 字符、SHA-256 `01e7a462...7493`；sequence `4205027636` 解码出正确工具名；API selection 通过并取得 CueKB trace | 注册、Prompt 构造/传输、Nano 9B function 解码、VoiceChat→API 工具事件和 CueKB 请求均已通过；原来的“未触发工具”不再是当前阻塞点 | 同一 sequence 在约 76 秒内重复解码 15 次，产品 case 在 90 秒超时；需确认工具结果停在 API 提交前还是 VoiceChat/Triton 接收后 |
 | 2026-10-18 13:13 现场轮次 | CueKB 102 ms 返回 5 个命中；语音层因 5 项均为 `context_omitted` 而全部拒绝。API 只启动一次 bridge/CueKB，却收到 15 个不同 call ID，其中 14 个没有新 input；API 提交 15 个结果。VoiceChat 摘要混入相邻 sequence，并把日志尾引号计入工具名 | 证据适配器把重复或超预算周边 context 与命中块完整性混为一类；VoiceChat 每次重复解码都生成新 call ID；旧摘要的 `MODEL_FUNCTION_WRONG_NAME` 是解析误报，模型实际名称仍正确 | 本期修复完整命中块识别、同输入规范调用去重/结果复用，以及按当前 sequence 汇总和工具名字符边界 |
-| 当前状态 | 根因修复已编码，等待 API 与 VoiceChat 同时部署后现场复测 | 工具名称、Prompt、模型选择和 CueKB 检索不再作为当前修改点 | 预期 CueKB 只调用一次、API `received=1 unique_calls=1 unbound=0 results_submitted=1`，且产品 case `voice_evidence=passed` |
+| 2026-10-18 14:27 现场轮次 | API `received=1 unique_calls=1 unbound=0 results_submitted=1`；VoiceChat `duplicates_coalesced=2 response_timeouts=0`，两份诊断均通过；CueKB 102 ms 返回 5 个命中，但语音层仍以 `context_omitted` 拒绝全部候选 | 重复调用问题已修复；工具注册、Prompt、模型 function、API bridge 和 CueKB 检索完整通过。剩余根因是语音准入只认精确 `context_parts`，没有采用 CueKB 的 `evidence_status=sufficient` | API 准入需允许“主命中完整、仅省略周边 context 且 CueKB 明确充分”的证据，同时保持 `context_truncated` 和未评估证据的拒绝边界 |
+| 当前状态 | 上述语音证据准入修复已编码，单入口增加 `cuekb_evidence` 字段，等待仅重建 API 后现场复测 | VoiceChat 去重修复已由现场验证，无需再次修改或重建 | 预期产品 case `retrieval=passed cuekb_evidence=sufficient voice_evidence=passed` 且单入口退出码为 0 |
 
 当前判断顺序固定为：先证明 API 当前目录和用例正确，再证明 VoiceChat 最终 Prompt 与 backend 收到内容一致，再看模型 function 通道是否输出，最后核对 API 提交工具结果和 Triton 收到结果。旧轮次、相邻日志或单独的 `tools_count=1` 不代替同一窗口证据。
 
@@ -50,12 +51,12 @@ set -e
 echo "host_exit_code=$VALIDATION_EXIT"
 ```
 
-预期只出现预检、时间窗口/会话 ID、四条 case、最终分类和 `host_exit_code`。新验证器把检索与语音证据分开显示；当前现场故障应接近：
+预期只出现预检、时间窗口/会话 ID、四条 case、最终分类和 `host_exit_code`。新验证器把 CueKB 充分性、检索和语音证据分开显示；本次修复部署后的产品 case 应接近：
 
 ```text
-case=black_pig_crisp_heart expected=search_knowledge_base actual=search_knowledge_base selection=passed arguments=manual_review_required retrieval=passed voice_evidence=unavailable evidence_filter=candidates:1,selected:0,context:1,non_ascii:0,limit:0,budget:0 speech=passed reason=CUEKB_VOICE_EVIDENCE_UNAVAILABLE ... input_ids=I trace_ids=T
-validation=failed fault=CUEKB_VOICE_EVIDENCE focus=api_voice_evidence_filter error_type=TimeoutError exit_code=1
-host_exit_code=1
+case=black_pig_crisp_heart expected=search_knowledge_base actual=search_knowledge_base selection=passed arguments=manual_review_required retrieval=passed cuekb_evidence=sufficient voice_evidence=passed evidence_filter=candidates:5,selected:N,context:0,non_ascii:0,limit:L,budget:B speech=passed reason=- ... input_ids=I trace_ids=T
+validation=passed fault=PASS focus=human_transcription_and_spoken_faithfulness error_type=- exit_code=0
+host_exit_code=0
 ```
 
 保存输出中的 `window_start`、`window_end`、`conversation_id` 和失败 case 的 `input_ids`。不提供 `/tmp/native-cuekb/report.json`，除非这些核心字段互相矛盾。
@@ -180,7 +181,7 @@ api_diagnostic_exit_code=0
 | `MODEL_FUNCTION_WRONG_NAME` | 模型/function decoder 输出了其他名称；用同 sequence 原始名称定位，不在 API 做模糊纠错 |
 | model function 正确但 API `TOOL_NOT_CALLED` | VoiceChat WebSocket function 事件封装/发送或 API 接收关联问题 |
 | API selection 通过但 `CUEKB_RETRIEVAL` | CueKB 没有返回可用命中或服务失败，查对应 trace 的检索状态 |
-| `retrieval=passed voice_evidence=unavailable` | CueKB 已命中，API 因上下文不完整、非 ASCII、条数限制或字节预算拒绝语音证据；本版本详细报告记录各拒绝计数 |
+| `retrieval=passed voice_evidence=unavailable` | CueKB 已命中；同时查看 `cuekb_evidence` 与 `evidence_filter`。真正截断、未评估且无完整块证明、非 ASCII 或字节预算均可导致拒绝 |
 | API `results_submitted=0` | 工具结果未从 API 写回 VoiceChat，继续查 API bridge/delivery |
 | API `results_submitted=1`、VoiceChat `function_result=0` | 结果越过 API，停在 VoiceChat function output 队列或 Triton inference 输入 |
 | `function_result>=1`、`response_timeouts>0` | 结果已进 Triton，但 backend function 状态机未正常消费 |

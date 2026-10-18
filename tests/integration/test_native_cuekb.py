@@ -61,7 +61,8 @@ def test_query_only_schema_rejects_authority_and_preserves_identifiers():
     ("budget", "CUEKB_VOICE_EVIDENCE_UNAVAILABLE"), ("partial", None),
     ("typographic_ascii", None),
     ("duplicate_context", None), ("bounded_source_part", None),
-    ("omitted_without_source_part", "CUEKB_VOICE_EVIDENCE_UNAVAILABLE"),
+    ("omitted_without_source_part", None),
+    ("omitted_unassessed", "CUEKB_VOICE_EVIDENCE_UNAVAILABLE"),
     ("oversized", "CUEKB_NO_EVIDENCE"),
 ])
 async def test_native_query_reaches_cuekb_without_an_answer_model(tmp_path, monkeypatch, scenario, code):
@@ -97,7 +98,7 @@ async def test_native_query_reaches_cuekb_without_an_answer_model(tmp_path, monk
                 "anchor": {},
                 "title_path": [],
             }])
-        if scenario in ("bounded_source_part", "omitted_without_source_part"):
+        if scenario in ("bounded_source_part", "omitted_without_source_part", "omitted_unassessed"):
             source = data["hits"][0]["source_text"]
             neighbor = "Additional complete neighboring context. " * 200
             source_part = {
@@ -117,6 +118,8 @@ async def test_native_query_reaches_cuekb_without_an_answer_model(tmp_path, monk
                 context_parts=([source_part, neighbor_part]
                                if scenario == "bounded_source_part" else [neighbor_part]),
             )
+            if scenario == "omitted_unassessed":
+                data["evidence_status"] = "unassessed"
         if scenario == "oversized":
             data["hits"][0]["source_text"] = "No. " * 2000
         if scenario == "truncated_context":

@@ -135,6 +135,7 @@ def case_line(row):
         f"selection={row.get('selection')}",
         f"arguments={row.get('arguments')}",
         f"retrieval={row.get('retrieval')}",
+        f"cuekb_evidence={row.get('cuekb_evidence_status') or '-'}",
         f"voice_evidence={row.get('voice_evidence') or '-'}",
         f"evidence_filter={evidence_filter_summary(row)}",
         f"speech={row.get('speech_transport')}",

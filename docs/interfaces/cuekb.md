@@ -46,7 +46,7 @@ Content-Type: application/json
 
 Citation 的 updated_at 已改为可选，未填当前时间冒充文档更新时间；不再生成 score。`version_id` 与 metadata 中受控的 `business_version` 分开，旧历史 JSON 在读取时仍按原数据兼容，新增任务字段由 Alembic 0004 迁移。
 
-CueKB M3 已提供有界章节、相邻块及表头上下文，但预算耗尽时仍可能截断或返回空 context；本项目另以 6000 字符证据预算和小于 32 KiB 的工具结果预算裁剪，使用 `context_omitted` 和 `hits_omitted` 明示应用侧裁剪，不将其冒充 CueKB 状态。`context` 与 `source_text` 完全相同时去重不算裁剪；周边 context 超预算时，仅在 `context_parts` 同时包含 chunk ID 和正文均精确匹配的完整命中块时，原生语音路径才可使用该命中块。CueKB 的 `context_truncated` 或无法证明完整命中块的应用裁剪仍被拒绝。回答模块仍需检查证据充分性。原件查看需经本项目重新鉴权并固定检索版本；这是待实现入口，不向浏览器暴露服务 Key 或私有下载 URL。
+CueKB M3 已提供有界章节、相邻块及表头上下文，但预算耗尽时仍可能截断或返回空 context；本项目另以 6000 字符证据预算和小于 32 KiB 的工具结果预算裁剪，使用 `context_omitted` 和 `hits_omitted` 明示应用侧裁剪，不将其冒充 CueKB 状态。`context` 与 `source_text` 完全相同时去重不算裁剪。周边 context 超预算时，原生语音路径可使用仍完整保留的 `source_text`，但必须满足以下一项：CueKB 明确返回 `evidence_status=sufficient`，或 `context_parts` 中存在 chunk ID 和正文均精确匹配的完整命中块。`context_truncated=true` 始终拒绝；`evidence_status=unassessed` 且没有完整命中块证明时也拒绝。回答模块仍需检查证据充分性。原件查看需经本项目重新鉴权并固定检索版本；这是待实现入口，不向浏览器暴露服务 Key 或私有下载 URL。
 
 ## 3. 身份和错误
 

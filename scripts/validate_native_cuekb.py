@@ -94,7 +94,9 @@ def assess(case, history, seen_inputs, output_samples):
         "unverified"
     )
     return {"selection": selection, "actual_tools": actual, "arguments": argument_status,
-            "retrieval": retrieval, "voice_evidence": voice_evidence_status,
+            "retrieval": retrieval,
+            "cuekb_evidence_status": searches[-1].get("evidence_status") if searches else None,
+            "voice_evidence": voice_evidence_status,
             "voice_evidence_filter": ({key: evidence_audit.get(key) for key in (
                 "candidate_count", "selected_count", "rejected_context_count",
                 "rejected_non_ascii_count", "rejected_limit_count", "rejected_budget_count",

@@ -59,6 +59,7 @@ def test_unusable_voice_evidence_is_separate_from_successful_retrieval():
     result = assess(case, history, {"i1"}, 1920)
 
     assert result["retrieval"] == "passed"
+    assert result["cuekb_evidence_status"] == "sufficient"
     assert result["voice_evidence"] == "unavailable"
 
 
@@ -108,7 +109,8 @@ def test_single_entrypoint_classifies_missing_native_tool_with_bounded_evidence(
     )
     assert line == (
         "case=product expected=search_knowledge_base actual=- selection=failed "
-        "arguments=unverified retrieval=unverified voice_evidence=- evidence_filter=- "
+        "arguments=unverified retrieval=unverified cuekb_evidence=- "
+        "voice_evidence=- evidence_filter=- "
         "speech=passed reason=- "
         "portal_error=- elapsed_ms=1200 input_ids=input-1 trace_ids=-"
     )
