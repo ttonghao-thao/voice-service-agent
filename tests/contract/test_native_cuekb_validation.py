@@ -1,10 +1,19 @@
 """Acceptance reporting must not conflate routing, arguments, sources and speech."""
 
 import json
+from io import StringIO
 from pathlib import Path
+from types import SimpleNamespace
 
 import pytest
 
+from scripts import run_native_cuekb_validation as entrypoint
+from scripts.run_native_cuekb_validation import (
+    case_line,
+    classify,
+    read_voicechat_evidence,
+    summarize_voicechat_log,
+)
 from scripts.validate_native_cuekb import assess, load_cases, passed, summary_lines
 
 
@@ -77,6 +86,150 @@ def test_console_summary_is_bounded_and_exit_requires_product_retrieval():
     assert passed(report)
     report["cases"][0]["retrieval"] = "insufficient_evidence"
     assert not passed(report)
+
+
+def test_single_entrypoint_classifies_missing_native_tool_with_bounded_evidence():
+    row = {
+        "case_id": "product", "expected_tool": "search_knowledge_base",
+        "actual_tools": [], "selection": "failed", "arguments": "unverified",
+        "retrieval": "unverified", "speech_transport": "passed",
+        "reason_code": None, "portal_error": None, "elapsed_ms": 1200,
+        "input_item_ids": ["input-1"], "source_trace_ids": [],
+    }
+
+    fault, focus = classify({"status": "observed", "cases": [row]})
+    line = case_line(row)
+
+    assert (fault, focus) == (
+        "TOOL_NOT_CALLED", "voicechat_prompt_or_model_function_channel"
+    )
+    assert line == (
+        "case=product expected=search_knowledge_base actual=- selection=failed "
+        "arguments=unverified retrieval=unverified speech=passed reason=- "
+        "portal_error=- elapsed_ms=1200 input_ids=input-1 trace_ids=-"
+    )
+
+
+@pytest.mark.parametrize(("row", "fault"), [
+    ({"portal_error": "VOICE_TOOL_UNKNOWN"}, "UNKNOWN_TOOL_NAME"),
+    ({"selection": "passed", "arguments": "failed"}, "TOOL_ARGUMENTS"),
+    ({"selection": "passed", "arguments": "manual_review_required",
+      "retrieval": "insufficient_evidence"}, "CUEKB_RETRIEVAL"),
+])
+def test_single_entrypoint_classifies_next_diagnostic_stage(row, fault):
+    product = {
+        "expected_tool": "search_knowledge_base", "actual_tools": ["search_knowledge_base"],
+        "selection": "passed", "arguments": "manual_review_required", "retrieval": "passed",
+        "speech_transport": "passed", "input_item_ids": ["input-1"], **row,
+    }
+    assert classify({"status": "partial", "cases": [product]})[0] == fault
+
+
+def test_single_entrypoint_does_not_blame_tool_selection_without_product_input():
+    row = {
+        "expected_tool": "search_knowledge_base", "actual_tools": [],
+        "selection": "unverified", "arguments": "unverified", "retrieval": "unverified",
+        "speech_transport": "failed", "input_item_ids": [], "input_items_observed": 0,
+    }
+
+    assert classify({"status": "partial", "cases": [row]}) == (
+        "INPUT_NOT_OBSERVED", "voicechat_audio_or_asr_transport"
+    )
+
+
+def test_voicechat_log_summary_compares_prompt_chain_without_printing_raw_log():
+    digest = "a" * 64
+    log = "\n".join((
+        "private prefix Prompt prepared: tools_count=1 tool_names=search_knowledge_base "
+        f"prompt_chars=6123 prompt_sha256={digest}",
+        "System prompt received for sequence 42: tool_names=search_knowledge_base "
+        f"chars=6123 sha256={digest}",
+        "Function call decoded from model for sequence 42: "
+        "tool_names=search_knowledge_base private suffix",
+        'voice_ws_diagnostic {"event": "function.parsed"}',
+        'voice_ws_diagnostic {"event": "function.result"}',
+        'voice_ws_diagnostic {"event": "output.sent", '
+        '"kind": "response.output_audio.done"}',
+    ))
+
+    lines, ok = summarize_voicechat_log(log, "search_knowledge_base")
+
+    assert ok and len(lines) == 5
+    assert lines[1] == (
+        f"backend_prompt sequence=42 tools=search_knowledge_base chars=6123 "
+        f"sha256={digest} match=passed"
+    )
+    assert lines[2] == (
+        "model_function status=passed sequences=42 tools=search_knowledge_base"
+    )
+    assert lines[3] == "voicechat_events function_parsed=1 function_result=1 audio_done=1"
+    assert "private" not in "\n".join(lines)
+
+
+def test_voicechat_log_summary_marks_absent_model_function_as_fault():
+    digest = "b" * 64
+    log = "\n".join((
+        "Prompt prepared: tools_count=1 tool_names=search_knowledge_base "
+        f"prompt_chars=6000 prompt_sha256={digest}",
+        "System prompt received for sequence 7: tool_names=search_knowledge_base "
+        f"chars=6000 sha256={digest}",
+    ))
+
+    lines, ok = summarize_voicechat_log(log, "search_knowledge_base")
+
+    assert not ok
+    assert lines[-1] == "voicechat_diagnostic=failed fault=MODEL_FUNCTION_ABSENT"
+
+
+def test_voicechat_log_input_discards_unrelated_lines_before_summary():
+    source = StringIO(
+        "private unrelated payload\n"
+        "Prompt prepared: tools_count=1 tool_names=search_knowledge_base "
+        f"prompt_chars=1 prompt_sha256={'c' * 64}\n"
+        'voice_ws_diagnostic {"event":"function.result"}\n'
+    )
+
+    evidence = read_voicechat_evidence(source)
+
+    assert "private unrelated" not in evidence
+    assert "Prompt prepared" in evidence
+    assert "function.result" in evidence
+
+
+async def test_single_entrypoint_prints_only_preflight_window_cases_and_classification(
+    monkeypatch, capsys,
+):
+    cases = [{"case_id": name} for name in ("greeting", "general", "product-1", "product-2")]
+    capabilities = {
+        "provider": "nvidia", "qa_execution_mode": "dual_tools",
+        "answer_policy": "general_qa", "native_tools": ["search_knowledge_base"],
+    }
+    rows = [{
+        "case_id": case["case_id"],
+        "expected_tool": "search_knowledge_base" if case["case_id"].startswith("product") else None,
+        "actual_tools": [], "selection": "failed", "arguments": "unverified",
+        "retrieval": "unverified", "speech_transport": "passed", "elapsed_ms": 1,
+        "input_item_ids": [case["case_id"] + "-input"], "source_trace_ids": [],
+    } for case in cases]
+
+    async def fake_preflight(_args, _settings):
+        return cases, capabilities
+
+    async def fake_run(_args):
+        return {"status": "observed", "conversation_id": "conversation-1", "cases": rows}
+
+    monkeypatch.setattr(entrypoint, "preflight", fake_preflight)
+    monkeypatch.setattr(entrypoint, "run", fake_run)
+    args = SimpleNamespace(output="/tmp/report.json")
+
+    result = await entrypoint.execute(args)
+    lines = capsys.readouterr().out.splitlines()
+
+    assert result == 1
+    assert len(lines) == 7
+    assert lines[0].startswith("preflight=passed provider=nvidia")
+    assert "conversation_id=conversation-1" in lines[1]
+    assert lines[-1].startswith("validation=failed fault=TOOL_NOT_CALLED")
 
 
 @pytest.mark.parametrize("scenario,expected", [

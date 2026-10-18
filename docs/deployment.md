@@ -51,14 +51,16 @@ python /app/scripts/configure_native_cuekb.py --apply
 
 同步 [完整 VoiceChat 模板](voicechat/docker-run.md)，重新创建 VoiceChat 容器。新模板包含 search_knowledge_base(query) 单调用示例及会话策略优先/禁止重复并行/只按授权结果发声约束；不修改模型权重、融合参数或引入其他语音模型。
 
-部署脚本会检查实际 capabilities。手工部署也可执行：
+部署脚本会检查实际 capabilities。手工部署完成后直接运行统一入口；它同时检查 readiness、capabilities、镜像材料和固定四用例，不再分别执行多个验证脚本：
 
 ```sh
-docker compose --env-file .env -f deploy/compose.production.yaml exec -T api \
-  python /app/scripts/verify_deployment.py --base-url http://127.0.0.1:8000 --expect-cuekb-native
+API_CONTAINER=$(docker compose --env-file .env \
+  -f deploy/compose.production.yaml ps -q api)
+docker exec "$API_CONTAINER" \
+  python /app/scripts/run_native_cuekb_validation.py
 ```
 
-必须看到 nvidia / dual_tools / general_qa、native_tools=[search_knowledge_base]、agent_provider=disabled、is_mock=false、voice_available=true。text_configured=false 在本期是预期状态。握手和配置检查不证明模型选工具正确。
+必须看到 `preflight=passed provider=nvidia mode=dual_tools policy=general_qa tools=search_knowledge_base cases=4`，随后根据四条 case 和最终 `fault/focus` 判断。完整输出契约见 [原生单工具验证](native-cuekb-validation.md#3-从宿主机用一个入口完成-api-项目验证)。
 
 **结束旧通话并新建 Conversation。** 模式/策略在创建时快照，旧 knowledge_required 会话不会因重连或刷新页面变成 general_qa。
 
@@ -134,7 +136,7 @@ docker compose --env-file .env -f deploy/compose.production.yaml logs --tail=200
 
 源码依据及证据边界见 [NVIDIA 核对记录](voicechat-upstream-analysis.md)。先记录实际镜像 digest、挂载源码和模板 hash；以下脚本不会远程证明版本，不自动开启能力或部署服务。
 
-本期真实 CueKB 验收使用 [容器内原生单工具流程](native-cuekb-validation.md#3-从宿主机在-api-容器内运行固定-wav)。以下是额外的合成结果协议探针，同样从宿主机通过 `docker exec` 在 API 容器内运行，不要求宿主机 Python。脚本和固定 WAV 已包含在 API 镜像中；多工具 `session.update` 直接由容器内实际持久化目录生成，不再从宿主机复制脚本、管理员 JSON 或 WAV：
+本期真实 CueKB 验收使用 [API 容器单入口流程](native-cuekb-validation.md#3-从宿主机用一个入口完成-api-项目验证)。以下是额外的合成结果协议探针，同样从宿主机通过 `docker exec` 在 API 容器内运行，不要求宿主机 Python。脚本和固定 WAV 已包含在 API 镜像中；多工具 `session.update` 直接由容器内实际持久化目录生成，不再从宿主机复制脚本、管理员 JSON 或 WAV：
 
 ```sh
 API_CONTAINER=$(docker compose --env-file .env \

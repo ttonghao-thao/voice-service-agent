@@ -6,6 +6,8 @@
 
 当前现场验证容器的完整 `docker run` 命令、宿主文件同步和启动后核对步骤见 [`docker-run.md`](docker-run.md)。以后修改本目录中的 VoiceChat 运行文件、环境变量、挂载、镜像、端口或 entrypoint 时，必须在同一提交中同步更新该命令。
 
+当前原生工具未触发故障的多轮证据、最小输出命令、VoiceChat 独立验证步骤和预期结果见 [`native-tool-selection-validation.md`](native-tool-selection-validation.md)。故障定位只回传该页规定的核心行，不回传全量容器日志。
+
 补丁前的完整快照保存在 Git commit `b924c72a295bdca428ea3c841fdfca8a26aac53a`；`model.py` 的 before/after hash 仍由 [`pad-tail-completion-manifest.json`](../../deploy/voicechat/pad-tail-completion-manifest.json) 记录。当前收录文件不是已部署到 GPU 的证明。
 
 ## 快照范围

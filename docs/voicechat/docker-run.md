@@ -105,4 +105,4 @@ docker logs nemotron-labs-voicechat 2>&1 \
 
 预期运行文件 hash 与上文一致，环境依次为 `true`、`true`、`3`、`0`，backend 启动日志包含 `force=True`、`pad_tail_ratio=3.0`、`close_on_pad_tail=True`。一次新会话应出现相同 Prompt SHA-256 的 `Prompt prepared` 与 `System prompt received`，两行均列出 `search_knowledge_base`；模型触发工具时还应出现同一 sequence 的 `Function call decoded from model for sequence ...: tool_names=search_knowledge_base`。这些结果只证明新文件、启动配置和该轮工具名称链路；回答收尾、ASR、原生工具执行和真实知识链仍需按 [验证记录](../voicechat-validation-20261014.md) 执行现场测试。
 
-模板在进程启动时加载；同步宿主文件后按上面的命令重新创建验证容器。门户或 API 单独重启不会更新 VoiceChat 进程内的模板。
+模板在进程启动时加载；同步宿主文件后按上面的命令重新创建验证容器。门户或 API 单独重启不会更新 VoiceChat 进程内的模板。当前未触发工具故障的最小输出复测按 [原生工具选择验证](native-tool-selection-validation.md)执行。

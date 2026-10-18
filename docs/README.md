@@ -5,7 +5,7 @@
 ## 最小读取路径
 
 - 了解系统： [当前架构](architecture.md)；要安排工作再读 [任务板](TASK_BOARD.md)。
-- 继续当前工作： [单工具原生验证](native-cuekb-validation.md) → [任务板](TASK_BOARD.md)；需要历史严格模式诊断时再查 [故障定位](voicechat-fault-recovery-design.md) 与日期证据。
+- 继续当前工作： [单工具原生验证](native-cuekb-validation.md) → [VoiceChat 工具选择定位](voicechat/native-tool-selection-validation.md) → [任务板](TASK_BOARD.md)；需要历史严格模式诊断时再查 [故障定位](voicechat-fault-recovery-design.md) 与日期证据。
 - 架构/编码规划： [实施方案](q1003-target-architecture.md)；确认受影响的接口和代码后再扩读主题。
 - 现场更新： [VoiceChat 启动](voicechat/docker-run.md) 或 [应用部署](deployment.md)；完成后对照 [验收](acceptance-report.md)。
 
@@ -16,7 +16,7 @@
 | 已实现模块、调用与状态边界 | [架构](architecture.md) | voice、sessions、agent_runtime、tools、storage |
 | 改进设计、依赖与架构退出条件 | [方案](q1003-target-architecture.md) | Gateway/Provider/Runtime；原因查 [ADR](decisions/architecture-decisions.md) |
 | 未完成工作及优先级 | [任务板](TASK_BOARD.md) | P0–P3；不维护测试计数 |
-| 当前故障诊断分支 | [故障定位](voicechat-fault-recovery-design.md) | WS/encoder/RNNT/function/EOS/Gateway |
+| 当前故障诊断分支 | [VoiceChat 工具选择定位](voicechat/native-tool-selection-validation.md)、[通用故障定位](voicechat-fault-recovery-design.md) | 当前未触发工具的最小证据；WS/encoder/RNNT/function/EOS/Gateway 通用分支 |
 | 固定通话证据与采集步骤 | [10 月 15 日严格复测](voicechat-validation-20261015.md)、[10 月 14 日复测及采集](voicechat-validation-20261014.md) | 同 sequence 的日志事实；不套用早期断线原因 |
 | 外部完整文件、hash、启动 | [VoiceChat 快照](voicechat/README.md)、[启动命令](voicechat/docker-run.md) | docs/voicechat；补丁/构建查 [交付](../deploy/voicechat/README.md) |
 | 知识执行与证据准入 | [知识执行](qa-routing-design.md) | agent_runtime、Registry；[CueKB 契约](interfaces/cuekb.md) |

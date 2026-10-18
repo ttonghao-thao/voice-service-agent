@@ -119,6 +119,7 @@ async def run(args):
             created.raise_for_status()
             conversation = created.json()
             cid = conversation["id"]
+            report["conversation_id"] = cid
             http.headers["Authorization"] = "Bearer " + conversation["access_token"]
             issued_response = await http.post(f"/api/v1/conversations/{cid}/voice-sessions", json={})
             issued_response.raise_for_status()
@@ -206,6 +207,7 @@ async def run(args):
                             await asyncio.gather(sender, return_exceptions=True)
                             row["elapsed_ms"] = round((time.monotonic() - started) * 1000)
                             row["primary_fully_sent"] = primary_sent.is_set()
+                            row["input_item_ids"] = sorted(seen_inputs)
                             row["input_items_observed"] = len(seen_inputs)
                             row["output_samples"] = samples
                             row["output_sha256"] = hashlib.sha256(audio).hexdigest() if audio else None

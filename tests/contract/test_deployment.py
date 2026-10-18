@@ -126,6 +126,7 @@ def test_cloud_deployment_uses_prebuilt_images():
     dockerfile = (ROOT / "deploy/Dockerfile.api").read_text()
     assert "COPY scripts/configure_native_cuekb.py scripts/configure_native_cuekb.py" in dockerfile
     assert "COPY scripts/validate_native_cuekb.py scripts/validate_native_cuekb.py" in dockerfile
+    assert "COPY scripts/run_native_cuekb_validation.py scripts/run_native_cuekb_validation.py" in dockerfile
     assert "COPY scripts/probe_voicechat.py scripts/probe_voicechat.py" in dockerfile
     assert "COPY artifacts/native-cuekb/cases.json validation/native-cuekb/cases.json" in dockerfile
     assert "COPY artifacts/native-cuekb/*.wav validation/native-cuekb/" in dockerfile
@@ -140,6 +141,10 @@ def test_cloud_deployment_uses_prebuilt_images():
     voicechat_runbook = (ROOT / "docs/voicechat/docker-run.md").read_text()
     assert "voicechat_validation_bundle=passed" in voicechat_runbook
     assert '"$VOICECHAT_RELEASE_IMAGE"' in voicechat_runbook
+    selection_runbook = (ROOT / "docs/voicechat/native-tool-selection-validation.md").read_text()
+    assert "python /app/scripts/run_native_cuekb_validation.py" in selection_runbook
+    assert "--summarize-voicechat-log" in selection_runbook
+    assert "不要回传完整 `docker logs`" in selection_runbook
     assert "configure_native_cuekb.py --apply" in script
     nginx = (ROOT / "deploy/nginx.conf").read_text()
     assert "listen 8087 ssl;" in nginx

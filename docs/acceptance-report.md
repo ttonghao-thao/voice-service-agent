@@ -1,6 +1,6 @@
 # 当前验收证据
 
-更新日期：2026-10-18。**真实知识语音闭环尚未放行。**现场固定 WAV 已验证问候/通用问题直接回答，以及产品问题选择完整名称 `search_knowledge_base` 并命中 CueKB；原 `VOICE_TOOL_UNKNOWN` 已消失。当前产品证据因英文资料中的 Unicode 排版符号被语音 ASCII 边界全部过滤，返回 `CUEKB_VOICE_EVIDENCE_UNAVAILABLE`，随后缺少音频结束边界并在 90 秒超时。证据规范化修复仍需部署后复测正常知识回答、第四条用例及完整听音。状态见 [任务板](TASK_BOARD.md)，要求见 [验证清单](development/validation.md)。
+更新日期：2026-10-18。**真实知识语音闭环尚未放行。**当前已知故障一是产品问题未稳定触发 VoiceChat 原生工具，正在按最终 Prompt、Triton 接收内容、模型 function 通道和 WebSocket/API 事件逐层定位；历史上既有 `search_cueb` 错误名称和连续未调用，也有一次完整名称进入 CueKB，均不能单独代表当前部署。故障二是 `hello.wav` 句首 `Hello` 丢失，本期暂缓定位。状态见 [任务板](TASK_BOARD.md)，故障一进展与操作见 [VoiceChat 工具选择验证](voicechat/native-tool-selection-validation.md)。
 
 当前用户目标已改为 VoiceChat 自主决定直接回答或调用工具，部署采用 general_qa。qa-tools-v4 已修正模板冲突并补充部署策略检查；以下严格模式现场结果保留为历史证据，不能当作新模式的验收结果。
 
@@ -12,6 +12,7 @@
 
 | 日期 / 版本 | 实际结果 | 限制与证据位置 |
 | --- | --- | --- |
+| 2026-10-18（北京时间）/ 原生工具故障单入口 | 新增 API 镜像内 `/app/scripts/run_native_cuekb_validation.py`：一次 `docker exec` 完成 readiness、capabilities、镜像材料及真实四 WAV 验证，输出时间窗口、conversation/input/trace ID、四条 case 和稳定故障分类；同一文件可把限定窗口的 VoiceChat stdout 归纳为 Prompt、backend Prompt、model function、关键事件和最终判定五行，不回显原始日志。故障一多轮定位与 VoiceChat 修改/预期结果独立写入 `docs/voicechat`，故障二明确暂缓。API 镜像实际构建成功并在只读 rootfs 下核对入口及四段 WAV；135 项相关测试通过，全仓 Ruff/编译、文档 Shell 语法、链接及 diff 检查通过 | 本地 Docker/CPU 和受控报告/日志夹具；未连接现场 VoiceChat GPU/CueKB，不能证明当前故障已定位或修复。VoiceChat stdout 仍须由宿主机按脚本输出的时间窗口读取，再通过标准输入交给镜像内摘要模式，这是 Docker 日志边界，不要求宿主机 Python |
 | 2026-10-18（北京时间）/ 真实三用例与英文排版符号修复 | 问候、TCP/UDP 均正确直答；Black Pig 用例 `selection=passed`、工具名为 `search_knowledge_base`、CueKB 返回 trace 和命中，证明名称注册与原生检索已经打通。现场返回 `CUEKB_VOICE_EVIDENCE_UNAVAILABLE` 并在 90 秒缺少结束边界；附件原文含 143 个非 ASCII 排版字符，产品标题自身含弯引号。API 现将弯引号、长短破折号、间隔点及 `>=`/`<=` 的 Unicode 等价符号规范为 ASCII，其他 Unicode 仍拒绝；验证报告不再用原始命中覆盖证据不可用状态。39 项定向及 482 项 Python 全量测试通过 | 用户现场真实 NVIDIA VoiceChat/CueKB 报告与用户提供的产品原文；修复尚未部署。第三条只产生 49,920 输出样本且无完成边界，第四条未运行，因此不能宣称知识回答或连续四用例通过。规范化只覆盖语义等价的英文排版符号，不翻译中文证据 |
 | 2026-10-18（北京时间）/ 镜像内置验证材料与最小输出 | API 镜像内置验证/探针脚本、`cases.json` 和四段固定 WAV；VoiceChat 派生镜像内置官方客户端、静态检查器、同一 case 配置和 WAV。现场从宿主机直接 `docker exec`，不再创建输入目录或复制宿主机测试文件；只在 `/tmp` 写报告、回答音频和动态会话快照。三个验证脚本默认只输出判定字段，完整 JSON 改为显式 `--print-report`。API 与 VoiceChat 测试镜像实际构建成功，API 在只读 rootfs 下核对四用例通过；79 项定向测试、Ruff、脚本编译及 30 个文档 Shell 块语法通过 | 本地 Docker/CPU 与受控夹具；未访问现场 GPU/CueKB，不能记为真实语音闭环通过。两次 485 项全量运行各有一个既有时序/SQLite 并发用例瞬时失败，其余 484 项通过，两个失败用例单独重跑均通过；本次改动的定向范围无失败 |
 | 2026-10-18（北京时间）/ 完整工具名与跨层诊断 | 工具公开名称和可信 implementation 全面统一为 `search_knowledge_base`；旧缩写及错误拼写严格拒绝。VoiceChat WebSocket 和 Triton backend 增加最终 Prompt 工具名/hash及同 sequence 模型函数通道名称日志，用于区分注册/转换错误与模型生成错误。191 项名称/CueKB/语音定向、478 项 Python 全量、66 项 VoiceChat 交付契约及独立 VoiceChat 环境 25 项完整文件测试通过；Ruff、编译、manifest 与 diff 检查通过 | SQLite、受控 WS/CueKB 与 CPU VoiceChat 夹具；尚未部署真实 GPU。诊断不记录 Prompt、query 或参数正文，且必须以实际容器文件 hash、两层 Prompt hash 和同 sequence 模型日志联合判断 |
