@@ -46,13 +46,13 @@
 
 ## 3. 从宿主机在 API 容器内运行固定 WAV
 
-`scripts/validate_native_cuekb.py` 必须在 API 容器内运行；宿主机只负责执行 `docker exec`、`docker cp` 和保存结果。脚本通过 API 容器的 loopback HTTP/WS 进入实际 Portal Gateway，工具仍由本项目调用真实 CueKB，不生成合成工具结果。它为一组顺序录音创建一条会话，可检查连续追问。
+`scripts/validate_native_cuekb.py` 必须在 API 容器内运行；宿主机通过 `docker exec` 创建目录和执行程序，通过标准输入把文件写入容器，只用 `docker cp` 从容器导出结果。脚本通过 API 容器的 loopback HTTP/WS 进入实际 Portal Gateway，工具仍由本项目调用真实 CueKB，不生成合成工具结果。它为一组顺序录音创建一条会话，可检查连续追问。
 
-以下命令都从仓库根目录在**宿主机**执行。示例使用生产 Compose 中的 `api` 服务和独立的 `nemotron-labs-voicechat` 容器。不要使用 `c5f` 之类的短 ID；容器重建后短 ID 会改变。
+以下命令都从仓库根目录在**宿主机的同一个 shell** 中执行。示例使用生产 Compose 中的 `api` 服务和独立的 `nemotron-labs-voicechat` 容器。不要使用 `c5f` 之类的短 ID；容器重建后短 ID 会改变。
 
 ### 3.1 准备宿主机输入
 
-在忽略目录 `artifacts/native-cuekb/cases/` 放入 `cases.json` 和授权 WAV。WAV 路径相对 `cases.json`；例如：
+在忽略目录 `artifacts/native-cuekb/` 放入 `cases.json` 和授权 WAV。WAV 路径相对 `cases.json`；例如：
 
 ```json
 [
@@ -69,7 +69,7 @@
 COMPOSE='docker compose --env-file .env -f deploy/compose.production.yaml'
 API_CONTAINER=$($COMPOSE ps -q api)
 VOICE_CONTAINER=nemotron-labs-voicechat
-HOST_CASE_DIR=artifacts/native-cuekb/cases
+HOST_CASE_DIR=artifacts/native-cuekb
 
 test -n "$API_CONTAINER"
 test -f "$HOST_CASE_DIR/cases.json"
@@ -130,11 +130,13 @@ docker exec "$API_CONTAINER" \
 
 预期 JSON 的 `target_names` 为 `["search_knowledge_base"]`，`applied=true`；首次迁移时 `changed=true`，已经应用过时 `changed=false`。执行后重新运行本节 capabilities 命令，并为验证新建 Conversation；不要复用旧会话。
 
-### 3.3 创建容器临时目录并复制验证材料
+### 3.3 创建容器临时目录并流式写入验证材料
 
-生产 API 使用只读 rootfs，`/app` 不能写；Compose 只将 `/tmp` 挂为可写 tmpfs。先在**当前完整容器 ID**中创建目标目录并验证可写，再复制文件：
+生产 API 使用只读 rootfs，`/app` 不能写；Compose 只将 `/tmp` 挂为可写 tmpfs。现场 Docker 对 tmpfs 目标执行宿主机到容器的 `docker cp` 会稳定返回 `container rootfs is marked read-only` 或 `no such directory`，因此入站文件统一通过 `docker exec -i` 的标准输入写入。先在**当前完整容器 ID**中创建目标目录并验证可写：
 
 ```sh
+set -e
+
 docker exec "$API_CONTAINER" sh -c '
   rm -rf /tmp/native-cuekb &&
   mkdir -p /tmp/native-cuekb/scripts \
@@ -143,45 +145,45 @@ docker exec "$API_CONTAINER" sh -c '
   test -w /tmp/native-cuekb/output
 '
 
-docker cp scripts/validate_native_cuekb.py \
-  "${API_CONTAINER}:/tmp/native-cuekb/scripts/validate_native_cuekb.py"
-docker cp scripts/probe_voicechat.py \
-  "${API_CONTAINER}:/tmp/native-cuekb/scripts/probe_voicechat.py"
-docker cp "${HOST_CASE_DIR}/." \
-  "${API_CONTAINER}:/tmp/native-cuekb/cases/"
+write_to_api() {
+  source_file=$1
+  target_file=$2
+  test -f "$source_file" || return 1
+  docker exec -i "$API_CONTAINER" \
+    sh -c 'umask 022; cat > "$1"' sh "$target_file" \
+    < "$source_file" || return 1
+  host_sha=$(sha256sum "$source_file" | cut -d' ' -f1)
+  container_sha=$(docker exec "$API_CONTAINER" sha256sum "$target_file" | cut -d' ' -f1)
+  test "$host_sha" = "$container_sha" || return 1
+  echo "$container_sha  $target_file"
+}
 
-docker exec "$API_CONTAINER" sh -c '
-  test -r /tmp/native-cuekb/scripts/validate_native_cuekb.py &&
-  test -r /tmp/native-cuekb/scripts/probe_voicechat.py &&
-  test -r /tmp/native-cuekb/cases/cases.json &&
-  find /tmp/native-cuekb -maxdepth 3 -type f -print
-'
-```
-
-预期最后至少列出两个 Python 文件、`cases.json` 和其中引用的全部 WAV。必须先创建目录再 `docker cp`；直接复制到不存在的 `/tmp/native-cuekb`，Docker 可能尝试修改只读 rootfs 或返回 `no such directory`。
-
-若现场 Docker 仍拒绝向 tmpfs 执行 `docker cp`，使用标准输入写入两个脚本，并对每个授权输入文件采用同样方式；这仍由宿主机通过 `docker exec` 写入容器 `/tmp`：
-
-```sh
-docker exec -i "$API_CONTAINER" sh -c \
-  'cat > /tmp/native-cuekb/scripts/validate_native_cuekb.py' \
-  < scripts/validate_native_cuekb.py
-docker exec -i "$API_CONTAINER" sh -c \
-  'cat > /tmp/native-cuekb/scripts/probe_voicechat.py' \
-  < scripts/probe_voicechat.py
-docker exec -i "$API_CONTAINER" sh -c \
-  'cat > /tmp/native-cuekb/cases/cases.json' \
-  < "$HOST_CASE_DIR/cases.json"
+write_to_api scripts/validate_native_cuekb.py \
+  /tmp/native-cuekb/scripts/validate_native_cuekb.py
+write_to_api scripts/probe_voicechat.py \
+  /tmp/native-cuekb/scripts/probe_voicechat.py
+write_to_api scripts/verify_deployment.py \
+  /tmp/native-cuekb/scripts/verify_deployment.py
+write_to_api "$HOST_CASE_DIR/cases.json" \
+  /tmp/native-cuekb/cases/cases.json
 
 set -- "$HOST_CASE_DIR"/*.wav
 test -e "$1"
 for wav in "$HOST_CASE_DIR"/*.wav; do
   filename=$(basename "$wav")
-  docker exec -i "$API_CONTAINER" \
-    sh -c 'cat > "$1"' sh "/tmp/native-cuekb/cases/$filename" \
-    < "$wav"
+  write_to_api "$wav" "/tmp/native-cuekb/cases/$filename"
 done
+
+docker exec "$API_CONTAINER" sh -c '
+  test -r /tmp/native-cuekb/scripts/validate_native_cuekb.py &&
+  test -r /tmp/native-cuekb/scripts/probe_voicechat.py &&
+  test -r /tmp/native-cuekb/scripts/verify_deployment.py &&
+  test -r /tmp/native-cuekb/cases/cases.json &&
+  find /tmp/native-cuekb -maxdepth 3 -type f -print
+'
 ```
+
+每次 `write_to_api` 都应打印一个 SHA-256，且函数已验证宿主机源文件与容器目标文件逐字节相同。最后至少列出三个 Python 文件、`cases.json` 和其中引用的全部 WAV。任何命令非零都停止验证；不要再改用宿主机到容器的 `docker cp`。
 
 ### 3.4 在 API 容器内执行端到端验证
 
@@ -193,7 +195,7 @@ VALIDATION_START=$(date -u +%Y-%m-%dT%H:%M:%SZ)
 set +e
 docker exec \
   -w /tmp/native-cuekb \
-  -e PYTHONPATH=/app/apps/api:/app:/tmp/native-cuekb \
+  -e PYTHONPATH=/tmp/native-cuekb:/app/apps/api:/app \
   "$API_CONTAINER" \
   sh -c '
     test -n "$PUBLIC_ORIGIN" &&
@@ -398,6 +400,8 @@ PY
 预期只打印 `tool_names= ['search_knowledge_base']`。在宿主机指定官方客户端和一条产品 WAV，然后复制到 VoiceChat 容器的 `/tmp`：
 
 ```sh
+set -e
+
 VOICECHAT_CLIENT=/actual/NeMo-Speech.cpp/clients/voicechat/nemotron-voicechat-client.py
 DIRECT_WAV="$HOST_CASE_DIR/product.wav"
 
@@ -406,18 +410,32 @@ test -f "$DIRECT_WAV"
 
 docker exec "$VOICE_CONTAINER" sh -c \
   'rm -rf /tmp/native-cuekb && mkdir -p /tmp/native-cuekb'
-docker cp "$VOICECHAT_CLIENT" \
-  "${VOICE_CONTAINER}:/tmp/native-cuekb/nemotron-voicechat-client.py"
-docker cp "$DIRECT_WAV" \
-  "${VOICE_CONTAINER}:/tmp/native-cuekb/product.wav"
+
+write_to_voicechat() {
+  source_file=$1
+  target_file=$2
+  docker exec -i "$VOICE_CONTAINER" \
+    sh -c 'umask 022; cat > "$1"' sh "$target_file" \
+    < "$source_file" || return 1
+  host_sha=$(sha256sum "$source_file" | cut -d' ' -f1)
+  container_sha=$(docker exec "$VOICE_CONTAINER" sha256sum "$target_file" | cut -d' ' -f1)
+  test "$host_sha" = "$container_sha" || return 1
+  echo "$container_sha  $target_file"
+}
+
+write_to_voicechat "$VOICECHAT_CLIENT" \
+  /tmp/native-cuekb/nemotron-voicechat-client.py
+write_to_voicechat "$DIRECT_WAV" \
+  /tmp/native-cuekb/product.wav
+
 docker cp "${API_CONTAINER}:/tmp/native-cuekb/direct/tools.json" \
   /tmp/native-cuekb-tools.json
 docker cp "${API_CONTAINER}:/tmp/native-cuekb/direct/instructions.txt" \
   /tmp/native-cuekb-instructions.txt
-docker cp /tmp/native-cuekb-tools.json \
-  "${VOICE_CONTAINER}:/tmp/native-cuekb/tools.json"
-docker cp /tmp/native-cuekb-instructions.txt \
-  "${VOICE_CONTAINER}:/tmp/native-cuekb/instructions.txt"
+write_to_voicechat /tmp/native-cuekb-tools.json \
+  /tmp/native-cuekb/tools.json
+write_to_voicechat /tmp/native-cuekb-instructions.txt \
+  /tmp/native-cuekb/instructions.txt
 
 docker exec -w /tmp/native-cuekb "$VOICE_CONTAINER" \
   python nemotron-voicechat-client.py \

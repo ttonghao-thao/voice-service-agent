@@ -62,7 +62,7 @@ docker compose --env-file .env -f deploy/compose.production.yaml exec -T api \
 
 **结束旧通话并新建 Conversation。** 模式/策略在创建时快照，旧 knowledge_required 会话不会因重连或刷新页面变成 general_qa。
 
-现场录音、连续追问、失败归类和输出听音步骤见 [原生单工具验证](native-cuekb-validation.md)。该流程从宿主机通过 `docker exec` 在 API/VoiceChat 容器内运行验证程序，并先在可写 `/tmp` 建目录后用 `docker cp` 传入脚本和授权 WAV；不依赖宿主机 Python 版本。knowledge_required、双工具及外置 SDK 的兼容实现保留，但不属于本期部署或自动 fallback。
+现场录音、连续追问、失败归类和输出听音步骤见 [原生单工具验证](native-cuekb-validation.md)。该流程从宿主机通过 `docker exec` 在 API/VoiceChat 容器内运行验证程序，先在可写 `/tmp` 建目录，再用 `docker exec -i` 标准输入写入脚本和授权 WAV并核对两端 SHA-256；宿主机到只读容器不使用 `docker cp`，也不依赖宿主机 Python 版本。knowledge_required、双工具及外置 SDK 的兼容实现保留，但不属于本期部署或自动 fallback。
 
 ## 镜像构建与部署
 
@@ -137,18 +137,35 @@ docker compose --env-file .env -f deploy/compose.production.yaml logs --tail=200
 本期真实 CueKB 验收使用 [容器内原生单工具流程](native-cuekb-validation.md#3-从宿主机在-api-容器内运行固定-wav)。以下是额外的合成结果协议探针，同样从宿主机通过 `docker exec` 在 API 容器内运行，不要求宿主机 Python。多工具模式必须提供实际 `session.update` JSON；可将同一部署的管理员 `GET /api/v1/admin/voice-tools` 响应保存为忽略目录下的 `artifacts/voice-tools-admin.json`，为**空历史新会话**生成快照：
 
 ```sh
+set -e
+
 API_CONTAINER=$(docker compose --env-file .env \
   -f deploy/compose.production.yaml ps -q api)
+test -n "$API_CONTAINER"
 
 docker exec "$API_CONTAINER" sh -c '
   rm -rf /tmp/voicechat-probe && mkdir -p /tmp/voicechat-probe
 '
-docker cp scripts/probe_voicechat.py \
-  "${API_CONTAINER}:/tmp/voicechat-probe/probe_voicechat.py"
-docker cp artifacts/voice-tools-admin.json \
-  "${API_CONTAINER}:/tmp/voicechat-probe/voice-tools-admin.json"
-docker cp artifacts/authorized-question.wav \
-  "${API_CONTAINER}:/tmp/voicechat-probe/authorized-question.wav"
+
+write_to_api() {
+  source_file=$1
+  target_file=$2
+  test -f "$source_file" || return 1
+  docker exec -i "$API_CONTAINER" \
+    sh -c 'umask 022; cat > "$1"' sh "$target_file" \
+    < "$source_file" || return 1
+  host_sha=$(sha256sum "$source_file" | cut -d' ' -f1)
+  container_sha=$(docker exec "$API_CONTAINER" sha256sum "$target_file" | cut -d' ' -f1)
+  test "$host_sha" = "$container_sha" || return 1
+  echo "$container_sha  $target_file"
+}
+
+write_to_api scripts/probe_voicechat.py \
+  /tmp/voicechat-probe/probe_voicechat.py
+write_to_api artifacts/voice-tools-admin.json \
+  /tmp/voicechat-probe/voice-tools-admin.json
+write_to_api artifacts/authorized-question.wav \
+  /tmp/voicechat-probe/authorized-question.wav
 
 docker exec -i \
   -w /tmp/voicechat-probe \
@@ -189,11 +206,20 @@ API 容器读取自身已有的 `VOICECHAT_WS_URL`/凭据，不把 Key 放入命
 在宿主机把只读检查脚本复制到 VoiceChat 容器的可写 `/tmp`，再用 `docker exec` 检查该容器实际挂载的模型产物。替换为容器内实际转换后 vLLM LLM 路径；每个分片重复传 `--checkpoint`：
 
 ```sh
+set -e
+
 VOICE_CONTAINER=nemotron-labs-voicechat
+test -f scripts/inspect_voicechat_artifacts.py
 docker exec "$VOICE_CONTAINER" sh -c \
   'rm -rf /tmp/voicechat-artifacts && mkdir -p /tmp/voicechat-artifacts'
-docker cp scripts/inspect_voicechat_artifacts.py \
-  "${VOICE_CONTAINER}:/tmp/voicechat-artifacts/inspect_voicechat_artifacts.py"
+docker exec -i "$VOICE_CONTAINER" \
+  sh -c 'umask 022; cat > "$1"' sh \
+  /tmp/voicechat-artifacts/inspect_voicechat_artifacts.py \
+  < scripts/inspect_voicechat_artifacts.py
+
+test "$(sha256sum scripts/inspect_voicechat_artifacts.py | cut -d' ' -f1)" = \
+  "$(docker exec "$VOICE_CONTAINER" sha256sum \
+    /tmp/voicechat-artifacts/inspect_voicechat_artifacts.py | cut -d' ' -f1)"
 
 docker exec -w /tmp/voicechat-artifacts "$VOICE_CONTAINER" \
   python inspect_voicechat_artifacts.py \
