@@ -70,13 +70,13 @@ preflight=passed provider=nvidia mode=dual_tools policy=general_qa tools=search_
 window_start=... window_end=... conversation_id=... report=/tmp/native-cuekb/report.json
 case=greeting expected=- actual=- selection=passed arguments=not_applicable retrieval=not_applicable cuekb_evidence=- voice_evidence=not_applicable evidence_filter=- speech=passed reason=- portal_error=- elapsed_ms=... input_ids=... trace_ids=-
 case=general_tech expected=- actual=- selection=passed arguments=not_applicable retrieval=not_applicable cuekb_evidence=- voice_evidence=not_applicable evidence_filter=- speech=passed reason=- portal_error=- elapsed_ms=... input_ids=... trace_ids=-
-case=black_pig_crisp_heart expected=search_knowledge_base actual=search_knowledge_base selection=passed arguments=passed retrieval=passed cuekb_evidence=sufficient voice_evidence=passed evidence_filter=candidates:5,selected:N,truncated_ok:T,truncated_rejected:R,omitted_ok:O,omitted_rejected:M,non_ascii:0,limit:L,budget:B speech=passed reason=- portal_error=- elapsed_ms=... input_ids=... trace_ids=...
-case=golden_yolk expected=search_knowledge_base actual=search_knowledge_base selection=passed arguments=passed retrieval=passed cuekb_evidence=sufficient voice_evidence=passed evidence_filter=candidates:5,selected:N,truncated_ok:T,truncated_rejected:R,omitted_ok:O,omitted_rejected:M,non_ascii:0,limit:L,budget:B speech=passed reason=- portal_error=- elapsed_ms=... input_ids=... trace_ids=...
+case=black_pig_crisp_heart expected=search_knowledge_base actual=search_knowledge_base selection=passed arguments=passed retrieval=passed cuekb_evidence=unassessed voice_evidence=passed evidence_filter=candidates:3,selected:3,truncated_ok:T,truncated_rejected:0,omitted_ok:O,omitted_rejected:0,non_ascii:0,limit:0,budget:0 speech=passed reason=- portal_error=- elapsed_ms=... input_ids=... trace_ids=...
+case=golden_yolk expected=search_knowledge_base actual=search_knowledge_base selection=passed arguments=passed retrieval=passed cuekb_evidence=unassessed voice_evidence=passed evidence_filter=candidates:3,selected:3,truncated_ok:T,truncated_rejected:0,omitted_ok:O,omitted_rejected:0,non_ascii:0,limit:0,budget:0 speech=passed reason=- portal_error=- elapsed_ms=... input_ids=... trace_ids=...
 validation=passed fault=PASS focus=human_transcription_and_spoken_faithfulness error_type=- exit_code=0
 host_exit_code=0
 ```
 
-`arguments=manual_review_required` 代表已有 query、但固定词项不足以自动判定语义；这种状态本身允许通过。产品用例必须同时满足 `retrieval=passed` 和 `voice_evidence=passed`。`cuekb_evidence` 直接显示 CueKB 的 `evidence_status`；仅省略周边 context 时，`sufficient` 可证明保留的主命中足以进入语音证据，`unassessed` 仍需完整命中块证明。`truncated_ok` 只统计由 chunk ID 与正文精确回显证明完整、且已从语音包移除截断 context 的主命中；`truncated_rejected` 是缺少该证明的截断命中。`omitted_ok/rejected` 对应应用省略周边 context 的准入结果。示例中的 `N` 必须至少为 1；`L` 和 `B` 由命中长度及固定条数/字节预算决定。脚本不输出证据正文，保持 80 ms 送帧，单 case 上限 90 秒。
+`arguments=manual_review_required` 代表已有 query、但固定词项不足以自动判定语义；这种状态本身允许通过。产品用例必须同时满足 `retrieval=passed` 和 `voice_evidence=passed`。`cuekb_evidence` 直接显示 CueKB 的 `evidence_status`；`unassessed` 只有在每个使用的截断命中都由完整块精确证明时才能通过。`truncated_ok` 统计由 chunk ID 与正文精确回显证明完整、且已从语音包移除截断 context 的主命中；`truncated_rejected` 是缺少该证明的截断命中。原生语音 top_k 与 3 个证据槽位一致，正常结果应为 `candidates:3,selected:3,limit:0`，不再因固定丢弃 2 项产生人为 `partial`。脚本不输出证据正文，保持 80 ms 送帧，单 case 上限 90 秒。
 
 失败时只提供脚本实际输出，不先提供完整报告或全量日志。最终 `fault/focus` 的含义为：
 

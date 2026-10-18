@@ -190,6 +190,7 @@ async def test_native_query_reaches_cuekb_without_an_answer_model(tmp_path, monk
         body = json.loads(calls[0].content)
         assert body["query"] == query  # Do not replace the model's resolved query with ASR.
         assert body["kb_ids"] == [KB]
+        assert body["top_k"] == s.qa_direct_max_hits == 3
         assert calls[0].headers["authorization"] == "Bearer server-only"
         assert str(calls[0].url) == "https://cuekb.fixture/v1/search"
         if code:

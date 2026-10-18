@@ -55,6 +55,8 @@ VOICECHAT_LOG_MARKERS = (
     "Function call decoded from model for sequence",
     '"event": "function.parsed"',
     '"event":"function.parsed"',
+    '"event": "function.call"',
+    '"event":"function.call"',
     '"event": "function.result"',
     '"event":"function.result"',
     '"event": "function.duplicate"',
@@ -121,8 +123,13 @@ def classify(report):
         return "CUEKB_RETRIEVAL", "api_cuekb_trace"
     if any(row.get("voice_evidence") not in (None, "passed") for row in product):
         return "CUEKB_VOICE_EVIDENCE", "api_voice_evidence_filter"
-    if report.get("error_type") == "TimeoutError" or any(
-        row.get("speech_transport") != "passed" for row in cases
+    if (
+        report.get("error_type") == "TimeoutError"
+        or any(row.get("reason_code") == "VOICE_ANSWER_TIMEOUT" for row in product)
+        or any(row.get("portal_error") == "VOICE_TOOL_REQUIRED" for row in product)
+        or any(
+            row.get("speech_transport") != "passed" for row in cases
+        )
     ):
         return "VOICE_RESPONSE_COMPLETION", "voicechat_audio_done_or_eos"
     if passed(report):
@@ -150,8 +157,8 @@ def case_line(row):
     ))
 
 
-def voicechat_diagnostic_count(text, sequence_id, **wanted):
-    count = 0
+def voicechat_diagnostics(text, sequence_id):
+    entries = []
     for line in text.splitlines():
         marker = "voice_ws_diagnostic "
         if marker not in line:
@@ -162,9 +169,13 @@ def voicechat_diagnostic_count(text, sequence_id, **wanted):
             continue
         if str(entry.get("sequence_id")) != str(sequence_id):
             continue
-        if all(entry.get(key) == value for key, value in wanted.items()):
-            count += 1
-    return count
+        entries.append(entry)
+    return entries
+
+
+def diagnostic_matches(entries, **wanted):
+    return [entry for entry in entries
+            if all(entry.get(key) == value for key, value in wanted.items())]
 
 
 def summarize_voicechat_log(text, expected_tool):
@@ -183,12 +194,18 @@ def summarize_voicechat_log(text, expected_tool):
     decoded_names = [name for _, name in decoded]
     decoded_sequences = [sequence for sequence, _ in decoded]
     sequence_id = received[0] if received else None
-    parsed_count = voicechat_diagnostic_count(text, sequence_id, event="function.parsed")
-    result_count = voicechat_diagnostic_count(text, sequence_id, event="function.result")
-    duplicate_count = voicechat_diagnostic_count(text, sequence_id, event="function.duplicate")
-    audio_done_count = voicechat_diagnostic_count(
-        text, sequence_id, event="output.sent", kind="response.output_audio.done"
-    )
+    diagnostics = voicechat_diagnostics(text, sequence_id)
+    parsed = diagnostic_matches(diagnostics, event="function.parsed")
+    parsed_count = sum(entry.get("calls", 1) for entry in parsed)
+    new_calls = diagnostic_matches(diagnostics, event="function.call", action="queued")
+    new_call_count = len(new_calls)
+    new_call_input_count = len({entry.get("input_item_id") for entry in new_calls
+                                if entry.get("input_item_id")})
+    result_count = len(diagnostic_matches(diagnostics, event="function.result"))
+    duplicate_count = len(diagnostic_matches(diagnostics, event="function.duplicate"))
+    audio_done_count = len(diagnostic_matches(
+        diagnostics, event="output.sent", kind="response.output_audio.done"
+    ))
     model_function = (
         "passed" if expected_tool in decoded_names
         else "wrong_name" if decoded_names else "absent"
@@ -210,6 +227,7 @@ def summarize_voicechat_log(text, expected_tool):
         ),
         (
             f"voicechat_events function_parsed={parsed_count} "
+            f"new_calls={new_call_count} new_call_inputs={new_call_input_count} "
             f"function_result={result_count} "
             f"duplicates_coalesced={duplicate_count} "
             f"response_timeouts={text.count('Function call response timed out')} "
@@ -222,6 +240,10 @@ def summarize_voicechat_log(text, expected_tool):
         result = ("failed", "MODEL_FUNCTION_" + model_function.upper())
     elif parsed_count == 0:
         result = ("failed", "FUNCTION_EVENT_NOT_PARSED")
+    elif new_call_count == 0:
+        result = ("failed", "FUNCTION_CALL_NOT_QUEUED")
+    elif new_call_count != new_call_input_count or new_call_count + duplicate_count != parsed_count:
+        result = ("failed", "FUNCTION_DEDUPE_GAP")
     elif result_count == 0:
         result = ("failed", "TOOL_RESULT_NOT_RECEIVED")
     elif text.count("Function call response timed out"):
@@ -263,9 +285,12 @@ def summarize_api_log(text):
         + [row[2] for row in submitted]
         + [row[1] for row in unbound]
     )
+    received_inputs = dict.fromkeys((row[0], row[3]) for row in received)
+    duplicate_inputs = len(received) - len(received_inputs)
     lines = [
         (
             f"api_tool_flow conversations={csv(conversation_ids)} received={len(received)} "
+            f"inputs={len(received_inputs)} duplicate_inputs={duplicate_inputs} "
             f"unique_calls={len(unique_calls)} bridges_started={len(started)} "
             f"bridges_finished={len(finished)} bridges_failed={len(failed)} "
             f"unbound={len(unbound)} results_submitted={len(submitted)}"
@@ -286,7 +311,7 @@ def summarize_api_log(text):
         result = ("failed", "CUEKB_RESPONSE_ABSENT")
     elif not submitted:
         result = ("failed", "TOOL_RESULT_NOT_SUBMITTED")
-    elif len(received) > 1 or unbound:
+    elif duplicate_inputs or unbound:
         result = ("failed", "DUPLICATE_TOOL_EVENTS")
     else:
         result = ("passed", "NONE")

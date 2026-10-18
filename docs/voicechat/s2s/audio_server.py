@@ -1645,8 +1645,23 @@ class AudioSession:
             if not isinstance(arguments, dict):
                 raise ValueError("Tool arguments must be a JSON object")
             name = call.get("name", "")
+            # In a single-tool session the application supports one business
+            # call per customer input. Nano may restate the query after seeing
+            # a partial-looking result; treat that as the same call even when
+            # argument wording differs. Multi-tool sessions retain exact-args
+            # identity because different calls may be intentional.
+            try:
+                registered_tools = json.loads(self.tools) if isinstance(self.tools, str) else self.tools
+            except json.JSONDecodeError:
+                registered_tools = []
+            single_tool = (
+                isinstance(registered_tools, list)
+                and len(registered_tools) == 1
+                and isinstance(registered_tools[0], dict)
+                and registered_tools[0].get("name") == name
+            )
             signature = json.dumps(
-                {"name": name, "arguments": arguments},
+                {"name": name} if single_tool else {"name": name, "arguments": arguments},
                 sort_keys=True,
                 separators=(",", ":"),
                 ensure_ascii=True,
@@ -1678,6 +1693,12 @@ class AudioSession:
             }
             self._function_call_signatures[call_id] = signature
             self._function_signature_states[signature] = "pending"
+            self._voice_diagnostic(
+                "function.call",
+                action="queued",
+                tool=name,
+                input_item_id=str(self._input_item_id or "")[:128],
+            )
             self._queue_output_event(fn_done)
 
     async def finalize_sequence(self):

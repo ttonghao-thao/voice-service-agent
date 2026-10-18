@@ -169,6 +169,21 @@ def test_single_entrypoint_does_not_blame_tool_selection_without_product_input()
     )
 
 
+def test_single_entrypoint_classifies_post_tool_answer_timeout():
+    row = {
+        "expected_tool": "search_knowledge_base",
+        "actual_tools": ["search_knowledge_base"], "selection": "passed",
+        "arguments": "manual_review_required", "retrieval": "passed",
+        "voice_evidence": "passed", "speech_transport": "passed",
+        "reason_code": "VOICE_ANSWER_TIMEOUT", "portal_error": "VOICE_TOOL_REQUIRED",
+        "input_item_ids": ["input-1"],
+    }
+
+    assert classify({"status": "partial", "error_type": "ValueError", "cases": [row]}) == (
+        "VOICE_RESPONSE_COMPLETION", "voicechat_audio_done_or_eos"
+    )
+
+
 def test_voicechat_log_summary_compares_prompt_chain_without_printing_raw_log():
     digest = "a" * 64
     log = "\n".join((
@@ -179,6 +194,8 @@ def test_voicechat_log_summary_compares_prompt_chain_without_printing_raw_log():
         "Function call decoded from model for sequence 42: "
         "tool_names=search_knowledge_base private suffix",
         'voice_ws_diagnostic {"sequence_id":42,"event":"function.parsed"}',
+        'voice_ws_diagnostic {"sequence_id":42,"event":"function.call",'
+        '"action":"queued","input_item_id":"i1"}',
         'voice_ws_diagnostic {"sequence_id":42,"event":"function.result"}',
         'voice_ws_diagnostic {"sequence_id":42,"event":"output.sent",'
         '"kind":"response.output_audio.done"}',
@@ -195,7 +212,7 @@ def test_voicechat_log_summary_compares_prompt_chain_without_printing_raw_log():
         "model_function status=passed count=1 unique_sequences=42 tools=search_knowledge_base"
     )
     assert lines[3] == (
-        "voicechat_events function_parsed=1 function_result=1 "
+        "voicechat_events function_parsed=1 new_calls=1 new_call_inputs=1 function_result=1 "
         "duplicates_coalesced=0 response_timeouts=0 audio_done=1"
     )
     assert "private" not in "\n".join(lines)
@@ -240,6 +257,10 @@ def test_voicechat_log_summary_flags_repeated_calls_without_tool_result():
         f"chars=7000 sha256={digest}",
         "Function call decoded from model for sequence 42: tool_names=search_knowledge_base",
         'voice_ws_diagnostic {"sequence_id":42,"event":"function.parsed"}',
+        'voice_ws_diagnostic {"sequence_id":42,"event":"function.call",'
+        '"action":"queued","input_item_id":"i1"}',
+        'voice_ws_diagnostic {"sequence_id":42,"event":"function.parsed"}',
+        'voice_ws_diagnostic {"sequence_id":42,"event":"function.duplicate"}',
         "Function call response timed out after 64 frames, resetting to idle",
         "Function call decoded from model for sequence 42: tool_names=search_knowledge_base",
     ))
@@ -262,10 +283,13 @@ def test_voicechat_log_summary_allows_sequential_tool_cases_on_one_sequence():
         "Function call decoded from model for sequence 42: tool_names=search_knowledge_base",
         "Function call decoded from model for sequence 42: tool_names=search_knowledge_base",
         'voice_ws_diagnostic {"sequence_id":42,"event":"function.parsed"}',
+        'voice_ws_diagnostic {"sequence_id":42,"event":"function.call",'
+        '"action":"queued","input_item_id":"i1"}',
         'voice_ws_diagnostic {"sequence_id":42,"event":"function.result"}',
         'voice_ws_diagnostic {"sequence_id":42,"event":"function.parsed"}',
+        'voice_ws_diagnostic {"sequence_id":42,"event":"function.call",'
+        '"action":"queued","input_item_id":"i2"}',
         'voice_ws_diagnostic {"sequence_id":42,"event":"function.result"}',
-        'voice_ws_diagnostic {"sequence_id":42,"event":"function.duplicate"}',
     ))
 
     lines, ok = summarize_voicechat_log(log, "search_knowledge_base")
@@ -284,7 +308,11 @@ def test_voicechat_log_summary_filters_other_sequences_and_trailing_log_quote():
         f'chars=7000 sha256={digest}"',
         'Function call decoded from model for sequence 41: tool_names=old_tool"',
         'Function call decoded from model for sequence 42: tool_names=search_knowledge_base"',
+        'Function call decoded from model for sequence 42: tool_names=search_knowledge_base"',
         'voice_ws_diagnostic {"sequence_id":41,"event":"function.parsed"}',
+        'voice_ws_diagnostic {"sequence_id":42,"event":"function.parsed"}',
+        'voice_ws_diagnostic {"sequence_id":42,"event":"function.call",'
+        '"action":"queued","input_item_id":"i1"}',
         'voice_ws_diagnostic {"sequence_id":42,"event":"function.parsed"}',
         'voice_ws_diagnostic {"sequence_id":42,"event":"function.result"}',
         'voice_ws_diagnostic {"sequence_id":42,"event":"function.duplicate"}',
@@ -294,11 +322,12 @@ def test_voicechat_log_summary_filters_other_sequences_and_trailing_log_quote():
 
     assert ok
     assert lines[2] == (
-        "model_function status=passed count=1 unique_sequences=42 "
+        "model_function status=passed count=2 unique_sequences=42 "
         "tools=search_knowledge_base"
     )
     assert lines[3].startswith(
-        "voicechat_events function_parsed=1 function_result=1 duplicates_coalesced=1"
+        "voicechat_events function_parsed=2 new_calls=1 new_call_inputs=1 "
+        "function_result=1 duplicates_coalesced=1"
     )
 
 
@@ -320,12 +349,54 @@ def test_api_log_summary_reports_only_lifecycle_counts_and_trace():
 
     assert ok
     assert lines[0] == (
-        "api_tool_flow conversations=c1 received=1 unique_calls=1 bridges_started=1 "
+        "api_tool_flow conversations=c1 received=1 inputs=1 duplicate_inputs=0 "
+        "unique_calls=1 bridges_started=1 "
         "bridges_finished=1 bridges_failed=0 unbound=0 results_submitted=1"
     )
     assert lines[1] == "api_cuekb responses=1 statuses=ok hits=1 traces=z1 durations_ms=25"
     assert lines[2] == "api_diagnostic=passed fault=NONE"
     assert "private" not in evidence
+
+
+def test_api_log_summary_allows_one_call_for_each_product_input():
+    log = "\n".join((
+        "voice_tool_call_received conversation_id=c1 call_id=k1 "
+        "tool=search_knowledge_base input_item_id=i1",
+        "voice_bridge_started conversation_id=c1 call_id=k1",
+        "cuekb_response_validated conversation_id=c1 turn_id=t1 trace_id=z1 "
+        "retrieval_status=ok hit_count=3 duration_ms=25",
+        "voice_tool_result_submitted conversation_id=c1 turn_id=t1 call_id=k1",
+        "voice_tool_call_received conversation_id=c1 call_id=k2 "
+        "tool=search_knowledge_base input_item_id=i2",
+        "voice_bridge_started conversation_id=c1 call_id=k2",
+        "cuekb_response_validated conversation_id=c1 turn_id=t2 trace_id=z2 "
+        "retrieval_status=ok hit_count=3 duration_ms=26",
+        "voice_tool_result_submitted conversation_id=c1 turn_id=t2 call_id=k2",
+    ))
+
+    lines, ok = summarize_api_log(log)
+
+    assert ok
+    assert "received=2 inputs=2 duplicate_inputs=0 unique_calls=2" in lines[0]
+
+
+def test_api_log_summary_rejects_two_calls_for_one_input():
+    log = "\n".join((
+        "voice_tool_call_received conversation_id=c1 call_id=k1 "
+        "tool=search_knowledge_base input_item_id=i1",
+        "voice_tool_call_received conversation_id=c1 call_id=k2 "
+        "tool=search_knowledge_base input_item_id=i1",
+        "voice_bridge_started conversation_id=c1 call_id=k1",
+        "cuekb_response_validated conversation_id=c1 turn_id=t1 trace_id=z1 "
+        "retrieval_status=ok hit_count=3 duration_ms=25",
+        "voice_tool_result_submitted conversation_id=c1 turn_id=t1 call_id=k1",
+    ))
+
+    lines, ok = summarize_api_log(log)
+
+    assert not ok
+    assert "received=2 inputs=1 duplicate_inputs=1 unique_calls=2" in lines[0]
+    assert lines[-1] == "api_diagnostic=failed fault=DUPLICATE_TOOL_EVENTS"
 
 
 async def test_single_entrypoint_prints_only_preflight_window_cases_and_classification(

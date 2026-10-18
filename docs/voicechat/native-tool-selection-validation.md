@@ -15,7 +15,8 @@
 | 2026-10-18 现场轮次 | 最终 Prompt 与 Triton 收到的 Prompt 均为 `search_knowledge_base`、7082 字符、SHA-256 `01e7a462...7493`；sequence `4205027636` 解码出正确工具名；API selection 通过并取得 CueKB trace | 注册、Prompt 构造/传输、Nano 9B function 解码、VoiceChat→API 工具事件和 CueKB 请求均已通过；原来的“未触发工具”不再是当前阻塞点 | 同一 sequence 在约 76 秒内重复解码 15 次，产品 case 在 90 秒超时；需确认工具结果停在 API 提交前还是 VoiceChat/Triton 接收后 |
 | 2026-10-18 13:13 现场轮次 | CueKB 102 ms 返回 5 个命中；旧 `context:5` 聚合计数显示 5 项都在上下文完整性阶段被拒绝，但不能区分上游 `context_truncated` 与应用 `context_omitted`。API 只启动一次 bridge/CueKB，却收到 15 个不同 call ID，其中 14 个没有新 input；API 提交 15 个结果 | 证据适配器把两类 context 状态合并诊断；VoiceChat 每次重复解码都生成新 call ID；旧摘要的 `MODEL_FUNCTION_WRONG_NAME` 是解析误报，模型实际名称仍正确 | 本期修复同输入规范调用去重/结果复用、按当前 sequence 汇总和工具名字符边界，并拆分 context 诊断 |
 | 2026-10-18 14:27 现场轮次 | API `received=1 unique_calls=1 unbound=0 results_submitted=1`；VoiceChat `duplicates_coalesced=2 response_timeouts=0`，两份诊断均通过；CueKB 102 ms 返回 5 个命中，但旧聚合计数仍显示 5 项上下文拒绝 | 重复调用问题已修复；工具注册、Prompt、模型 function、API bridge 和 CueKB 检索完整通过。剩余根因限定在语音证据的截断/省略准入，但旧计数不能判定现场具体分支 | 同时安全处理两种分支并拆分计数，避免先后部署多个猜测性修复 |
-| 当前状态 | 未部署的上一版已继续修订：应用省略与上游截断分别判定；截断命中仅在 `context_parts` 精确回显主命中时使用，并从语音包移除截断 context；单入口拆分两类准入/拒绝计数 | VoiceChat 去重修复已由现场验证，无需再次修改或重建；`top_k` 保持 5，避免用降低召回掩盖完整性问题 | 仅重建 API 一次；预期产品 case `voice_evidence=passed selected>=1`，并用 `truncated_ok/rejected`、`omitted_ok/rejected` 确认现场实际分支 |
+| 2026-10-19 00:03（北京时间）现场轮次 | `cuekb_evidence=unassessed voice_evidence=passed candidates:5 selected:3 truncated_ok:5 limit:2`，证明截断准入已修复。随后出现 `VOICE_ANSWER_TIMEOUT/VOICE_TOOL_REQUIRED`；模型解码 3 次、VoiceChat 仅合并 1 次；API `received=1 unique_calls=2 unbound=1 results_submitted=2` | 5→3 使 evidence envelope 标为 `partial`，模型改写 query 重调；现有完整参数签名把变体当成新调用。第二份无用户输入的失败结果破坏回答授权；旧验证器又误报 `INCOMPLETE` | 原生语音 top_k 与 3 个证据槽位一致；单工具会话按当前输入和工具名合并参数变体；诊断按 input 统计并把该错误归为 `VOICE_RESPONSE_COMPLETION` |
+| 当前状态 | 上述修复已编码，等待 API 与 VoiceChat 同时部署 | 截断证据无需再放宽；通用检索仍可 top_k=5，只有原生语音限制为 3 | 预期每个产品 input 只有一个新调用，`candidates=selected=3 limit=0`，无 unbound 和回答超时 |
 
 当前判断顺序固定为：先证明 API 当前目录和用例正确，再证明 VoiceChat 最终 Prompt 与 backend 收到内容一致，再看模型 function 通道是否输出，最后核对 API 提交工具结果和 Triton 收到结果。旧轮次、相邻日志或单独的 `tools_count=1` 不代替同一窗口证据。
 
@@ -28,7 +29,7 @@ VoiceChat 修改以本目录完整文件为准：
 | 文件 | 与故障一有关的修改 |
 | --- | --- |
 | `s2s/prompt_template.jinja` | 单工具调用规则、完整 `search_knowledge_base` 名称和消费品/商业事实示例 |
-| `s2s/audio_server.py` | 记录最终 Prompt 的工具名、字符数和 SHA-256；记录 `function.parsed`、`function.result` 与输出边界诊断；按用户输入合并相同规范工具调用并复用首个结果 |
+| `s2s/audio_server.py` | 记录最终 Prompt 的工具名、字符数和 SHA-256；记录 function 新调用、合并、结果与输出边界诊断；单工具会话按用户输入和工具名合并参数改写并复用首个结果 |
 | `opt/tritonserver/backends/nemotron-voicechat/model.py` | 记录 Triton 收到的 Prompt 名称/hash，以及同 sequence 的模型 function 通道解码名称 |
 | `docker-run.md` | 派生镜像、挂载、环境变量和启动后 hash 核对 |
 
@@ -54,7 +55,7 @@ echo "host_exit_code=$VALIDATION_EXIT"
 预期只出现预检、时间窗口/会话 ID、四条 case、最终分类和 `host_exit_code`。新验证器把 CueKB 充分性、检索和语音证据分开显示；本次修复部署后的产品 case 应接近：
 
 ```text
-case=black_pig_crisp_heart expected=search_knowledge_base actual=search_knowledge_base selection=passed arguments=manual_review_required retrieval=passed cuekb_evidence=sufficient voice_evidence=passed evidence_filter=candidates:5,selected:N,truncated_ok:T,truncated_rejected:R,omitted_ok:O,omitted_rejected:M,non_ascii:0,limit:L,budget:B speech=passed reason=- ... input_ids=I trace_ids=T
+case=black_pig_crisp_heart expected=search_knowledge_base actual=search_knowledge_base selection=passed arguments=manual_review_required retrieval=passed cuekb_evidence=unassessed voice_evidence=passed evidence_filter=candidates:3,selected:3,truncated_ok:3,truncated_rejected:0,omitted_ok:0,omitted_rejected:0,non_ascii:0,limit:0,budget:0 speech=passed reason=- portal_error=- ... input_ids=I trace_ids=T
 validation=passed fault=PASS focus=human_transcription_and_spoken_faithfulness error_type=- exit_code=0
 host_exit_code=0
 ```
@@ -83,7 +84,7 @@ docker exec "$VOICE_CONTAINER" sh -c '
 
 ```text
 c91b3af5b41f515fc1dbfaf7fdbec4ae528a4989f90a144829d2491a9b805990  /opt/tritonserver/backends/nemotron-voicechat/model.py
-f45bd8a6d91e0d7f8e270c3b767706c7e644e690c6f96e63254d70f8380ab74d  /s2s/audio_server.py
+f28ada577f84956c46b3ce04f4cbebf9c0e6405773ce4486105aef97958bb17b  /s2s/audio_server.py
 a71230010295a363a0fde0e0d86c4786aeb4ef5f458cf4d75ddf0926895bcdb7  /s2s/prompt_template.jinja
 env=1
 ```
@@ -117,12 +118,12 @@ echo "voicechat_exit_code=$VOICE_DIAGNOSTIC_EXIT"
 voicechat_prompt count=1 tools=search_knowledge_base chars=N sha256=H
 backend_prompt sequence=S tools=search_knowledge_base chars=N sha256=H match=passed
 model_function status=passed count=1 unique_sequences=S tools=search_knowledge_base
-voicechat_events function_parsed=P function_result=R duplicates_coalesced=D response_timeouts=W audio_done=A
+voicechat_events function_parsed=P new_calls=N new_call_inputs=I function_result=R duplicates_coalesced=D response_timeouts=W audio_done=A
 voicechat_diagnostic=passed fault=NONE
 voicechat_exit_code=0
 ```
 
-实际第三行会输出当前 backend Prompt 对应 sequence 的 `count=N unique_sequences=S`，不会混入同一日志窗口的旧 sequence；工具名解析也不会把 Triton 日志尾引号计入名称。完整工具回答应有 `P>=1`、`R>=1`、`W=0`、`A>=1`。`D` 可大于 0，表示 VoiceChat 已在内部合并模型重复调用并复用首个 API 结果；此时 API 摘要仍必须是 `received=1 unique_calls=1 unbound=0 results_submitted=1`。`voicechat_diagnostic=passed` 表示 Prompt、function 选择和工具结果接收链均完整，最终检索和回答仍以第 3 节 API case 为准。
+实际第三行会输出当前 backend Prompt 对应 sequence 的 `count=N unique_sequences=S`，不会混入同一日志窗口的旧 sequence。第四行要求 `new_calls=new_call_inputs` 且 `new_calls+duplicates_coalesced=function_parsed`；完整四用例通常有两个产品 input，所以允许两个新调用，但每个 input 只能有一个。`R>=N`、`W=0`、`A>=1`；缓存结果重放可使 `R>N`。`voicechat_diagnostic=passed` 表示 Prompt、function 选择、单输入去重和工具结果接收链完整，最终回答仍以第 3 节 case 为准。
 
 当前故障若发生在模型/function decoder，前两条仍应匹配，而第三条为：
 
@@ -153,8 +154,8 @@ echo "api_diagnostic_exit_code=$API_DIAGNOSTIC_EXIT"
 正常的一次工具调用只输出三条摘要和退出码：
 
 ```text
-api_tool_flow conversations=C received=1 unique_calls=1 bridges_started=1 bridges_finished=1 bridges_failed=0 unbound=0 results_submitted=1
-api_cuekb responses=1 statuses=ok hits=1 traces=T durations_ms=N
+api_tool_flow conversations=C received=2 inputs=2 duplicate_inputs=0 unique_calls=2 bridges_started=2 bridges_finished=0 bridges_failed=0 unbound=0 results_submitted=2
+api_cuekb responses=2 statuses=ok hits=3,3 traces=T1,T2 durations_ms=N1,N2
 api_diagnostic=passed fault=NONE
 api_diagnostic_exit_code=0
 ```
@@ -162,9 +163,9 @@ api_diagnostic_exit_code=0
 判定方式：
 
 - `results_submitted=0`：结果停在 API 内，查 `CUEKB_RESPONSE_ABSENT`、`TOOL_RESULT_NOT_SUBMITTED` 或 bridge failure。
-- `results_submitted=1` 且 VoiceChat `function_result=0`：WebSocket 已从 API 写出，但 VoiceChat 未把结果送入 Triton，查 `audio_server.py` 的 function output 队列与 inference 调度。
+- `results_submitted>0` 且 VoiceChat `function_result=0`：WebSocket 已从 API 写出，但 VoiceChat 未把结果送入 Triton，查 `audio_server.py` 的 function output 队列与 inference 调度。
 - `function_result>=1` 且 `response_timeouts>0`：Triton 收到过结果，但 function 状态机没有及时进入或保持 `process_response`。
-- `received>1`、`unique_calls>1` 或 `unbound>0`：同一产品输入产生了重复 function 事件；API 只执行绑定到该 input item 的第一项，后续项属于重复调用。
+- `duplicate_inputs>0` 或 `unbound>0`：同一个产品 input 产生多次新 function 事件，或工具事件已没有可绑定输入。完整四用例允许 `received=2 inputs=2`，分别对应两个产品录音。
 
 只回传三条摘要和 `api_diagnostic_exit_code`。若摘要与第 3 节报告矛盾，才需要按 `conversation_id` 提取对应的单条原始生命周期日志。
 

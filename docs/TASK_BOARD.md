@@ -4,7 +4,7 @@
 
 ## 1. 当前结论与审计基线
 
-应用控制链已有实现。2026-10-18 14:27 现场窗口已证明 VoiceChat 最终 Prompt 与 Triton 接收 hash 一致、Nano 9B 解码出 `search_knowledge_base`、API selection 和 CueKB 检索通过；API 只收到并执行 1 次调用，VoiceChat 合并 2 次重复解码，两个诊断均通过。当前唯一阻塞是 5 个命中在 context 完整性阶段全部被语音证据过滤。下一版同时处理应用省略与上游截断：CueKB 明确 `sufficient` 可放行仅省略周边 context 的完整主命中；截断 context 只有在 `context_parts` 精确回显主命中时才放行，并从语音包移除截断字符串。诊断已拆分两类准入与拒绝计数，待重建 API 一次性复测。故障二是 `hello.wav` 句首 `Hello` 丢失，已确认独立存在并暂缓定位。真实知识语音链路仍未放行，详见 [VoiceChat 工具选择定位](voicechat/native-tool-selection-validation.md)。
+应用控制链已有实现。2026-10-19 最新现场轮次已证明证据准入修复有效：5 个截断命中全部有精确主块证明，选入 3 个，`voice_evidence=passed`。剩余故障发生在结果返回后：固定 5→3 使工具结果标为 `partial`，Nano 用改写后的 query 再次调用同一工具；VoiceChat 的完整参数去重只合并 1 次，另一个变体进入 API 成为未绑定调用，最终 `VOICE_ANSWER_TIMEOUT/VOICE_TOOL_REQUIRED`。下一版将原生语音 top_k 限为证据槽位 3，并在单工具会话按当前输入和工具名合并参数变体，同时修正摘要对多产品输入及回答超时的判定。故障二是 `hello.wav` 句首 `Hello` 丢失，已确认独立存在并暂缓定位。真实知识语音链路仍未放行，详见 [VoiceChat 工具选择定位](voicechat/native-tool-selection-validation.md)。
 
 当前需求已确认：VoiceChat 自主决定直接回答或调用工具，后端只使用 VoiceChat，不引入独立 ASR/TTS，不根据最终转写自动启动业务。本次实现以 dual_tools/general_qa 为部署目标；旧 knowledge_required 现场证据属于严格模式，不能作为当前目标配置。先打通功能再优化时延，详见 [实施顺序](q1003-target-architecture.md#4-实施计划与决策门槛)。
 
@@ -27,7 +27,7 @@
 
 | 任务 | 当前状态 | 下一步完成条件 |
 | --- | --- | --- |
-| VoiceChat 一期原生单工具 | 工具注册、Prompt 传输、Nano 9B function 解码、API selection、CueKB 调用及重复调用合并已通过现场验证。语音证据可接受 CueKB 明确 `sufficient` 的应用侧周边省略，以及有精确主命中块证明的上游 context 截断；截断字符串不发送。公开名称统一为 search_knowledge_base(query)，旧拼写严格拒绝。问候首词故障暂缓 | 仅重建 API 后运行单入口；放行要求产品 case `voice_evidence=passed selected>=1`、退出码 0，并据 `truncated/omitted ok/rejected` 判断实际现场分支 |
+| VoiceChat 一期原生单工具 | 工具名、Prompt、模型 function、CueKB 及截断证据准入均已通过现场验证。结果后的参数变体重调已定位；原生语音只检索可承载的 3 项，单工具会话按输入和工具名合并重调。公开名称统一为 search_knowledge_base(query)，旧拼写严格拒绝。问候首词故障暂缓 | 重建 API 和 VoiceChat 后运行单入口及两份摘要；产品 case 需 `candidates=selected=3 limit=0`、无 timeout/tool-required，每个产品 input 只对应一个新工具调用 |
 | P0-A/B：现场部署与两类验证 | 严格配置已确认；两类现场日志已分析 | 补运行 hash；严格知识闭环与 PAD A/B 分开报告 |
 | P1-A：严格提示与授权一致 | 编码及本地回归完成；现场拒绝保护生效 | 保留显式严格模式；当前自主回答部署改用 general_qa，不要求每次先调用工具 |
 | P1-B：ASR/function 首差异修复 | 原生路径追加排查暂停；算子未确定 | 仅在重新投入原生路径时恢复，不阻塞提示与应用契约修正 |

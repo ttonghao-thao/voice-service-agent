@@ -526,6 +526,8 @@ def function_call_harness():
     session._function_call_signatures = {}
     session._function_result_cache = {}
     session._function_signature_states = {}
+    session.tools = json.dumps([{"name": "search_knowledge_base"}])
+    session._input_item_id = "input-1"
     session.events = []
     session.diagnostics = []
 
@@ -550,11 +552,15 @@ async def test_voicechat_coalesces_new_call_ids_for_same_tool_request_and_replay
     }])
 
     await session._process_function_text(request)
-    await session._process_function_text(request)
+    await session._process_function_text(json.dumps([{
+        "name": "search_knowledge_base",
+        "arguments": {"query": "Please find the Black Pig product details"},
+    }]))
     calls = [event for event in session.events
              if event["type"] == "response.function_call_arguments.done"]
     assert len(calls) == 1
     assert session.diagnostics[-1]["action"] == "coalesced"
+    assert [entry["event"] for entry in session.diagnostics].count("function.call") == 1
 
     await session.handle_function_call_output({
         "call_id": calls[0]["call_id"],
@@ -562,7 +568,10 @@ async def test_voicechat_coalesces_new_call_ids_for_same_tool_request_and_replay
     })
     signature = session._function_call_signatures[calls[0]["call_id"]]
     assert session._function_signature_states[signature] == "queued"
-    await session._process_function_text(request)
+    await session._process_function_text(json.dumps([{
+        "name": "search_knowledge_base",
+        "arguments": {"query": "Black Pig price and storage"},
+    }]))
     assert len(session.function_call_output) == 1
 
     session.function_call_output.clear()

@@ -215,13 +215,18 @@ async def test_function_channel_forwards_registered_tool_name_without_rewriting(
 @pytest.mark.asyncio
 async def test_duplicate_tool_call_reuses_one_api_call_and_cached_result_per_input():
     session = server.AudioSession("test", Socket())
+    session.tools = json.dumps([{"name": "search_knowledge_base"}])
+    session._input_item_id = "input-1"
     call_text = json.dumps([{
         "name": "search_knowledge_base",
         "arguments": {"query": "Black Pig Crisp Heart details"},
     }])
 
     await session._process_function_text(call_text)
-    await session._process_function_text(call_text)
+    await session._process_function_text(json.dumps([{
+        "name": "search_knowledge_base",
+        "arguments": {"query": "Please find the Black Pig product details"},
+    }]))
     calls = [event for event in pending(session)
              if event["type"] == "response.function_call_arguments.done"]
     assert len(calls) == 1
@@ -231,7 +236,10 @@ async def test_duplicate_tool_call_reuses_one_api_call_and_cached_result_per_inp
         "call_id": calls[0]["call_id"],
         "output": '{"status":"evidence_ready"}',
     })
-    await session._process_function_text(call_text)
+    await session._process_function_text(json.dumps([{
+        "name": "search_knowledge_base",
+        "arguments": {"query": "Black Pig price and storage"},
+    }]))
     assert not [event for event in pending(session)
                 if event["type"] == "response.function_call_arguments.done"]
     assert len(session.function_call_output) == 1
