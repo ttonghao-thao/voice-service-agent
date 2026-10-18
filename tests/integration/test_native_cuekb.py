@@ -268,6 +268,11 @@ def test_pcm_through_real_adapter_native_call_cuekb_and_voice_reply(tmp_path, sp
                 source = next(r for r in records if r["kind"] == "native_cuekb_result")
                 assert source["payload"]["status"] == "ok" and source["payload"]["trace_id"].endswith("111")
                 assert "_authorized_kb_ids" not in source["payload"]
+                voice_evidence = next(
+                    r for r in records if r["kind"] == "native_cuekb_voice_evidence"
+                )["payload"]
+                assert voice_evidence["candidate_count"] == voice_evidence["selected_count"] == 1
+                assert sum(value for key, value in voice_evidence.items() if key.startswith("rejected_")) == 0
         finally:
             client.portal.call(http.aclose)
             server.close()

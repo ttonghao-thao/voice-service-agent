@@ -29,6 +29,24 @@ BACKEND_PROMPT_RE = re.compile(
 MODEL_FUNCTION_RE = re.compile(
     r"Function call decoded from model for sequence (\d+): tool_names=(\S+)"
 )
+API_TOOL_RECEIVED_RE = re.compile(
+    r"voice_tool_call_received conversation_id=(\S+) call_id=(\S+) tool=(\S+) input_item_id=(\S+)"
+)
+API_BRIDGE_STARTED_RE = re.compile(r"voice_bridge_started conversation_id=(\S+) call_id=(\S+)")
+API_BRIDGE_FINISHED_RE = re.compile(
+    r"voice_bridge_finished conversation_id=(\S+) turn_id=(\S+) call_id=(\S+) status=(\S+)"
+)
+API_BRIDGE_FAILED_RE = re.compile(
+    r"voice_bridge_failed conversation_id=(\S+) turn_id=(\S+) call_id=(\S+) exception_type=(\S+)"
+)
+API_RESULT_SUBMITTED_RE = re.compile(
+    r"voice_tool_result_submitted conversation_id=(\S+) turn_id=(\S+) call_id=(\S+)"
+)
+API_UNBOUND_RE = re.compile(r"voice_unbound_tool_settled conversation_id=(\S+) call_id=(\S+)")
+API_CUEKB_RE = re.compile(
+    r"cuekb_response_validated conversation_id=(\S+) turn_id=(\S+) trace_id=(\S+) "
+    r"retrieval_status=(\S+) hit_count=(\d+) duration_ms=(\d+)"
+)
 VOICECHAT_LOG_MARKERS = (
     "Prompt prepared:",
     "System prompt received for sequence",
@@ -39,6 +57,16 @@ VOICECHAT_LOG_MARKERS = (
     '"event":"function.result"',
     '"kind": "response.output_audio.done"',
     '"kind":"response.output_audio.done"',
+    "Function call response timed out",
+)
+API_LOG_MARKERS = (
+    "voice_tool_call_received",
+    "voice_bridge_started",
+    "voice_bridge_finished",
+    "voice_bridge_failed",
+    "voice_tool_result_submitted",
+    "voice_unbound_tool_settled",
+    "cuekb_response_validated",
 )
 
 
@@ -48,6 +76,20 @@ def csv(values):
 
 def safe_detail(value):
     return " ".join(str(value).split())[:240]
+
+
+def evidence_filter_summary(row):
+    value = row.get("voice_evidence_filter")
+    if not value:
+        return "-"
+    return ",".join((
+        f"candidates:{value.get('candidate_count', 0)}",
+        f"selected:{value.get('selected_count', 0)}",
+        f"context:{value.get('rejected_context_count', 0)}",
+        f"non_ascii:{value.get('rejected_non_ascii_count', 0)}",
+        f"limit:{value.get('rejected_limit_count', 0)}",
+        f"budget:{value.get('rejected_budget_count', 0)}",
+    ))
 
 
 def classify(report):
@@ -70,6 +112,8 @@ def classify(report):
         return "TOOL_ARGUMENTS", "voicechat_function_arguments"
     if any(row.get("retrieval") != "passed" for row in product):
         return "CUEKB_RETRIEVAL", "api_cuekb_trace"
+    if any(row.get("voice_evidence") not in (None, "passed") for row in product):
+        return "CUEKB_VOICE_EVIDENCE", "api_voice_evidence_filter"
     if report.get("error_type") == "TimeoutError" or any(
         row.get("speech_transport") != "passed" for row in cases
     ):
@@ -87,6 +131,8 @@ def case_line(row):
         f"selection={row.get('selection')}",
         f"arguments={row.get('arguments')}",
         f"retrieval={row.get('retrieval')}",
+        f"voice_evidence={row.get('voice_evidence') or '-'}",
+        f"evidence_filter={evidence_filter_summary(row)}",
         f"speech={row.get('speech_transport')}",
         f"reason={row.get('reason_code') or '-'}",
         f"portal_error={row.get('portal_error') or '-'}",
@@ -112,6 +158,7 @@ def summarize_voicechat_log(text, expected_tool):
         else "failed" if prompt and received else "unverified"
     )
     decoded_names = [name for _, name in decoded]
+    decoded_sequences = [sequence for sequence, _ in decoded]
     model_function = (
         "passed" if expected_tool in decoded_names
         else "wrong_name" if decoded_names else "absent"
@@ -128,12 +175,13 @@ def summarize_voicechat_log(text, expected_tool):
         ),
         (
             f"model_function status={model_function} "
-            f"sequences={csv(sequence for sequence, _ in decoded)} "
-            f"tools={csv(decoded_names)}"
+            f"count={len(decoded)} unique_sequences={csv(dict.fromkeys(decoded_sequences))} "
+            f"tools={csv(dict.fromkeys(decoded_names))}"
         ),
         (
             f"voicechat_events function_parsed={json_field_count(text, 'event', 'function.parsed')} "
             f"function_result={json_field_count(text, 'event', 'function.result')} "
+            f"response_timeouts={text.count('Function call response timed out')} "
             f"audio_done={json_field_count(text, 'kind', 'response.output_audio.done')}"
         ),
     ]
@@ -141,6 +189,12 @@ def summarize_voicechat_log(text, expected_tool):
         result = ("failed", "PROMPT_CHAIN")
     elif model_function != "passed":
         result = ("failed", "MODEL_FUNCTION_" + model_function.upper())
+    elif json_field_count(text, "event", "function.parsed") == 0:
+        result = ("failed", "FUNCTION_EVENT_NOT_PARSED")
+    elif json_field_count(text, "event", "function.result") == 0:
+        result = ("failed", "TOOL_RESULT_NOT_RECEIVED")
+    elif text.count("Function call response timed out"):
+        result = ("failed", "TOOL_RESULT_WAIT_TIMEOUT")
     else:
         result = ("passed", "NONE")
     lines.append(f"voicechat_diagnostic={result[0]} fault={result[1]}")
@@ -154,6 +208,68 @@ def read_voicechat_evidence(stream):
             selected.append(line)
             if len(selected) > 4096:
                 raise ValueError("VoiceChat diagnostic window contains more than 4096 relevant lines")
+    return "".join(selected)
+
+
+def summarize_api_log(text):
+    received = API_TOOL_RECEIVED_RE.findall(text)
+    started = API_BRIDGE_STARTED_RE.findall(text)
+    finished = API_BRIDGE_FINISHED_RE.findall(text)
+    failed = API_BRIDGE_FAILED_RE.findall(text)
+    submitted = API_RESULT_SUBMITTED_RE.findall(text)
+    unbound = API_UNBOUND_RE.findall(text)
+    cuekb = API_CUEKB_RE.findall(text)
+    conversation_ids = dict.fromkeys(
+        row[0]
+        for rows in (received, started, finished, failed, submitted, unbound, cuekb)
+        for row in rows
+    )
+    unique_calls = dict.fromkeys(
+        [row[1] for row in received]
+        + [row[1] for row in started]
+        + [row[2] for row in finished]
+        + [row[2] for row in failed]
+        + [row[2] for row in submitted]
+        + [row[1] for row in unbound]
+    )
+    lines = [
+        (
+            f"api_tool_flow conversations={csv(conversation_ids)} received={len(received)} "
+            f"unique_calls={len(unique_calls)} bridges_started={len(started)} "
+            f"bridges_finished={len(finished)} bridges_failed={len(failed)} "
+            f"unbound={len(unbound)} results_submitted={len(submitted)}"
+        ),
+        (
+            f"api_cuekb responses={len(cuekb)} statuses={csv(dict.fromkeys(row[3] for row in cuekb))} "
+            f"hits={csv(row[4] for row in cuekb)} traces={csv(row[2] for row in cuekb)} "
+            f"durations_ms={csv(row[5] for row in cuekb)}"
+        ),
+    ]
+    if not received:
+        result = ("failed", "TOOL_EVENT_ABSENT")
+    elif not started:
+        result = ("failed", "BRIDGE_NOT_STARTED")
+    elif failed:
+        result = ("failed", "BRIDGE_FAILED")
+    elif not cuekb:
+        result = ("failed", "CUEKB_RESPONSE_ABSENT")
+    elif not submitted:
+        result = ("failed", "TOOL_RESULT_NOT_SUBMITTED")
+    elif len(received) > 1 or unbound:
+        result = ("failed", "DUPLICATE_TOOL_EVENTS")
+    else:
+        result = ("passed", "NONE")
+    lines.append(f"api_diagnostic={result[0]} fault={result[1]}")
+    return lines, result[0] == "passed"
+
+
+def read_api_evidence(stream):
+    selected = []
+    for line in stream:
+        if any(marker in line for marker in API_LOG_MARKERS):
+            selected.append(line)
+            if len(selected) > 4096:
+                raise ValueError("API diagnostic window contains more than 4096 relevant lines")
     return "".join(selected)
 
 
@@ -210,6 +326,8 @@ def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--summarize-voicechat-log", action="store_true",
                         help="Read a bounded docker-log window from stdin and print five diagnostic lines")
+    parser.add_argument("--summarize-api-log", action="store_true",
+                        help="Read a bounded API docker-log window from stdin and print three diagnostic lines")
     parser.add_argument("--expected-tool", default="search_knowledge_base")
     parser.add_argument("--base-url", default="http://127.0.0.1:8000")
     parser.add_argument("--origin", help="Defaults to the API container PUBLIC_ORIGIN")
@@ -218,13 +336,18 @@ def main():
     parser.add_argument("--audio-dir", default="/tmp/native-cuekb/replies")
     parser.add_argument("--output", default="/tmp/native-cuekb/report.json")
     args = parser.parse_args()
-    if args.summarize_voicechat_log:
+    if args.summarize_voicechat_log and args.summarize_api_log:
+        parser.error("Select only one log summarizer")
+    if args.summarize_voicechat_log or args.summarize_api_log:
         try:
-            evidence = read_voicechat_evidence(sys.stdin)
+            evidence = (read_voicechat_evidence(sys.stdin) if args.summarize_voicechat_log
+                        else read_api_evidence(sys.stdin))
         except ValueError as exc:
-            print(f"voicechat_diagnostic=failed fault=LOG_WINDOW detail={safe_detail(exc)!r}")
+            component = "voicechat" if args.summarize_voicechat_log else "api"
+            print(f"{component}_diagnostic=failed fault=LOG_WINDOW detail={safe_detail(exc)!r}")
             raise SystemExit(2) from exc
-        lines, ok = summarize_voicechat_log(evidence, args.expected_tool)
+        lines, ok = (summarize_voicechat_log(evidence, args.expected_tool)
+                     if args.summarize_voicechat_log else summarize_api_log(evidence))
         print("\n".join(lines))
         raise SystemExit(0 if ok else 1)
     if args.origin is None:

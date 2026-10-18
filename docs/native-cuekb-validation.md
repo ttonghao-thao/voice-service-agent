@@ -68,15 +68,15 @@ API 容器的 8000 端口是 Uvicorn 明文 loopback；脚本固定使用 `http:
 ```text
 preflight=passed provider=nvidia mode=dual_tools policy=general_qa tools=search_knowledge_base cases=4
 window_start=... window_end=... conversation_id=... report=/tmp/native-cuekb/report.json
-case=greeting expected=- actual=- selection=passed arguments=not_applicable retrieval=not_applicable speech=passed reason=- portal_error=- elapsed_ms=... input_ids=... trace_ids=-
-case=general_tech expected=- actual=- selection=passed arguments=not_applicable retrieval=not_applicable speech=passed reason=- portal_error=- elapsed_ms=... input_ids=... trace_ids=-
-case=black_pig_crisp_heart expected=search_knowledge_base actual=search_knowledge_base selection=passed arguments=passed retrieval=passed speech=passed reason=- portal_error=- elapsed_ms=... input_ids=... trace_ids=...
-case=golden_yolk expected=search_knowledge_base actual=search_knowledge_base selection=passed arguments=passed retrieval=passed speech=passed reason=- portal_error=- elapsed_ms=... input_ids=... trace_ids=...
+case=greeting expected=- actual=- selection=passed arguments=not_applicable retrieval=not_applicable voice_evidence=not_applicable evidence_filter=- speech=passed reason=- portal_error=- elapsed_ms=... input_ids=... trace_ids=-
+case=general_tech expected=- actual=- selection=passed arguments=not_applicable retrieval=not_applicable voice_evidence=not_applicable evidence_filter=- speech=passed reason=- portal_error=- elapsed_ms=... input_ids=... trace_ids=-
+case=black_pig_crisp_heart expected=search_knowledge_base actual=search_knowledge_base selection=passed arguments=passed retrieval=passed voice_evidence=passed evidence_filter=candidates:1,selected:1,context:0,non_ascii:0,limit:0,budget:0 speech=passed reason=- portal_error=- elapsed_ms=... input_ids=... trace_ids=...
+case=golden_yolk expected=search_knowledge_base actual=search_knowledge_base selection=passed arguments=passed retrieval=passed voice_evidence=passed evidence_filter=candidates:1,selected:1,context:0,non_ascii:0,limit:0,budget:0 speech=passed reason=- portal_error=- elapsed_ms=... input_ids=... trace_ids=...
 validation=passed fault=PASS focus=human_transcription_and_spoken_faithfulness error_type=- exit_code=0
 host_exit_code=0
 ```
 
-`arguments=manual_review_required` 代表已有 query、但固定词项不足以自动判定语义；这种状态本身允许通过。产品用例必须严格满足 `retrieval=passed`。脚本保持 80 ms 送帧，单 case 上限 90 秒，不用提高超时掩盖结束边界故障。
+`arguments=manual_review_required` 代表已有 query、但固定词项不足以自动判定语义；这种状态本身允许通过。产品用例必须同时满足 `retrieval=passed` 和 `voice_evidence=passed`。`evidence_filter` 只给出候选、选中及四类拒绝计数，不输出证据正文。脚本保持 80 ms 送帧，单 case 上限 90 秒，不用提高超时掩盖结束边界故障。
 
 失败时只提供脚本实际输出，不先提供完整报告或全量日志。最终 `fault/focus` 的含义为：
 
@@ -89,6 +89,7 @@ host_exit_code=0
 | `UNKNOWN_TOOL_NAME` | 失败 case 行，再查该 `input_ids` 对应的 `emitted_tool/reason_code/stage` |
 | `TOOL_ARGUMENTS` | 失败 case 行和对应 input ID 的参数校验结果，不提供 query 正文 |
 | `CUEKB_RETRIEVAL` | 失败 case 行及对应 `trace_ids` 的一行 `cuekb_response_validated` |
+| `CUEKB_VOICE_EVIDENCE` | 失败 case 行中的 `evidence_filter`；按 context、non_ascii、limit、budget 的非零计数修复过滤原因 |
 | `VOICE_RESPONSE_COMPLETION` | 时间窗口、失败 case 行，以及同窗口 VoiceChat 的工具结果接收与 audio done/EOS 行 |
 | `PASS` | Python 七行及 `host_exit_code=0`；需要口述复核时只导出相关 case WAV |
 

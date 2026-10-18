@@ -11,7 +11,9 @@ from scripts import run_native_cuekb_validation as entrypoint
 from scripts.run_native_cuekb_validation import (
     case_line,
     classify,
+    read_api_evidence,
     read_voicechat_evidence,
+    summarize_api_log,
     summarize_voicechat_log,
 )
 from scripts.validate_native_cuekb import assess, load_cases, passed, summary_lines
@@ -37,7 +39,7 @@ def test_case_validation_identifies_legacy_tool_name(tmp_path):
         load_cases(path)
 
 
-def test_unusable_voice_evidence_is_not_reported_as_retrieval_passed():
+def test_unusable_voice_evidence_is_separate_from_successful_retrieval():
     case = {"expected_tool": "search_knowledge_base", "query_terms": ["Black Pig"]}
     records = [
         {"kind": "native_tool_arguments", "payload": {
@@ -56,7 +58,8 @@ def test_unusable_voice_evidence_is_not_reported_as_retrieval_passed():
 
     result = assess(case, history, {"i1"}, 1920)
 
-    assert result["retrieval"] == "insufficient_evidence"
+    assert result["retrieval"] == "passed"
+    assert result["voice_evidence"] == "unavailable"
 
 
 def test_console_summary_is_bounded_and_exit_requires_product_retrieval():
@@ -105,7 +108,8 @@ def test_single_entrypoint_classifies_missing_native_tool_with_bounded_evidence(
     )
     assert line == (
         "case=product expected=search_knowledge_base actual=- selection=failed "
-        "arguments=unverified retrieval=unverified speech=passed reason=- "
+        "arguments=unverified retrieval=unverified voice_evidence=- evidence_filter=- "
+        "speech=passed reason=- "
         "portal_error=- elapsed_ms=1200 input_ids=input-1 trace_ids=-"
     )
 
@@ -115,6 +119,8 @@ def test_single_entrypoint_classifies_missing_native_tool_with_bounded_evidence(
     ({"selection": "passed", "arguments": "failed"}, "TOOL_ARGUMENTS"),
     ({"selection": "passed", "arguments": "manual_review_required",
       "retrieval": "insufficient_evidence"}, "CUEKB_RETRIEVAL"),
+    ({"selection": "passed", "arguments": "manual_review_required",
+      "retrieval": "passed", "voice_evidence": "unavailable"}, "CUEKB_VOICE_EVIDENCE"),
 ])
 def test_single_entrypoint_classifies_next_diagnostic_stage(row, fault):
     product = {
@@ -160,9 +166,12 @@ def test_voicechat_log_summary_compares_prompt_chain_without_printing_raw_log():
         f"sha256={digest} match=passed"
     )
     assert lines[2] == (
-        "model_function status=passed sequences=42 tools=search_knowledge_base"
+        "model_function status=passed count=1 unique_sequences=42 tools=search_knowledge_base"
     )
-    assert lines[3] == "voicechat_events function_parsed=1 function_result=1 audio_done=1"
+    assert lines[3] == (
+        "voicechat_events function_parsed=1 function_result=1 "
+        "response_timeouts=0 audio_done=1"
+    )
     assert "private" not in "\n".join(lines)
 
 
@@ -194,6 +203,75 @@ def test_voicechat_log_input_discards_unrelated_lines_before_summary():
     assert "private unrelated" not in evidence
     assert "Prompt prepared" in evidence
     assert "function.result" in evidence
+
+
+def test_voicechat_log_summary_flags_repeated_calls_without_tool_result():
+    digest = "d" * 64
+    log = "\n".join((
+        "Prompt prepared: tools_count=1 tool_names=search_knowledge_base "
+        f"prompt_chars=7000 prompt_sha256={digest}",
+        "System prompt received for sequence 42: tool_names=search_knowledge_base "
+        f"chars=7000 sha256={digest}",
+        "Function call decoded from model for sequence 42: tool_names=search_knowledge_base",
+        'voice_ws_diagnostic {"event":"function.parsed"}',
+        "Function call response timed out after 64 frames, resetting to idle",
+        "Function call decoded from model for sequence 42: tool_names=search_knowledge_base",
+    ))
+
+    lines, ok = summarize_voicechat_log(log, "search_knowledge_base")
+
+    assert not ok
+    assert "count=2 unique_sequences=42" in lines[2]
+    assert "response_timeouts=1" in lines[3]
+    assert lines[-1] == "voicechat_diagnostic=failed fault=TOOL_RESULT_NOT_RECEIVED"
+
+
+def test_voicechat_log_summary_allows_sequential_tool_cases_on_one_sequence():
+    digest = "e" * 64
+    log = "\n".join((
+        "Prompt prepared: tools_count=1 tool_names=search_knowledge_base "
+        f"prompt_chars=7000 prompt_sha256={digest}",
+        "System prompt received for sequence 42: tool_names=search_knowledge_base "
+        f"chars=7000 sha256={digest}",
+        "Function call decoded from model for sequence 42: tool_names=search_knowledge_base",
+        "Function call decoded from model for sequence 42: tool_names=search_knowledge_base",
+        'voice_ws_diagnostic {"event":"function.parsed"}',
+        'voice_ws_diagnostic {"event":"function.result"}',
+        'voice_ws_diagnostic {"event":"function.parsed"}',
+        'voice_ws_diagnostic {"event":"function.result"}',
+    ))
+
+    lines, ok = summarize_voicechat_log(log, "search_knowledge_base")
+
+    assert ok
+    assert "count=2 unique_sequences=42" in lines[2]
+    assert lines[-1] == "voicechat_diagnostic=passed fault=NONE"
+
+
+def test_api_log_summary_reports_only_lifecycle_counts_and_trace():
+    log = "\n".join((
+        "voice_tool_call_received conversation_id=c1 call_id=k1 "
+        "tool=search_knowledge_base input_item_id=i1",
+        "voice_bridge_started conversation_id=c1 call_id=k1",
+        "cuekb_response_validated conversation_id=c1 turn_id=t1 trace_id=z1 "
+        "retrieval_status=ok hit_count=1 duration_ms=25 service_total_ms=20",
+        "voice_bridge_finished conversation_id=c1 turn_id=t1 call_id=k1 "
+        "status=insufficient_evidence",
+        "voice_tool_result_submitted conversation_id=c1 turn_id=t1 call_id=k1",
+        "private query and response body",
+    ))
+
+    evidence = read_api_evidence(StringIO(log))
+    lines, ok = summarize_api_log(evidence)
+
+    assert ok
+    assert lines[0] == (
+        "api_tool_flow conversations=c1 received=1 unique_calls=1 bridges_started=1 "
+        "bridges_finished=1 bridges_failed=0 unbound=0 results_submitted=1"
+    )
+    assert lines[1] == "api_cuekb responses=1 statuses=ok hits=1 traces=z1 durations_ms=25"
+    assert lines[2] == "api_diagnostic=passed fault=NONE"
+    assert "private" not in evidence
 
 
 async def test_single_entrypoint_prints_only_preflight_window_cases_and_classification(

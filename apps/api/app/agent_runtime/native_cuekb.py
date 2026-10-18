@@ -92,10 +92,15 @@ class NativeCueKBExecutor:
             "presentation": presentation_contract("grounded", ctx.slots).model_dump(),
         }
         selected = []
+        rejected_context = 0
+        rejected_non_ascii = 0
+        rejected_limit = 0
+        rejected_budget = 0
         for citation in ctx.evidence.values():
             # A missing/truncated context can remove a qualification. Do not cut
             # individual passages to fit the voice payload or transliterate facts.
             if citation.context_truncated or citation.context_omitted:
+                rejected_context += 1
                 continue
             item = {"citation_id": citation.citation_id, "text": citation.content,
                     "context": citation.context, "title": citation.title,
@@ -103,12 +108,35 @@ class NativeCueKBExecutor:
                     "version_id": citation.version_id, "conditions": citation.metadata}
             item = normalize_voice_punctuation(item)
             if not printable_ascii(json.dumps(item, ensure_ascii=False)):
+                rejected_non_ascii += 1
                 continue
             candidate = {**envelope, "items": [*envelope["items"], item], "partial": False}
-            if len(selected) >= self.settings.qa_direct_max_hits or len(json.dumps(candidate).encode()) > self.settings.qa_direct_evidence_max_bytes:
+            if len(selected) >= self.settings.qa_direct_max_hits:
+                rejected_limit += 1
+                continue
+            if len(json.dumps(candidate).encode()) > self.settings.qa_direct_evidence_max_bytes:
+                rejected_budget += 1
                 continue
             selected.append(citation)
             envelope["items"].append(item)
+        await self.registry.store.record(
+            ctx.conversation_id,
+            ctx.epoch,
+            "native_cuekb_voice_evidence",
+            ctx.turn_id,
+            {
+                "input_item_id": ctx.task_context.get("input_source", {}).get("input_item_id"),
+                "trace_id": result.get("trace_id"),
+                "candidate_count": len(ctx.evidence),
+                "selected_count": len(selected),
+                "rejected_context_count": rejected_context,
+                "rejected_non_ascii_count": rejected_non_ascii,
+                "rejected_limit_count": rejected_limit,
+                "rejected_budget_count": rejected_budget,
+            },
+            ctx.turn_id,
+            ctx.request_revision,
+        )
         if not selected:
             return self.result("insufficient_evidence", "CUEKB_VOICE_EVIDENCE_UNAVAILABLE",
                 "I could not obtain complete English evidence suitable for a reliable spoken answer.", is_mock=is_mock)

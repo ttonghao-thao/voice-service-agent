@@ -60,6 +60,8 @@ def assess(case, history, seen_inputs, output_samples):
               and r["payload"].get("input_item_id") in seen_inputs]
     searches = [r["payload"] for r in records if r["kind"] == "native_cuekb_result"
                 and r["payload"].get("input_item_id") in seen_inputs]
+    evidence_checks = [r["payload"] for r in records if r["kind"] == "native_cuekb_voice_evidence"
+                       and r["payload"].get("input_item_id") in seen_inputs]
     actual = [t["selected_tool"] for t in turns]
     if not actual:
         actual = [entry["name"] for entry in [*args, *errors]]
@@ -72,19 +74,31 @@ def assess(case, history, seen_inputs, output_samples):
         else "manual_review_required" if queries else "not_applicable" if not wanted else "unverified")
     answer = next((t["answer"] for t in turns if t.get("answer")), None)
     reason = answer.get("reason_code") if answer else None
-    retrieval = ("insufficient_evidence" if reason in ("CUEKB_NO_EVIDENCE", "CUEKB_EVIDENCE_UNSAFE", "CUEKB_VOICE_EVIDENCE_UNAVAILABLE") else
-        "needs_clarification" if reason == "CUEKB_NEEDS_CLARIFICATION" else
-        "failed" if reason and reason.startswith(("CUEKB_", "TOOL_")) else
-        "passed" if answer and answer.get("citations") else
-        "not_applicable" if not wanted and not actual else "unverified")
-    if searches and retrieval not in ("insufficient_evidence", "needs_clarification", "failed"):
+    if searches:
         source = searches[-1]
         retrieval = ("failed" if source.get("status") == "failed" else
             "needs_clarification" if source.get("status") == "needs_clarification" else
             "insufficient_evidence" if source.get("status") == "not_found" or source.get("evidence_status") in ("insufficient", "conflicting") else
             "passed" if source.get("hit_count", 0) > 0 else "insufficient_evidence")
+    else:
+        retrieval = ("insufficient_evidence" if reason in ("CUEKB_NO_EVIDENCE", "CUEKB_EVIDENCE_UNSAFE") else
+            "needs_clarification" if reason == "CUEKB_NEEDS_CLARIFICATION" else
+            "failed" if reason and reason.startswith(("CUEKB_", "TOOL_")) else
+            "passed" if answer and answer.get("citations") else
+            "not_applicable" if not wanted and not actual else "unverified")
+    evidence_audit = evidence_checks[-1] if evidence_checks else None
+    voice_evidence_status = (
+        "not_applicable" if not wanted else
+        "passed" if evidence_audit and evidence_audit.get("selected_count", 0) > 0 else
+        "unavailable" if reason == "CUEKB_VOICE_EVIDENCE_UNAVAILABLE" else
+        "unverified"
+    )
     return {"selection": selection, "actual_tools": actual, "arguments": argument_status,
-            "retrieval": retrieval, "reason_code": reason,
+            "retrieval": retrieval, "voice_evidence": voice_evidence_status,
+            "voice_evidence_filter": ({key: evidence_audit.get(key) for key in (
+                "candidate_count", "selected_count", "rejected_context_count",
+                "rejected_non_ascii_count", "rejected_limit_count", "rejected_budget_count",
+            )} if evidence_audit else None), "reason_code": reason,
             "speech_transport": "passed" if output_samples else "failed",
             "retrieval_relevance": "manual_review_required" if wanted else "not_applicable",
             "input_transcription": "manual_review_required",
@@ -245,6 +259,7 @@ def summary_lines(report):
             f"tools={case.get('actual_tools')}",
             f"arguments={case.get('arguments')}",
             f"retrieval={case.get('retrieval')}",
+            f"voice_evidence={case.get('voice_evidence')}",
             f"reason={case.get('reason_code')}",
             f"speech={case.get('speech_transport')}",
             f"elapsed_ms={case.get('elapsed_ms')}",
@@ -261,10 +276,12 @@ def passed(report):
     for row in report["cases"]:
         expected_tool = row.get("expected_tool")
         expected_retrieval = "not_applicable" if expected_tool is None else "passed"
+        expected_voice_evidence = "not_applicable" if expected_tool is None else "passed"
         if (
             row.get("selection") != "passed"
             or row.get("arguments") in ("failed", "unverified")
             or row.get("retrieval") != expected_retrieval
+            or row.get("voice_evidence", expected_voice_evidence) != expected_voice_evidence
             or row.get("speech_transport") != "passed"
         ):
             return False

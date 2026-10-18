@@ -4,7 +4,7 @@
 
 ## 1. 当前结论与审计基线
 
-应用控制链已有实现，但当前部署的产品问题未稳定触发 `search_knowledge_base`，故障一正在定位。历史轮次曾产生错误名称 `search_cueb`，也曾有一次完整名称选择并进入 CueKB；这些证据说明链路并非恒定缺失，但不能覆盖当前失败。现按同一验证窗口比较 VoiceChat 最终 Prompt、Triton 接收 hash 和模型 function 通道，分开判断注册/转换/模型/事件封装。故障二是 `hello.wav` 句首 `Hello` 丢失，已确认独立存在并暂缓定位。真实知识语音链路仍未放行，详见 [VoiceChat 工具选择定位](voicechat/native-tool-selection-validation.md)。
+应用控制链已有实现。2026-10-18 同一现场窗口已证明 VoiceChat 最终 Prompt 与 Triton 接收 hash 一致、Nano 9B 解码出 `search_knowledge_base`、API selection 通过且 CueKB 返回 trace；原“未触发工具”不再是当前阻塞点。当前阻塞是 CueKB 命中被语音证据过滤为 `CUEKB_VOICE_EVIDENCE_UNAVAILABLE`，并伴随同一 sequence 约每 5.3 秒重复 function call、产品 case 90 秒超时。故障二是 `hello.wav` 句首 `Hello` 丢失，已确认独立存在并暂缓定位。真实知识语音链路仍未放行，详见 [VoiceChat 工具选择定位](voicechat/native-tool-selection-validation.md)。
 
 当前需求已确认：VoiceChat 自主决定直接回答或调用工具，后端只使用 VoiceChat，不引入独立 ASR/TTS，不根据最终转写自动启动业务。本次实现以 dual_tools/general_qa 为部署目标；旧 knowledge_required 现场证据属于严格模式，不能作为当前目标配置。先打通功能再优化时延，详见 [实施顺序](q1003-target-architecture.md#4-实施计划与决策门槛)。
 
@@ -20,14 +20,14 @@
 | D21-HANDSHAKE / RECOVERY | 字符串 tools 回显、空事件边界、错误/转写交付与重试；现场确认注册及可见超时，其余恢复矩阵待验 |
 | D21-PROBE / END | 连续送音探针、静态产物检查、WS/backend 隔离采集、可选 PAD 结束保护；CPU 证据不替代 GPU |
 | VoiceChat 交付规则 | 完整外部修改文件、manifest、容器命令已在 docs/voicechat；AGENTS 要求后续同步 |
-| 镜像内置验证材料 | API 内置单入口、底层验证/探针、case 配置和四段 WAV；VoiceChat 派生镜像内置客户端、静态检查器和相同输入。一次 `docker exec` 完成 API 项目验证并只返回窗口、ID、四条 case 和故障分类；同一 Python 可将 VoiceChat 日志窗口归纳为五行 |
+| 镜像内置验证材料 | API 内置单入口、底层验证/探针、case 配置和四段 WAV；VoiceChat 派生镜像内置客户端、静态检查器和相同输入。一次 `docker exec` 完成 API 项目验证并只返回窗口、ID、四条 case 和故障分类；同一 Python 可将 VoiceChat 日志窗口归纳为五行、API 工具生命周期归纳为三行 |
 | P1-A 严格提示一致性 | Provider/两份 voice prompt 统一授权口述与关联固定 ACK，legacy 保持 bridge；未经授权的问候/澄清/限制说明不放行，沉默时自动澄清与真实模型行为另行验证 |
 
 ## 3. 待完成与建议顺序
 
 | 任务 | 当前状态 | 下一步完成条件 |
 | --- | --- | --- |
-| VoiceChat 一期原生单工具 | 当前产品问题未稳定触发工具。公开名称已统一为 search_knowledge_base(query)，旧拼写严格拒绝；历史错误名称、20 轮未调用、21/21 注册/Prompt 预发送及一次 CueKB 命中已分层整理。问候首词故障暂缓 | 重建 API 和 VoiceChat 派生镜像，运行单入口；只回传 Python 七行、宿主退出码和六行 VoiceChat 摘要。两层 Prompt 匹配但 function 缺失时，再采同 sequence 的 function token 类型/计数和首个非 PAD 位置 |
+| VoiceChat 一期原生单工具 | 工具注册、Prompt 传输、Nano 9B function 解码、API selection 和 CueKB 调用已通过；当前是语音证据过滤与工具结果回传/状态机收尾故障。公开名称统一为 search_knowledge_base(query)，旧拼写严格拒绝。问候首词故障暂缓 | 部署新增诊断后运行单入口，并用同一窗口输出五行 VoiceChat 摘要和三行 API 摘要；先按 `evidence_filter` 修复证据拒绝原因，再用 `results_submitted`、`function_result`、`response_timeouts` 定位重复调用边界 |
 | P0-A/B：现场部署与两类验证 | 严格配置已确认；两类现场日志已分析 | 补运行 hash；严格知识闭环与 PAD A/B 分开报告 |
 | P1-A：严格提示与授权一致 | 编码及本地回归完成；现场拒绝保护生效 | 保留显式严格模式；当前自主回答部署改用 general_qa，不要求每次先调用工具 |
 | P1-B：ASR/function 首差异修复 | 原生路径追加排查暂停；算子未确定 | 仅在重新投入原生路径时恢复，不阻塞提示与应用契约修正 |
