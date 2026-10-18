@@ -99,7 +99,14 @@ class NativeCueKBExecutor:
         for citation in ctx.evidence.values():
             # A missing/truncated context can remove a qualification. Do not cut
             # individual passages to fit the voice payload or transliterate facts.
-            if citation.context_truncated or citation.context_omitted:
+            # Surrounding context may be omitted only when CueKB also returned
+            # the exact source chunk as an independently anchored complete part.
+            complete_source_part = any(
+                str(part.get("chunk_id")) == citation.chunk_id
+                and part.get("source_text") == citation.content
+                for part in citation.context_parts
+            )
+            if citation.context_truncated or (citation.context_omitted and not complete_source_part):
                 rejected_context += 1
                 continue
             item = {"citation_id": citation.citation_id, "text": citation.content,

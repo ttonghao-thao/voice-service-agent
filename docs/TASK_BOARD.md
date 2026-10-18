@@ -4,7 +4,7 @@
 
 ## 1. 当前结论与审计基线
 
-应用控制链已有实现。2026-10-18 同一现场窗口已证明 VoiceChat 最终 Prompt 与 Triton 接收 hash 一致、Nano 9B 解码出 `search_knowledge_base`、API selection 通过且 CueKB 返回 trace；原“未触发工具”不再是当前阻塞点。当前阻塞是 CueKB 命中被语音证据过滤为 `CUEKB_VOICE_EVIDENCE_UNAVAILABLE`，并伴随同一 sequence 约每 5.3 秒重复 function call、产品 case 90 秒超时。故障二是 `hello.wav` 句首 `Hello` 丢失，已确认独立存在并暂缓定位。真实知识语音链路仍未放行，详见 [VoiceChat 工具选择定位](voicechat/native-tool-selection-validation.md)。
+应用控制链已有实现。2026-10-18 同一现场窗口已证明 VoiceChat 最终 Prompt 与 Triton 接收 hash 一致、Nano 9B 解码出 `search_knowledge_base`、API selection 通过且 CueKB 返回 trace；原“未触发工具”不再是当前阻塞点。13:13 轮次进一步定位到两个根因：适配器把重复/超预算周边 context 与完整命中块一并标为不可用；VoiceChat 为同一输入的重复模型调用生成新 call ID，导致 API 收到 1 个绑定调用和 14 个未绑定调用。修复已编码，待 API 与 VoiceChat 同时部署复测。故障二是 `hello.wav` 句首 `Hello` 丢失，已确认独立存在并暂缓定位。真实知识语音链路仍未放行，详见 [VoiceChat 工具选择定位](voicechat/native-tool-selection-validation.md)。
 
 当前需求已确认：VoiceChat 自主决定直接回答或调用工具，后端只使用 VoiceChat，不引入独立 ASR/TTS，不根据最终转写自动启动业务。本次实现以 dual_tools/general_qa 为部署目标；旧 knowledge_required 现场证据属于严格模式，不能作为当前目标配置。先打通功能再优化时延，详见 [实施顺序](q1003-target-architecture.md#4-实施计划与决策门槛)。
 
@@ -27,7 +27,7 @@
 
 | 任务 | 当前状态 | 下一步完成条件 |
 | --- | --- | --- |
-| VoiceChat 一期原生单工具 | 工具注册、Prompt 传输、Nano 9B function 解码、API selection 和 CueKB 调用已通过；当前是语音证据过滤与工具结果回传/状态机收尾故障。公开名称统一为 search_knowledge_base(query)，旧拼写严格拒绝。问候首词故障暂缓 | 部署新增诊断后运行单入口，并用同一窗口输出五行 VoiceChat 摘要和三行 API 摘要；先按 `evidence_filter` 修复证据拒绝原因，再用 `results_submitted`、`function_result`、`response_timeouts` 定位重复调用边界 |
+| VoiceChat 一期原生单工具 | 工具注册、Prompt 传输、Nano 9B function 解码、API selection 和 CueKB 调用已通过；完整命中块识别、同输入规范调用去重/结果复用和按 sequence 日志摘要已编码。公开名称统一为 search_knowledge_base(query)，旧拼写严格拒绝。问候首词故障暂缓 | 重建 API 与 VoiceChat 后运行单入口及两份摘要；放行要求产品 case `voice_evidence=passed`，API `received=1 unique_calls=1 unbound=0 results_submitted=1`，VoiceChat 无 response timeout 并完成 answer audio done |
 | P0-A/B：现场部署与两类验证 | 严格配置已确认；两类现场日志已分析 | 补运行 hash；严格知识闭环与 PAD A/B 分开报告 |
 | P1-A：严格提示与授权一致 | 编码及本地回归完成；现场拒绝保护生效 | 保留显式严格模式；当前自主回答部署改用 general_qa，不要求每次先调用工具 |
 | P1-B：ASR/function 首差异修复 | 原生路径追加排查暂停；算子未确定 | 仅在重新投入原生路径时恢复，不阻塞提示与应用契约修正 |

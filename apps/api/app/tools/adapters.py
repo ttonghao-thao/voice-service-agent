@@ -195,10 +195,17 @@ class CueKBAdapter:
             if len(content) > budget:
                 omitted += 1
                 continue
-            context_omitted = bool(hit.context and context is None and hit.context_parts)
+            # CueKB may repeat the exact source chunk in ``context``. Removing
+            # that duplicate loses no evidence and is not application truncation.
+            context_omitted = bool(hit.context and hit.context != content and context is None)
             if len(content) + len(context or "") > budget:
                 context = None
                 context_omitted = True
+            source_parts = [
+                part.model_dump(mode="json")
+                for part in hit.context_parts
+                if str(part.chunk_id) == str(hit.chunk_id) and part.source_text == content
+            ]
             citation_id = f"C{len(ctx.evidence) + 1}"
             title = " / ".join(part for part in hit.title_path if part.strip()) or "Source excerpt"
             safe_metadata = {
@@ -219,7 +226,11 @@ class CueKBAdapter:
                 business_version=business_version,
                 content=content,
                 context=context,
-                context_parts=[part.model_dump(mode="json") for part in hit.context_parts] if context else [],
+                # Keep the independently anchored source chunk when surrounding
+                # context is too large. The native path can verify completeness
+                # without sending all neighboring chunks to the model.
+                context_parts=([part.model_dump(mode="json") for part in hit.context_parts]
+                               if context else source_parts),
                 context_truncated=hit.context_truncated,
                 context_omitted=context_omitted,
                 relations=[relation.model_dump(mode="json") for relation in hit.relations],
@@ -241,7 +252,7 @@ class CueKBAdapter:
             candidate = citation.model_dump(mode="json")
             if not fits(candidate) and context:
                 citation.context = None
-                citation.context_parts = []
+                citation.context_parts = source_parts
                 citation.context_omitted = True
                 candidate = citation.model_dump(mode="json")
             if not fits(candidate):

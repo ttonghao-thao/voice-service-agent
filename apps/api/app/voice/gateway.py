@@ -541,6 +541,7 @@ class VoiceGateway:
                         "speech_text": "Please read the written response in the portal. I cannot speak it safely.",
                         "language": "en-US",
                         "is_mock": bundle.is_mock,
+                        "instructions": "This result is final for the current request. Do not call another tool.",
                     })
                 else:
                     text = json.dumps(
@@ -549,6 +550,7 @@ class VoiceGateway:
                             "speech_text": bundle.speech_text,
                             "language": bundle.speech_language,
                             "is_mock": bundle.is_mock,
+                            "instructions": "This result is final for the current request. Do not call another tool.",
                             "presentation": bundle.presentation.model_dump(),
                         },
                         ensure_ascii=True,

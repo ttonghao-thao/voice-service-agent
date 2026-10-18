@@ -152,10 +152,10 @@ def test_voicechat_log_summary_compares_prompt_chain_without_printing_raw_log():
         f"chars=6123 sha256={digest}",
         "Function call decoded from model for sequence 42: "
         "tool_names=search_knowledge_base private suffix",
-        'voice_ws_diagnostic {"event": "function.parsed"}',
-        'voice_ws_diagnostic {"event": "function.result"}',
-        'voice_ws_diagnostic {"event": "output.sent", '
-        '"kind": "response.output_audio.done"}',
+        'voice_ws_diagnostic {"sequence_id":42,"event":"function.parsed"}',
+        'voice_ws_diagnostic {"sequence_id":42,"event":"function.result"}',
+        'voice_ws_diagnostic {"sequence_id":42,"event":"output.sent",'
+        '"kind":"response.output_audio.done"}',
     ))
 
     lines, ok = summarize_voicechat_log(log, "search_knowledge_base")
@@ -170,7 +170,7 @@ def test_voicechat_log_summary_compares_prompt_chain_without_printing_raw_log():
     )
     assert lines[3] == (
         "voicechat_events function_parsed=1 function_result=1 "
-        "response_timeouts=0 audio_done=1"
+        "duplicates_coalesced=0 response_timeouts=0 audio_done=1"
     )
     assert "private" not in "\n".join(lines)
 
@@ -213,7 +213,7 @@ def test_voicechat_log_summary_flags_repeated_calls_without_tool_result():
         "System prompt received for sequence 42: tool_names=search_knowledge_base "
         f"chars=7000 sha256={digest}",
         "Function call decoded from model for sequence 42: tool_names=search_knowledge_base",
-        'voice_ws_diagnostic {"event":"function.parsed"}',
+        'voice_ws_diagnostic {"sequence_id":42,"event":"function.parsed"}',
         "Function call response timed out after 64 frames, resetting to idle",
         "Function call decoded from model for sequence 42: tool_names=search_knowledge_base",
     ))
@@ -235,10 +235,11 @@ def test_voicechat_log_summary_allows_sequential_tool_cases_on_one_sequence():
         f"chars=7000 sha256={digest}",
         "Function call decoded from model for sequence 42: tool_names=search_knowledge_base",
         "Function call decoded from model for sequence 42: tool_names=search_knowledge_base",
-        'voice_ws_diagnostic {"event":"function.parsed"}',
-        'voice_ws_diagnostic {"event":"function.result"}',
-        'voice_ws_diagnostic {"event":"function.parsed"}',
-        'voice_ws_diagnostic {"event":"function.result"}',
+        'voice_ws_diagnostic {"sequence_id":42,"event":"function.parsed"}',
+        'voice_ws_diagnostic {"sequence_id":42,"event":"function.result"}',
+        'voice_ws_diagnostic {"sequence_id":42,"event":"function.parsed"}',
+        'voice_ws_diagnostic {"sequence_id":42,"event":"function.result"}',
+        'voice_ws_diagnostic {"sequence_id":42,"event":"function.duplicate"}',
     ))
 
     lines, ok = summarize_voicechat_log(log, "search_knowledge_base")
@@ -246,6 +247,33 @@ def test_voicechat_log_summary_allows_sequential_tool_cases_on_one_sequence():
     assert ok
     assert "count=2 unique_sequences=42" in lines[2]
     assert lines[-1] == "voicechat_diagnostic=passed fault=NONE"
+
+
+def test_voicechat_log_summary_filters_other_sequences_and_trailing_log_quote():
+    digest = "f" * 64
+    log = "\n".join((
+        "Prompt prepared: tools_count=1 tool_names=search_knowledge_base "
+        f"prompt_chars=7000 prompt_sha256={digest}",
+        'System prompt received for sequence 42: tool_names=search_knowledge_base '
+        f'chars=7000 sha256={digest}"',
+        'Function call decoded from model for sequence 41: tool_names=old_tool"',
+        'Function call decoded from model for sequence 42: tool_names=search_knowledge_base"',
+        'voice_ws_diagnostic {"sequence_id":41,"event":"function.parsed"}',
+        'voice_ws_diagnostic {"sequence_id":42,"event":"function.parsed"}',
+        'voice_ws_diagnostic {"sequence_id":42,"event":"function.result"}',
+        'voice_ws_diagnostic {"sequence_id":42,"event":"function.duplicate"}',
+    ))
+
+    lines, ok = summarize_voicechat_log(log, "search_knowledge_base")
+
+    assert ok
+    assert lines[2] == (
+        "model_function status=passed count=1 unique_sequences=42 "
+        "tools=search_knowledge_base"
+    )
+    assert lines[3].startswith(
+        "voicechat_events function_parsed=1 function_result=1 duplicates_coalesced=1"
+    )
 
 
 def test_api_log_summary_reports_only_lifecycle_counts_and_trace():

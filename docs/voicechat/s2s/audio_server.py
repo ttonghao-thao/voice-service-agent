@@ -469,6 +469,9 @@ class AudioSession:
 
         # Function calling state variables
         self.function_call_output = deque()
+        self._function_call_signatures = {}
+        self._function_result_cache = {}
+        self._function_signature_states = {}
         self.tools = "[]"
 
     def _create_codec(self, format: str, sample_rate: int) -> AudioCodec:
@@ -1070,6 +1073,11 @@ class AudioSession:
         """Emit VAD speech_started (Pipecat/OpenAI Realtime compatibility)."""
         self._speech_active = True
         self._input_item_id = str(uuid.uuid4())
+        # Tool-call deduplication is scoped to one customer input. A later turn
+        # may legitimately ask the same question and must execute it again.
+        self._function_call_signatures.clear()
+        self._function_result_cache.clear()
+        self._function_signature_states.clear()
         msg = {
             "type": "input_audio_buffer.speech_started",
             "event_id": str(uuid.uuid4()),
@@ -1441,6 +1449,9 @@ class AudioSession:
                 self._voice_diagnostic("function.result", chars=len(output_str),
                                        call_id=str(function_call_item.get("call_id", ""))[:128])
                 inputs[2].set_data_from_numpy(np.array([[output_str.encode("utf-8")]], dtype=object))
+                signature = function_call_item.get("_signature")
+                if signature and self._function_signature_states.get(signature) == "queued":
+                    self._function_signature_states[signature] = "delivered"
             else:
                 inputs[2].set_data_from_numpy(np.array([[b""]], dtype=object))
 
@@ -1633,16 +1644,40 @@ class AudioSession:
                 arguments = json.loads(arguments)
             if not isinstance(arguments, dict):
                 raise ValueError("Tool arguments must be a JSON object")
+            name = call.get("name", "")
+            signature = json.dumps(
+                {"name": name, "arguments": arguments},
+                sort_keys=True,
+                separators=(",", ":"),
+                ensure_ascii=True,
+            )
+            state = self._function_signature_states.get(signature)
+            if state in ("pending", "queued"):
+                self._voice_diagnostic("function.duplicate", action="coalesced", state=state)
+                continue
+            if state == "delivered":
+                cached = self._function_result_cache[signature]
+                self.function_call_output.append({
+                    "call_id": cached["call_id"],
+                    "output": cached["output"],
+                    "_signature": signature,
+                })
+                self._function_signature_states[signature] = "queued"
+                self._voice_diagnostic("function.duplicate", action="replayed_result", state=state)
+                continue
+            call_id = str(uuid.uuid4())
             fn_done = {
                 "event_id": str(uuid.uuid4()),
                 "type": "response.function_call_arguments.done",
                 "response_id": response_id,
                 "item_id": str(uuid.uuid4()),
                 "output_index": output_index,
-                "call_id": str(uuid.uuid4()),
-                "name": call.get("name", ""),
+                "call_id": call_id,
+                "name": name,
                 "arguments": json.dumps(arguments),
             }
+            self._function_call_signatures[call_id] = signature
+            self._function_signature_states[signature] = "pending"
             self._queue_output_event(fn_done)
 
     async def finalize_sequence(self):
@@ -1779,7 +1814,21 @@ class AudioSession:
     async def handle_function_call_output(self, item: dict):
         """Handle a function_call_output conversation item"""
         if item:
-            logger.info(f"Client {self.client_id}: Function call output: {item}")
+            call_id = str(item.get("call_id", ""))
+            output = item.get("output", "")
+            output_chars = len(output if isinstance(output, str) else json.dumps(output))
+            logger.info(
+                f"Client {self.client_id}: Function call output received: "
+                f"call_id={call_id[:128]} chars={output_chars}"
+            )
+            signature = self._function_call_signatures.get(call_id)
+            if signature:
+                self._function_result_cache[signature] = {
+                    "call_id": call_id,
+                    "output": output,
+                }
+                self._function_signature_states[signature] = "queued"
+                item = {**item, "_signature": signature}
             self.function_call_output.append(item)
 
 

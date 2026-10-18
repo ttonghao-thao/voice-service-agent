@@ -60,6 +60,8 @@ def test_query_only_schema_rejects_authority_and_preserves_identifiers():
     ("truncated_context", "CUEKB_VOICE_EVIDENCE_UNAVAILABLE"),
     ("budget", "CUEKB_VOICE_EVIDENCE_UNAVAILABLE"), ("partial", None),
     ("typographic_ascii", None),
+    ("duplicate_context", None), ("bounded_source_part", None),
+    ("omitted_without_source_part", "CUEKB_VOICE_EVIDENCE_UNAVAILABLE"),
     ("oversized", "CUEKB_NO_EVIDENCE"),
 ])
 async def test_native_query_reaches_cuekb_without_an_answer_model(tmp_path, monkeypatch, scenario, code):
@@ -86,6 +88,34 @@ async def test_native_query_reaches_cuekb_without_an_answer_model(tmp_path, monk
             data["hits"][0].update(
                 source_text="Product AX supports \u226510 connections \u2014 it\u2019s documented.",
                 title_path=["Guide \u00b7 \u201cProduct AX\u201d"],
+            )
+        if scenario == "duplicate_context":
+            source = data["hits"][0]["source_text"]
+            data["hits"][0].update(context=source, context_parts=[{
+                "chunk_id": data["hits"][0]["chunk_id"],
+                "source_text": source,
+                "anchor": {},
+                "title_path": [],
+            }])
+        if scenario in ("bounded_source_part", "omitted_without_source_part"):
+            source = data["hits"][0]["source_text"]
+            neighbor = "Additional complete neighboring context. " * 200
+            source_part = {
+                "chunk_id": data["hits"][0]["chunk_id"],
+                "source_text": source,
+                "anchor": {},
+                "title_path": [],
+            }
+            neighbor_part = {
+                "chunk_id": "00000000-0000-4000-8000-000000000199",
+                "source_text": neighbor,
+                "anchor": {},
+                "title_path": [],
+            }
+            data["hits"][0].update(
+                context=source + "\n\n" + neighbor,
+                context_parts=([source_part, neighbor_part]
+                               if scenario == "bounded_source_part" else [neighbor_part]),
             )
         if scenario == "oversized":
             data["hits"][0]["source_text"] = "No. " * 2000

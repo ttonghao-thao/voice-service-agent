@@ -210,6 +210,45 @@ async def test_function_channel_forwards_registered_tool_name_without_rewriting(
     event = pending(session)[-1]
     assert event["type"] == "response.function_call_arguments.done"
     assert event["name"] == "search_knowledge_base"
+
+
+@pytest.mark.asyncio
+async def test_duplicate_tool_call_reuses_one_api_call_and_cached_result_per_input():
+    session = server.AudioSession("test", Socket())
+    call_text = json.dumps([{
+        "name": "search_knowledge_base",
+        "arguments": {"query": "Black Pig Crisp Heart details"},
+    }])
+
+    await session._process_function_text(call_text)
+    await session._process_function_text(call_text)
+    calls = [event for event in pending(session)
+             if event["type"] == "response.function_call_arguments.done"]
+    assert len(calls) == 1
+
+    await session.handle_function_call_output({
+        "type": "function_call_output",
+        "call_id": calls[0]["call_id"],
+        "output": '{"status":"evidence_ready"}',
+    })
+    await session._process_function_text(call_text)
+    assert not [event for event in pending(session)
+                if event["type"] == "response.function_call_arguments.done"]
+    assert len(session.function_call_output) == 1
+
+    signature = session._function_call_signatures[calls[0]["call_id"]]
+    session.function_call_output.clear()
+    session._function_signature_states[signature] = "delivered"
+    await session._process_function_text(call_text)
+    assert len(session.function_call_output) == 1
+    assert session.function_call_output[0]["output"] == '{"status":"evidence_ready"}'
+
+    await session._emit_speech_started()
+    pending(session)
+    await session._process_function_text(call_text)
+    next_turn = [event for event in pending(session)
+                 if event["type"] == "response.function_call_arguments.done"]
+    assert len(next_turn) == 1 and next_turn[0]["call_id"] != calls[0]["call_id"]
     assert json.loads(event["arguments"]) == {"query": "Product AX storage requirements"}
 
 

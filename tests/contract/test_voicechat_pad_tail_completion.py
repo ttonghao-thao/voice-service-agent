@@ -503,6 +503,76 @@ def websocket_harness():
     return session
 
 
+def function_call_harness():
+    source = ROOT / "docs/voicechat/s2s/audio_server.py"
+    tree = ast.parse(source.read_text())
+    original = next(node for node in tree.body if isinstance(node, ast.ClassDef)
+                    and node.name == "AudioSession")
+    names = {"_process_function_text", "handle_function_call_output"}
+    methods = [node for node in original.body if isinstance(node, ast.AsyncFunctionDef)
+               and node.name in names]
+    assert len(methods) == len(names)
+    module = ast.Module(body=[
+        ast.ClassDef(name="FunctionSession", bases=[], keywords=[], body=methods,
+                     decorator_list=[], type_params=[]),
+    ], type_ignores=[])
+    namespace = {"json": json, "uuid": uuid,
+                 "logger": SimpleNamespace(info=lambda *_args: None)}
+    exec(compile(ast.fix_missing_locations(module), str(source), "exec"), namespace)
+    session = namespace["FunctionSession"]()
+    session._response_active = False
+    session._response_id = None
+    session.function_call_output = deque()
+    session._function_call_signatures = {}
+    session._function_result_cache = {}
+    session._function_signature_states = {}
+    session.events = []
+    session.diagnostics = []
+
+    async def emit_response_created():
+        session._response_active = True
+        session._response_id = "response"
+
+    session._emit_response_created = emit_response_created
+    session._queue_output_event = session.events.append
+    session._voice_diagnostic = lambda event, **fields: session.diagnostics.append(
+        {"event": event, **fields}
+    )
+    session.client_id = "fixture"
+    return session
+
+
+async def test_voicechat_coalesces_new_call_ids_for_same_tool_request_and_replays_result():
+    session = function_call_harness()
+    request = json.dumps([{
+        "name": "search_knowledge_base",
+        "arguments": {"query": "Black Pig Crisp Heart details"},
+    }])
+
+    await session._process_function_text(request)
+    await session._process_function_text(request)
+    calls = [event for event in session.events
+             if event["type"] == "response.function_call_arguments.done"]
+    assert len(calls) == 1
+    assert session.diagnostics[-1]["action"] == "coalesced"
+
+    await session.handle_function_call_output({
+        "call_id": calls[0]["call_id"],
+        "output": '{"status":"evidence_ready"}',
+    })
+    signature = session._function_call_signatures[calls[0]["call_id"]]
+    assert session._function_signature_states[signature] == "queued"
+    await session._process_function_text(request)
+    assert len(session.function_call_output) == 1
+
+    session.function_call_output.clear()
+    session._function_signature_states[signature] = "delivered"
+    await session._process_function_text(request)
+    assert len(session.function_call_output) == 1
+    assert session.function_call_output[0]["output"] == '{"status":"evidence_ready"}'
+    assert session.diagnostics[-1]["action"] == "replayed_result"
+
+
 async def test_patched_eos_produces_ordered_done_after_final_audio_tail(patched_backend):
     model = model_harness(patched_backend)
     seq = sequence()

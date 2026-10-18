@@ -8,6 +8,7 @@ under /tmp; stdout is a bounded set of fields used for fault localization.
 
 import argparse
 import asyncio
+import json
 import re
 import sys
 from datetime import UTC, datetime
@@ -27,7 +28,8 @@ BACKEND_PROMPT_RE = re.compile(
     r"chars=(\d+) sha256=([0-9a-f]{64})"
 )
 MODEL_FUNCTION_RE = re.compile(
-    r"Function call decoded from model for sequence (\d+): tool_names=(\S+)"
+    r"Function call decoded from model for sequence (\d+): "
+    r"tool_names=([A-Za-z0-9_.-]+(?:,[A-Za-z0-9_.-]+)*)"
 )
 API_TOOL_RECEIVED_RE = re.compile(
     r"voice_tool_call_received conversation_id=(\S+) call_id=(\S+) tool=(\S+) input_item_id=(\S+)"
@@ -55,6 +57,8 @@ VOICECHAT_LOG_MARKERS = (
     '"event":"function.parsed"',
     '"event": "function.result"',
     '"event":"function.result"',
+    '"event": "function.duplicate"',
+    '"event":"function.duplicate"',
     '"kind": "response.output_audio.done"',
     '"kind":"response.output_audio.done"',
     "Function call response timed out",
@@ -142,16 +146,31 @@ def case_line(row):
     ))
 
 
-def json_field_count(text, field, value):
-    return len(re.findall(rf'"{re.escape(field)}"\s*:\s*"{re.escape(value)}"', text))
+def voicechat_diagnostic_count(text, sequence_id, **wanted):
+    count = 0
+    for line in text.splitlines():
+        marker = "voice_ws_diagnostic "
+        if marker not in line:
+            continue
+        try:
+            entry = json.loads(line.split(marker, 1)[1])
+        except ValueError:
+            continue
+        if str(entry.get("sequence_id")) != str(sequence_id):
+            continue
+        if all(entry.get(key) == value for key, value in wanted.items()):
+            count += 1
+    return count
 
 
 def summarize_voicechat_log(text, expected_tool):
     prompts = PROMPT_RE.findall(text)
     backend = BACKEND_PROMPT_RE.findall(text)
-    decoded = MODEL_FUNCTION_RE.findall(text)
+    decoded_all = MODEL_FUNCTION_RE.findall(text)
     prompt = prompts[-1] if prompts else None
     received = backend[-1] if backend else None
+    decoded = ([row for row in decoded_all if row[0] == received[0]]
+               if received else decoded_all)
     prompt_match = (
         "passed" if prompt and received and prompt[0] == "1"
         and prompt[1] == expected_tool and prompt[1:] == received[1:]
@@ -159,6 +178,13 @@ def summarize_voicechat_log(text, expected_tool):
     )
     decoded_names = [name for _, name in decoded]
     decoded_sequences = [sequence for sequence, _ in decoded]
+    sequence_id = received[0] if received else None
+    parsed_count = voicechat_diagnostic_count(text, sequence_id, event="function.parsed")
+    result_count = voicechat_diagnostic_count(text, sequence_id, event="function.result")
+    duplicate_count = voicechat_diagnostic_count(text, sequence_id, event="function.duplicate")
+    audio_done_count = voicechat_diagnostic_count(
+        text, sequence_id, event="output.sent", kind="response.output_audio.done"
+    )
     model_function = (
         "passed" if expected_tool in decoded_names
         else "wrong_name" if decoded_names else "absent"
@@ -179,19 +205,20 @@ def summarize_voicechat_log(text, expected_tool):
             f"tools={csv(dict.fromkeys(decoded_names))}"
         ),
         (
-            f"voicechat_events function_parsed={json_field_count(text, 'event', 'function.parsed')} "
-            f"function_result={json_field_count(text, 'event', 'function.result')} "
+            f"voicechat_events function_parsed={parsed_count} "
+            f"function_result={result_count} "
+            f"duplicates_coalesced={duplicate_count} "
             f"response_timeouts={text.count('Function call response timed out')} "
-            f"audio_done={json_field_count(text, 'kind', 'response.output_audio.done')}"
+            f"audio_done={audio_done_count}"
         ),
     ]
     if prompt_match != "passed":
         result = ("failed", "PROMPT_CHAIN")
     elif model_function != "passed":
         result = ("failed", "MODEL_FUNCTION_" + model_function.upper())
-    elif json_field_count(text, "event", "function.parsed") == 0:
+    elif parsed_count == 0:
         result = ("failed", "FUNCTION_EVENT_NOT_PARSED")
-    elif json_field_count(text, "event", "function.result") == 0:
+    elif result_count == 0:
         result = ("failed", "TOOL_RESULT_NOT_RECEIVED")
     elif text.count("Function call response timed out"):
         result = ("failed", "TOOL_RESULT_WAIT_TIMEOUT")
