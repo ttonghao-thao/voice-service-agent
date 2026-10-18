@@ -213,7 +213,7 @@ def test_voicechat_log_summary_compares_prompt_chain_without_printing_raw_log():
     )
     assert lines[3] == (
         "voicechat_events function_parsed=1 new_calls=1 new_call_inputs=1 function_result=1 "
-        "duplicates_coalesced=0 results_replayed=0 replay_limit=0 "
+        "duplicates_coalesced=0 results_replayed=0 duplicate_acks_suppressed=0 replay_limit=0 "
         "response_timeouts=0 audio_done=1"
     )
     assert "private" not in "\n".join(lines)
@@ -319,6 +319,9 @@ def test_voicechat_log_summary_filters_other_sequences_and_trailing_log_quote():
         'voice_ws_diagnostic {"sequence_id":42,"event":"function.result"}',
         'voice_ws_diagnostic {"sequence_id":42,"event":"function.duplicate",'
         '"action":"replayed_result"}',
+        'voice_ws_diagnostic {"sequence_id":42,"event":"function.duplicate",'
+        '"action":"ack_suppressed"}',
+        'voice_ws_diagnostic {"sequence_id":42,"event":"function.result"}',
     ))
 
     lines, ok = summarize_voicechat_log(log, "search_knowledge_base")
@@ -330,7 +333,8 @@ def test_voicechat_log_summary_filters_other_sequences_and_trailing_log_quote():
     )
     assert lines[3].startswith(
         "voicechat_events function_parsed=2 new_calls=1 new_call_inputs=1 "
-        "function_result=1 duplicates_coalesced=0 results_replayed=1 replay_limit=0"
+        "function_result=2 duplicates_coalesced=0 results_replayed=1 "
+        "duplicate_acks_suppressed=1 replay_limit=0"
     )
 
 
@@ -357,8 +361,58 @@ def test_voicechat_log_summary_fails_after_one_cached_result_replay():
     lines, ok = summarize_voicechat_log(log, "search_knowledge_base")
 
     assert not ok
-    assert "results_replayed=1 replay_limit=1" in lines[3]
+    assert "results_replayed=1 duplicate_acks_suppressed=0 replay_limit=1" in lines[3]
     assert lines[-1] == "voicechat_diagnostic=failed fault=FUNCTION_REPLAY_LIMIT"
+
+
+def test_voicechat_log_summary_requires_duplicate_ack_suppression():
+    digest = "2" * 64
+    log = "\n".join((
+        "Prompt prepared: tools_count=1 tool_names=search_knowledge_base "
+        f"prompt_chars=7000 prompt_sha256={digest}",
+        "System prompt received for sequence 42: tool_names=search_knowledge_base "
+        f"chars=7000 sha256={digest}",
+        *["Function call decoded from model for sequence 42: "
+          "tool_names=search_knowledge_base"] * 2,
+        'voice_ws_diagnostic {"sequence_id":42,"event":"function.parsed"}',
+        'voice_ws_diagnostic {"sequence_id":42,"event":"function.call",'
+        '"action":"queued","input_item_id":"i1"}',
+        'voice_ws_diagnostic {"sequence_id":42,"event":"function.result"}',
+        'voice_ws_diagnostic {"sequence_id":42,"event":"function.parsed"}',
+        'voice_ws_diagnostic {"sequence_id":42,"event":"function.duplicate",'
+        '"action":"replayed_result"}',
+    ))
+
+    lines, ok = summarize_voicechat_log(log, "search_knowledge_base")
+
+    assert not ok
+    assert lines[-1] == "voicechat_diagnostic=failed fault=DUPLICATE_ACK_NOT_SUPPRESSED"
+
+
+def test_voicechat_log_summary_requires_cached_replay_delivery():
+    digest = "3" * 64
+    log = "\n".join((
+        "Prompt prepared: tools_count=1 tool_names=search_knowledge_base "
+        f"prompt_chars=7000 prompt_sha256={digest}",
+        "System prompt received for sequence 42: tool_names=search_knowledge_base "
+        f"chars=7000 sha256={digest}",
+        *["Function call decoded from model for sequence 42: "
+          "tool_names=search_knowledge_base"] * 2,
+        'voice_ws_diagnostic {"sequence_id":42,"event":"function.parsed"}',
+        'voice_ws_diagnostic {"sequence_id":42,"event":"function.call",'
+        '"action":"queued","input_item_id":"i1"}',
+        'voice_ws_diagnostic {"sequence_id":42,"event":"function.result"}',
+        'voice_ws_diagnostic {"sequence_id":42,"event":"function.parsed"}',
+        'voice_ws_diagnostic {"sequence_id":42,"event":"function.duplicate",'
+        '"action":"replayed_result"}',
+        'voice_ws_diagnostic {"sequence_id":42,"event":"function.duplicate",'
+        '"action":"ack_suppressed"}',
+    ))
+
+    lines, ok = summarize_voicechat_log(log, "search_knowledge_base")
+
+    assert not ok
+    assert lines[-1] == "voicechat_diagnostic=failed fault=TOOL_RESULT_REPLAY_NOT_SENT"
 
 
 def test_api_log_summary_rejects_multiple_ack_grant_restores_for_one_call():

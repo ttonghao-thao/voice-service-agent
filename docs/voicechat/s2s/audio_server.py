@@ -466,6 +466,7 @@ class AudioSession:
         self._response_id: Optional[str] = None
         self._output_item_id: Optional[str] = None
         self._input_item_id: Optional[str] = None
+        self._suppress_duplicate_response = False
 
         # Function calling state variables
         self.function_call_output = deque()
@@ -1078,6 +1079,7 @@ class AudioSession:
         self._function_call_signatures.clear()
         self._function_result_cache.clear()
         self._function_signature_states.clear()
+        self._suppress_duplicate_response = False
         msg = {
             "type": "input_audio_buffer.speech_started",
             "event_id": str(uuid.uuid4()),
@@ -1575,6 +1577,14 @@ class AudioSession:
             return
         if asr_text:
             await self._dispatch_asr_text(asr_text)
+        # A cached-result replay is an internal recovery from a repeated model
+        # tool call. Its server-generated ACK must not become a second client
+        # response or consume the application's one final-answer grant.
+        if getattr(self, "_suppress_duplicate_response", False) and not function_text:
+            if "</s>" in text:
+                self._suppress_duplicate_response = False
+                self._voice_diagnostic("function.duplicate", action="ack_suppressed")
+            return
         # A new BOS ends an interrupted prior spoken turn. A tool-reserved
         # response with no speech yet is retained for its first ACK/BOS.
         if "<s>" in text and self._response_active and self._response_has_speech:
@@ -1588,11 +1598,22 @@ class AudioSession:
             await self._dispatch_model_output(audio, text, "", "")
             if self._response_active:
                 await self._finish_spoken_response()
-            await self._process_function_text(function_text)
+            duplicate_only = await self._process_function_text(function_text)
+            if duplicate_only and not self._response_active:
+                self._suppress_duplicate_response = True
+                self._voice_diagnostic("function.duplicate", action="suppressing_ack")
             return
         # Bind user input and authorize the tool before any same-batch ACK audio.
         if function_text:
-            await self._process_function_text(function_text)
+            duplicate_only = await self._process_function_text(function_text)
+            if duplicate_only and not self._response_active:
+                self._suppress_duplicate_response = True
+                self._voice_diagnostic("function.duplicate", action="suppressing_ack")
+        if getattr(self, "_suppress_duplicate_response", False):
+            if "</s>" in text:
+                self._suppress_duplicate_response = False
+                self._voice_diagnostic("function.duplicate", action="ack_suppressed")
+            return
         clean_text = text.replace("^", "").replace("<s>", "").replace("</s>", "")
         if not self._response_active and ("<s>" in text or clean_text.strip()):
             await self._emit_response_created()
@@ -1622,7 +1643,7 @@ class AudioSession:
         self.accumulated_agent_transcript = []
         await self._emit_response_done()
 
-    async def _process_function_text(self, function_text: str) -> None:
+    async def _process_function_text(self, function_text: str) -> bool:
         """Process the function text response from the Triton inference"""
         try:
             parsed = json.loads(function_text)
@@ -1631,13 +1652,13 @@ class AudioSession:
             raise ValueError("Invalid model tool-call JSON") from None
 
         if not calls:
-            return
+            return False
         if not all(isinstance(call, dict) for call in calls):
             raise ValueError("Tool calls must be JSON objects")
         self._voice_diagnostic("function.parsed", chars=len(function_text), calls=len(calls))
-        if not self._response_active:
-            await self._emit_response_created()
-        response_id = self._response_id
+        duplicate_count = 0
+        duplicate_ack_count = 0
+        new_call_count = 0
         for output_index, call in enumerate(calls):
             arguments = call.get("arguments", call.get("parameters", {}))
             if isinstance(arguments, str):
@@ -1660,6 +1681,9 @@ class AudioSession:
                 and isinstance(registered_tools[0], dict)
                 and registered_tools[0].get("name") == name
             )
+            matching_tool = next((tool for tool in registered_tools
+                                  if isinstance(tool, dict) and tool.get("name") == name), {})
+            has_fixed_ack = bool(matching_tool.get("ack_messages"))
             signature = json.dumps(
                 {"name": name} if single_tool else {"name": name, "arguments": arguments},
                 sort_keys=True,
@@ -1668,9 +1692,13 @@ class AudioSession:
             )
             state = self._function_signature_states.get(signature)
             if state in ("pending", "queued"):
+                duplicate_count += 1
+                duplicate_ack_count += int(has_fixed_ack)
                 self._voice_diagnostic("function.duplicate", action="coalesced", state=state)
                 continue
             if state == "delivered":
+                duplicate_count += 1
+                duplicate_ack_count += int(has_fixed_ack)
                 cached = self._function_result_cache[signature]
                 replay_count = cached.get("replay_count", 0)
                 if replay_count >= 1:
@@ -1687,6 +1715,9 @@ class AudioSession:
                 self._function_signature_states[signature] = "queued"
                 self._voice_diagnostic("function.duplicate", action="replayed_result", state=state)
                 continue
+            if not self._response_active:
+                await self._emit_response_created()
+            response_id = self._response_id
             call_id = str(uuid.uuid4())
             fn_done = {
                 "event_id": str(uuid.uuid4()),
@@ -1700,6 +1731,7 @@ class AudioSession:
             }
             self._function_call_signatures[call_id] = signature
             self._function_signature_states[signature] = "pending"
+            new_call_count += 1
             self._voice_diagnostic(
                 "function.call",
                 action="queued",
@@ -1707,6 +1739,7 @@ class AudioSession:
                 input_item_id=str(self._input_item_id or "")[:128],
             )
             self._queue_output_event(fn_done)
+        return duplicate_count > 0 and duplicate_ack_count == duplicate_count and new_call_count == 0
 
     async def finalize_sequence(self):
         """Send final empty chunk to close Triton sequence"""

@@ -26,13 +26,13 @@ sha256sum /home/thao/voice/model.py
 
 ```text
 model.py          c91b3af5b41f515fc1dbfaf7fdbec4ae528a4989f90a144829d2491a9b805990
-audio_server.py   6a87b5e8121b44667278e9cc75fc4d663d91705cd7cf0929bdf26d1496fd1a21
+audio_server.py   781db4d39fcc28b56f1085b4d111a4d8624a2a436b3c3c8053007e46d727a308
 prompt_template   a71230010295a363a0fde0e0d86c4786aeb4ef5f458cf4d75ddf0926895bcdb7
 ```
 
 `load_utils.py` 沿用现场文件。本次模板必须使用上面同步的完整 `prompt_template.jinja`。模板加入会话策略优先、禁止同请求重试/并行工具调用、仅按授权结果发声的约束，并将调用示例收敛为单个工具和对象参数；单工具 search_knowledge_base 使用完整英文工具名和覆盖价格、重量、存储及保质期的 query 示例。已注册工具覆盖请求时，模板要求调用工具，不能直接声称无权访问资料。它修复提示冲突，不代表已修复模型全 PAD。
 
-`audio_server.py` 在模板渲染后记录工具名、Prompt 字符数和 SHA-256；backend `model.py` 在接收 Triton system_prompt 时再次记录工具名、字符数和 SHA-256，并在函数通道形成有效 JSON 后按 sequence 记录模型解码出的工具名。日志不写 Prompt 正文、query、参数或工具结果正文。单工具会话在同一用户输入内按工具名只向 API 发送一次，即使模型改写 query；结果返回前的重复请求被合并，结果返回后最多重放一次缓存结果，再次重调立即形成明确协议错误，避免无限工具循环。新用户输入开始后清空状态。多工具会话仍用工具名和完整参数区分调用。两层 Prompt hash 相同且工具名均为 `search_knowledge_base`，才证明注册名称未在 VoiceChat 转换链路中被改写。
+`audio_server.py` 在模板渲染后记录工具名、Prompt 字符数和 SHA-256；backend `model.py` 在接收 Triton system_prompt 时再次记录工具名、字符数和 SHA-256，并在函数通道形成有效 JSON 后按 sequence 记录模型解码出的工具名。日志不写 Prompt 正文、query、参数或工具结果正文。单工具会话在同一用户输入内按工具名只向 API 发送一次，即使模型改写 query；结果返回前的重复请求被合并，结果返回后最多重放一次缓存结果。该内部重放产生的固定 ACK 不创建客户端响应，最终知识回答继续使用原有授权；再次重调立即形成明确协议错误，避免无限工具循环。新用户输入开始后清空状态。多工具会话仍用工具名和完整参数区分调用。两层 Prompt hash 相同且工具名均为 `search_knowledge_base`，才证明注册名称未在 VoiceChat 转换链路中被改写。
 
 ## 创建容器
 

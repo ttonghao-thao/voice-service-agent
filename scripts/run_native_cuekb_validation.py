@@ -215,6 +215,9 @@ def summarize_voicechat_log(text, expected_tool):
     replay_limit_count = len(diagnostic_matches(
         diagnostics, event="function.duplicate", action="replay_limit"
     ))
+    suppressed_ack_count = len(diagnostic_matches(
+        diagnostics, event="function.duplicate", action="ack_suppressed"
+    ))
     duplicate_count = coalesced_count + replayed_count
     audio_done_count = len(diagnostic_matches(
         diagnostics, event="output.sent", kind="response.output_audio.done"
@@ -243,7 +246,7 @@ def summarize_voicechat_log(text, expected_tool):
             f"new_calls={new_call_count} new_call_inputs={new_call_input_count} "
             f"function_result={result_count} "
             f"duplicates_coalesced={coalesced_count} results_replayed={replayed_count} "
-            f"replay_limit={replay_limit_count} "
+            f"duplicate_acks_suppressed={suppressed_ack_count} replay_limit={replay_limit_count} "
             f"response_timeouts={text.count('Function call response timed out')} "
             f"audio_done={audio_done_count}"
         ),
@@ -258,10 +261,14 @@ def summarize_voicechat_log(text, expected_tool):
         result = ("failed", "FUNCTION_CALL_NOT_QUEUED")
     elif replay_limit_count:
         result = ("failed", "FUNCTION_REPLAY_LIMIT")
+    elif replayed_count != suppressed_ack_count:
+        result = ("failed", "DUPLICATE_ACK_NOT_SUPPRESSED")
     elif new_call_count != new_call_input_count or new_call_count + duplicate_count != parsed_count:
         result = ("failed", "FUNCTION_DEDUPE_GAP")
     elif result_count == 0:
         result = ("failed", "TOOL_RESULT_NOT_RECEIVED")
+    elif result_count < new_call_count + replayed_count:
+        result = ("failed", "TOOL_RESULT_REPLAY_NOT_SENT")
     elif text.count("Function call response timed out"):
         result = ("failed", "TOOL_RESULT_WAIT_TIMEOUT")
     else:

@@ -17,20 +17,21 @@
 | 2026-10-18 14:27 现场轮次 | API `received=1 unique_calls=1 unbound=0 results_submitted=1`；VoiceChat `duplicates_coalesced=2 response_timeouts=0`，两份诊断均通过；CueKB 102 ms 返回 5 个命中，但旧聚合计数仍显示 5 项上下文拒绝 | 重复调用问题已修复；工具注册、Prompt、模型 function、API bridge 和 CueKB 检索完整通过。剩余根因限定在语音证据的截断/省略准入，但旧计数不能判定现场具体分支 | 同时安全处理两种分支并拆分计数，避免先后部署多个猜测性修复 |
 | 2026-10-19 00:03（北京时间）现场轮次 | `cuekb_evidence=unassessed voice_evidence=passed candidates:5 selected:3 truncated_ok:5 limit:2`，证明截断准入已修复。随后出现 `VOICE_ANSWER_TIMEOUT/VOICE_TOOL_REQUIRED`；模型解码 3 次、VoiceChat 仅合并 1 次；API `received=1 unique_calls=2 unbound=1 results_submitted=2` | 5→3 使 evidence envelope 标为 `partial`，模型改写 query 重调；现有完整参数签名把变体当成新调用。第二份无用户输入的失败结果破坏回答授权；旧验证器又误报 `INCOMPLETE` | 原生语音 top_k 与 3 个证据槽位一致；单工具会话按当前输入和工具名合并参数变体；诊断按 input 统计并把该错误归为 `VOICE_RESPONSE_COMPLETION` |
 | 2026-10-19 00:45（北京时间）现场轮次 | `candidates=selected=3 limit=0`；VoiceChat `function_parsed=2 new_calls=1 function_result=1 duplicates_coalesced=1`；API `received=inputs=unique_calls=1 unbound=0`，两份诊断通过；产品轮仍以 `VOICE_ANSWER_TIMEOUT/VOICE_TOOL_REQUIRED` 结束 | top_k 对齐、参数变体合并、真实 CueKB 与结果回送均已通过。剩余故障是重复 function call 产生的新 response ACK 消耗了唯一回答 continuation grant；ACK 结束未归还 grant，真正答案随后被当作未授权输出拒绝 | Gateway 在已绑定工具结果的精确固定 ACK 结束后恢复同一个 grant；摘要拆分等待合并与缓存结果重放，重新部署 API 验证最终回答完成 |
-| 当前状态 | 最终状态机修复已编码，等待重新部署 API 与 VoiceChat | 截断证据、检索条数和 API 工具调用无需再调整；VoiceChat 缓存结果最多重放一次，Gateway 重复 ACK 最多归还一次授权 | 产品 case 需 `replay_limit=0` 且无 timeout/tool-required；完整四用例通过，API 仍为每个产品 input 一个调用 |
+| 2026-10-19 01:46（北京时间）现场轮次 | 业务报告仍止于 `VOICE_ANSWER_TIMEOUT/VOICE_TOOL_REQUIRED`；VoiceChat 明确 `results_replayed=1 replay_limit=0`，API `results_submitted=1 ack_grants_restored=0`，两份诊断均通过 | 缓存结果已送回模型，但上一版依赖 API 事后识别重复固定 ACK；该轮没有形成可识别并归还授权的 ACK 边界，证明 API 侧恢复不能作为主路径 | 在 VoiceChat 内部缓存重放时直接抑制该次固定 ACK，不创建客户端 response；API 的一次恢复仅保留为兼容防线 |
+| 当前状态 | 重复 ACK 源头抑制已编码，等待重新部署 API 与 VoiceChat | 截断证据、检索条数和 API 工具调用无需再调整；VoiceChat 缓存结果最多重放一次，内部重放 ACK 不再消耗客户端回答授权 | 产品 case 需 `results_replayed=1 duplicate_acks_suppressed=1 replay_limit=0` 且无 timeout/tool-required；完整四用例通过，API 仍为每个产品 input 一个调用 |
 
 当前判断顺序固定为：先证明 API 当前目录和用例正确，再证明 VoiceChat 最终 Prompt 与 backend 收到内容一致，再看模型 function 通道是否输出，最后核对 API 提交工具结果和 Triton 收到结果。旧轮次、相邻日志或单独的 `tools_count=1` 不代替同一窗口证据。
 
 ### 最终根因与状态机不变量
 
-多轮日志对应的是同一条链路上先后暴露的不同边界，不再分别作为独立猜测处理：错误工具名已由完整名称和两层 Prompt hash 关闭；15 次 API 重复调用已由单输入去重关闭；上下文拒绝已由精确 `context_parts` 完整性证明关闭；5→3 的应用截断已由原生语音 `top_k=3` 关闭。最新轮次中的唯一开放根因是：结果后的重复 function call 生成新固定 ACK，新 response 先消费了最终回答 grant，而 ACK 结束未归还，随后真实回答被拒绝。
+多轮日志对应的是同一条链路上先后暴露的不同边界，不再分别作为独立猜测处理：错误工具名已由完整名称和两层 Prompt hash 关闭；15 次 API 重复调用已由单输入去重关闭；上下文拒绝已由精确 `context_parts` 完整性证明关闭；5→3 的应用截断已由原生语音 `top_k=3` 关闭。最新两轮中的唯一开放根因是：结果后的重复 function call 触发固定 ACK 路径并抢占最终回答 grant；API 事后恢复依赖 ACK 形成独立且可精确识别的客户端边界，现场 `ack_grants_restored=0` 证明该假设不成立。最终实现改为在 VoiceChat 已确认缓存重放时抑制该内部 ACK，不再让它进入客户端授权状态机。
 
 最终实现固定以下不变量：
 
 1. 一个 `input_item_id` 对一个单工具最多产生一个 API `call_id`，首个合法参数为该输入的执行参数。
 2. CueKB 原生语音最多请求并携带 3 个完整命中；截断的聚合 context 不进入语音包，命中主块只有在 `context_parts` 精确回显时可用。
-3. 工具结果到达前的重复 function call 只等待首个结果；结果到达后的第一次重复只重放缓存结果，不再访问 API；第二次重复立即产生 `FUNCTION_REPLAY_LIMIT`，不继续循环。
-4. 每个成功工具结果只创建一个最终回答 grant。与该工具绑定且逐字匹配配置值的固定 ACK 可以借用并归还该 grant 一次；第一个非 ACK 回答永久消费它。其他输出继续返回 `VOICE_TOOL_REQUIRED`。
+3. 工具结果到达前的重复 function call 只等待首个结果；结果到达后的第一次重复只重放缓存结果，不再访问 API；该内部重放的固定 ACK 被 VoiceChat 丢弃，不创建客户端 response；第二次重复立即产生 `FUNCTION_REPLAY_LIMIT`，不继续循环。
+4. 每个成功工具结果只创建一个最终回答 grant。最终知识回答永久消费它；API 对独立且精确匹配配置值的重复 ACK 最多归还一次，仅作为旧 VoiceChat/异常时序的兼容防线。其他输出继续返回 `VOICE_TOOL_REQUIRED`。
 5. 只有最终知识回答的 `audio.done` 才调用 `provider_answer` 并完成 Turn；ACK、空边界、检索成功和 `function.result` 都不能单独提交最终答案。
 6. 正常验收必须同时满足业务报告、VoiceChat 摘要和 API 摘要；任何重放超限、重复 input 调用、unbound 调用、结果超时或未授权回答都具有明确失败终态，不再靠延长轮次观察。
 
@@ -43,7 +44,7 @@ VoiceChat 修改以本目录完整文件为准：
 | 文件 | 与故障一有关的修改 |
 | --- | --- |
 | `s2s/prompt_template.jinja` | 单工具调用规则、完整 `search_knowledge_base` 名称和消费品/商业事实示例 |
-| `s2s/audio_server.py` | 记录最终 Prompt 的工具名、字符数和 SHA-256；记录 function 新调用、合并、结果与输出边界诊断；单工具会话按用户输入和工具名合并参数改写并复用首个结果 |
+| `s2s/audio_server.py` | 记录最终 Prompt 的工具名、字符数和 SHA-256；记录 function 新调用、合并、结果与输出边界诊断；单工具会话按用户输入和工具名合并参数改写、复用首个结果并抑制内部重放 ACK |
 | `opt/tritonserver/backends/nemotron-voicechat/model.py` | 记录 Triton 收到的 Prompt 名称/hash，以及同 sequence 的模型 function 通道解码名称 |
 | `docker-run.md` | 派生镜像、挂载、环境变量和启动后 hash 核对 |
 
@@ -98,7 +99,7 @@ docker exec "$VOICE_CONTAINER" sh -c '
 
 ```text
 c91b3af5b41f515fc1dbfaf7fdbec4ae528a4989f90a144829d2491a9b805990  /opt/tritonserver/backends/nemotron-voicechat/model.py
-6a87b5e8121b44667278e9cc75fc4d663d91705cd7cf0929bdf26d1496fd1a21  /s2s/audio_server.py
+781db4d39fcc28b56f1085b4d111a4d8624a2a436b3c3c8053007e46d727a308  /s2s/audio_server.py
 a71230010295a363a0fde0e0d86c4786aeb4ef5f458cf4d75ddf0926895bcdb7  /s2s/prompt_template.jinja
 env=1
 ```
@@ -132,12 +133,12 @@ echo "voicechat_exit_code=$VOICE_DIAGNOSTIC_EXIT"
 voicechat_prompt count=1 tools=search_knowledge_base chars=N sha256=H
 backend_prompt sequence=S tools=search_knowledge_base chars=N sha256=H match=passed
 model_function status=passed count=1 unique_sequences=S tools=search_knowledge_base
-voicechat_events function_parsed=P new_calls=N new_call_inputs=I function_result=R duplicates_coalesced=D results_replayed=Y replay_limit=L response_timeouts=W audio_done=A
+voicechat_events function_parsed=P new_calls=N new_call_inputs=I function_result=R duplicates_coalesced=D results_replayed=Y duplicate_acks_suppressed=K replay_limit=L response_timeouts=W audio_done=A
 voicechat_diagnostic=passed fault=NONE
 voicechat_exit_code=0
 ```
 
-实际第三行会输出当前 backend Prompt 对应 sequence 的 `count=N unique_sequences=S`，不会混入同一日志窗口的旧 sequence。正常轮次要求 `new_calls=new_call_inputs`、`new_calls+duplicates_coalesced+results_replayed=function_parsed` 且 `replay_limit=0`；`duplicates_coalesced` 表示首个结果尚未交付时合并，`results_replayed` 表示结果已送入 Triton 后模型再次调用并重放缓存结果。每个 input 最多重放一次；再次重调输出 `FUNCTION_REPLAY_LIMIT` 并结束异常轮次，不再形成无限循环。完整四用例通常有两个产品 input，所以允许两个新调用，但每个 input 只能有一个。`R>=N`、`W=0`、`A>=1`；一次缓存重放可使 `R>N`。`voicechat_diagnostic=passed` 表示 Prompt、function 选择、单输入去重和工具结果接收链完整，最终回答仍以第 3 节 case 为准。
+实际第三行会输出当前 backend Prompt 对应 sequence 的 `count=N unique_sequences=S`，不会混入同一日志窗口的旧 sequence。正常轮次要求 `new_calls=new_call_inputs`、`new_calls+duplicates_coalesced+results_replayed=function_parsed`、`results_replayed=duplicate_acks_suppressed` 且 `replay_limit=0`；`duplicates_coalesced` 表示首个结果尚未交付时合并，`results_replayed` 表示模型再次调用后缓存结果进入重放队列，`duplicate_acks_suppressed` 证明该内部重放的固定 ACK 未发送给客户端。本次稳定复现路径应为 `results_replayed=1 duplicate_acks_suppressed=1`；重放不等于抑制时摘要明确输出 `DUPLICATE_ACK_NOT_SUPPRESSED`。每个 input 最多重放一次；再次重调输出 `FUNCTION_REPLAY_LIMIT` 并结束异常轮次，不再形成无限循环。完整四用例通常有两个产品 input，所以允许两个新调用，但每个 input 只能有一个。`R>=N+Y`、`W=0`、`A>=1`，确保每个新调用及缓存重放都实际送入 Triton；不足时输出 `TOOL_RESULT_REPLAY_NOT_SENT`。`voicechat_diagnostic=passed` 表示 Prompt、function 选择、单输入去重和工具结果接收链完整，最终回答仍以第 3 节 case 为准。
 
 当前故障若发生在模型/function decoder，前两条仍应匹配，而第三条为：
 
@@ -180,7 +181,7 @@ api_diagnostic_exit_code=0
 - `results_submitted>0` 且 VoiceChat `function_result=0`：WebSocket 已从 API 写出，但 VoiceChat 未把结果送入 Triton，查 `audio_server.py` 的 function output 队列与 inference 调度。
 - `function_result>=1` 且 `response_timeouts>0`：Triton 收到过结果，但 function 状态机没有及时进入或保持 `process_response`。
 - `duplicate_inputs>0` 或 `unbound>0`：同一个产品 input 产生多次新 function 事件，或工具事件已没有可绑定输入。完整四用例允许 `received=2 inputs=2`，分别对应两个产品录音。
-- `ack_grants_restored>0`：模型重调后产生了新的固定 ACK，Gateway 已在该 ACK 结束时把同一个 continuation grant 归还给最终答案；没有重调时该值可以为 0。
+- 新 VoiceChat 主路径应为 `ack_grants_restored=0`：内部缓存重放 ACK 已在进入客户端前抑制。该值为 1 表示兼容防线处理了一个独立重复 ACK，仍可通过；大于 1 不允许。
 - `ack_grants_restored` 不得超过 `received`，同一 `call_id` 不得出现两次；违反时摘要明确输出 `ACK_GRANT_INVARIANT`。
 
 只回传三条摘要和 `api_diagnostic_exit_code`。若摘要与第 3 节报告矛盾，才需要按 `conversation_id` 提取对应的单条原始生命周期日志。
