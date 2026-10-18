@@ -62,7 +62,7 @@ docker compose --env-file .env -f deploy/compose.production.yaml exec -T api \
 
 **结束旧通话并新建 Conversation。** 模式/策略在创建时快照，旧 knowledge_required 会话不会因重连或刷新页面变成 general_qa。
 
-现场录音、连续追问、失败归类和输出听音步骤见 [原生单工具验证](native-cuekb-validation.md)。knowledge_required、双工具及外置 SDK 的兼容实现保留，但不属于本期部署或自动 fallback。
+现场录音、连续追问、失败归类和输出听音步骤见 [原生单工具验证](native-cuekb-validation.md)。该流程从宿主机通过 `docker exec` 在 API/VoiceChat 容器内运行验证程序，并先在可写 `/tmp` 建目录后用 `docker cp` 传入脚本和授权 WAV；不依赖宿主机 Python 版本。knowledge_required、双工具及外置 SDK 的兼容实现保留，但不属于本期部署或自动 fallback。
 
 ## 镜像构建与部署
 
@@ -134,41 +134,77 @@ docker compose --env-file .env -f deploy/compose.production.yaml logs --tail=200
 
 源码依据及证据边界见 [NVIDIA 核对记录](voicechat-upstream-analysis.md)。先记录实际镜像 digest、挂载源码和模板 hash；以下脚本不会远程证明版本，不自动开启能力或部署服务。
 
-多工具模式必须提供实际 `session.update` JSON。可使用授权捕获的首次会话配置；也可将同一部署的管理员 `GET /api/v1/admin/voice-tools` 响应保存为忽略目录下的 `artifacts/voice-tools-admin.json`，为**空历史新会话**生成快照（本机代码与 `QA_ANSWER_POLICY` 必须和部署一致）：
+本期真实 CueKB 验收使用 [容器内原生单工具流程](native-cuekb-validation.md#3-从宿主机在-api-容器内运行固定-wav)。以下是额外的合成结果协议探针，同样从宿主机通过 `docker exec` 在 API 容器内运行，不要求宿主机 Python。多工具模式必须提供实际 `session.update` JSON；可将同一部署的管理员 `GET /api/v1/admin/voice-tools` 响应保存为忽略目录下的 `artifacts/voice-tools-admin.json`，为**空历史新会话**生成快照：
 
 ```sh
-PYTHONPATH=apps/api .venv/bin/python - <<'PYTHON'
+API_CONTAINER=$(docker compose --env-file .env \
+  -f deploy/compose.production.yaml ps -q api)
+
+docker exec "$API_CONTAINER" sh -c '
+  rm -rf /tmp/voicechat-probe && mkdir -p /tmp/voicechat-probe
+'
+docker cp scripts/probe_voicechat.py \
+  "${API_CONTAINER}:/tmp/voicechat-probe/probe_voicechat.py"
+docker cp artifacts/voice-tools-admin.json \
+  "${API_CONTAINER}:/tmp/voicechat-probe/voice-tools-admin.json"
+docker cp artifacts/authorized-question.wav \
+  "${API_CONTAINER}:/tmp/voicechat-probe/authorized-question.wav"
+
+docker exec -i \
+  -w /tmp/voicechat-probe \
+  -e PYTHONPATH=/app/apps/api:/app \
+  "$API_CONTAINER" python - <<'PYTHON'
 import json
 from pathlib import Path
 from app.config import Settings
 from app.voice.provider import session_update
-catalog = json.loads(Path("artifacts/voice-tools-admin.json").read_text())
+catalog = json.loads(Path("voice-tools-admin.json").read_text())
 update = session_update(tools=catalog["definitions"], answer_policy=Settings().answer_policy)
-Path("artifacts/voicechat-session-update.json").write_text(json.dumps(update, ensure_ascii=True))
+Path("voicechat-session-update.json").write_text(json.dumps(update, ensure_ascii=True))
 print("catalog_revision:", catalog["revision"])
 PYTHON
 
-PYTHONPATH=apps/api .venv/bin/python scripts/probe_voicechat.py \
-  --wav artifacts/authorized-question.wav \
-  --session-update artifacts/voicechat-session-update.json \
-  --api-version ACTUAL_API_REVISION --image-digest ACTUAL_IMAGE_DIGEST \
-  --tool-delay-seconds 5 --tool-wait-timeout 20 --post-result-seconds 20 \
-  --output artifacts/voicechat-probe.json
+docker exec \
+  -w /tmp/voicechat-probe \
+  -e PYTHONPATH=/app/apps/api:/app \
+  "$API_CONTAINER" \
+  python probe_voicechat.py \
+    --wav authorized-question.wav \
+    --session-update voicechat-session-update.json \
+    --api-version ACTUAL_API_REVISION --image-digest ACTUAL_IMAGE_DIGEST \
+    --tool-delay-seconds 5 --tool-wait-timeout 20 --post-result-seconds 20 \
+    --output-wav authorized-response.wav \
+    --output voicechat-probe.json
+
+docker cp "${API_CONTAINER}:/tmp/voicechat-probe/voicechat-probe.json" \
+  artifacts/voicechat-probe.json
+docker cp "${API_CONTAINER}:/tmp/voicechat-probe/authorized-response.wav" \
+  artifacts/authorized-response.wav
 ```
 
-读取已有 `.env` 中的 `VOICECHAT_WS_URL`/凭据，不把 Key 放入命令或报告。legacy 可不传快照；dual_tools 缺快照直接失败，避免误测 bridge。快照和授权 WAV 不提交 Git。需要听音时显式加 `--output-wav artifacts/authorized-response.wav`；需要插话协议观察时加 `--barge-in-wav`，报告只说明输入时序，不能证明新问题影响了模型回答。
+API 容器读取自身已有的 `VOICECHAT_WS_URL`/凭据，不把 Key 放入命令或报告。预期命令生成非空 JSON 报告和 WAV；报告是否 `observed` 仍按下一段的协议字段判定。legacy 可不传快照；dual_tools 缺快照直接失败，避免误测 bridge。快照和授权 WAV 不提交 Git。需要插话协议观察时，将授权 WAV 复制到同一临时目录并加 `--barge-in-wav`；报告只说明输入时序，不能证明新问题影响了模型回答。
 
 探针在等待工具和回填时持续送静音，默认再观察 20 秒续答，时长参数有上限。合成工具结果不经过 CueKB/业务授权，不是端到端验收。报告 `partial` 表示只完成部分协议观察，不能改写为模型通过；检查 `reason`、`phase`、`pending_call_ids_at_close`、`timeline_dropped` 和 `output_wav_truncated`。输入样本 hash 包含最后一帧补零，静音单独计数；报告不保存转写或工具参数正文。原探针在这些等待阶段停止送音，其“无工具”结果需重测。
 
-在模型产物所在机器，使用普通 Python 执行静态检查（替换为实际转换后 vLLM LLM 路径；每个分片重复传 `--checkpoint`）：
+在宿主机把只读检查脚本复制到 VoiceChat 容器的可写 `/tmp`，再用 `docker exec` 检查该容器实际挂载的模型产物。替换为容器内实际转换后 vLLM LLM 路径；每个分片重复传 `--checkpoint`：
 
 ```sh
-python scripts/inspect_voicechat_artifacts.py \
+VOICE_CONTAINER=nemotron-labs-voicechat
+docker exec "$VOICE_CONTAINER" sh -c \
+  'rm -rf /tmp/voicechat-artifacts && mkdir -p /tmp/voicechat-artifacts'
+docker cp scripts/inspect_voicechat_artifacts.py \
+  "${VOICE_CONTAINER}:/tmp/voicechat-artifacts/inspect_voicechat_artifacts.py"
+
+docker exec -w /tmp/voicechat-artifacts "$VOICE_CONTAINER" \
+  python inspect_voicechat_artifacts.py \
   --config /actual/converted-llm/config.json \
   --tokenizer /actual/converted-llm/tokenizer.json \
   --checkpoint /actual/converted-llm/model.safetensors \
   --voicechat-config /actual/voicechat-checkpoint/config.json \
-  --output artifacts/voicechat-artifacts.json
+  --output /tmp/voicechat-artifacts/voicechat-artifacts.json
+
+docker cp "${VOICE_CONTAINER}:/tmp/voicechat-artifacts/voicechat-artifacts.json" \
+  artifacts/voicechat-artifacts.json
 ```
 
 该脚本无需 GPU/NeMo，只读配置和 safetensors header。可选 `--voicechat-config` 必须是含 `model.stt.model` 的原始 VoiceChat 配置，不是转换后的 vLLM config；它将声明值/公开 wrapper 缺省值与论文 1/1/2 融合权重比较，返回 `matches/differs/unverified`，不会自动改配置。官方固定 HF 配置本轮为 matches，不能据此推断现场运行配置；见 [论文 v2 核对](voicechat-paper-v2-review.md#6-本轮落地验证与未完成项)。`missing/mismatch/unverified` 定位提供文件的契约差异；`passed` 也不证明权重正确加载、实际 tokenizer 编码、RNNT 或 function 推理正确。它不修改模型，头部 hash 不代表权重内容 hash。真实定位仍需同 sequence 的输入帧、RNNT raw token 和 runtime function key/token 证据。
