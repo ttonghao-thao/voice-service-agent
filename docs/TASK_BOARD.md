@@ -27,7 +27,7 @@
 
 | 任务 | 当前状态 | 下一步完成条件 |
 | --- | --- | --- |
-| VoiceChat 一期原生单工具 | 工具名、Prompt、模型 function、CueKB、截断证据准入、3 项检索、单输入去重及缓存结果重放均已通过现场验证。内部重放 ACK 已改为不创建客户端 response；公开名称统一为 search_knowledge_base(query)，旧拼写严格拒绝。问候首词故障暂缓 | 重建 API 与 VoiceChat 后运行单入口及两份摘要；产品 case 需 `candidates=selected=3 limit=0`、`results_replayed=1 duplicate_acks_suppressed=1 replay_limit=0`、无 timeout/tool-required，每个产品 input 只对应一个新工具调用，完整四用例退出 0 |
+| VoiceChat 一期原生单工具 | 工具名、Prompt、模型 function、CueKB、截断证据准入、3 项检索、单输入去重及缓存结果重放均已通过现场验证。内部重放 ACK 已改为不创建客户端 response；公开名称统一为 search_knowledge_base(query)，旧拼写严格拒绝。问候首词故障暂缓 | 重建 API 与 VoiceChat 后运行单入口及两份摘要；产品 case 需 `candidates=selected=3 limit=0`、`results_replayed=duplicate_acks_suppressed`、`replay_limit=0`、无 timeout/tool-required，每个产品 input 只对应一个新工具调用，完整四用例退出 0 |
 | P0-A/B：现场部署与两类验证 | 严格配置已确认；两类现场日志已分析 | 补运行 hash；严格知识闭环与 PAD A/B 分开报告 |
 | P1-A：严格提示与授权一致 | 编码及本地回归完成；现场拒绝保护生效 | 保留显式严格模式；当前自主回答部署改用 general_qa，不要求每次先调用工具 |
 | P1-B：ASR/function 首差异修复 | 原生路径追加排查暂停；算子未确定 | 仅在重新投入原生路径时恢复，不阻塞提示与应用契约修正 |
