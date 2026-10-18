@@ -656,6 +656,69 @@ def test_fast_tool_result_during_ack_preserves_exactly_one_answer_permission(
         assert ack not in spoken
 
 
+@pytest.mark.parametrize("qa_mode", ["legacy", "dual_tools"])
+def test_repeated_tool_ack_returns_the_answer_permission(tmp_path, qa_mode):
+    app = create_app(Settings(
+        _env_file=None, auto_create_schema=True,
+        qa_execution_mode=qa_mode, qa_answer_policy="knowledge_required",
+        database_url=f"sqlite+aiosqlite:///{tmp_path}/repeated-tool-ack.db",
+    ))
+    ack = QA_ACK if qa_mode == "dual_tools" else BRIDGE_ACK
+
+    class Scripted(MockVoiceAdapter):
+        async def connect(self, summary):
+            await self.queue.put(VoiceEvent("input.state", {"state": "speaking", "item_id": "input"}))
+            await self.queue.put(VoiceEvent("transcript.done", {
+                "item_id": "input", "text": "Find the integration sample",
+            }))
+            await self.queue.put(VoiceEvent("tool", {
+                "response_id": "tool-response", "call_id": "call",
+                "name": "lookup_knowledge" if qa_mode == "dual_tools" else "consult_service_agent",
+                "arguments": json.dumps({"user_request": "Find the integration sample", **(
+                    {"product_model": None, "software_version": None} if qa_mode == "dual_tools" else {})}),
+            }))
+
+        async def submit_tool_result(self, call_id, text):
+            speech = json.loads(text)["speech_text"]
+            # VoiceChat coalesced a repeated model function call, replayed the
+            # cached result, and emitted the fixed ACK under a new response ID.
+            await self.queue.put(VoiceEvent("speech_text.done", {
+                "response_id": "repeated-ack", "text": ack,
+            }))
+            await self.queue.put(VoiceEvent("audio.done", {"response_id": "repeated-ack"}))
+            await self.queue.put(VoiceEvent("speech_text.done", {
+                "response_id": "answer", "text": speech,
+            }))
+            await self.queue.put(VoiceEvent("audio.done", {"response_id": "answer"}))
+            # The answer consumes the restored grant. No further response is
+            # authorized by the same tool result.
+            await self.queue.put(VoiceEvent("speech_text.delta", {
+                "response_id": "unrelated", "text": "An unbridged answer.",
+            }))
+
+    with TestClient(app) as client:
+        app.state.voice.provider_factory = Scripted
+        cid = client.post("/api/v1/conversations", json={}).json()["id"]
+        issued = client.post(f"/api/v1/conversations/{cid}/voice-sessions", json={}).json()
+        with client.websocket_connect(
+            issued["ws_url"], headers={"Origin": "http://localhost:5173"}
+        ) as ws:
+            events = []
+            for _ in range(16):
+                event = ws.receive_json()
+                events.append(event)
+                if event["type"] == "portal.error":
+                    assert event["payload"]["code"] == "VOICE_TOOL_REQUIRED"
+                    break
+            else:
+                pytest.fail("Unrelated output must be rejected after the tool answer")
+        records = client.get(f"/api/v1/conversations/{cid}/messages").json()["records"]
+        spoken = [record["payload"]["text"] for record in records
+                  if record["kind"] == "voicechat_transcript"]
+        assert ack not in spoken
+        assert len(spoken) == 1 and "synthetic integration result" in spoken[0].lower()
+
+
 
 def test_initial_greeting_overlapping_user_input_is_suppressed_without_false_lifecycle_error(tmp_path):
     app = create_app(Settings(

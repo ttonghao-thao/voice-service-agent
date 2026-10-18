@@ -1002,6 +1002,24 @@ class VoiceGateway:
                         **event.payload,
                         "phase": "status" if response_id in ack_responses else "answer",
                     }
+                    if response_id in ack_responses and response_id in response_deliveries:
+                        # A repeated model tool call can create a fresh response
+                        # containing only the tool's fixed acknowledgement. That
+                        # response consumes the one continuation grant when its
+                        # first frame arrives. Return the same grant after the
+                        # exact ACK closes so the actual tool answer remains
+                        # authorized; there is still only one outstanding grant.
+                        call = response_deliveries[response_id]
+                        parent_response = tool_responses.get(call)
+                        if parent_response and pending.get(call) == "sent":
+                            authorized_followups.add(parent_response)
+                            logger.info(
+                                "voice_tool_ack_continuation_restored "
+                                "conversation_id=%s call_id=%s response_id=%s",
+                                session.conversation_id,
+                                call,
+                                response_id,
+                            )
                     # A fast business result can arrive while the fixed tool ACK
                     # is still playing. ACK frames must not spend the permission
                     # reserved for the following answer. If the original response

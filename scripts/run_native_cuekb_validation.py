@@ -45,6 +45,9 @@ API_RESULT_SUBMITTED_RE = re.compile(
     r"voice_tool_result_submitted conversation_id=(\S+) turn_id=(\S+) call_id=(\S+)"
 )
 API_UNBOUND_RE = re.compile(r"voice_unbound_tool_settled conversation_id=(\S+) call_id=(\S+)")
+API_ACK_RESTORED_RE = re.compile(
+    r"voice_tool_ack_continuation_restored conversation_id=(\S+) call_id=(\S+) response_id=(\S+)"
+)
 API_CUEKB_RE = re.compile(
     r"cuekb_response_validated conversation_id=(\S+) turn_id=(\S+) trace_id=(\S+) "
     r"retrieval_status=(\S+) hit_count=(\d+) duration_ms=(\d+)"
@@ -72,6 +75,7 @@ API_LOG_MARKERS = (
     "voice_bridge_failed",
     "voice_tool_result_submitted",
     "voice_unbound_tool_settled",
+    "voice_tool_ack_continuation_restored",
     "cuekb_response_validated",
 )
 
@@ -202,7 +206,13 @@ def summarize_voicechat_log(text, expected_tool):
     new_call_input_count = len({entry.get("input_item_id") for entry in new_calls
                                 if entry.get("input_item_id")})
     result_count = len(diagnostic_matches(diagnostics, event="function.result"))
-    duplicate_count = len(diagnostic_matches(diagnostics, event="function.duplicate"))
+    coalesced_count = len(diagnostic_matches(
+        diagnostics, event="function.duplicate", action="coalesced"
+    ))
+    replayed_count = len(diagnostic_matches(
+        diagnostics, event="function.duplicate", action="replayed_result"
+    ))
+    duplicate_count = coalesced_count + replayed_count
     audio_done_count = len(diagnostic_matches(
         diagnostics, event="output.sent", kind="response.output_audio.done"
     ))
@@ -229,7 +239,7 @@ def summarize_voicechat_log(text, expected_tool):
             f"voicechat_events function_parsed={parsed_count} "
             f"new_calls={new_call_count} new_call_inputs={new_call_input_count} "
             f"function_result={result_count} "
-            f"duplicates_coalesced={duplicate_count} "
+            f"duplicates_coalesced={coalesced_count} results_replayed={replayed_count} "
             f"response_timeouts={text.count('Function call response timed out')} "
             f"audio_done={audio_done_count}"
         ),
@@ -271,10 +281,11 @@ def summarize_api_log(text):
     failed = API_BRIDGE_FAILED_RE.findall(text)
     submitted = API_RESULT_SUBMITTED_RE.findall(text)
     unbound = API_UNBOUND_RE.findall(text)
+    ack_restored = API_ACK_RESTORED_RE.findall(text)
     cuekb = API_CUEKB_RE.findall(text)
     conversation_ids = dict.fromkeys(
         row[0]
-        for rows in (received, started, finished, failed, submitted, unbound, cuekb)
+        for rows in (received, started, finished, failed, submitted, unbound, ack_restored, cuekb)
         for row in rows
     )
     unique_calls = dict.fromkeys(
@@ -284,6 +295,7 @@ def summarize_api_log(text):
         + [row[2] for row in failed]
         + [row[2] for row in submitted]
         + [row[1] for row in unbound]
+        + [row[1] for row in ack_restored]
     )
     received_inputs = dict.fromkeys((row[0], row[3]) for row in received)
     duplicate_inputs = len(received) - len(received_inputs)
@@ -293,7 +305,8 @@ def summarize_api_log(text):
             f"inputs={len(received_inputs)} duplicate_inputs={duplicate_inputs} "
             f"unique_calls={len(unique_calls)} bridges_started={len(started)} "
             f"bridges_finished={len(finished)} bridges_failed={len(failed)} "
-            f"unbound={len(unbound)} results_submitted={len(submitted)}"
+            f"unbound={len(unbound)} results_submitted={len(submitted)} "
+            f"ack_grants_restored={len(ack_restored)}"
         ),
         (
             f"api_cuekb responses={len(cuekb)} statuses={csv(dict.fromkeys(row[3] for row in cuekb))} "

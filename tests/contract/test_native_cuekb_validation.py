@@ -213,7 +213,7 @@ def test_voicechat_log_summary_compares_prompt_chain_without_printing_raw_log():
     )
     assert lines[3] == (
         "voicechat_events function_parsed=1 new_calls=1 new_call_inputs=1 function_result=1 "
-        "duplicates_coalesced=0 response_timeouts=0 audio_done=1"
+        "duplicates_coalesced=0 results_replayed=0 response_timeouts=0 audio_done=1"
     )
     assert "private" not in "\n".join(lines)
 
@@ -260,7 +260,8 @@ def test_voicechat_log_summary_flags_repeated_calls_without_tool_result():
         'voice_ws_diagnostic {"sequence_id":42,"event":"function.call",'
         '"action":"queued","input_item_id":"i1"}',
         'voice_ws_diagnostic {"sequence_id":42,"event":"function.parsed"}',
-        'voice_ws_diagnostic {"sequence_id":42,"event":"function.duplicate"}',
+        'voice_ws_diagnostic {"sequence_id":42,"event":"function.duplicate",'
+        '"action":"coalesced"}',
         "Function call response timed out after 64 frames, resetting to idle",
         "Function call decoded from model for sequence 42: tool_names=search_knowledge_base",
     ))
@@ -315,7 +316,8 @@ def test_voicechat_log_summary_filters_other_sequences_and_trailing_log_quote():
         '"action":"queued","input_item_id":"i1"}',
         'voice_ws_diagnostic {"sequence_id":42,"event":"function.parsed"}',
         'voice_ws_diagnostic {"sequence_id":42,"event":"function.result"}',
-        'voice_ws_diagnostic {"sequence_id":42,"event":"function.duplicate"}',
+        'voice_ws_diagnostic {"sequence_id":42,"event":"function.duplicate",'
+        '"action":"replayed_result"}',
     ))
 
     lines, ok = summarize_voicechat_log(log, "search_knowledge_base")
@@ -327,7 +329,7 @@ def test_voicechat_log_summary_filters_other_sequences_and_trailing_log_quote():
     )
     assert lines[3].startswith(
         "voicechat_events function_parsed=2 new_calls=1 new_call_inputs=1 "
-        "function_result=1 duplicates_coalesced=1"
+        "function_result=1 duplicates_coalesced=0 results_replayed=1"
     )
 
 
@@ -351,7 +353,8 @@ def test_api_log_summary_reports_only_lifecycle_counts_and_trace():
     assert lines[0] == (
         "api_tool_flow conversations=c1 received=1 inputs=1 duplicate_inputs=0 "
         "unique_calls=1 bridges_started=1 "
-        "bridges_finished=1 bridges_failed=0 unbound=0 results_submitted=1"
+        "bridges_finished=1 bridges_failed=0 unbound=0 results_submitted=1 "
+        "ack_grants_restored=0"
     )
     assert lines[1] == "api_cuekb responses=1 statuses=ok hits=1 traces=z1 durations_ms=25"
     assert lines[2] == "api_diagnostic=passed fault=NONE"
