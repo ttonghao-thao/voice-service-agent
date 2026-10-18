@@ -59,6 +59,7 @@ def test_query_only_schema_rejects_authority_and_preserves_identifiers():
     ("timeout", "TOOL_UNAVAILABLE"), ("non_ascii", "CUEKB_VOICE_EVIDENCE_UNAVAILABLE"),
     ("truncated_context", "CUEKB_VOICE_EVIDENCE_UNAVAILABLE"),
     ("budget", "CUEKB_VOICE_EVIDENCE_UNAVAILABLE"), ("partial", None),
+    ("typographic_ascii", None),
     ("oversized", "CUEKB_NO_EVIDENCE"),
 ])
 async def test_native_query_reaches_cuekb_without_an_answer_model(tmp_path, monkeypatch, scenario, code):
@@ -81,6 +82,11 @@ async def test_native_query_reaches_cuekb_without_an_answer_model(tmp_path, monk
             data.update(retrieval_status=scenario, hits=[])
         if scenario == "non_ascii":
             data["hits"][0]["source_text"] = "产品 AX: 10 connections."
+        if scenario == "typographic_ascii":
+            data["hits"][0].update(
+                source_text="Product AX supports \u226510 connections \u2014 it\u2019s documented.",
+                title_path=["Guide \u00b7 \u201cProduct AX\u201d"],
+            )
         if scenario == "oversized":
             data["hits"][0]["source_text"] = "No. " * 2000
         if scenario == "truncated_context":
@@ -144,7 +150,12 @@ async def test_native_query_reaches_cuekb_without_an_answer_model(tmp_path, monk
             assert result.status != "answered"
         else:
             assert isinstance(result, EvidenceReady)
-            assert result.envelope["items"][0]["text"] == "Product AX supports 10 connections."
+            expected_text = (
+                "Product AX supports >=10 connections - it's documented."
+                if scenario == "typographic_ascii"
+                else "Product AX supports 10 connections."
+            )
+            assert result.envelope["items"][0]["text"] == expected_text
             assert result.envelope["items"][0]["document_id"].endswith("101")
             assert result.envelope["trace_id"].endswith("111")
             assert len(json.dumps(result.envelope).encode()) <= s.qa_direct_evidence_max_bytes

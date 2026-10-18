@@ -266,6 +266,8 @@ PY
 
 预期总状态为 `observed`；问候/通用问题的 `selection=passed`、`tools=[]`、`retrieval=not_applicable`、`speech=passed`；产品问题的 `selection=passed`、`tools=['search_knowledge_base']`、`arguments` 不为 `failed/unverified`、`retrieval` 不为 `failed/unverified`、`speech=passed`。任何 `VOICE_TOOL_UNKNOWN`、`ConnectError`、空 `cases` 或 `status=partial` 都是不通过，先按第 4、6 节定位。
 
+`CUEKB_VOICE_EVIDENCE_UNAVAILABLE` 表示 CueKB 已命中，但所有候选证据都因上下文截断/省略、6000 字节语音证据预算或非英文字符而不能安全发送给 VoiceChat。英文资料中的弯引号、长短破折号、间隔点及 `>=`/`<=` 对应的 Unicode 符号会规范为等价 ASCII；其他 Unicode 内容仍拒绝。该原因必须报告为 `retrieval=insufficient_evidence`，不能因原始 `hit_count>0` 记为通过。
+
 ### 3.5 把报告和回答录音复制回宿主机
 
 ```sh

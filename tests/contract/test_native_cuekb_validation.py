@@ -28,6 +28,28 @@ def test_case_validation_identifies_legacy_tool_name(tmp_path):
         load_cases(path)
 
 
+def test_unusable_voice_evidence_is_not_reported_as_retrieval_passed():
+    case = {"expected_tool": "search_knowledge_base", "query_terms": ["Black Pig"]}
+    records = [
+        {"kind": "native_tool_arguments", "payload": {
+            "name": "search_knowledge_base", "input_item_id": "i1",
+            "arguments": {"query": "Black Pig"},
+        }},
+        {"kind": "native_cuekb_result", "payload": {
+            "input_item_id": "i1", "status": "ok", "evidence_status": "sufficient",
+            "hit_count": 1, "trace_id": "trace-1",
+        }},
+    ]
+    history = {"records": records, "items": [{
+        "input_item_id": "i1", "selected_tool": "search_knowledge_base",
+        "answer": {"reason_code": "CUEKB_VOICE_EVIDENCE_UNAVAILABLE", "citations": []},
+    }]}
+
+    result = assess(case, history, {"i1"}, 1920)
+
+    assert result["retrieval"] == "insufficient_evidence"
+
+
 @pytest.mark.parametrize("scenario,expected", [
     ("missing_call", ("failed", "unverified", "unverified", "passed")),
     ("bad_arguments", ("passed", "failed", "unverified", "failed")),

@@ -1,6 +1,6 @@
 # 当前验收证据
 
-更新日期：2026-10-18。**真实知识语音闭环尚未放行。**现场日志已验证提示预填充、工具注册及 ASR；新元数据已使消费品文档问题进入工具选择，但供应商发出 `search_cueb`，在 Gateway 名称校验阶段被拒绝。原生检索、正常知识回答及完整听音仍未通过。状态见 [任务板](TASK_BOARD.md)，要求见 [验证清单](development/validation.md)。
+更新日期：2026-10-18。**真实知识语音闭环尚未放行。**现场固定 WAV 已验证问候/通用问题直接回答，以及产品问题选择完整名称 `search_knowledge_base` 并命中 CueKB；原 `VOICE_TOOL_UNKNOWN` 已消失。当前产品证据因英文资料中的 Unicode 排版符号被语音 ASCII 边界全部过滤，返回 `CUEKB_VOICE_EVIDENCE_UNAVAILABLE`，随后缺少音频结束边界并在 90 秒超时。证据规范化修复仍需部署后复测正常知识回答、第四条用例及完整听音。状态见 [任务板](TASK_BOARD.md)，要求见 [验证清单](development/validation.md)。
 
 当前用户目标已改为 VoiceChat 自主决定直接回答或调用工具，部署采用 general_qa。qa-tools-v4 已修正模板冲突并补充部署策略检查；以下严格模式现场结果保留为历史证据，不能当作新模式的验收结果。
 
@@ -12,6 +12,7 @@
 
 | 日期 / 版本 | 实际结果 | 限制与证据位置 |
 | --- | --- | --- |
+| 2026-10-18（北京时间）/ 真实三用例与英文排版符号修复 | 问候、TCP/UDP 均正确直答；Black Pig 用例 `selection=passed`、工具名为 `search_knowledge_base`、CueKB 返回 trace 和命中，证明名称注册与原生检索已经打通。现场返回 `CUEKB_VOICE_EVIDENCE_UNAVAILABLE` 并在 90 秒缺少结束边界；附件原文含 143 个非 ASCII 排版字符，产品标题自身含弯引号。API 现将弯引号、长短破折号、间隔点及 `>=`/`<=` 的 Unicode 等价符号规范为 ASCII，其他 Unicode 仍拒绝；验证报告不再用原始命中覆盖证据不可用状态。39 项定向及 482 项 Python 全量测试通过 | 用户现场真实 NVIDIA VoiceChat/CueKB 报告与用户提供的产品原文；修复尚未部署。第三条只产生 49,920 输出样本且无完成边界，第四条未运行，因此不能宣称知识回答或连续四用例通过。规范化只覆盖语义等价的英文排版符号，不翻译中文证据 |
 | 2026-10-18（北京时间）/ 容器内验证操作 | 本期命令验证统一为宿主机发起 `docker exec`：API 容器内完成 readiness、目录应用、固定 WAV 端到端验证和报告判定，VoiceChat 容器内完成运行文件/hash、可选 function JSONL 及模型产物检查；只读 rootfs 先建 `/tmp`，宿主机文件通过 `docker exec -i` 标准输入写入并逐文件核对两端 SHA-256，`docker cp` 只用于导出结果。提交的 `cases.json` 已迁移到 `search_knowledge_base`，并在容器内预检该字段。明确 loopback HTTP、结果回拷、预期输出和清理步骤。19 项部署/验证契约通过，新增 shell 块、Python heredoc、文档链接及 diff 检查通过 | 操作手册和本地契约检查；本轮没有访问现场 Docker/GPU/CueKB，不把命令语法验证记为真实语音闭环通过。VoiceChat stdout 只能由宿主机 `docker logs` 提取，文档已单独说明该 Docker 边界 |
 | 2026-10-18（北京时间）/ 完整工具名与跨层诊断 | 工具公开名称和可信 implementation 全面统一为 `search_knowledge_base`；旧缩写及错误拼写严格拒绝。VoiceChat WebSocket 和 Triton backend 增加最终 Prompt 工具名/hash及同 sequence 模型函数通道名称日志，用于区分注册/转换错误与模型生成错误。191 项名称/CueKB/语音定向、478 项 Python 全量、66 项 VoiceChat 交付契约及独立 VoiceChat 环境 25 项完整文件测试通过；Ruff、编译、manifest 与 diff 检查通过 | SQLite、受控 WS/CueKB 与 CPU VoiceChat 夹具；尚未部署真实 GPU。诊断不记录 Prompt、query 或参数正文，且必须以实际容器文件 hash、两层 Prompt hash 和同 sequence 模型日志联合判断 |
 | 2026-10-18（北京时间）/ cuekb-native-v1 名称兼容（已被完整名称迁移取代） | 部署消费品路由元数据后，问候及通用技术控制通过；产品问题进入原生工具选择，但数据库记录错误拼写 `search_cueb`、`reason_code=VOICE_TOOL_UNKNOWN`、`stage=selection`，尚未进入参数或检索。早期严格别名兼容方案已删除，当前不接受任何别名 | 用户现场真实 NVIDIA VoiceChat 与 API 记录；该早期方案不再代表当前代码。问候录音首词转写问题按当前安排另行处理 |

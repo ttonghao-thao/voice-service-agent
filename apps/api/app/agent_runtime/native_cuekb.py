@@ -11,6 +11,30 @@ from app.agent_runtime.direct import EvidenceReady
 from app.agent_runtime.evidence import presentation_contract
 from app.contracts import AnswerBundle, printable_ascii, uid
 
+VOICE_ASCII_TRANSLATION = str.maketrans({
+    "\u2018": "'",
+    "\u2019": "'",
+    "\u201c": '"',
+    "\u201d": '"',
+    "\u2013": "-",
+    "\u2014": "-",
+    "\u00b7": "-",
+    "\u2265": ">=",
+    "\u2264": "<=",
+})
+
+
+def normalize_voice_punctuation(value):
+    """Convert equivalent English typography while retaining other Unicode for rejection."""
+    if isinstance(value, str):
+        return value.translate(VOICE_ASCII_TRANSLATION)
+    if isinstance(value, dict):
+        return {normalize_voice_punctuation(key): normalize_voice_punctuation(item)
+                for key, item in value.items()}
+    if isinstance(value, list):
+        return [normalize_voice_punctuation(item) for item in value]
+    return value
+
 
 class NativeCueKBExecutor:
     def __init__(self, settings, registry):
@@ -77,6 +101,7 @@ class NativeCueKBExecutor:
                     "context": citation.context, "title": citation.title,
                     "document_id": citation.document_id, "chunk_id": citation.chunk_id,
                     "version_id": citation.version_id, "conditions": citation.metadata}
+            item = normalize_voice_punctuation(item)
             if not printable_ascii(json.dumps(item, ensure_ascii=False)):
                 continue
             candidate = {**envelope, "items": [*envelope["items"], item], "partial": False}

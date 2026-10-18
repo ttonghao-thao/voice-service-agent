@@ -77,7 +77,7 @@ def assess(case, history, seen_inputs, output_samples):
         "failed" if reason and reason.startswith(("CUEKB_", "TOOL_")) else
         "passed" if answer and answer.get("citations") else
         "not_applicable" if not wanted and not actual else "unverified")
-    if searches:
+    if searches and retrieval not in ("insufficient_evidence", "needs_clarification", "failed"):
         source = searches[-1]
         retrieval = ("failed" if source.get("status") == "failed" else
             "needs_clarification" if source.get("status") == "needs_clarification" else
