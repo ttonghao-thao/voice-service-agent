@@ -62,7 +62,7 @@ docker compose --env-file .env -f deploy/compose.production.yaml exec -T api \
 
 **结束旧通话并新建 Conversation。** 模式/策略在创建时快照，旧 knowledge_required 会话不会因重连或刷新页面变成 general_qa。
 
-现场录音、连续追问、失败归类和输出听音步骤见 [原生单工具验证](native-cuekb-validation.md)。该流程从宿主机通过 `docker exec` 在 API/VoiceChat 容器内运行验证程序，先在可写 `/tmp` 建目录，再用 `docker exec -i` 标准输入写入脚本和授权 WAV并核对两端 SHA-256；宿主机到只读容器不使用 `docker cp`，也不依赖宿主机 Python 版本。knowledge_required、双工具及外置 SDK 的兼容实现保留，但不属于本期部署或自动 fallback。
+现场录音、连续追问、失败归类和输出听音步骤见 [原生单工具验证](native-cuekb-validation.md)。固定脚本、case 配置和授权 WAV 已打入 API 镜像的只读 `/app`，宿主机只用 `docker exec` 启动验证；无需创建输入目录、复制测试文件或依赖宿主机 Python。JSON 报告和回答 WAV 才写入 `/tmp`，且默认控制台只输出总状态和每个 case 的核心字段。knowledge_required、双工具及外置 SDK 的兼容实现保留，但不属于本期部署或自动 fallback。
 
 ## 镜像构建与部署
 
@@ -134,106 +134,95 @@ docker compose --env-file .env -f deploy/compose.production.yaml logs --tail=200
 
 源码依据及证据边界见 [NVIDIA 核对记录](voicechat-upstream-analysis.md)。先记录实际镜像 digest、挂载源码和模板 hash；以下脚本不会远程证明版本，不自动开启能力或部署服务。
 
-本期真实 CueKB 验收使用 [容器内原生单工具流程](native-cuekb-validation.md#3-从宿主机在-api-容器内运行固定-wav)。以下是额外的合成结果协议探针，同样从宿主机通过 `docker exec` 在 API 容器内运行，不要求宿主机 Python。多工具模式必须提供实际 `session.update` JSON；可将同一部署的管理员 `GET /api/v1/admin/voice-tools` 响应保存为忽略目录下的 `artifacts/voice-tools-admin.json`，为**空历史新会话**生成快照：
+本期真实 CueKB 验收使用 [容器内原生单工具流程](native-cuekb-validation.md#3-从宿主机在-api-容器内运行固定-wav)。以下是额外的合成结果协议探针，同样从宿主机通过 `docker exec` 在 API 容器内运行，不要求宿主机 Python。脚本和固定 WAV 已包含在 API 镜像中；多工具 `session.update` 直接由容器内实际持久化目录生成，不再从宿主机复制脚本、管理员 JSON 或 WAV：
 
 ```sh
-set -e
-
 API_CONTAINER=$(docker compose --env-file .env \
   -f deploy/compose.production.yaml ps -q api)
 test -n "$API_CONTAINER"
 
-docker exec "$API_CONTAINER" sh -c '
-  rm -rf /tmp/voicechat-probe && mkdir -p /tmp/voicechat-probe
-'
-
-write_to_api() {
-  source_file=$1
-  target_file=$2
-  test -f "$source_file" || return 1
-  docker exec -i "$API_CONTAINER" \
-    sh -c 'umask 022; cat > "$1"' sh "$target_file" \
-    < "$source_file" || return 1
-  host_sha=$(sha256sum "$source_file" | cut -d' ' -f1)
-  container_sha=$(docker exec "$API_CONTAINER" sha256sum "$target_file" | cut -d' ' -f1)
-  test "$host_sha" = "$container_sha" || return 1
-  echo "$container_sha  $target_file"
-}
-
-write_to_api scripts/probe_voicechat.py \
-  /tmp/voicechat-probe/probe_voicechat.py
-write_to_api artifacts/voice-tools-admin.json \
-  /tmp/voicechat-probe/voice-tools-admin.json
-write_to_api artifacts/authorized-question.wav \
-  /tmp/voicechat-probe/authorized-question.wav
-
 docker exec -i \
-  -w /tmp/voicechat-probe \
   -e PYTHONPATH=/app/apps/api:/app \
   "$API_CONTAINER" python - <<'PYTHON'
+import asyncio
 import json
 from pathlib import Path
+
+import httpx
+from app.agent_runtime.runtime import BusinessRuntime
 from app.config import Settings
+from app.storage.store import Store
+from app.tools.registry import ToolRegistry
 from app.voice.provider import session_update
-catalog = json.loads(Path("voice-tools-admin.json").read_text())
-update = session_update(tools=catalog["definitions"], answer_policy=Settings().answer_policy)
-Path("voicechat-session-update.json").write_text(json.dumps(update, ensure_ascii=True))
-print("catalog_revision:", catalog["revision"])
+
+async def main():
+    settings = Settings()
+    store = Store(settings.database_url)
+    try:
+        async with httpx.AsyncClient() as client:
+            runtime = BusinessRuntime(settings, ToolRegistry(settings, client, store))
+            snapshot = await runtime.catalog.snapshot()
+            update = session_update(
+                tools=snapshot.definitions,
+                answer_policy=settings.answer_policy,
+            )
+            target = Path("/tmp/voicechat-probe/session-update.json")
+            target.parent.mkdir(parents=True, exist_ok=True)
+            target.write_text(json.dumps(update, ensure_ascii=True))
+            print("snapshot=passed tools=" + ",".join(snapshot.tools))
+    finally:
+        await store.engine.dispose()
+
+asyncio.run(main())
 PYTHON
 
 docker exec \
-  -w /tmp/voicechat-probe \
+  -w /app \
   -e PYTHONPATH=/app/apps/api:/app \
   "$API_CONTAINER" \
-  python probe_voicechat.py \
-    --wav authorized-question.wav \
-    --session-update voicechat-session-update.json \
+  python scripts/probe_voicechat.py \
+    --wav /app/validation/native-cuekb/black_pig_crisp_heart.wav \
+    --session-update /tmp/voicechat-probe/session-update.json \
     --api-version ACTUAL_API_REVISION --image-digest ACTUAL_IMAGE_DIGEST \
     --tool-delay-seconds 5 --tool-wait-timeout 20 --post-result-seconds 20 \
-    --output-wav authorized-response.wav \
-    --output voicechat-probe.json
-
-docker cp "${API_CONTAINER}:/tmp/voicechat-probe/voicechat-probe.json" \
-  artifacts/voicechat-probe.json
-docker cp "${API_CONTAINER}:/tmp/voicechat-probe/authorized-response.wav" \
-  artifacts/authorized-response.wav
+    --output-wav /tmp/voicechat-probe/authorized-response.wav \
+    --output /tmp/voicechat-probe/voicechat-probe.json
 ```
 
-API 容器读取自身已有的 `VOICECHAT_WS_URL`/凭据，不把 Key 放入命令或报告。预期命令生成非空 JSON 报告和 WAV；报告是否 `observed` 仍按下一段的协议字段判定。legacy 可不传快照；dual_tools 缺快照直接失败，避免误测 bridge。快照和授权 WAV 不提交 Git。需要插话协议观察时，将授权 WAV 复制到同一临时目录并加 `--barge-in-wav`；报告只说明输入时序，不能证明新问题影响了模型回答。
+API 容器读取自身已有的 `VOICECHAT_WS_URL`/凭据，不把 Key 放入命令或报告。首条命令应只输出 `snapshot=passed tools=search_knowledge_base`；探针随后只回传以下三行，不提供完整报告：
+
+```text
+probe_status=... phase=... reason=... connected=... tools=...
+checks={...}
+audio_output_samples=... pending_calls=... timeline_dropped=... output_wav_truncated=...
+```
+
+完整 JSON 保存在 `/tmp/voicechat-probe/voicechat-probe.json`。只有这三行不足以定位时才加 `--print-report`。legacy 可不传快照；dual_tools 缺快照直接失败，避免误测 bridge。需要插话协议观察时使用镜像内另一条明确授权 WAV；报告只说明输入时序，不能证明新问题影响了模型回答。
 
 探针在等待工具和回填时持续送静音，默认再观察 20 秒续答，时长参数有上限。合成工具结果不经过 CueKB/业务授权，不是端到端验收。报告 `partial` 表示只完成部分协议观察，不能改写为模型通过；检查 `reason`、`phase`、`pending_call_ids_at_close`、`timeline_dropped` 和 `output_wav_truncated`。输入样本 hash 包含最后一帧补零，静音单独计数；报告不保存转写或工具参数正文。原探针在这些等待阶段停止送音，其“无工具”结果需重测。
 
-在宿主机把只读检查脚本复制到 VoiceChat 容器的可写 `/tmp`，再用 `docker exec` 检查该容器实际挂载的模型产物。替换为容器内实际转换后 vLLM LLM 路径；每个分片重复传 `--checkpoint`：
+静态检查脚本已随 VoiceChat 派生镜像写入只读 `/opt/voice-validation`。直接用 `docker exec` 检查该容器实际挂载的模型产物；替换为容器内实际转换后 vLLM LLM 路径，每个分片重复传 `--checkpoint`：
 
 ```sh
-set -e
-
 VOICE_CONTAINER=nemotron-labs-voicechat
-test -f scripts/inspect_voicechat_artifacts.py
-docker exec "$VOICE_CONTAINER" sh -c \
-  'rm -rf /tmp/voicechat-artifacts && mkdir -p /tmp/voicechat-artifacts'
-docker exec -i "$VOICE_CONTAINER" \
-  sh -c 'umask 022; cat > "$1"' sh \
-  /tmp/voicechat-artifacts/inspect_voicechat_artifacts.py \
-  < scripts/inspect_voicechat_artifacts.py
-
-test "$(sha256sum scripts/inspect_voicechat_artifacts.py | cut -d' ' -f1)" = \
-  "$(docker exec "$VOICE_CONTAINER" sha256sum \
-    /tmp/voicechat-artifacts/inspect_voicechat_artifacts.py | cut -d' ' -f1)"
-
-docker exec -w /tmp/voicechat-artifacts "$VOICE_CONTAINER" \
-  python inspect_voicechat_artifacts.py \
+docker exec "$VOICE_CONTAINER" \
+  python /opt/voice-validation/inspect_voicechat_artifacts.py \
   --config /actual/converted-llm/config.json \
   --tokenizer /actual/converted-llm/tokenizer.json \
   --checkpoint /actual/converted-llm/model.safetensors \
   --voicechat-config /actual/voicechat-checkpoint/config.json \
-  --output /tmp/voicechat-artifacts/voicechat-artifacts.json
-
-docker cp "${VOICE_CONTAINER}:/tmp/voicechat-artifacts/voicechat-artifacts.json" \
-  artifacts/voicechat-artifacts.json
+  --output /tmp/voicechat-artifacts.json
 ```
 
-该脚本无需 GPU/NeMo，只读配置和 safetensors header。可选 `--voicechat-config` 必须是含 `model.stt.model` 的原始 VoiceChat 配置，不是转换后的 vLLM config；它将声明值/公开 wrapper 缺省值与论文 1/1/2 融合权重比较，返回 `matches/differs/unverified`，不会自动改配置。官方固定 HF 配置本轮为 matches，不能据此推断现场运行配置；见 [论文 v2 核对](voicechat-paper-v2-review.md#6-本轮落地验证与未完成项)。`missing/mismatch/unverified` 定位提供文件的契约差异；`passed` 也不证明权重正确加载、实际 tokenizer 编码、RNNT 或 function 推理正确。它不修改模型，头部 hash 不代表权重内容 hash。真实定位仍需同 sequence 的输入帧、RNNT raw token 和 runtime function key/token 证据。
+默认只回传以下三行，完整 JSON 保存在 `/tmp/voicechat-artifacts.json`：
+
+```text
+artifact_checks={...}
+fusion_status=... paper_weight_alignment=...
+checkpoint_count=... missing_required_outputs=[]
+```
+
+正常结果中 `artifact_checks` 的必需项应为 `passed`，且 `missing_required_outputs=[]`；只有三行互相矛盾时才加 `--print-report`。该脚本无需 GPU/NeMo，只读配置和 safetensors header。可选 `--voicechat-config` 必须是含 `model.stt.model` 的原始 VoiceChat 配置，不是转换后的 vLLM config；它将声明值/公开 wrapper 缺省值与论文 1/1/2 融合权重比较，返回 `matches/differs/unverified`，不会自动改配置。官方固定 HF 配置本轮为 matches，不能据此推断现场运行配置；见 [论文 v2 核对](voicechat-paper-v2-review.md#6-本轮落地验证与未完成项)。`missing/mismatch/unverified` 定位提供文件的契约差异；`passed` 也不证明权重正确加载、实际 tokenizer 编码、RNNT 或 function 推理正确。它不修改模型，头部 hash 不代表权重内容 hash。真实定位仍需同 sequence 的输入帧、RNNT raw token 和 runtime function key/token 证据。
 
 `function_outputs_contract` 仅检查当前 backend 必需的 `text_logits`、`function_tokens`；`function_output_declarations` 保存实际声明及缺失的必需字段。可选的 `function_logits` 单独报告为 `function_scores_declared`，缺失只代表没有声明诊断分数，不能据此判定原生工具不可用。早期脚本将三者合并，只有前两项的现场配置会被误报为运行契约 mismatch；不要为消除该旧告警直接修改模型配置。即使声明了分数，仍需验证运行时实际返回。
 

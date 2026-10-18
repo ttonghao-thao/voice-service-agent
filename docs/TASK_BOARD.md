@@ -20,13 +20,14 @@
 | D21-HANDSHAKE / RECOVERY | 字符串 tools 回显、空事件边界、错误/转写交付与重试；现场确认注册及可见超时，其余恢复矩阵待验 |
 | D21-PROBE / END | 连续送音探针、静态产物检查、WS/backend 隔离采集、可选 PAD 结束保护；CPU 证据不替代 GPU |
 | VoiceChat 交付规则 | 完整外部修改文件、manifest、容器命令已在 docs/voicechat；AGENTS 要求后续同步 |
+| 镜像内置验证材料 | API 内置验证/探针脚本、case 配置和四段 WAV；VoiceChat 派生镜像内置客户端、静态检查器和相同输入。现场只执行 `docker exec`，默认仅返回判定字段，完整报告按需显式输出 |
 | P1-A 严格提示一致性 | Provider/两份 voice prompt 统一授权口述与关联固定 ACK，legacy 保持 bridge；未经授权的问候/澄清/限制说明不放行，沉默时自动澄清与真实模型行为另行验证 |
 
 ## 3. 待完成与建议顺序
 
 | 任务 | 当前状态 | 下一步完成条件 |
 | --- | --- | --- |
-| VoiceChat 一期原生单工具 | 公开名称改为 search_knowledge_base(query)，内部仍走 CueKB；旧缩写/错误名称不再接受。VoiceChat 已增加最终 Prompt 工具名/hash、backend 接收 hash 和模型函数名称诊断；问候首词转写问题按当前安排另行处理 | 重建 API 和 VoiceChat 后先核对两层 Prompt hash，再做 5 次合成产品录音确认模型原始名称、参数、检索和口述，最后以真人英文录音验收 |
+| VoiceChat 一期原生单工具 | 公开名称改为 search_knowledge_base(query)，内部仍走 CueKB；旧缩写/错误名称不再接受。VoiceChat 已增加最终 Prompt 工具名/hash、backend 接收 hash 和模型函数名称诊断；问候首词转写问题按当前安排另行处理 | 重建 API 和 VoiceChat 派生镜像，直接运行镜像内固定四用例；只回传总状态、四行 case 与退出码。通过后核对两层 Prompt hash，最后以真人英文录音验收 |
 | P0-A/B：现场部署与两类验证 | 严格配置已确认；两类现场日志已分析 | 补运行 hash；严格知识闭环与 PAD A/B 分开报告 |
 | P1-A：严格提示与授权一致 | 编码及本地回归完成；现场拒绝保护生效 | 保留显式严格模式；当前自主回答部署改用 general_qa，不要求每次先调用工具 |
 | P1-B：ASR/function 首差异修复 | 原生路径追加排查暂停；算子未确定 | 仅在重新投入原生路径时恢复，不阻塞提示与应用契约修正 |

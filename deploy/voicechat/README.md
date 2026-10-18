@@ -50,11 +50,12 @@ python -m py_compile s2s/audio_server.py
 voicechat_base_image='YOUR_VALIDATED_OFFLINE_IMAGE@sha256:YOUR_DIGEST'
 voicechat_release_image='YOUR_REGISTRY/voicechat:YOUR_RELEASE'
 docker build --build-arg VOICECHAT_BASE_IMAGE="$voicechat_base_image" \
+  --build-context agent_repo=/path/to/voice-service-agent \
   -f /path/to/voice-service-agent/deploy/voicechat/Dockerfile \
   -t "$voicechat_release_image" /path/to/speech
 ```
 
-该派生镜像不安装依赖或下载权重，继承原镜像 entrypoint、command 和运行环境，并设置 Jinja 为默认。随后在**现场原有启动命令/Compose**中替换镜像，显式加入 `-e USE_JINJA_TEMPLATE_PROMPT=1`（Compose 使用 environment），保留全部原参数并重建容器。仅 `docker restart` 不会应用新镜像或新环境变量。若 `/s2s` 已被 bind mount 覆盖，镜像内 COPY 不生效，须同步更新挂载源文件。
+该派生镜像不安装依赖或下载权重，继承原镜像 entrypoint、command 和运行环境，并设置 Jinja 为默认。命令通过 BuildKit named context 将固定诊断客户端、静态检查器、case 配置和 WAV 写入只读 `/opt/voice-validation`；验证时不再从宿主机复制这些文件。随后在**现场原有启动命令/Compose**中替换镜像，显式加入 `-e USE_JINJA_TEMPLATE_PROMPT=1`（Compose 使用 environment），保留全部原参数并重建容器。仅 `docker restart` 不会应用新镜像或新环境变量。若 `/s2s` 已被 bind mount 覆盖，镜像内 COPY 不生效，须同步更新挂载源文件。
 
 在已配置的容器 shell 中直接运行现有脚本时，对应命令为：
 

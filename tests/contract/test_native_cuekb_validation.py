@@ -5,7 +5,7 @@ from pathlib import Path
 
 import pytest
 
-from scripts.validate_native_cuekb import assess, load_cases
+from scripts.validate_native_cuekb import assess, load_cases, passed, summary_lines
 
 
 def test_committed_cases_use_current_public_tool_name():
@@ -48,6 +48,35 @@ def test_unusable_voice_evidence_is_not_reported_as_retrieval_passed():
     result = assess(case, history, {"i1"}, 1920)
 
     assert result["retrieval"] == "insufficient_evidence"
+
+
+def test_console_summary_is_bounded_and_exit_requires_product_retrieval():
+    report = {
+        "status": "observed",
+        "capabilities": {"native_tools": ["search_knowledge_base"]},
+        "cases": [{
+            "case_id": "product", "expected_tool": "search_knowledge_base",
+            "status": "observed", "selection": "passed",
+            "actual_tools": ["search_knowledge_base"], "arguments": "manual_review_required",
+            "retrieval": "passed", "reason_code": None, "speech_transport": "passed",
+            "elapsed_ms": 1200, "input_items_observed": 1, "output_samples": 1920,
+            "source_trace_ids": ["trace-1"],
+        }],
+    }
+
+    lines = list(summary_lines(report))
+
+    assert len(lines) == 2
+    assert lines[0] == (
+        "report_status=observed error_type=None cases=1 "
+        "native_tools=['search_knowledge_base']"
+    )
+    assert "case=product" in lines[1]
+    assert "retrieval=passed" in lines[1]
+    assert "traces=1" in lines[1]
+    assert passed(report)
+    report["cases"][0]["retrieval"] = "insufficient_evidence"
+    assert not passed(report)
 
 
 @pytest.mark.parametrize("scenario,expected", [

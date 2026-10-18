@@ -314,8 +314,27 @@ async def probe(args):
     output = Path(args.output)
     output.parent.mkdir(parents=True, exist_ok=True)
     await asyncio.to_thread(output.write_text, json.dumps(report, indent=2, ensure_ascii=False) + "\n")
-    print(json.dumps(report, ensure_ascii=False, indent=2))
+    if getattr(args, "print_report", False):
+        print(json.dumps(report, ensure_ascii=False, indent=2))
+    else:
+        print("\n".join(summary_lines(report)))
     return report
+
+
+def summary_lines(report):
+    yield (
+        f"probe_status={report.get('status')} phase={report.get('phase')} "
+        f"reason={report.get('reason')} connected={report.get('real_service_connected')} "
+        f"tools={report.get('registered_tool_names')}"
+    )
+    yield "checks=" + json.dumps(report.get("checks", {}), sort_keys=True, separators=(",", ":"))
+    audio = report.get("audio_evidence", {})
+    yield (
+        f"audio_output_samples={audio.get('output_samples')} "
+        f"pending_calls={report.get('pending_call_ids_at_close')} "
+        f"timeline_dropped={report.get('timeline_dropped')} "
+        f"output_wav_truncated={audio.get('output_wav_truncated')}"
+    )
 
 
 if __name__ == "__main__":
@@ -330,4 +349,5 @@ if __name__ == "__main__":
     parser.add_argument("--post-result-seconds", type=float, default=20.0)
     parser.add_argument("--output", default="artifacts/voicechat-probe.json")
     parser.add_argument("--output-wav", help="Optional authorized output audio for human review, capped at 16 MiB")
+    parser.add_argument("--print-report", action="store_true", help="Print full JSON instead of the compact summary")
     asyncio.run(probe(parser.parse_args()))

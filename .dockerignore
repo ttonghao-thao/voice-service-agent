@@ -13,7 +13,11 @@
 **/__pycache__
 **/test-results
 **/playwright-report
-artifacts
+artifacts/*
+!artifacts/native-cuekb/
+artifacts/native-cuekb/*
+!artifacts/native-cuekb/cases.json
+!artifacts/native-cuekb/*.wav
 *.db*
 **/*.db*
 .DS_Store

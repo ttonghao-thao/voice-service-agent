@@ -9,8 +9,12 @@ COPY apps/api apps/api
 COPY config config
 COPY scripts/verify_deployment.py scripts/verify_deployment.py
 COPY scripts/configure_native_cuekb.py scripts/configure_native_cuekb.py
-ENV PYTHONPATH=/app/apps/api PYTHONUNBUFFERED=1
-RUN chmod -R u=rwX,go=rX apps/api config scripts \
+COPY scripts/probe_voicechat.py scripts/probe_voicechat.py
+COPY scripts/validate_native_cuekb.py scripts/validate_native_cuekb.py
+COPY artifacts/native-cuekb/cases.json validation/native-cuekb/cases.json
+COPY artifacts/native-cuekb/*.wav validation/native-cuekb/
+ENV PYTHONPATH=/app/apps/api:/app PYTHONUNBUFFERED=1
+RUN chmod -R u=rwX,go=rX apps/api config scripts validation \
     && groupadd --gid 10001 service \
     && useradd --uid 10001 --gid service --no-create-home service \
     && mkdir /app/data && chown service:service /app/data

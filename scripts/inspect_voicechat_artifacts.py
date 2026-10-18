@@ -148,6 +148,19 @@ def inspect(config_path, tokenizer_path, checkpoints, voicechat_config_path=None
     }
 
 
+def summary_lines(report):
+    yield "artifact_checks=" + json.dumps(report["checks"], sort_keys=True, separators=(",", ":"))
+    fusion = report["voicechat_fusion"]
+    yield (
+        f"fusion_status={fusion.get('status')} "
+        f"paper_weight_alignment={fusion.get('paper_weight_alignment')}"
+    )
+    yield (
+        f"checkpoint_count={len(report['checkpoints'])} "
+        f"missing_required_outputs={report['function_output_declarations'].get('missing_required')}"
+    )
+
+
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--config", required=True, help="Converted vLLM LLM config.json")
@@ -155,12 +168,16 @@ def main():
     parser.add_argument("--checkpoint", action="append", required=True, help="Safetensors file; repeat for all shards")
     parser.add_argument("--voicechat-config", help="Original VoiceChat config.json with model.stt.model fusion settings")
     parser.add_argument("--output", default="artifacts/voicechat-artifacts.json")
+    parser.add_argument("--print-report", action="store_true", help="Print full JSON instead of the compact summary")
     args = parser.parse_args()
     report = inspect(args.config, args.tokenizer, args.checkpoint, args.voicechat_config)
     output = Path(args.output)
     output.parent.mkdir(parents=True, exist_ok=True)
     output.write_text(json.dumps(report, indent=2) + "\n")
-    print(json.dumps(report, indent=2))
+    if args.print_report:
+        print(json.dumps(report, indent=2))
+    else:
+        print("\n".join(summary_lines(report)))
 
 
 if __name__ == "__main__":

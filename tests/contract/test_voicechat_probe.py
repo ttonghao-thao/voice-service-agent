@@ -151,6 +151,29 @@ def test_dual_tools_cannot_silently_test_legacy_bridge(args):
         probe.load_configuration(args, Settings(_env_file=None, qa_execution_mode="dual_tools"))
 
 
+def test_console_summary_contains_only_decision_fields():
+    report = {
+        "status": "observed", "phase": "finished", "reason": None,
+        "real_service_connected": True, "registered_tool_names": ["search_knowledge_base"],
+        "checks": {"tool_result_submitted": "passed"},
+        "audio_evidence": {"output_samples": 1920, "output_wav_truncated": False},
+        "pending_call_ids_at_close": [], "timeline_dropped": 0,
+    }
+
+    lines = list(probe.summary_lines(report))
+
+    assert len(lines) == 3
+    assert lines[0] == (
+        "probe_status=observed phase=finished reason=None connected=True "
+        "tools=['search_knowledge_base']"
+    )
+    assert lines[1] == 'checks={"tool_result_submitted":"passed"}'
+    assert lines[2] == (
+        "audio_output_samples=1920 pending_calls=[] timeline_dropped=0 "
+        "output_wav_truncated=False"
+    )
+
+
 @pytest.mark.parametrize("duration", [float("nan"), float("inf"), -1, 121])
 def test_invalid_duration_is_bounded(args, duration):
     args.tool_wait_timeout = duration

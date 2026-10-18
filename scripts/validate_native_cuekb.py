@@ -229,6 +229,46 @@ async def run(args):
     return report
 
 
+def summary_lines(report):
+    capabilities = report.get("capabilities", {})
+    yield (
+        f"report_status={report.get('status')} error_type={report.get('error_type')} "
+        f"cases={len(report.get('cases', []))} native_tools={capabilities.get('native_tools')}"
+    )
+    for case in report.get("cases", []):
+        yield " ".join((
+            f"case={case.get('case_id')}",
+            f"status={case.get('status')}",
+            f"selection={case.get('selection')}",
+            f"tools={case.get('actual_tools')}",
+            f"arguments={case.get('arguments')}",
+            f"retrieval={case.get('retrieval')}",
+            f"reason={case.get('reason_code')}",
+            f"speech={case.get('speech_transport')}",
+            f"elapsed_ms={case.get('elapsed_ms')}",
+            f"inputs={case.get('input_items_observed')}",
+            f"samples={case.get('output_samples')}",
+            f"portal_error={case.get('portal_error')}",
+            f"traces={len(case.get('source_trace_ids', []))}",
+        ))
+
+
+def passed(report):
+    if report.get("status") != "observed" or not report.get("cases"):
+        return False
+    for row in report["cases"]:
+        expected_tool = row.get("expected_tool")
+        expected_retrieval = "not_applicable" if expected_tool is None else "passed"
+        if (
+            row.get("selection") != "passed"
+            or row.get("arguments") in ("failed", "unverified")
+            or row.get("retrieval") != expected_retrieval
+            or row.get("speech_transport") != "passed"
+        ):
+            return False
+    return True
+
+
 if __name__ == "__main__":
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--base-url", required=True, help="Portal origin, using its trusted TLS certificate")
@@ -237,9 +277,11 @@ if __name__ == "__main__":
     parser.add_argument("--case-timeout", type=float, default=90)
     parser.add_argument("--audio-dir", help="Optional authorized output recordings for listening")
     parser.add_argument("--output", default="artifacts/native-cuekb-validation.json")
-    report = asyncio.run(run(parser.parse_args()))
-    print(json.dumps(report, indent=2))
-    raise SystemExit(0 if report["status"] == "observed" and all(
-        row.get("selection") == "passed" and row.get("arguments") != "failed"
-        and row.get("retrieval") != "failed" and row.get("speech_transport") == "passed"
-        for row in report["cases"]) else 1)
+    parser.add_argument("--print-report", action="store_true", help="Print full JSON instead of the compact summary")
+    args = parser.parse_args()
+    report = asyncio.run(run(args))
+    if args.print_report:
+        print(json.dumps(report, indent=2))
+    else:
+        print("\n".join(summary_lines(report)))
+    raise SystemExit(0 if passed(report) else 1)

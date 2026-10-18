@@ -125,6 +125,21 @@ def test_cloud_deployment_uses_prebuilt_images():
     assert "APP_ENV" not in script
     dockerfile = (ROOT / "deploy/Dockerfile.api").read_text()
     assert "COPY scripts/configure_native_cuekb.py scripts/configure_native_cuekb.py" in dockerfile
+    assert "COPY scripts/validate_native_cuekb.py scripts/validate_native_cuekb.py" in dockerfile
+    assert "COPY scripts/probe_voicechat.py scripts/probe_voicechat.py" in dockerfile
+    assert "COPY artifacts/native-cuekb/cases.json validation/native-cuekb/cases.json" in dockerfile
+    assert "COPY artifacts/native-cuekb/*.wav validation/native-cuekb/" in dockerfile
+    dockerignore = (ROOT / ".dockerignore").read_text()
+    assert "!artifacts/native-cuekb/cases.json" in dockerignore
+    assert "!artifacts/native-cuekb/*.wav" in dockerignore
+    voicechat_dockerfile = (ROOT / "deploy/voicechat/Dockerfile").read_text()
+    assert "COPY --from=agent_repo scripts/inspect_voicechat_artifacts.py" in voicechat_dockerfile
+    assert "COPY --from=agent_repo artifacts/native-cuekb/*.wav" in voicechat_dockerfile
+    voicechat_readme = (ROOT / "deploy/voicechat/README.md").read_text()
+    assert "--build-context agent_repo=/path/to/voice-service-agent" in voicechat_readme
+    voicechat_runbook = (ROOT / "docs/voicechat/docker-run.md").read_text()
+    assert "voicechat_validation_bundle=passed" in voicechat_runbook
+    assert '"$VOICECHAT_RELEASE_IMAGE"' in voicechat_runbook
     assert "configure_native_cuekb.py --apply" in script
     nginx = (ROOT / "deploy/nginx.conf").read_text()
     assert "listen 8087 ssl;" in nginx

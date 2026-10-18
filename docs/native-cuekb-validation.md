@@ -46,35 +46,20 @@
 
 ## 3. 从宿主机在 API 容器内运行固定 WAV
 
-`scripts/validate_native_cuekb.py` 必须在 API 容器内运行；宿主机通过 `docker exec` 创建目录和执行程序，通过标准输入把文件写入容器，只用 `docker cp` 从容器导出结果。脚本通过 API 容器的 loopback HTTP/WS 进入实际 Portal Gateway，工具仍由本项目调用真实 CueKB，不生成合成工具结果。它为一组顺序录音创建一条会话，可检查连续追问。
+`scripts/validate_native_cuekb.py`、依赖脚本、`cases.json` 和四段固定 WAV 在构建 API 镜像时写入只读 `/app`。验证时不创建输入目录、不从宿主机复制测试文件，也不依赖宿主机 Python；只有报告和回答 WAV 写入容器可写的 `/tmp`。脚本通过 API 容器的 loopback HTTP/WS 进入实际 Portal Gateway，工具仍由本项目调用真实 CueKB，不生成合成工具结果。它为一组顺序录音创建一条会话，可检查连续追问。
 
 以下命令都从仓库根目录在**宿主机的同一个 shell** 中执行。示例使用生产 Compose 中的 `api` 服务和独立的 `nemotron-labs-voicechat` 容器。不要使用 `c5f` 之类的短 ID；容器重建后短 ID 会改变。
 
-### 3.1 准备宿主机输入
+### 3.1 定位当前容器
 
-在忽略目录 `artifacts/native-cuekb/` 放入 `cases.json` 和授权 WAV。WAV 路径相对 `cases.json`；例如：
-
-```json
-[
-  {"case_id": "greeting", "wav": "hello.wav", "expected_tool": null},
-  {"case_id": "general_tech", "wav": "tcp_udp.wav", "expected_tool": null},
-  {"case_id": "product", "wav": "product.wav", "expected_tool": "search_knowledge_base", "query_terms": ["AX"]},
-  {"case_id": "follow_up", "wav": "follow_up.wav", "expected_tool": "search_knowledge_base", "query_terms": ["AX"]}
-]
-```
-
-将 AX 替换为录音和知识库中使用的真实标识。宿主机先检查必要文件和容器：
+宿主机只需定位 Compose 当前 API 容器：
 
 ```sh
 COMPOSE='docker compose --env-file .env -f deploy/compose.production.yaml'
 API_CONTAINER=$($COMPOSE ps -q api)
 VOICE_CONTAINER=nemotron-labs-voicechat
-HOST_CASE_DIR=artifacts/native-cuekb
 
 test -n "$API_CONTAINER"
-test -f "$HOST_CASE_DIR/cases.json"
-test -f scripts/validate_native_cuekb.py
-test -f scripts/probe_voicechat.py
 docker inspect -f '{{.State.Running}} {{.Name}}' "$API_CONTAINER" "$VOICE_CONTAINER"
 ```
 
@@ -84,27 +69,15 @@ docker inspect -f '{{.State.Running}} {{.Name}}' "$API_CONTAINER" "$VOICE_CONTAI
 
 ```sh
 docker exec "$API_CONTAINER" \
-  python /app/scripts/verify_deployment.py \
-    --base-url http://127.0.0.1:8000 \
-    --expect-cuekb-native
+  sh -c '
+    python /app/scripts/verify_deployment.py \
+      --base-url http://127.0.0.1:8000 \
+      --expect-cuekb-native >/tmp/native-cuekb-deployment.json &&
+    echo deployment_check=passed
+  '
 ```
 
-预期退出码为 0，JSON 至少满足：
-
-```json
-{
-  "readiness": {
-    "status": "ready",
-    "text_configured": false,
-    "voice_configured": true,
-    "voice_policy": {
-      "provider": "nvidia",
-      "qa_execution_mode": "dual_tools",
-      "answer_policy": "general_qa"
-    }
-  }
-}
-```
+预期只输出 `deployment_check=passed`。失败时只提供命令的错误行；仅在错误行不足以定位时再读取 `/tmp/native-cuekb-deployment.json`。
 
 随后直接读取实际 capabilities，确认持久化目录已切换到完整名称：
 
@@ -117,11 +90,11 @@ with urlopen("http://127.0.0.1:8000/api/v1/capabilities", timeout=5) as response
     value = json.load(response)
 keys = ("provider", "agent_provider", "qa_execution_mode", "answer_policy",
         "qa_toolset_version", "native_tools", "voice_available", "is_mock")
-print(json.dumps({key: value.get(key) for key in keys}, indent=2))
+print(" ".join(f"{key}={value.get(key)}" for key in keys))
 PY
 ```
 
-预期 `native_tools` 严格等于 `["search_knowledge_base"]`，`agent_provider=disabled`、`voice_available=true`、`is_mock=false`。若仍是旧目录，从宿主机在当前 API 容器内执行：
+预期只输出一行；其中 `native_tools=['search_knowledge_base']`、`agent_provider=disabled`、`voice_available=True`、`is_mock=False`。若仍是旧目录，从宿主机在当前 API 容器内执行：
 
 ```sh
 docker exec "$API_CONTAINER" \
@@ -130,88 +103,33 @@ docker exec "$API_CONTAINER" \
 
 预期 JSON 的 `target_names` 为 `["search_knowledge_base"]`，`applied=true`；首次迁移时 `changed=true`，已经应用过时 `changed=false`。执行后重新运行本节 capabilities 命令，并为验证新建 Conversation；不要复用旧会话。
 
-### 3.3 创建容器临时目录并流式写入验证材料
+### 3.3 核对镜像内置验证材料
 
-生产 API 使用只读 rootfs，`/app` 不能写；Compose 只将 `/tmp` 挂为可写 tmpfs。现场 Docker 对 tmpfs 目标执行宿主机到容器的 `docker cp` 会稳定返回 `container rootfs is marked read-only` 或 `no such directory`，因此入站文件统一通过 `docker exec -i` 的标准输入写入。先在**当前完整容器 ID**中创建目标目录并验证可写：
+生产 API 使用只读 rootfs；固定输入应全部来自镜像 `/app/validation/native-cuekb`。从宿主机执行：
 
 ```sh
-set -e
-
-docker exec "$API_CONTAINER" sh -c '
-  rm -rf /tmp/native-cuekb &&
-  mkdir -p /tmp/native-cuekb/scripts \
-           /tmp/native-cuekb/cases \
-           /tmp/native-cuekb/output/replies &&
-  test -w /tmp/native-cuekb/output
-'
-
-write_to_api() {
-  source_file=$1
-  target_file=$2
-  test -f "$source_file" || return 1
-  docker exec -i "$API_CONTAINER" \
-    sh -c 'umask 022; cat > "$1"' sh "$target_file" \
-    < "$source_file" || return 1
-  host_sha=$(sha256sum "$source_file" | cut -d' ' -f1)
-  container_sha=$(docker exec "$API_CONTAINER" sha256sum "$target_file" | cut -d' ' -f1)
-  test "$host_sha" = "$container_sha" || return 1
-  echo "$container_sha  $target_file"
-}
-
-write_to_api scripts/validate_native_cuekb.py \
-  /tmp/native-cuekb/scripts/validate_native_cuekb.py
-write_to_api scripts/probe_voicechat.py \
-  /tmp/native-cuekb/scripts/probe_voicechat.py
-write_to_api scripts/verify_deployment.py \
-  /tmp/native-cuekb/scripts/verify_deployment.py
-write_to_api "$HOST_CASE_DIR/cases.json" \
-  /tmp/native-cuekb/cases/cases.json
-
-set -- "$HOST_CASE_DIR"/*.wav
-test -e "$1"
-for wav in "$HOST_CASE_DIR"/*.wav; do
-  filename=$(basename "$wav")
-  write_to_api "$wav" "/tmp/native-cuekb/cases/$filename"
-done
-
 docker exec -i "$API_CONTAINER" python - <<'PY'
 import json
 from pathlib import Path
 
-path = Path("/tmp/native-cuekb/cases/cases.json")
+root = Path("/app/validation/native-cuekb")
+path = root / "cases.json"
 cases = json.loads(path.read_text())
 values = [(case["case_id"], case.get("expected_tool")) for case in cases]
-print(values)
 assert all(value in (None, "search_knowledge_base") for _, value in values), values
-PY
-
-docker exec "$API_CONTAINER" sh -c '
-  test -r /tmp/native-cuekb/scripts/validate_native_cuekb.py &&
-  test -r /tmp/native-cuekb/scripts/probe_voicechat.py &&
-  test -r /tmp/native-cuekb/scripts/verify_deployment.py &&
-  test -r /tmp/native-cuekb/cases/cases.json &&
-  find /tmp/native-cuekb -maxdepth 3 -type f -print
-'
-```
-
-每次 `write_to_api` 都应打印一个 SHA-256，且函数已验证宿主机源文件与容器目标文件逐字节相同。配置预检应显示问候和通用问题对应 `None`，所有产品问题对应 `search_knowledge_base`；该字段只是验证期望值，不会修改 CueKB 后端名称。最后至少列出三个 Python 文件、`cases.json` 和其中引用的全部 WAV。任何命令非零都停止验证；不要再改用宿主机到容器的 `docker cp`。
-
-若验证脚本报告 `expected_tool must be null or search_knowledge_base`，说明复制进去的是旧 `cases.json`。从宿主机重新执行第 3.1 节预检和本节的 `write_to_api "$HOST_CASE_DIR/cases.json" ...`，然后在容器内确认：
-
-```sh
-docker exec -i "$API_CONTAINER" python - <<'PY'
-import json
-from pathlib import Path
-
-path = Path("/tmp/native-cuekb/cases/cases.json")
-cases = json.loads(path.read_text())
-values = [(case["case_id"], case["expected_tool"]) for case in cases]
-print(values)
-assert all(value in (None, "search_knowledge_base") for _, value in values)
+required = {
+    "/app/scripts/validate_native_cuekb.py",
+    "/app/scripts/probe_voicechat.py",
+    *(str(root / case["wav"]) for case in cases),
+}
+missing = sorted(item for item in required if not Path(item).is_file())
+assert not missing, missing
+print("validation_bundle=passed")
+print("cases=" + ",".join(f"{case_id}:{tool or 'none'}" for case_id, tool in values))
 PY
 ```
 
-预期问候和通用问题对应 `None`，所有产品问题对应 `search_knowledge_base`。
+预期只输出两行：`validation_bundle=passed`，以及四个 case 的名称和期望工具。缺文件、旧工具名或 JSON 错误都应在这里停止；修正源码后重新构建 API 镜像，不再现场复制单个文件。
 
 ### 3.4 在 API 容器内执行端到端验证
 
@@ -222,61 +140,52 @@ VALIDATION_START=$(date -u +%Y-%m-%dT%H:%M:%SZ)
 
 set +e
 docker exec \
-  -w /tmp/native-cuekb \
-  -e PYTHONPATH=/tmp/native-cuekb:/app/apps/api:/app \
+  -w /app \
+  -e PYTHONPATH=/app/apps/api:/app \
   "$API_CONTAINER" \
   sh -c '
     test -n "$PUBLIC_ORIGIN" &&
     python scripts/validate_native_cuekb.py \
       --base-url http://127.0.0.1:8000 \
       --origin "$PUBLIC_ORIGIN" \
-      --cases /tmp/native-cuekb/cases/cases.json \
-      --audio-dir /tmp/native-cuekb/output/replies \
-      --output /tmp/native-cuekb/output/report.json
+      --cases /app/validation/native-cuekb/cases.json \
+      --audio-dir /tmp/native-cuekb/replies \
+      --output /tmp/native-cuekb/report.json
   '
 VALIDATION_EXIT=$?
 set -e
 echo "exit_code=$VALIDATION_EXIT"
 ```
 
-预期 `exit_code=0`。脚本保持 80 ms 送帧，WAV 结束后继续送静音推进推理；不会在音频前段返回时提前断开。单个 case 默认上限 90 秒，可加 `--case-timeout 180`，不能超过 180 秒。过长语料组应拆开；需要验证指代的录音必须保留在同一组。
+验证脚本默认只打印一行总状态和每个 case 一行核心字段，最后打印 `exit_code`；完整 JSON 只写入 `/tmp/native-cuekb/report.json`。正常回传只需要这六行，不要提供完整报告。需要人工审计完整 JSON 时才加 `--print-report`。脚本保持 80 ms 送帧，WAV 结束后继续送静音推进推理；不会在音频前段返回时提前断开。单个 case 默认上限 90 秒，不要为隐藏结束边界故障而直接提高上限。
 
-无论退出码是否为 0，都在容器内打印紧凑判定，不能只看 shell 退出码：
-
-```sh
-docker exec -i "$API_CONTAINER" python - <<'PY'
-import json
-from pathlib import Path
-
-report = json.loads(Path("/tmp/native-cuekb/output/report.json").read_text())
-print("report_status=", report.get("status"), "error_type=", report.get("error_type"))
-for case in report.get("cases", []):
-    print(
-        case.get("case_id"),
-        "status=" + str(case.get("status")),
-        "selection=" + str(case.get("selection")),
-        "tools=" + str(case.get("actual_tools")),
-        "arguments=" + str(case.get("arguments")),
-        "retrieval=" + str(case.get("retrieval")),
-        "speech=" + str(case.get("speech_transport")),
-        "portal_error=" + str(case.get("portal_error")),
-    )
-PY
-```
-
-预期总状态为 `observed`；问候/通用问题的 `selection=passed`、`tools=[]`、`retrieval=not_applicable`、`speech=passed`；产品问题的 `selection=passed`、`tools=['search_knowledge_base']`、`arguments` 不为 `failed/unverified`、`retrieval` 不为 `failed/unverified`、`speech=passed`。任何 `VOICE_TOOL_UNKNOWN`、`ConnectError`、空 `cases` 或 `status=partial` 都是不通过，先按第 4、6 节定位。
+预期总状态为 `observed`；问候/通用问题的 `selection=passed`、`tools=[]`、`retrieval=not_applicable`、`speech=passed`；产品问题的 `selection=passed`、`tools=['search_knowledge_base']`、`arguments` 不为 `failed/unverified`、`retrieval=passed`、`speech=passed`。任何 `VOICE_TOOL_UNKNOWN`、`ConnectError`、空 `cases`、产品检索不是 `passed` 或 `status=partial` 都是不通过，先按第 4、6 节定位。
 
 `CUEKB_VOICE_EVIDENCE_UNAVAILABLE` 表示 CueKB 已命中，但所有候选证据都因上下文截断/省略、6000 字节语音证据预算或非英文字符而不能安全发送给 VoiceChat。英文资料中的弯引号、长短破折号、间隔点及 `>=`/`<=` 对应的 Unicode 符号会规范为等价 ASCII；其他 Unicode 内容仍拒绝。该原因必须报告为 `retrieval=insufficient_evidence`，不能因原始 `hit_count>0` 记为通过。
 
-### 3.5 把报告和回答录音复制回宿主机
+现场反馈遵循最小证据原则：
+
+| 结果 | 需要提供的输出 |
+| --- | --- |
+| 全部通过 | 验证命令的一行总状态、四行 case 状态和 `exit_code=0` |
+| `VOICE_TOOL_UNKNOWN` | 失败 case 行，以及数据库中该轮的 `created_at/emitted_tool/reason_code/stage/input_item_id` |
+| `CUEKB_*` 或检索不是 `passed` | 失败 case 行、`reason`、`traces`，以及 API 日志中同 trace 的一行 `cuekb_response_validated` |
+| `TimeoutError` | 总状态、超时 case 行，以及同一时间窗口内 VoiceChat 的 `Function call decoded`、工具结果接收和 audio done/EOS 匹配行 |
+| 口述内容可疑 | 对应 case 行、该 case 的回答 WAV和人工听写的疑点句；不要先提供其他 case 音频 |
+
+除非上述核心字段互相矛盾或无法定位，不提供完整 `report.json`、完整数据库记录、全量 API 日志或全量 VoiceChat 日志。日志提取必须先用验证起始时间、trace、sequence 或 conversation ID 限定窗口，再用明确事件名过滤。
+
+### 3.5 可选：导出报告和需要听音的回答
+
+控制台核心字段足以完成机器判定时跳过本节。只有需要归档报告或人工听音时才从容器导出结果；固定输入始终留在镜像内。
 
 ```sh
 HOST_RESULT_DIR=artifacts/native-cuekb/result-$(date -u +%Y%m%dT%H%M%SZ)
 mkdir -p "$HOST_RESULT_DIR/replies"
 
-docker cp "${API_CONTAINER}:/tmp/native-cuekb/output/report.json" \
+docker cp "${API_CONTAINER}:/tmp/native-cuekb/report.json" \
   "$HOST_RESULT_DIR/report.json"
-docker cp "${API_CONTAINER}:/tmp/native-cuekb/output/replies/." \
+docker cp "${API_CONTAINER}:/tmp/native-cuekb/replies/." \
   "$HOST_RESULT_DIR/replies/"
 
 test -s "$HOST_RESULT_DIR/report.json"
@@ -298,7 +207,7 @@ echo "$HOST_RESULT_DIR"
 | 知识检索 | ToolRun/CueKB trace/来源；鉴权、超时、格式失败不等同于无命中，insufficient/conflicting 不得生成肯定事实 |
 | 语音回答 | 同 call 回填、音频/结束事件、实际口述与证据、数字/单位/否定/版本条件及听音；与工具选择单独判定 |
 
-报告 selection/arguments/retrieval/speech_transport 分开记录；retrieval_relevance、input_transcription、spoken_faithfulness 保持人工复核。退出码 0 仅表示已观察到预期路由、参数字面条件、非失败检索和音频结束，不能表示答案事实、语义、发音或实际播放全部正确。
+报告 selection/arguments/retrieval/speech_transport 分开记录；retrieval_relevance、input_transcription、spoken_faithfulness 保持人工复核。退出码 0 仅表示已观察到预期路由、参数字面条件、产品检索通过和音频结束，不能表示答案事实、语义、发音或实际播放全部正确。
 
 精简证据只选择完整 ASCII 来源/context，不从句中截断或音译型号/技术事实；保留 document/chunk/version/trace。不可用来源返回受控不足说明，不调用额外模型翻译或回答。unassessed 保留原值而不宣称服务已验证充分；partial 限定回答范围，检索失败或局部结果不证明事实不存在。
 
@@ -415,10 +324,8 @@ async def main():
             runtime = BusinessRuntime(settings, ToolRegistry(settings, client, store))
             snapshot = await runtime.catalog.snapshot()
             update = session_update(tools=snapshot.definitions, answer_policy=settings.answer_policy)
-            target = Path("/tmp/native-cuekb/direct")
-            target.mkdir(parents=True, exist_ok=True)
-            (target / "tools.json").write_text(json.dumps(update["session"]["tools"]))
-            (target / "instructions.txt").write_text(update["session"]["instructions"])
+            Path("/tmp/native-cuekb-tools.json").write_text(json.dumps(update["session"]["tools"]))
+            Path("/tmp/native-cuekb-instructions.txt").write_text(update["session"]["instructions"])
             print("tool_names=", [item["name"] for item in update["session"]["tools"]])
     finally:
         await store.engine.dispose()
@@ -427,57 +334,28 @@ asyncio.run(main())
 PY
 ```
 
-预期只打印 `tool_names= ['search_knowledge_base']`。在宿主机指定官方客户端和一条产品 WAV，然后复制到 VoiceChat 容器的 `/tmp`：
+预期只打印 `tool_names= ['search_knowledge_base']`。官方客户端和固定 WAV 已随 VoiceChat 派生镜像写入 `/opt/voice-validation`；运行时只把刚生成的动态 tools/instructions 通过标准输入送到 VoiceChat 的 `/tmp`：
 
 ```sh
 set -e
+set -o pipefail
 
-VOICECHAT_CLIENT=/actual/NeMo-Speech.cpp/clients/voicechat/nemotron-voicechat-client.py
-DIRECT_WAV="$HOST_CASE_DIR/product.wav"
+docker exec "$API_CONTAINER" cat /tmp/native-cuekb-tools.json \
+  | docker exec -i "$VOICE_CONTAINER" sh -c 'cat > /tmp/native-cuekb-tools.json'
+docker exec "$API_CONTAINER" cat /tmp/native-cuekb-instructions.txt \
+  | docker exec -i "$VOICE_CONTAINER" sh -c 'cat > /tmp/native-cuekb-instructions.txt'
 
-test -f "$VOICECHAT_CLIENT"
-test -f "$DIRECT_WAV"
-
-docker exec "$VOICE_CONTAINER" sh -c \
-  'rm -rf /tmp/native-cuekb && mkdir -p /tmp/native-cuekb'
-
-write_to_voicechat() {
-  source_file=$1
-  target_file=$2
-  docker exec -i "$VOICE_CONTAINER" \
-    sh -c 'umask 022; cat > "$1"' sh "$target_file" \
-    < "$source_file" || return 1
-  host_sha=$(sha256sum "$source_file" | cut -d' ' -f1)
-  container_sha=$(docker exec "$VOICE_CONTAINER" sha256sum "$target_file" | cut -d' ' -f1)
-  test "$host_sha" = "$container_sha" || return 1
-  echo "$container_sha  $target_file"
-}
-
-write_to_voicechat "$VOICECHAT_CLIENT" \
-  /tmp/native-cuekb/nemotron-voicechat-client.py
-write_to_voicechat "$DIRECT_WAV" \
-  /tmp/native-cuekb/product.wav
-
-docker cp "${API_CONTAINER}:/tmp/native-cuekb/direct/tools.json" \
-  /tmp/native-cuekb-tools.json
-docker cp "${API_CONTAINER}:/tmp/native-cuekb/direct/instructions.txt" \
-  /tmp/native-cuekb-instructions.txt
-write_to_voicechat /tmp/native-cuekb-tools.json \
-  /tmp/native-cuekb/tools.json
-write_to_voicechat /tmp/native-cuekb-instructions.txt \
-  /tmp/native-cuekb/instructions.txt
-
-docker exec -w /tmp/native-cuekb "$VOICE_CONTAINER" \
-  python nemotron-voicechat-client.py \
+docker exec "$VOICE_CONTAINER" \
+  python /opt/voice-validation/nemotron-voicechat-client.py \
   --server 127.0.0.1:9000 \
-  --input-file /tmp/native-cuekb/product.wav \
+  --input-file /opt/voice-validation/native-cuekb/black_pig_crisp_heart.wav \
   --no-playback \
-  --instructions /tmp/native-cuekb/instructions.txt \
-  --tools /tmp/native-cuekb/tools.json \
+  --instructions /tmp/native-cuekb-instructions.txt \
+  --tools /tmp/native-cuekb-tools.json \
   --ignore-tool-calls \
   --trailing-silence 10 \
-  --function-text-output /tmp/native-cuekb/function_calls.jsonl \
-  --conversation-output /tmp/native-cuekb/conversation.jsonl
+  --function-text-output /tmp/native-cuekb-function-calls.jsonl \
+  --conversation-output /tmp/native-cuekb-conversation.jsonl
 ```
 
 执行后在 VoiceChat 容器内检查并复制回宿主机：
@@ -487,7 +365,7 @@ docker exec -i "$VOICE_CONTAINER" python - <<'PY'
 import json
 from pathlib import Path
 
-path = Path("/tmp/native-cuekb/function_calls.jsonl")
+path = Path("/tmp/native-cuekb-function-calls.jsonl")
 assert path.stat().st_size > 0, "function_calls.jsonl is empty"
 events = [json.loads(line) for line in path.read_text().splitlines() if line.strip()]
 names = [event.get("name") for event in events]
@@ -495,11 +373,10 @@ print("function_call_names=", names)
 assert names and all(name == "search_knowledge_base" for name in names), names
 PY
 
-docker cp "${VOICE_CONTAINER}:/tmp/native-cuekb/function_calls.jsonl" \
+docker cp "${VOICE_CONTAINER}:/tmp/native-cuekb-function-calls.jsonl" \
   "$HOST_RESULT_DIR/function_calls.jsonl"
-docker cp "${VOICE_CONTAINER}:/tmp/native-cuekb/conversation.jsonl" \
+docker cp "${VOICE_CONTAINER}:/tmp/native-cuekb-conversation.jsonl" \
   "$HOST_RESULT_DIR/conversation.jsonl"
-rm -f /tmp/native-cuekb-tools.json /tmp/native-cuekb-instructions.txt
 ```
 
 预期打印 `function_call_names= ['search_knowledge_base']`；若同一输入产生多个调用，每一项也必须是该完整名称。
@@ -511,8 +388,11 @@ rm -f /tmp/native-cuekb-tools.json /tmp/native-cuekb-instructions.txt
 确认第 3.5、6.2 节证据已落到宿主机忽略目录后执行：
 
 ```sh
-docker exec "$API_CONTAINER" rm -rf /tmp/native-cuekb
-docker exec "$VOICE_CONTAINER" rm -rf /tmp/native-cuekb
+docker exec "$API_CONTAINER" rm -rf /tmp/native-cuekb \
+  /tmp/native-cuekb-tools.json /tmp/native-cuekb-instructions.txt
+docker exec "$VOICE_CONTAINER" rm -f /tmp/native-cuekb-tools.json \
+  /tmp/native-cuekb-instructions.txt /tmp/native-cuekb-function-calls.jsonl \
+  /tmp/native-cuekb-conversation.jsonl
 ```
 
-预期两个命令退出码均为 0。清理只删除验证时复制到容器 tmpfs 的脚本、输入和输出，不删除宿主机结果或应用数据。
+预期两个命令退出码均为 0。清理只删除运行时输出和动态 session 快照；镜像内固定脚本/WAV 是只读发布内容，不需要也不能现场删除。

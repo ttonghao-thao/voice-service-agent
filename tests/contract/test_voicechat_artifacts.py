@@ -3,7 +3,7 @@ import struct
 
 import pytest
 
-from scripts.inspect_voicechat_artifacts import checkpoint_header, inspect
+from scripts.inspect_voicechat_artifacts import checkpoint_header, inspect, summary_lines
 
 
 def artifacts(tmp_path, *, function_outputs=True, function_head=True):
@@ -30,6 +30,17 @@ def test_distinguishes_missing_head_from_missing_runtime_output_contract(tmp_pat
     assert report["checks"]["function_head_in_supplied_headers"] == ("present" if function_head else "missing")
     assert report["checks"]["atomic_special_token_entries"] == "passed"
     assert "weight_sha256" not in json.dumps(report)
+
+
+def test_console_summary_contains_only_decision_fields(tmp_path):
+    report = inspect(*artifacts(tmp_path))
+
+    lines = list(summary_lines(report))
+
+    assert len(lines) == 3
+    assert lines[0].startswith("artifact_checks=")
+    assert "paper_weight_alignment=" in lines[1]
+    assert lines[2] == "checkpoint_count=1 missing_required_outputs=[]"
 
 
 @pytest.mark.parametrize("outputs,contract,scores,missing", [
