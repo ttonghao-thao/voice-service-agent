@@ -60,7 +60,7 @@ docker exec "$API_CONTAINER" \
   python /app/scripts/run_native_cuekb_validation.py
 ```
 
-必须看到 `preflight=passed provider=nvidia mode=dual_tools policy=general_qa tools=search_knowledge_base cases=4`，随后根据四条 case 和最终 `fault/focus` 判断。完整输出契约见 [原生单工具验证](native-cuekb-validation.md#3-从宿主机用一个入口完成-api-项目验证)。
+必须看到 `preflight=passed provider=nvidia mode=dual_tools policy=general_qa tools=search_knowledge_base cases=4`，随后根据四条 case 和最终 `fault/focus` 判断。完整输出契约见 [原生单工具验证](native-cuekb-validation.md#2-从宿主机运行一次验证)。
 
 **结束旧通话并新建 Conversation。** 模式/策略在创建时快照，旧 knowledge_required 会话不会因重连或刷新页面变成 general_qa。
 
@@ -136,7 +136,7 @@ docker compose --env-file .env -f deploy/compose.production.yaml logs --tail=200
 
 源码依据及证据边界见 [NVIDIA 核对记录](voicechat-upstream-analysis.md)。先记录实际镜像 digest、挂载源码和模板 hash；以下脚本不会远程证明版本，不自动开启能力或部署服务。
 
-本期真实 CueKB 验收使用 [API 容器单入口流程](native-cuekb-validation.md#3-从宿主机用一个入口完成-api-项目验证)。以下是额外的合成结果协议探针，同样从宿主机通过 `docker exec` 在 API 容器内运行，不要求宿主机 Python。脚本和固定 WAV 已包含在 API 镜像中；多工具 `session.update` 直接由容器内实际持久化目录生成，不再从宿主机复制脚本、管理员 JSON 或 WAV：
+本期真实 CueKB 验收使用 [API 容器单入口流程](native-cuekb-validation.md#2-从宿主机运行一次验证)。以下是额外的合成结果协议探针，同样从宿主机通过 `docker exec` 在 API 容器内运行，不要求宿主机 Python。脚本和固定 WAV 已包含在 API 镜像中；多工具 `session.update` 直接由容器内实际持久化目录生成，不再从宿主机复制脚本、管理员 JSON 或 WAV：
 
 ```sh
 API_CONTAINER=$(docker compose --env-file .env \

@@ -317,7 +317,8 @@ def test_pcm_through_real_adapter_native_call_cuekb_and_voice_reply(tmp_path, sp
                 assert turn["answer"]["verification_timing"] == "after_audio"
                 assert len(requests) == len(results) == 1
                 assert results[0]["call_id"] == "native-call"
-                assert json.loads(results[0]["output"])["status"] == "evidence_ready"
+                assert json.loads(results[0]["output"])["status"] == "ok"
+                assert "trace_id" not in json.loads(results[0]["output"])
                 query = json.loads(requests[0].content)
                 assert "How many connections does Product AX support?" in query["query"]
                 assert query["filters"]["product_model"] == "AX"
@@ -418,6 +419,133 @@ async def test_recording_validator_uses_portal_business_results_not_synthetic_re
     assert row["speech_transport"] == "passed" and row["spoken_faithfulness"] == "manual_review_required"
     assert received[0]["call_id"] == "call"
     assert len(searches) == 1 and searches[0]["kb_ids"] == [KB]
-    assert json.loads(received[0]["output"])["schema_version"] == "cuekb-evidence-v1"
+    assert json.loads(received[0]["output"])["sources"][0]["text"] == "Product AX supports 10 connections."
     stored = (tmp_path / "report.json").read_text()
     assert "Authorization" not in stored and "server-only" not in stored
+
+
+@pytest.mark.parametrize("answer_available", [True, False])
+async def test_continuous_native_conversation_survives_delayed_answers_and_repeated_acks(tmp_path, answer_available):
+    """Real API/WS transport, controlled provider. No claim about GPU semantics."""
+    import asyncio
+
+    from scripts.simulate_full_flow import http_server
+    from scripts.validate_native_cuekb import passed, run
+
+    queries, results, registrations, silence_during_wait = [], [], [], []
+    cuekb = FastAPI()
+
+    @cuekb.post("/v1/search")
+    async def search(request: Request):
+        body = await request.json()
+        queries.append(body["query"])
+        return evidence()
+
+    async def voicechat(ws):
+        await ws.send(json.dumps({"type": "session.created"}))
+        registration = json.loads(await ws.recv())["session"]
+        registrations.append(registration)
+        await ws.send(json.dumps({"type": "session.updated", "session": registration}))
+        seen, workers = set(), set()
+        waiting = False
+
+        async def speak(rid, text):
+            await ws.send(json.dumps({"type": "response.output_audio_transcript.done", "response_id": rid, "transcript": text}))
+            await ws.send(json.dumps({"type": "response.output_audio.delta", "response_id": rid,
+                                      "delta": base64.b64encode(b"\x01\x00" * 1920).decode()}))
+            await ws.send(json.dumps({"type": "response.output_audio.done", "response_id": rid}))
+
+        async def answer(n):
+            nonlocal waiting
+            waiting = True
+            # Exceeds the old 100ms provider answer deadline while audio keeps flowing.
+            await asyncio.sleep(.3)
+            await speak(f"ack-{n}-1", "Let me check the documentation.")
+            await speak(f"ack-{n}-2", "Let me check the documentation.")
+            if answer_available:
+                await speak(f"answer-{n}", "Product AX supports 10 connections.")
+            waiting = False
+
+        try:
+            async for raw in ws:
+                event = json.loads(raw)
+                if event["type"] == "input_audio_buffer.append":
+                    n = base64.b64decode(event["audio"])[0]
+                    if n == 0 and waiting:
+                        silence_during_wait.append(True)
+                    if n == 0 or n in seen:
+                        continue
+                    seen.add(n)
+                    await ws.send(json.dumps({"type": "input_audio_buffer.speech_started", "item_id": f"i{n}"}))
+                    utterances = {1: "Hello.", 2: "How many connections does Product AX support?",
+                                  3: "Thank you.", 4: "What was its connection limit again?"}
+                    await ws.send(json.dumps({"type": "conversation.item.input_audio_transcription.completed",
+                                              "item_id": f"i{n}", "transcript": utterances[n]}))
+                    if n in (1, 3):
+                        await speak(f"answer-{n}", "Hello." if n == 1 else "You are welcome.")
+                    else:
+                        call = {"type": "response.function_call_arguments.done", "response_id": f"tool-{n}",
+                                "call_id": f"call-{n}", "name": "search_knowledge_base",
+                                "arguments": json.dumps({"query": "Product AX connection limit"})}
+                        await ws.send(json.dumps(call))
+                        await ws.send(json.dumps(call))  # same ID must execute only once
+                elif event["type"] == "conversation.item.create":
+                    results.append(event["item"])
+                    if answer_available and event["item"]["call_id"] == "call-2":
+                        # A new native ID with a refined query must execute,
+                        # even while the previous answer observer is pending.
+                        await ws.send(json.dumps({
+                            "type": "response.function_call_arguments.done", "response_id": "refine-2",
+                            "call_id": "refined-2", "name": "search_knowledge_base",
+                            "arguments": json.dumps({"query": "Product AX maximum simultaneous connections"}),
+                        }))
+                        continue
+                    task = asyncio.create_task(answer(int(event["item"]["call_id"].split("-")[1])))
+                    workers.add(task)
+                    task.add_done_callback(workers.discard)
+        finally:
+            for task in workers:
+                task.cancel()
+            await asyncio.gather(*workers, return_exceptions=True)
+
+    cases = []
+    for n in range(1, 5):
+        with wave.open(str(tmp_path / f"input-{n}.wav"), "wb") as wav:
+            wav.setparams((1, 2, 24000, 0, "NONE", "not compressed"))
+            wav.writeframes(bytes([n, 0]) * 1920)
+        cases.append({"case_id": str(n), "wav": f"input-{n}.wav",
+                      "expected_tool": "search_knowledge_base" if n in (2, 4) else None})
+    case_file = tmp_path / "cases.json"
+    case_file.write_text(json.dumps(cases))
+    async with serve(voicechat, "127.0.0.1", 0) as endpoint, http_server(cuekb) as cuekb_url:
+        s = configuration(tmp_path, voice_provider="nvidia", voicechat_api_key="fixture",
+            voicechat_ws_url=f"ws://127.0.0.1:{endpoint.sockets[0].getsockname()[1]}",
+            qa_provider_answer_timeout_ms=100)
+        s.cuekb_base_url = cuekb_url
+        app = create_app(s)
+        async with http_server(app) as base:
+            report = await run(Namespace(base_url=base, origin=s.public_origin, cases=case_file,
+                case_timeout=5 if answer_available else 1, audio_dir=tmp_path / "audio", output=tmp_path / "report.json"))
+            # Closing the connection also settles a pending answer observer.
+            for _ in range(100):
+                if not app.state.voice.sessions and not app.state.coordinator.awaiting_answers:
+                    break
+                await asyncio.sleep(.01)
+            assert not app.state.voice.sessions
+            assert not app.state.coordinator.awaiting_answers
+    if not answer_available:
+        assert not passed(report)
+        assert report["error_type"] == "TimeoutError"
+        assert len(report["cases"]) == 2
+        assert report["cases"][-1]["speech_transport"] == "passed"
+        assert report["cases"][-1]["answer_complete"] == "unverified"
+        return
+    assert passed(report), report
+    assert len(registrations) == 1
+    assert len(queries) == len(results) == 3
+    assert queries[1].splitlines()[0] == "Product AX maximum simultaneous connections"
+    assert [r["call_id"] for r in results] == ["call-2", "refined-2", "call-4"]
+    assert silence_during_wait
+    assert all(row["answer_complete"] == "passed" for row in report["cases"])
+    assert [r["answer_response_id"] for r in report["cases"]] == [f"answer-{n}" for n in range(1, 5)]
+    assert all(row.get("reason_code") is None for row in report["cases"])

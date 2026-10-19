@@ -213,136 +213,37 @@ async def test_function_channel_forwards_registered_tool_name_without_rewriting(
 
 
 @pytest.mark.asyncio
-async def test_duplicate_tool_call_reuses_one_api_call_and_cached_result_per_input():
+async def test_distinct_model_queries_are_forwarded_without_result_replay():
     session = server.AudioSession("test", Socket())
     session.tools = json.dumps([{"name": "search_knowledge_base", "ack_messages": [ACK]}])
-    session._input_item_id = "input-1"
-    call_text = json.dumps([{
-        "name": "search_knowledge_base",
-        "arguments": {"query": "Black Pig Crisp Heart details"},
-    }])
-
-    await session._process_function_text(call_text)
-    await session._process_function_text(json.dumps([{
-        "name": "search_knowledge_base",
-        "arguments": {"query": "Please find the Black Pig product details"},
-    }]))
-    calls = [event for event in pending(session)
-             if event["type"] == "response.function_call_arguments.done"]
-    assert len(calls) == 1
-
-    await session.handle_function_call_output({
-        "type": "function_call_output",
-        "call_id": calls[0]["call_id"],
-        "output": '{"status":"evidence_ready"}',
-    })
-    await session._process_function_text(json.dumps([{
-        "name": "search_knowledge_base",
-        "arguments": {"query": "Black Pig price and storage"},
-    }]))
-    assert not [event for event in pending(session)
-                if event["type"] == "response.function_call_arguments.done"]
-    assert len(session.function_call_output) == 1
-
-    signature = session._function_call_signatures[calls[0]["call_id"]]
-    session.function_call_output.clear()
-    session._function_signature_states[signature] = "delivered"
-    await session._process_function_text(call_text)
-    assert len(session.function_call_output) == 1
-    assert session.function_call_output[0]["output"] == '{"status":"evidence_ready"}'
-
-    session.function_call_output.clear()
-    session._function_signature_states[signature] = "delivered"
-    with pytest.raises(ValueError, match="cached result replay limit"):
-        await session._process_function_text(call_text)
-
-    await session._emit_speech_started()
-    pending(session)
-    await session._process_function_text(call_text)
-    next_turn = [event for event in pending(session)
-                 if event["type"] == "response.function_call_arguments.done"]
-    assert len(next_turn) == 1 and next_turn[0]["call_id"] != calls[0]["call_id"]
-    assert json.loads(next_turn[0]["arguments"]) == {"query": "Black Pig Crisp Heart details"}
+    for query in ("Product AX price", "Product BX storage", "Product AX price"):
+        await session._process_function_text(json.dumps([{
+            "name": "search_knowledge_base", "arguments": {"query": query},
+        }]))
+    calls = [e for e in pending(session) if e["type"] == "response.function_call_arguments.done"]
+    assert len(calls) == len({e["call_id"] for e in calls}) == 3
+    assert [json.loads(e["arguments"])["query"] for e in calls] == [
+        "Product AX price", "Product BX storage", "Product AX price"]
+    for call in calls:
+        await session.handle_function_call_output({"call_id": call["call_id"], "output": "{}"})
+    assert [item["call_id"] for item in session.function_call_output] == [e["call_id"] for e in calls]
 
 
 @pytest.mark.asyncio
-async def test_cached_result_replay_suppresses_duplicate_ack_response(monkeypatch):
-    monkeypatch.setattr(server, "VOICECHAT_DIAGNOSTICS", True)
+async def test_repeated_model_ack_and_following_answer_remain_visible():
     session = server.AudioSession("test", Socket())
     session.tools = json.dumps([{"name": "search_knowledge_base", "ack_messages": [ACK]}])
-    call_text = json.dumps([{
-        "name": "search_knowledge_base",
-        "arguments": {"query": "Black Pig Crisp Heart details"},
-    }])
-
-    await session._dispatch_model_output(
-        np.ones(3528, np.float32) * .2, "<s>" + ACK + "</s>", "<s>question</s>", call_text
-    )
-    first_events = pending(session)
-    call = next(event for event in first_events
-                if event["type"] == "response.function_call_arguments.done")
-    await session.handle_function_call_output({
-        "type": "function_call_output",
-        "call_id": call["call_id"],
-        "output": '{"status":"evidence_ready"}',
-    })
-    queued = session.function_call_output.popleft()
-    signature = queued["_signature"]
-    session._function_signature_states[signature] = "delivered"
-
-    await session._dispatch_model_output(
-        np.ones(3528, np.float32) * .3, "<s>" + ACK, "", call_text
-    )
-    await session._dispatch_model_output(np.ones(3528, np.float32) * .3, "</s>", "", "")
-
-    assert pending(session) == []
-    assert len(session.function_call_output) == 1
-    assert not session._suppress_duplicate_response
-    actions = [entry.get("action") for _, entry in session._diagnostic_events
-               if entry["event"] == "function.duplicate"]
-    assert actions[-3:] == ["replayed_result", "suppressing_ack", "ack_suppressed"]
-
-    await session._dispatch_model_output(
-        np.ones(3528, np.float32) * .4, "<s>The product answer.</s>", "", ""
-    )
-    answer_events = pending(session)
-    assert [event["type"] for event in answer_events].count("response.created") == 1
-    assert next(event for event in answer_events
-                if event["type"] == "response.output_audio_transcript.done")["transcript"] == (
-                    "The product answer."
-                )
-
-
-@pytest.mark.asyncio
-async def test_cached_result_replay_without_fixed_ack_keeps_next_answer_visible():
-    session = server.AudioSession("test", Socket())
-    session.tools = json.dumps([{"name": "search_knowledge_base"}])
-    call_text = json.dumps([{
-        "name": "search_knowledge_base",
-        "arguments": {"query": "Product details"},
-    }])
-    await session._process_function_text(call_text)
-    call = next(event for event in pending(session)
-                if event["type"] == "response.function_call_arguments.done")
-    await session._emit_response_done()
-    pending(session)
-    await session.handle_function_call_output({
-        "type": "function_call_output", "call_id": call["call_id"], "output": "{}",
-    })
-    queued = session.function_call_output.popleft()
-    session._function_signature_states[queued["_signature"]] = "delivered"
-
-    await session._dispatch_model_output(np.array([], np.float32), "", "", call_text)
-    assert not session._suppress_duplicate_response
-    await session._dispatch_model_output(
-        np.ones(3528, np.float32) * .4, "<s>Visible answer.</s>", "", ""
-    )
-
-    answer_events = pending(session)
-    assert next(event for event in answer_events
-                if event["type"] == "response.output_audio_transcript.done")["transcript"] == (
-                    "Visible answer."
-                )
+    call = json.dumps([{"name": "search_knowledge_base", "arguments": {"query": "Product AX"}}])
+    for _ in range(2):
+        await session._dispatch_model_output(np.ones(3528, np.float32) * .2,
+                                            "<s>" + ACK + "</s>", "", call)
+    await session._dispatch_model_output(np.ones(3528, np.float32) * .2,
+                                        "<s>Product AX answer.</s>", "", "")
+    events = pending(session)
+    assert len([e for e in events if e["type"] == "response.function_call_arguments.done"]) == 2
+    assert [e["transcript"] for e in events if e["type"] == "response.output_audio_transcript.done"] == [
+        ACK, ACK, "Product AX answer."]
+    assert not session.function_call_output
 
 
 def test_pcm16_clips_full_scale_and_flushes_partial_little_endian_frame():

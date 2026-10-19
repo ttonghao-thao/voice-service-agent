@@ -217,6 +217,11 @@ class VoiceGateway:
         provider = self.provider_factory(self.settings)
         if session.qa_mode == "dual_tools":
             provider.configuration = session_update(session.summary, session.tool_definitions, session.answer_policy)
+        if (session.qa_mode == "dual_tools" and session.answer_policy == "general_qa"
+            and all(tool.kind == "cuekb" for tool in session.tool_catalog.values())):
+            from app.voice.relay import relay
+            await relay(self, ws, session, provider)
+            return
         incoming = asyncio.Queue(maxsize=6)  # 480 ms at fixed 80 ms chunks.
         controls = asyncio.Queue(maxsize=16)
         outgoing = asyncio.Queue(maxsize=12)

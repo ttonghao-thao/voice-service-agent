@@ -36,6 +36,18 @@ def normalize_voice_punctuation(value):
     return value
 
 
+def voice_result(ready):
+    """Send evidence to the model; keep tracing/presentation metadata in the API."""
+    sources = []
+    for item in ready.envelope["items"]:
+        source = {"text": item["text"]}
+        for key in ("title", "context", "conditions"):
+            if item.get(key) and item[key] != item["text"]:
+                source[key] = item[key]
+        sources.append(source)
+    return {"status": "ok", "sources": sources, "partial": ready.envelope["partial"]}
+
+
 class NativeCueKBExecutor:
     def __init__(self, settings, registry):
         self.settings, self.registry = settings, registry

@@ -110,6 +110,7 @@ class SessionCoordinator:
         input_item_id=None,
         decision=None,
         revision_of=None,
+        voice_relay=False,
     ):
         async with self.lock(cid):
             await self.ensure_owner(principal, cid)
@@ -166,7 +167,7 @@ class SessionCoordinator:
                 return turn, None
             self.contexts[turn.id] = ctx
             task = asyncio.create_task(
-                self.execute(ctx, request, conversation.history, channel, decision)
+                self.execute(ctx, request, conversation.history, channel, decision, voice_relay)
             )
             self.tasks[cid] = task
             self.all_tasks.add(task)
@@ -196,7 +197,7 @@ class SessionCoordinator:
                 return TaskProgress(epoch=c.epoch, request_revision=c.request_revision,
                     turn_id=t.id if t else None, status=status, phase=phase, message=message)
 
-    async def execute(self, ctx, request, history, channel, decision=None):
+    async def execute(self, ctx, request, history, channel, decision=None, voice_relay=False):
         started = time.monotonic()
 
         async def progress(message):
@@ -238,7 +239,7 @@ class SessionCoordinator:
                     future = asyncio.get_running_loop().create_future()
                     self.awaiting_answers[ctx.turn_id] = future
                     continuation = asyncio.create_task(
-                        self.finish_provider(ctx, request, visible_history, bundle, future))
+                        self.finish_provider(ctx, request, visible_history, bundle, future, voice_relay))
                     self.tasks[ctx.conversation_id] = continuation
                     self.all_tasks.add(continuation)
                     continuation.add_done_callback(self.all_tasks.discard)
@@ -306,12 +307,15 @@ class SessionCoordinator:
         if future and not future.done():
             future.set_result(text)
 
-    async def finish_provider(self, ctx, request, history, ready, future):
+    async def finish_provider(self, ctx, request, history, ready, future, voice_relay=False):
         try:
             budget = min(self.settings.qa_provider_answer_timeout_ms / 1000,
                          max(0, ready.deadline - time.monotonic()))
             try:
-                text = await asyncio.wait_for(future, budget)
+                # Native full-duplex speech belongs to the live connection. The
+                # retrieval deadline must not cancel result injection or speech.
+                # Disconnect/explicit cancellation still cancels this observer.
+                text = await future if voice_relay else await asyncio.wait_for(future, budget)
                 code = EvidenceGate.check_presentation(text, presentation_contract("grounded", ctx.slots), ready.citations)
             except TimeoutError:
                 text, code = "", "VOICE_ANSWER_TIMEOUT"
@@ -339,7 +343,7 @@ class SessionCoordinator:
                 await self.coordination.check(ctx.conversation_id)
                 committed = await self.store.commit(ctx.conversation_id, ctx.epoch, ctx.request_revision,
                     ctx.turn_id, bundle, new_history, ctx.slots)
-            if committed and code and self.voice:
+            if committed and code and self.voice and not voice_relay:
                 response_id = await self.voice.suppress_turn(ctx.conversation_id, ctx.epoch, ctx.turn_id)
                 async with self.lock(ctx.conversation_id):
                     await self.coordination.check(ctx.conversation_id)

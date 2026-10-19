@@ -1,6 +1,6 @@
 # Voice Service Agent · 实时语音问答
 
-英文实时语音问答，客服为首个场景。独立 NVIDIA VoiceChat 负责实时语音和原生工具选择，独立 CueKB 提供检索；本项目处理会话、权限、知识执行与交付。部署模板启用可配置多工具模式；未配置模式的旧部署仍兼容 legacy。工具数量、后台管理与动态刷新见 [工具目录](docs/interfaces/voice-tools.md)，执行行为见 [知识执行](docs/qa-routing-design.md)。
+本系统仅支持英文实时全双工语音问答与连接内多轮对话，客服为首个场景。独立 NVIDIA VoiceChat 负责实时语音和原生工具选择，独立 CueKB 提供检索；本项目处理会话、权限、知识执行与交付。部署模板启用可配置多工具模式；未配置模式的旧部署仍兼容 legacy。工具数量、后台管理与动态刷新见 [工具目录](docs/interfaces/voice-tools.md)，执行行为见 [知识执行](docs/qa-routing-design.md)。
 
 Codex 从 [AGENTS](AGENTS.md) 开始，按任务查 [文档索引](docs/README.md)；跨模块关系见 [架构](docs/architecture.md)。当前任务归 [任务板](docs/TASK_BOARD.md)，已执行测试及真实服务边界归 [验收](docs/acceptance-report.md)。
 

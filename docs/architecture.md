@@ -1,12 +1,12 @@
 # 当前系统架构
 
-2026-10-15 对照 `63e7059` 核对 Gateway、Provider、Coordinator、Runtime 与部署边界。本页维护已实现架构；改进方案见 [实施设计](q1003-target-architecture.md)，工作状态见 [任务板](TASK_BOARD.md)。
+2026-10-19 核对一期原生 relay、Provider、Coordinator、Runtime 与部署边界。本页维护已实现架构；改进方案见 [实施设计](q1003-target-architecture.md)，工作状态见 [任务板](TASK_BOARD.md)。
 
 当前一期部署为 VoiceChat 原生单工具验证：只向模型注册 search_knowledge_base(query)，通过内部 NativeCueKBExecutor→Registry→CueKBAdapter 检索，直接回填精简证据，由 VoiceChat 生成语音。AGENT_PROVIDER=disabled，不运行额外答案模型；外置 SDK/文本模型路径仅保留兼容实现，不在下图的一期数据流中。原生工具选择、连续追问与实际口述验收见 [验证步骤](native-cuekb-validation.md)。
 
 ## 1. 产品与部署边界
 
-当前系统是英文全双工知识客服，支持并行收音与播放；工具等待阶段的语音交互能力单独验证。当前为单组织、只读知识与每通话临时 capability。VoiceChat-11B + nemotron-labs-voicechat + WS 是独立语音系统，CueKB 是独立知识系统。本项目控制授权、任务、知识执行与交付，不训练模型、管理 GPU 或直连 CueKB 索引。中文扩展取决于后端模型/运行时能力及应用语言约束适配，不属于当前已支持能力。
+当前系统仅支持英文全双工知识客服及连接内多轮对话，支持并行收音与播放；工具等待阶段的语音交互能力单独验证。当前为单组织、只读知识与每通话临时 capability。VoiceChat-11B + nemotron-labs-voicechat + WS 是独立语音系统，CueKB 是独立知识系统。本项目控制授权、任务、知识执行与交付，不训练模型、管理 GPU 或直连 CueKB 索引。语音输入、回答及门户交互仅支持英文；中文不属于本期产品能力。
 
 Python/FastAPI/Agents SDK 与 React/TypeScript/AudioWorklet；生产状态为 PostgreSQL，租约为 Redis。Web 镜像内 Nginx 提供 HTTPS，同源代理到 API。端口、参数、镜像和迁移只看 [部署](deployment.md)，字段与客户端行为只看 [门户协议](portal-protocol.md)。
 
@@ -36,7 +36,7 @@ VoiceChat 内部并非 ASR 文本驱动 LLM：16 kHz 音频经共享 encoder 分
 | 代码模块 | 职责 | 修改时读 |
 | --- | --- | --- |
 | `api/auth.py`、`routes.py` | 通话归属/范围、HTTP/SSE/WS、受权历史、管理隔离 | 门户协议 / 接入 §6 |
-| `voice/provider.py`、`gateway.py` | 供应商事件归一化、最终输入绑定、输出许可、单写入器、背压 | 接入 §3 / 口述与交付 |
+| `voice/provider.py`、`gateway.py`、`relay.py` | 供应商事件归一化、连续收发、原生调用/结果回填、输入审计、背压 | 接入 §3 / 口述与交付 |
 | `sessions/coordinator.py`、`coordination.py` | 唯一业务提交、幂等、epoch/revision、任务/租约、共享期限 | 本页 §3 / 上下文 / 交付 |
 | `agent_runtime/` | 原生工具静态分派、直查或 SDK 推理、证据/呈现检查 | 知识执行 / 交付 §1 |
 | `agent_runtime/tool_catalog.py` | 全局后台目录、可信实现映射、revision；语音连接冻结注册快照 | 工具目录 |
@@ -48,13 +48,13 @@ VoiceChat 内部并非 ASR 文本驱动 LLM：16 kHz 音频经共享 encoder 分
 
 ## 3. 一轮请求与状态边界
 
-当前实际策略只有 `general_qa` 和 `knowledge_required`。前者允许唯一最新输入绑定的无工具回答，**没有企业事实语义门禁**；后者拒绝未授权非空回答，并将 direct 知识调用转外置链。Settings 未配置时默认 legacy，部署模板显式选择 dual_tools/general_qa；现场策略需独立确认。工具数量由目录决定；social_only 和通用响应隔离均未实现。
+一期原生 CueKB/general_qa 会话使用 relay。其它目录和 knowledge_required/legacy 保留旧兼容路径；其发声许可和补偿机制不进入一期流程。
 
-1. Start call 创建独立 owner/token 和策略快照，再签发绑定 conversation/epoch/Origin 的一次性语音票据；会话握手确认格式和原生工具。
-2. Gateway 将工具 call 绑定到用户 input item，必要时有界等待最终 ASR。最终原话与有来源的确认条件决定执行输入，不能采用模型猜测的型号/版本。
-3. VoiceChat 自主选择直接回答或工具。服务端按注册名分派；直查、升级、外置执行及严格模式见 [知识执行](qa-routing-design.md)。固定 ACK 与后台查询可并行，ACK 不证明查询成功。
-4. Coordinator 在 epoch/revision/Turn/租约仍有效时提交结果；Gateway 在写回和输出时再次核对权限/工具版本与有效归属。先建立输出许可和交付记录，再发送工具结果，避免即时续答丢失。
-5. 外置路径先提交经过检查的拟文本；D2 路径先回填证据，等待原生实际转写和音频结束后有限检查，再提交 canonical final。呈现检查、发送完成、播放估计与听到是不同证据，详见 [交付](live-agent-implementation.md)。
+1. Start call 创建绑定 conversation/epoch/Origin 的一次性票据，建立一条 VoiceChat 连接并确认工具目录。
+2. 持续转发输入音频与模型输出；普通问答、ACK、知识回复不消耗一次性发声许可。保留同一连接供多轮与指代追问。
+3. 模型原生调用才触发业务。按原 call_id 幂等，校验工具/参数与权限，使用模型 query 查询 CueKB，原 call_id 回填必要证据。
+4. Coordinator 唯一提交业务记录。检索有期限，模型续答不共用检索期限；连接结束或明确取消会结清等待观察的任务。
+5. 回答文本/音频完成用于审计，来源检查不伪装为播前事实保证，也不阻断后续普通问答。Web 同时收音与播放；原生 speech_started 清除已排队播放，查询不中止。
 
 | 状态层 | 权威对象 | 不能推导的结论 |
 | --- | --- | --- |
@@ -75,6 +75,4 @@ VoiceChat 内部并非 ASR 文本驱动 LLM：16 kHz 音频经共享 encoder 分
 
 ## 5. 演进与验收入口
 
-当前主要风险是模型不调用工具导致业务无法启动、ASR 错误进入业务输入、生成/渲染/协议结束不一致，以及实际口述仅事后检查。这些是不同边界，不能用放宽授权或延长一个超时一起解决。
-
-先按 [实施方案](q1003-target-architecture.md) 验证严格知识与 PAD 收尾，再依据首差异修复。Gateway 状态提取是后续维护性改进，不认定为本次模型故障根因。工作顺序见 [任务板 §3](TASK_BOARD.md#3-待完成与建议顺序)，已执行结果见 [验收报告](acceptance-report.md)，放行要求见 [验收清单](development/validation.md)。
+当前现场已证明工具名、原生调用与检索走通，但工具后完整回答仍需在新 relay 上验收。现有补丁撤回和 CPU 通过不能证明 GPU 已修复。按 [实施设计](q1003-target-architecture.md) 与 [单入口验证](native-cuekb-validation.md) 完成英文连续多轮、知识追问、实际听音和打断；hello 句首问题单独暂缓。

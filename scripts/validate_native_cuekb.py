@@ -66,7 +66,7 @@ def assess(case, history, seen_inputs, output_samples):
     if not actual:
         actual = [entry["name"] for entry in [*args, *errors]]
     wanted = [] if case["expected_tool"] is None else [case["expected_tool"]]
-    selection = "passed" if seen_inputs and actual == wanted else "failed" if seen_inputs else "unverified"
+    selection = "passed" if seen_inputs and set(actual) == set(wanted) else "failed" if seen_inputs else "unverified"
     queries = [entry["arguments"]["query"] for entry in args]
     terms = case.get("query_terms", [])
     argument_status = ("failed" if any(e.get("stage", "arguments") == "arguments" for e in errors) else "passed" if len(queries) == 1 and terms
@@ -157,6 +157,8 @@ async def run(args):
                         started = time.monotonic()
                         seen_inputs, audio = set(), bytearray()
                         samples = 0
+                        response_samples, answer_responses = {}, set()
+                        row["answer_complete"] = "unverified"
                         primary_sent = asyncio.Event()
                         answer_ended = False
 
@@ -191,13 +193,23 @@ async def run(args):
                                     elif event["type"] == "portal.audio.delta":
                                         raw = base64.b64decode(body["audio"], validate=True)
                                         samples += len(raw) // 2
+                                        rid = body["response_id"]
+                                        response_samples[rid] = response_samples.get(rid, 0) + len(raw) // 2
                                         if args.audio_dir and len(audio) + len(raw) <= 16 * 1024 * 1024:
                                             audio.extend(raw)
                                     elif event["type"] == "portal.error":
                                         row["portal_error"] = body["code"]
                                         raise ValueError("Portal voice error")
-                                    elif event["type"] == "portal.audio.done" and body.get("phase") == "answer" and seen_inputs:
+                                    elif (event["type"] == "portal.speech_text.done" and body.get("phase") == "answer"
+                                          and body.get("input_item_id") in seen_inputs and body.get("text", "").strip()):
+                                        answer_responses.add(body["response_id"])
+                                    elif (event["type"] == "portal.audio.done" and body.get("phase") == "answer"
+                                          and body["response_id"] in answer_responses
+                                          and response_samples.get(body["response_id"], 0) > 0):
                                         answer_ended = True
+                                        row["answer_complete"] = "passed"
+                                        row["answer_response_id"] = body["response_id"]
+                                        row["answer_samples"] = response_samples[body["response_id"]]
                                         if not primary_sent.is_set():
                                             row["answer_ended_before_full_input"] = True
                             # Leave inference advancing while the canonical tool answer commits.
@@ -282,6 +294,8 @@ def passed(report):
         expected_retrieval = "not_applicable" if expected_tool is None else "passed"
         expected_voice_evidence = "not_applicable" if expected_tool is None else "passed"
         if (
+            row.get("answer_complete", "passed") != "passed"
+            or
             row.get("selection") != "passed"
             or row.get("arguments") in ("failed", "unverified")
             or row.get("retrieval") != expected_retrieval

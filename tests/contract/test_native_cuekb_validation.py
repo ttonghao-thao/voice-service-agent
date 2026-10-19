@@ -112,7 +112,7 @@ def test_single_entrypoint_classifies_missing_native_tool_with_bounded_evidence(
         "case=product expected=search_knowledge_base actual=- selection=failed "
         "arguments=unverified retrieval=unverified cuekb_evidence=- "
         "voice_evidence=- evidence_filter=- "
-        "speech=passed reason=- "
+        "speech=passed answer_complete=unverified reason=- "
         "portal_error=- elapsed_ms=1200 input_ids=input-1 trace_ids=-"
     )
 
@@ -180,7 +180,7 @@ def test_single_entrypoint_classifies_post_tool_answer_timeout():
     }
 
     assert classify({"status": "partial", "error_type": "ValueError", "cases": [row]}) == (
-        "VOICE_RESPONSE_COMPLETION", "voicechat_audio_done_or_eos"
+        "VOICE_RESPONSE_COMPLETION", "provider_response_or_api_relay"
     )
 
 
@@ -272,7 +272,7 @@ def test_voicechat_log_summary_flags_repeated_calls_without_tool_result():
     assert not ok
     assert "count=2 unique_sequences=42" in lines[2]
     assert "response_timeouts=1" in lines[3]
-    assert lines[-1] == "voicechat_diagnostic=failed fault=TOOL_RESULT_NOT_RECEIVED"
+    assert lines[-1] == "voicechat_diagnostic=failed fault=LEGACY_TOOL_REPLAY"
 
 
 def test_voicechat_log_summary_allows_sequential_tool_cases_on_one_sequence():
@@ -326,7 +326,8 @@ def test_voicechat_log_summary_filters_other_sequences_and_trailing_log_quote():
 
     lines, ok = summarize_voicechat_log(log, "search_knowledge_base")
 
-    assert ok
+    assert not ok
+    assert lines[-1] == "voicechat_diagnostic=failed fault=LEGACY_TOOL_REPLAY"
     assert lines[2] == (
         "model_function status=passed count=2 unique_sequences=42 "
         "tools=search_knowledge_base"
@@ -362,7 +363,7 @@ def test_voicechat_log_summary_fails_after_one_cached_result_replay():
 
     assert not ok
     assert "results_replayed=1 duplicate_acks_suppressed=0 replay_limit=1" in lines[3]
-    assert lines[-1] == "voicechat_diagnostic=failed fault=FUNCTION_REPLAY_LIMIT"
+    assert lines[-1] == "voicechat_diagnostic=failed fault=LEGACY_TOOL_REPLAY"
 
 
 def test_voicechat_log_summary_requires_duplicate_ack_suppression():
@@ -386,7 +387,7 @@ def test_voicechat_log_summary_requires_duplicate_ack_suppression():
     lines, ok = summarize_voicechat_log(log, "search_knowledge_base")
 
     assert not ok
-    assert lines[-1] == "voicechat_diagnostic=failed fault=DUPLICATE_ACK_NOT_SUPPRESSED"
+    assert lines[-1] == "voicechat_diagnostic=failed fault=LEGACY_TOOL_REPLAY"
 
 
 def test_voicechat_log_summary_requires_cached_replay_delivery():
@@ -412,7 +413,7 @@ def test_voicechat_log_summary_requires_cached_replay_delivery():
     lines, ok = summarize_voicechat_log(log, "search_knowledge_base")
 
     assert not ok
-    assert lines[-1] == "voicechat_diagnostic=failed fault=TOOL_RESULT_REPLAY_NOT_SENT"
+    assert lines[-1] == "voicechat_diagnostic=failed fault=LEGACY_TOOL_REPLAY"
 
 
 def test_api_log_summary_rejects_multiple_ack_grant_restores_for_one_call():
@@ -444,6 +445,7 @@ def test_api_log_summary_reports_only_lifecycle_counts_and_trace():
         "voice_bridge_finished conversation_id=c1 turn_id=t1 call_id=k1 "
         "status=insufficient_evidence",
         "voice_tool_result_submitted conversation_id=c1 turn_id=t1 call_id=k1",
+        "voice_response_completed conversation_id=c1 response_id=r1 input_item_id=i1 phase=answer samples=1920",
         "private query and response body",
     ))
 
@@ -455,7 +457,7 @@ def test_api_log_summary_reports_only_lifecycle_counts_and_trace():
         "api_tool_flow conversations=c1 received=1 inputs=1 duplicate_inputs=0 "
         "unique_calls=1 bridges_started=1 "
         "bridges_finished=1 bridges_failed=0 unbound=0 results_submitted=1 "
-        "ack_grants_restored=0"
+        "ack_grants_restored=0 answers_completed=1"
     )
     assert lines[1] == "api_cuekb responses=1 statuses=ok hits=1 traces=z1 durations_ms=25"
     assert lines[2] == "api_diagnostic=passed fault=NONE"
@@ -476,6 +478,8 @@ def test_api_log_summary_allows_one_call_for_each_product_input():
         "cuekb_response_validated conversation_id=c1 turn_id=t2 trace_id=z2 "
         "retrieval_status=ok hit_count=3 duration_ms=26",
         "voice_tool_result_submitted conversation_id=c1 turn_id=t2 call_id=k2",
+        "voice_response_completed conversation_id=c1 response_id=r1 input_item_id=i1 phase=answer samples=1920",
+        "voice_response_completed conversation_id=c1 response_id=r2 input_item_id=i2 phase=answer samples=1920",
     ))
 
     lines, ok = summarize_api_log(log)
@@ -484,7 +488,7 @@ def test_api_log_summary_allows_one_call_for_each_product_input():
     assert "received=2 inputs=2 duplicate_inputs=0 unique_calls=2" in lines[0]
 
 
-def test_api_log_summary_rejects_two_calls_for_one_input():
+def test_api_log_summary_rejects_a_call_without_a_result():
     log = "\n".join((
         "voice_tool_call_received conversation_id=c1 call_id=k1 "
         "tool=search_knowledge_base input_item_id=i1",
@@ -500,11 +504,11 @@ def test_api_log_summary_rejects_two_calls_for_one_input():
 
     assert not ok
     assert "received=2 inputs=1 duplicate_inputs=1 unique_calls=2" in lines[0]
-    assert lines[-1] == "api_diagnostic=failed fault=DUPLICATE_TOOL_EVENTS"
+    assert lines[-1] == "api_diagnostic=failed fault=TOOL_RESULT_COUNT_MISMATCH"
 
 
 async def test_single_entrypoint_prints_only_preflight_window_cases_and_classification(
-    monkeypatch, capsys,
+    monkeypatch, capsys, tmp_path,
 ):
     cases = [{"case_id": name} for name in ("greeting", "general", "product-1", "product-2")]
     capabilities = {
@@ -527,7 +531,7 @@ async def test_single_entrypoint_prints_only_preflight_window_cases_and_classifi
 
     monkeypatch.setattr(entrypoint, "preflight", fake_preflight)
     monkeypatch.setattr(entrypoint, "run", fake_run)
-    args = SimpleNamespace(output="/tmp/report.json")
+    args = SimpleNamespace(output=tmp_path / "report.json")
 
     result = await entrypoint.execute(args)
     lines = capsys.readouterr().out.splitlines()
@@ -537,6 +541,8 @@ async def test_single_entrypoint_prints_only_preflight_window_cases_and_classifi
     assert lines[0].startswith("preflight=passed provider=nvidia")
     assert "conversation_id=conversation-1" in lines[1]
     assert lines[-1].startswith("validation=failed fault=TOOL_NOT_CALLED")
+    stored = json.loads(args.output.read_text())
+    assert f"window_start={stored['window_start']} window_end={stored['window_end']}" in lines[1]
 
 
 @pytest.mark.parametrize("scenario,expected", [

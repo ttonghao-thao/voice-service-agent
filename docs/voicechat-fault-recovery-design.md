@@ -4,7 +4,9 @@
 
 当前优先级已调整：用户确认 VoiceChat 是唯一全双工语音后端，且必须由 VoiceChat 决定直接回答或调用工具。当前采用 general_qa，先按 [实施方案](q1003-target-architecture.md) 修正提示、部署模式并验证双路径；不引入独立 ASR/TTS 或转写驱动业务。下面保留严格模式历史故障的诊断依据，未确认的模型根因仍未知。
 
-## 1. 当前判定
+> 以下为 2026-10-15 严格模式的历史诊断。当前工具调用、Prompt 和检索已由后续现场日志证明走通；当前接入和验证以 [简化架构](q1003-target-architecture.md) 与 [VoiceChat 验证](voicechat/native-tool-selection-validation.md) 为准。
+
+## 1. 当时判定
 
 目标录音为 `Hello, please introduce MONKEY MOONCAKE products.`。严格策略已由用户确认，新日志显示两次无原生工具调用的回答均被拒绝为 VOICE_TOOL_REQUIRED；WAV 字幕仍报告缺 Hell，麦克风仅得到极短转写并多次主动起答。ASR、工具选择、响应结束应分别定位，事件先后不代表三者互为因果。
 

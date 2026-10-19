@@ -9,11 +9,12 @@
     "opt/tritonserver/backends/nemotron-voicechat/data_types.py": "416a5ec1bd025685cec2552c2accc992b30b7013b0e0bcad0a2d9c5bb6f04c98",
     "opt/tritonserver/backends/nemotron-voicechat/model.py": "c91b3af5b41f515fc1dbfaf7fdbec4ae528a4989f90a144829d2491a9b805990",
     "opt/tritonserver/backends/nemotron-voicechat/runtime_setup.py": "f89b36f66222b3384791b5eecc98d82ae54fe7dd01f086224d4dfc1514fa28cc",
-    "s2s/audio_server.py": "781db4d39fcc28b56f1085b4d111a4d8624a2a436b3c3c8053007e46d727a308",
+    "s2s/audio_server.py": "0058e594d00aec26a366dc2b03496a82b16a810d70021c34105fee30064e53d8",
     "s2s/tests/requirements.txt": "095094833e146be9f5d5aea3b3d41ef662e3f269d5423172de266c71e154102b",
-    "s2s/tests/test_response_lifecycle.py": "097b3ea05ece2deee58523e433e43dcd0e05145bb61c891df6a8eec06f1fea03",
+    "s2s/tests/test_response_lifecycle.py": "bb2c662afb136d119867602a6f1d0ef35a1e0cd5c1c311fbfb5d21db0a136218",
     "s2s/tests/test_voice_diagnostics.py": "7e0faa6fc38886e87bbd88734f82ccf2064f818ecbf73276602b7fbdf6bfa4fd",
-    "s2s/prompt_template.jinja": "a71230010295a363a0fde0e0d86c4786aeb4ef5f458cf4d75ddf0926895bcdb7"
+    "s2s/prompt_template.jinja": "a71230010295a363a0fde0e0d86c4786aeb4ef5f458cf4d75ddf0926895bcdb7",
+    "opt/tritonserver/backends/nemotron-voicechat/checkpoint_utils/load_utils.py": "0a657d1aef0bf8b1d482ec092ba7682f74731b7bf6ce9a318665f88e404dc13c"
   },
   "base_snapshot_commit": "b924c72a295bdca428ea3c841fdfca8a26aac53a",
   "updated_in_repository": [
@@ -21,7 +22,8 @@
     "s2s/audio_server.py",
     "s2s/tests/test_response_lifecycle.py",
     "s2s/tests/test_voice_diagnostics.py",
-    "s2s/prompt_template.jinja"
+    "s2s/prompt_template.jinja",
+    "opt/tritonserver/backends/nemotron-voicechat/checkpoint_utils/load_utils.py"
   ],
   "applied_patches": [
     "deploy/voicechat/pad-tail-completion.patch",
@@ -30,18 +32,20 @@
     "business-product-cuekb-routing-example",
     "full-knowledge-base-tool-name",
     "prompt-and-model-tool-name-diagnostics",
-    "per-input-tool-call-result-replay",
-    "single-tool-argument-variant-coalescing",
-    "bounded-cached-result-replay",
-    "suppress-duplicate-tool-ack"
+    "native-call-forwarding-without-business-replay"
   ],
   "file_sources": {
     "s2s/audio_server.py": {
-      "source": "NVIDIA Speech snapshot with repository-maintained response lifecycle diagnostics and per-input tool-call coalescing; a single registered tool is keyed by tool name so argument restatements reuse the first API result without logging arguments or result content, with at most one cached-result replay before an explicit protocol failure; the fixed ACK generated for an internal cached-result replay is suppressed before client delivery"
+      "source": "Restored pre-611669e native call forwarding and ACK visibility; retained ordered response lifecycle and bounded diagnostics. Each decoded model call reaches the application; no query coalescing or cached result replay."
     },
     "s2s/prompt_template.jinja": {
       "source": "User-supplied deployed voicechat-prompt-template.jinja; strict session policy and single-call examples updated in this repository; search_knowledge_base(query) example covers consumer and business product facts and forbids lack-of-access responses when a registered tool covers the request",
       "base_sha256": "e28694b99a2b087ce6b2b9d1abec10878fa54b8c719324c484b1d15a559f6c2b"
+    },
+    "opt/tritonserver/backends/nemotron-voicechat/checkpoint_utils/load_utils.py": {
+      "source": "User-supplied load_utils.py uploaded 2026-10-19, preserved byte-for-byte with LF newlines. Converting only LF to CRLF reproduces the supplied deployed checksum; no code changes.",
+      "uploaded_lf_sha256": "0a657d1aef0bf8b1d482ec092ba7682f74731b7bf6ce9a318665f88e404dc13c",
+      "equivalent_crlf_sha256": "fef1389a273a0d55a7024e2520d229a6db6fec48aa2deb22594e6131a3c122a6"
     }
   }
 }

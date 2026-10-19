@@ -12,6 +12,7 @@ import json
 import re
 import sys
 from datetime import UTC, datetime
+from pathlib import Path
 
 import httpx
 from app.config import Settings
@@ -52,6 +53,9 @@ API_CUEKB_RE = re.compile(
     r"cuekb_response_validated conversation_id=(\S+) turn_id=(\S+) trace_id=(\S+) "
     r"retrieval_status=(\S+) hit_count=(\d+) duration_ms=(\d+)"
 )
+API_RESPONSE_COMPLETED_RE = re.compile(
+    r"voice_response_completed conversation_id=(\S+) response_id=(\S+) input_item_id=(\S+) phase=(\S+) samples=(\d+)"
+)
 VOICECHAT_LOG_MARKERS = (
     "Prompt prepared:",
     "System prompt received for sequence",
@@ -77,6 +81,7 @@ API_LOG_MARKERS = (
     "voice_unbound_tool_settled",
     "voice_tool_ack_continuation_restored",
     "cuekb_response_validated",
+    "voice_response_completed",
 )
 
 
@@ -129,13 +134,14 @@ def classify(report):
         return "CUEKB_VOICE_EVIDENCE", "api_voice_evidence_filter"
     if (
         report.get("error_type") == "TimeoutError"
+        or any(row.get("answer_complete", "passed") != "passed" for row in cases)
         or any(row.get("reason_code") == "VOICE_ANSWER_TIMEOUT" for row in product)
         or any(row.get("portal_error") == "VOICE_TOOL_REQUIRED" for row in product)
         or any(
             row.get("speech_transport") != "passed" for row in cases
         )
     ):
-        return "VOICE_RESPONSE_COMPLETION", "voicechat_audio_done_or_eos"
+        return "VOICE_RESPONSE_COMPLETION", "provider_response_or_api_relay"
     if passed(report):
         return "PASS", "human_transcription_and_spoken_faithfulness"
     return "INCOMPLETE", "report_json"
@@ -153,6 +159,7 @@ def case_line(row):
         f"voice_evidence={row.get('voice_evidence') or '-'}",
         f"evidence_filter={evidence_filter_summary(row)}",
         f"speech={row.get('speech_transport')}",
+        f"answer_complete={row.get('answer_complete', 'unverified')}",
         f"reason={row.get('reason_code') or '-'}",
         f"portal_error={row.get('portal_error') or '-'}",
         f"elapsed_ms={row.get('elapsed_ms')}",
@@ -259,16 +266,14 @@ def summarize_voicechat_log(text, expected_tool):
         result = ("failed", "FUNCTION_EVENT_NOT_PARSED")
     elif new_call_count == 0:
         result = ("failed", "FUNCTION_CALL_NOT_QUEUED")
-    elif replay_limit_count:
-        result = ("failed", "FUNCTION_REPLAY_LIMIT")
-    elif replayed_count != suppressed_ack_count:
-        result = ("failed", "DUPLICATE_ACK_NOT_SUPPRESSED")
-    elif new_call_count != new_call_input_count or new_call_count + duplicate_count != parsed_count:
-        result = ("failed", "FUNCTION_DEDUPE_GAP")
+    elif duplicate_count or suppressed_ack_count or replay_limit_count:
+        result = ("failed", "LEGACY_TOOL_REPLAY")
+    elif new_call_count != parsed_count:
+        result = ("failed", "FUNCTION_FORWARDING_GAP")
     elif result_count == 0:
         result = ("failed", "TOOL_RESULT_NOT_RECEIVED")
-    elif result_count < new_call_count + replayed_count:
-        result = ("failed", "TOOL_RESULT_REPLAY_NOT_SENT")
+    elif result_count != new_call_count:
+        result = ("failed", "TOOL_RESULT_COUNT_MISMATCH")
     elif text.count("Function call response timed out"):
         result = ("failed", "TOOL_RESULT_WAIT_TIMEOUT")
     else:
@@ -296,6 +301,8 @@ def summarize_api_log(text):
     unbound = API_UNBOUND_RE.findall(text)
     ack_restored = API_ACK_RESTORED_RE.findall(text)
     cuekb = API_CUEKB_RE.findall(text)
+    completed = API_RESPONSE_COMPLETED_RE.findall(text)
+    answer_inputs = {(row[0], row[2]) for row in completed if row[3] == "answer" and int(row[4]) > 0}
     conversation_ids = dict.fromkeys(
         row[0]
         for rows in (received, started, finished, failed, submitted, unbound, ack_restored, cuekb)
@@ -320,6 +327,7 @@ def summarize_api_log(text):
             f"bridges_finished={len(finished)} bridges_failed={len(failed)} "
             f"unbound={len(unbound)} results_submitted={len(submitted)} "
             f"ack_grants_restored={len(ack_restored)}"
+            f" answers_completed={len(answer_inputs)}"
         ),
         (
             f"api_cuekb responses={len(cuekb)} statuses={csv(dict.fromkeys(row[3] for row in cuekb))} "
@@ -337,10 +345,14 @@ def summarize_api_log(text):
         result = ("failed", "CUEKB_RESPONSE_ABSENT")
     elif not submitted:
         result = ("failed", "TOOL_RESULT_NOT_SUBMITTED")
+    elif {(row[0], row[1]) for row in received} != {(row[0], row[2]) for row in submitted}:
+        result = ("failed", "TOOL_RESULT_COUNT_MISMATCH")
     elif len(ack_restored) > len(received) or len({row[1] for row in ack_restored}) != len(ack_restored):
         result = ("failed", "ACK_GRANT_INVARIANT")
-    elif duplicate_inputs or unbound:
-        result = ("failed", "DUPLICATE_TOOL_EVENTS")
+    elif unbound:
+        result = ("failed", "UNBOUND_TOOL_EVENTS")
+    elif not set(received_inputs) <= answer_inputs:
+        result = ("failed", "TOOL_ANSWER_NOT_COMPLETED")
     else:
         result = ("passed", "NONE")
     lines.append(f"api_diagnostic={result[0]} fault={result[1]}")
@@ -390,6 +402,8 @@ async def execute(args):
     )
     report = await run(args)
     finished = datetime.now(UTC).isoformat()
+    report.update(window_start=started, window_end=finished)
+    await asyncio.to_thread(Path(args.output).write_text, json.dumps(report, indent=2) + "\n")
     print(
         f"window_start={started} window_end={finished} "
         f"conversation_id={report.get('conversation_id') or '-'} report={args.output}"

@@ -7,17 +7,12 @@
 从本项目根目录同步当前完整文件，并核对 backend hash：
 
 ```sh
+cp docs/voicechat/opt/tritonserver/backends/nemotron-voicechat/checkpoint_utils/load_utils.py /home/thao/voice/load_utils.py
 cp docs/voicechat/opt/tritonserver/backends/nemotron-voicechat/model.py /home/thao/voice/model.py
 cp docs/voicechat/opt/tritonserver/backends/nemotron-voicechat/data_types.py /home/thao/voice/data_types.py
 cp docs/voicechat/opt/tritonserver/backends/nemotron-voicechat/runtime_setup.py /home/thao/voice/runtime_setup.py
 cp docs/voicechat/s2s/audio_server.py /home/thao/voice/audio_server.py
 cp docs/voicechat/s2s/prompt_template.jinja /home/thao/voice/prompt_template.jinja
-
-python3.12 -m py_compile \
-  /home/thao/voice/model.py \
-  /home/thao/voice/data_types.py \
-  /home/thao/voice/runtime_setup.py \
-  /home/thao/voice/audio_server.py
 
 sha256sum /home/thao/voice/model.py
 ```
@@ -25,14 +20,15 @@ sha256sum /home/thao/voice/model.py
 当前运行文件预期 SHA-256：
 
 ```text
+load_utils.py     0a657d1aef0bf8b1d482ec092ba7682f74731b7bf6ce9a318665f88e404dc13c
 model.py          c91b3af5b41f515fc1dbfaf7fdbec4ae528a4989f90a144829d2491a9b805990
-audio_server.py   781db4d39fcc28b56f1085b4d111a4d8624a2a436b3c3c8053007e46d727a308
+audio_server.py   0058e594d00aec26a366dc2b03496a82b16a810d70021c34105fee30064e53d8
 prompt_template   a71230010295a363a0fde0e0d86c4786aeb4ef5f458cf4d75ddf0926895bcdb7
 ```
 
-`load_utils.py` 沿用现场文件。本次模板必须使用上面同步的完整 `prompt_template.jinja`。模板加入会话策略优先、禁止同请求重试/并行工具调用、仅按授权结果发声的约束，并将调用示例收敛为单个工具和对象参数；单工具 search_knowledge_base 使用完整英文工具名和覆盖价格、重量、存储及保质期的 query 示例。已注册工具覆盖请求时，模板要求调用工具，不能直接声称无权访问资料。它修复提示冲突，不代表已修复模型全 PAD。
+`load_utils.py` 已按用户附件原样收录（LF 换行）。仅转换为 CRLF 时，其 SHA-256 为 `fef1389a273a0d55a7024e2520d229a6db6fec48aa2deb22594e6131a3c122a6`，与用户提供的现场校验值一致。两者代码相同；按上述命令同步后，容器应报告清单中的 LF 校验值。本次模板必须使用上面同步的完整 `prompt_template.jinja`。模板加入会话策略优先、禁止同请求重试/并行工具调用、仅按授权结果发声的约束，并将调用示例收敛为单个工具和对象参数；单工具 search_knowledge_base 使用完整英文工具名和覆盖价格、重量、存储及保质期的 query 示例。已注册工具覆盖请求时，模板要求调用工具，不能直接声称无权访问资料。它修复提示冲突，不代表已修复模型全 PAD。
 
-`audio_server.py` 在模板渲染后记录工具名、Prompt 字符数和 SHA-256；backend `model.py` 在接收 Triton system_prompt 时再次记录工具名、字符数和 SHA-256，并在函数通道形成有效 JSON 后按 sequence 记录模型解码出的工具名。日志不写 Prompt 正文、query、参数或工具结果正文。单工具会话在同一用户输入内按工具名只向 API 发送一次，即使模型改写 query；结果返回前的重复请求被合并，结果返回后最多重放一次缓存结果。该内部重放产生的固定 ACK 不创建客户端响应，最终知识回答继续使用原有授权；再次重调立即形成明确协议错误，避免无限工具循环。新用户输入开始后清空状态。多工具会话仍用工具名和完整参数区分调用。两层 Prompt hash 相同且工具名均为 `search_knowledge_base`，才证明注册名称未在 VoiceChat 转换链路中被改写。
+`audio_server.py` 在模板渲染后记录工具名、Prompt 字符数和 SHA-256；backend `model.py` 在接收 Triton system_prompt 时再次记录工具名、字符数和 SHA-256，并在函数通道形成有效 JSON 后按 sequence 记录模型解码出的工具名。日志不写 Prompt 正文、query、参数或工具结果正文。本版撤回按工具名合并查询、缓存结果重放和隐藏重复 ACK。每个模型调用正常传给 API；API 按原 call_id 回填，同 ID 重复通知仅在应用侧幂等。ACK 与回答都正常转发，不再配合应用消耗或恢复回答许可。两层 Prompt hash 相同且工具名均为 `search_knowledge_base`，才证明注册名称未在 VoiceChat 转换链路中被改写。
 
 ## 创建容器
 
@@ -84,9 +80,16 @@ docker run -d --name=nemotron-labs-voicechat \
 
 ## 启动后核对
 
+编译也在容器内执行，无需宿主机 Python：
+
 ```sh
+docker exec -e PYTHONPYCACHEPREFIX=/tmp/voice-validation/pycache nemotron-labs-voicechat \
+  python -m py_compile /s2s/audio_server.py \
+    /opt/tritonserver/backends/nemotron-voicechat/checkpoint_utils/load_utils.py
+
 docker exec nemotron-labs-voicechat \
   sha256sum \
+    /opt/tritonserver/backends/nemotron-voicechat/checkpoint_utils/load_utils.py \
     /opt/tritonserver/backends/nemotron-voicechat/model.py \
     /s2s/audio_server.py \
     /s2s/prompt_template.jinja

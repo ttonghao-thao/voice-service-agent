@@ -523,9 +523,6 @@ def function_call_harness():
     session._response_active = False
     session._response_id = None
     session.function_call_output = deque()
-    session._function_call_signatures = {}
-    session._function_result_cache = {}
-    session._function_signature_states = {}
     session.tools = json.dumps([{"name": "search_knowledge_base"}])
     session._input_item_id = "input-1"
     session.events = []
@@ -544,42 +541,19 @@ def function_call_harness():
     return session
 
 
-async def test_voicechat_coalesces_new_call_ids_for_same_tool_request_and_replays_result():
+async def test_voicechat_forwards_each_query_and_does_not_replay_results():
     session = function_call_harness()
-    request = json.dumps([{
-        "name": "search_knowledge_base",
-        "arguments": {"query": "Black Pig Crisp Heart details"},
-    }])
-
-    await session._process_function_text(request)
-    await session._process_function_text(json.dumps([{
-        "name": "search_knowledge_base",
-        "arguments": {"query": "Please find the Black Pig product details"},
-    }]))
-    calls = [event for event in session.events
-             if event["type"] == "response.function_call_arguments.done"]
-    assert len(calls) == 1
-    assert session.diagnostics[-1]["action"] == "coalesced"
-    assert [entry["event"] for entry in session.diagnostics].count("function.call") == 1
-
-    await session.handle_function_call_output({
-        "call_id": calls[0]["call_id"],
-        "output": '{"status":"evidence_ready"}',
-    })
-    signature = session._function_call_signatures[calls[0]["call_id"]]
-    assert session._function_signature_states[signature] == "queued"
-    await session._process_function_text(json.dumps([{
-        "name": "search_knowledge_base",
-        "arguments": {"query": "Black Pig price and storage"},
-    }]))
+    for query in ("Black Pig details", "Golden Yolk details", "Black Pig details"):
+        await session._process_function_text(json.dumps([{
+            "name": "search_knowledge_base", "arguments": {"query": query},
+        }]))
+    assert len(session.events) == len({e["call_id"] for e in session.events}) == 3
+    assert [json.loads(e["arguments"])["query"] for e in session.events] == [
+        "Black Pig details", "Golden Yolk details", "Black Pig details"]
+    assert not session.function_call_output
+    await session.handle_function_call_output({"call_id": session.events[0]["call_id"], "output": "{}"})
     assert len(session.function_call_output) == 1
-
-    session.function_call_output.clear()
-    session._function_signature_states[signature] = "delivered"
-    await session._process_function_text(request)
-    assert len(session.function_call_output) == 1
-    assert session.function_call_output[0]["output"] == '{"status":"evidence_ready"}'
-    assert session.diagnostics[-1]["action"] == "replayed_result"
+    assert [e["event"] for e in session.diagnostics].count("function.call") == 3
 
 
 async def test_patched_eos_produces_ordered_done_after_final_audio_tail(patched_backend):
