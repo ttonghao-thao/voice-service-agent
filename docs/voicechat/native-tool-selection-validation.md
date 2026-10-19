@@ -87,21 +87,35 @@ docker exec "$VOICE_CONTAINER" sh -c '
 
 已提供的 `format_tool_response_for_nemo` 接受 JSON 对象，并添加 `<TOOL_RESPONSE>[...]</TOOL_RESPONSE>` 后调用 `normalize_tool_response`。不能据此要求 API 再加数组或标签，否则可能产生重复封装。最终规范化尚未核实。
 
-在已部署的 VoiceChat 容器执行下列只读检查，不需要更新镜像、重建容器或重新跑 WAV。它输出规范化函数来源/实现及一条固定测试响应的结果，不涉及实际知识、query 或凭据：
+在已部署的 VoiceChat 容器执行下列源码检查，不需要更新镜像、重建容器或重新跑 WAV。普通 Python 进程不一定具有 Triton backend 的模块路径；不要直接 import infer.utils，也不要为此安装 triton_python_backend_utils。下面只用标准库读取 AST，不加载 Torch/Triton，不执行模型代码。
 
 ```sh
 docker exec "$VOICE_CONTAINER" python -c '
-import inspect
-import json
-import sys
-sys.path.insert(0, "/opt/tritonserver/backends/nemotron-voicechat")
-from infer.utils import format_tool_response_for_nemo
-normalize = format_tool_response_for_nemo.__globals__["normalize_tool_response"]
-print("normalizer_source=" + str(inspect.getsourcefile(normalize)))
-print(inspect.getsource(normalize))
-payload = {"status": "ok", "sources": [{"text": "The test product weighs 100 grams."}], "partial": False}
-print("formatted_probe=" + repr(format_tool_response_for_nemo(json.dumps(payload))))
+import ast
+from pathlib import Path
+
+path = Path("/opt/tritonserver/backends/nemotron-voicechat/infer/utils.py")
+source = path.read_text()
+tree = ast.parse(source)
+name = "normalize_tool_response"
+found = False
+for node in tree.body:
+    if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)) and node.name == name:
+        print("normalizer_source=" + str(path))
+        print(ast.get_source_segment(source, node))
+        found = True
+    elif isinstance(node, (ast.Import, ast.ImportFrom)):
+        if any((alias.asname or alias.name) == name for alias in node.names):
+            print("normalizer_import=" + ast.get_source_segment(source, node))
+            found = True
+if not found:
+    print("normalizer_definition=not_found")
+    for node in tree.body:
+        if isinstance(node, (ast.Import, ast.ImportFrom)):
+            print(ast.get_source_segment(source, node))
 '
 ```
+
+只回传 normalizer_source 和函数源码；若规范化函数来自其他模块，回传 normalizer_import（或 not_found 后的导入列表），用于定位实际文件。本命令不生成 formatted_probe，不能用读取源码成功代替规范化行为已验证。此前直接导入报 ModuleNotFoundError 只证明该诊断进程无法导入 backend 模块，不能据此判断运行中的 Triton 服务缺少依赖。
 
 预期只增加一次工具响应封装，正文与数字保持完整。具体特殊标记映射应核对实际 normalizer 源码，不预设映射正确。若格式化和规范化均正确，再按 §4 的受控短结果探针对照；合成结果探针不能作为真实知识闭环验收。本轮不修改 VoiceChat 推理逻辑。
