@@ -120,17 +120,11 @@ class CueKBAdapter:
                 parsed_endpoint.path,
                 len(ctx.principal.knowledge_base_ids),
             )
-            # The native voice result can carry at most ``qa_direct_max_hits``.
-            # Asking CueKB for more makes an otherwise complete result appear
-            # application-partial and can provoke a redundant model tool call.
-            top_k = self.settings.cuekb_top_k
-            if ctx.effective_executor == "native_cuekb":
-                top_k = min(top_k, self.settings.qa_direct_max_hits)
             body = CueKBSearchRequest(
                 query=args.query,
                 kb_ids=list(ctx.principal.knowledge_base_ids),
                 mode=self.settings.cuekb_search_mode,
-                top_k=top_k,
+                top_k=self.settings.cuekb_top_k,
                 filters={
                     "product_model": args.product_model,
                     "software_version": args.software_version,

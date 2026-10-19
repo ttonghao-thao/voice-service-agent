@@ -23,7 +23,7 @@ Content-Type: application/json
 }
 ```
 
-示例 UUID 仅说明类型。实际 KB UUID 来自服务端授权映射；旧 `kb_support` 不能直接传入。当前 CueKB query 上限 2000 字符，top_k 支持 1–20；通用路径默认取 5。原生语音路径按语音证据槽位将 top_k 限为 3，避免检索 5 项后固定丢弃 2 项并把本可完整的工具结果标成 `partial`。工具输入目前只开放 `product_model`、`software_version`，由 BusinessRuntime 从明确输入或已确认上下文传入；Adapter 不从自然语言猜测。CueKB 支持的 `document_ids` 暂不开放给模型。`relations` 是 CueKB M3 的可选请求字段；本项目可接收其返回的关系证据，但暂不让模型生成实体 UUID、关系类型或时间条件。
+示例 UUID 仅说明类型。实际 KB UUID 来自服务端授权映射；旧 `kb_support` 不能直接传入。当前 CueKB query 上限 2000 字符，top_k 支持 1–20；所有路径遵守 CUEKB_TOP_K（默认 5）。原生语音不再用旧 direct 执行器的 3 个槽位压低检索数量；在请求数量及现有字节预算内保留完整来源，真实省略才标记 partial。减少检索数量不能证明证据已充分，也不能用于隐藏裁剪标记。工具输入目前只开放 `product_model`、`software_version`，由 BusinessRuntime 从明确输入或已确认上下文传入；Adapter 不从自然语言猜测。CueKB 支持的 `document_ids` 暂不开放给模型。`relations` 是 CueKB M3 的可选请求字段；本项目可接收其返回的关系证据，但暂不让模型生成实体 UUID、关系类型或时间条件。
 
 不向上游发送自造 request_id/locale/deadline 并假定生效。HTTP 超时与应用 deadline 自行执行，取消本地等待不证明 CueKB 后台已停止。
 
@@ -56,4 +56,4 @@ not_found 表示本次未命中，不能推导事实不存在；degraded 有 hit
 
 HTTP 3xx 不跟随，也不使用其正文中的证据，返回 `TOOL_BAD_RESPONSE`；损坏的压缩编码同样归为坏响应。上游连接中途关闭、超时或 5xx 最多重试一次，始终受工具和整轮预算限制；部分响应不能保留或与重试结果拼接。重试仍失败返回 `TOOL_UNAVAILABLE`，不回退模拟数据。
 
-CueKB 上游 HTTP 响应上限为 256 KiB，内部工具输出上限为 32 KiB，外置模型证据正文加上下文预算为 6000 字符；Q07 D2 的 evidence-v1 包另限默认 6000 bytes / 3 项（包括问题、身份与条件字段）。这些是不同边界，超过内部预算时显式舍弃上下文或命中。知识工具预算仍为 5 秒，业务整轮预算默认 30 秒，均不能证明真实端到端时延已达标。
+CueKB 上游 HTTP 响应上限为 256 KiB，内部工具输出上限为 32 KiB，外置模型证据正文加上下文预算为 6000 字符；Q07 D2 的 evidence-v1 包另限默认 6000 bytes / 3 项（包括问题、身份与条件字段）。一期 native CueKB 不使用旧 D2 的 3 项限制，项数由 CUEKB_TOP_K 控制，仍遵守完整证据包字节预算。这些是不同边界，超过内部预算时显式舍弃上下文或命中。知识工具预算仍为 5 秒，业务整轮预算默认 30 秒，均不能证明真实端到端时延已达标。

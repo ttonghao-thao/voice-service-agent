@@ -20,7 +20,7 @@ VoiceChat 模型通过 tools/instructions 自主选择；不发送 WS tool_choic
 
 默认向 VoiceChat 注册 `search_knowledge_base(query)`，服务端可信 implementation 使用同名 `search_knowledge_base`，由 `NativeCueKBExecutor` 经既有 Registry/CueKBAdapter 调 CueKB `/v1/search`。query 不会被最终转写覆盖；最终转写仍作为请求归属和可信上下文来源。原生参数/异常记录供区分选择、参数、检索和语音问题，不自动做语义正确性判定。
 
-该执行器没有外置模型或升级分支。检索失败、无结果、澄清、insufficient/conflicting 分别返回明确状态；有可用证据时，选取完整 ASCII 来源及必要 context，在项数/字节预算内形成内部审计结构 `cuekb-evidence-v1`。一期 relay 回填模型时只保留 status、sources、partial，来源保留正文及必要上下文/条件；追踪与呈现元数据留在 API。不截断句子或音译技术事实；无法保留完整英文证据则返回受控不足结果。scope/degraded/省略项标记 partial，不能推导为完整知识不存在。unassessed 保留原标签，由 VoiceChat 只根据实际证据作答，不冒充服务已经证明其充分。
+该执行器没有外置模型或升级分支。检索失败、无结果、澄清、insufficient/conflicting 分别返回明确状态；有可用证据时，选取完整 ASCII 来源及必要 context，在项数/字节预算内形成内部审计结构 `cuekb-evidence-v1`。一期 relay 回填模型时只保留 status、sources、partial，来源保留正文及必要上下文/条件；partial 内部为布尔值，发给 VoiceChat 时为字符串 "true"/"false"，避免数词转换误改布尔值。原生证据项按 CUEKB_TOP_K 与字节预算保留，不使用旧 direct 的三项上限；追踪与呈现元数据留在 API。不截断句子或音译技术事实；无法保留完整英文证据则返回受控不足结果。scope/degraded/省略项标记 partial，不能推导为完整知识不存在。unassessed 保留原标签，由 VoiceChat 只根据实际证据作答，不冒充服务已经证明其充分。
 
 证据保留 citation/document/chunk/version/trace 信息；经同 call_id 回填后由 VoiceChat 生成语音。Coordinator 复用既有 EvidenceReady/after_audio 检查和唯一提交；播后文字规则不是语义真实性证明或实际听音保证。AGENT_PROVIDER=disabled 时不构建额外模型客户端，文字提交关闭。
 

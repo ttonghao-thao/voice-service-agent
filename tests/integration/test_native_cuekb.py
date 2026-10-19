@@ -11,6 +11,7 @@ import httpx
 import pytest
 from app.agent_runtime.context import RunContext
 from app.agent_runtime.direct import EvidenceReady
+from app.agent_runtime.native_cuekb import voice_result
 from app.config import ROOT, Settings
 from app.contracts import CueKBArguments, DomainError, Principal
 from app.main import create_app
@@ -55,7 +56,8 @@ def test_query_only_schema_rejects_authority_and_preserves_identifiers():
 
 
 @pytest.mark.parametrize("scenario,code", [
-    ("ok", None), ("unassessed", None), ("not_found", "CUEKB_NO_EVIDENCE"),
+    ("ok", None), ("unassessed", None), ("five_hits", None), ("five_hits_bounded", None),
+    ("not_found", "CUEKB_NO_EVIDENCE"),
     ("insufficient", "CUEKB_EVIDENCE_UNSAFE"), ("conflicting", "CUEKB_EVIDENCE_UNSAFE"),
     ("needs_clarification", "CUEKB_NEEDS_CLARIFICATION"), ("auth", "CUEKB_AUTH_FAILED"),
     ("timeout", "TOOL_UNAVAILABLE"), ("non_ascii", "CUEKB_VOICE_EVIDENCE_UNAVAILABLE"),
@@ -72,6 +74,8 @@ async def test_native_query_reaches_cuekb_without_an_answer_model(tmp_path, monk
     s = configuration(tmp_path)
     if scenario == "budget":
         s.qa_direct_evidence_max_bytes = 1024
+    if scenario == "five_hits_bounded":
+        s.qa_direct_evidence_max_bytes = 2200
     app = create_app(s)
     calls = []
 
@@ -82,6 +86,17 @@ async def test_native_query_reaches_cuekb_without_an_answer_model(tmp_path, monk
         if scenario == "timeout":
             raise httpx.ReadTimeout("fixture timeout")
         data = evidence()
+        if scenario in ("five_hits", "five_hits_bounded"):
+            # Later ranked hits can carry the requested facts; the first
+            # three headings/introductory excerpts are not necessarily enough.
+            texts = ["Product AX supports 10 connections.", "Product AX overview.",
+                     "Product AX launches in 2026.", "Product AX weighs 100 grams.",
+                     "Product AX costs 20 dollars."]
+            original = data["hits"][0]
+            data["hits"] = [{**original,
+                "chunk_id": f"00000000-0000-4000-8000-{index + 200:012d}",
+                "source_text": text, "rank": index + 1,
+            } for index, text in enumerate(texts)]
         if scenario in ("unassessed", "insufficient", "conflicting"):
             data["evidence_status"] = scenario
         if scenario in ("not_found", "needs_clarification"):
@@ -190,7 +205,7 @@ async def test_native_query_reaches_cuekb_without_an_answer_model(tmp_path, monk
         body = json.loads(calls[0].content)
         assert body["query"] == query  # Do not replace the model's resolved query with ASR.
         assert body["kb_ids"] == [KB]
-        assert body["top_k"] == s.qa_direct_max_hits == 3
+        assert body["top_k"] == s.cuekb_top_k == 5
         assert calls[0].headers["authorization"] == "Bearer server-only"
         assert str(calls[0].url) == "https://cuekb.fixture/v1/search"
         if code:
@@ -210,7 +225,16 @@ async def test_native_query_reaches_cuekb_without_an_answer_model(tmp_path, monk
                 assert result.envelope["items"][0]["context"] is None
             assert len(json.dumps(result.envelope).encode()) <= s.qa_direct_evidence_max_bytes
             assert json.dumps(result.envelope, ensure_ascii=False).isascii()
-            assert result.envelope["partial"] is (scenario == "partial")
+            partial = scenario in ("partial", "five_hits_bounded")
+            assert result.envelope["partial"] is partial
+            wire = voice_result(result)
+            assert wire["partial"] == ("true" if partial else "false")
+            if scenario == "five_hits_bounded":
+                assert 0 < len(wire["sources"]) < 5
+            if scenario == "five_hits":
+                assert len(wire["sources"]) == 5
+                assert wire["sources"][-2]["text"] == "Product AX weighs 100 grams."
+                assert wire["sources"][-1]["text"] == "Product AX costs 20 dollars."
         assert ctx.effective_executor == "native_cuekb" and ctx.escalation_reason is None
         assert ctx.retrieval_calls == 1
         if scenario in ("truncated_context", "truncated_context_with_source_part"):

@@ -45,7 +45,9 @@ def voice_result(ready):
             if item.get(key) and item[key] != item["text"]:
                 source[key] = item[key]
         sources.append(source)
-    return {"status": "ok", "sources": sources, "partial": ready.envelope["partial"]}
+    # Deployed VoiceChat verbalizes JSON booleans (observed false -> "zero").
+    # Text flags survive that boundary; internal audit stays bool.
+    return {"status": "ok", "sources": sources, "partial": "true" if ready.envelope["partial"] else "false"}
 
 
 class NativeCueKBExecutor:
@@ -151,7 +153,9 @@ class NativeCueKBExecutor:
                 rejected_non_ascii += 1
                 continue
             candidate = {**envelope, "items": [*envelope["items"], item], "partial": False}
-            if len(selected) >= self.settings.qa_direct_max_hits:
+            # Native evidence is bounded by the requested retrieval count and
+            # the existing byte budget, not the legacy direct executor's 3 slots.
+            if len(selected) >= self.settings.cuekb_top_k:
                 rejected_limit += 1
                 continue
             if len(json.dumps(candidate).encode()) > self.settings.qa_direct_evidence_max_bytes:

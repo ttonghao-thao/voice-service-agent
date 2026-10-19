@@ -19,7 +19,7 @@ VoiceChat 决定是否调用 `search_knowledge_base(query)`，负责英文理解
 - 音频输入、输出与工具 worker 并行；上游写入串行化，工具等待不停止音频时钟。
 - 检索仍有期限、权限、版本、租约和 epoch 检查；VoiceChat 的结果注入及说话时间不受检索期限控制。
 - 回答观察与连接同寿命，断线、明确取消和连接资源上限会结清任务。`QA_PROVIDER_ANSWER_TIMEOUT_MS` 仅用于旧工作流，不控制一期语音续答。
-- API 保存完整来源与追踪信息，回填模型的 JSON 只有 status、sources、partial；每条 source 保留正文和必要上下文/条件。不发送审计 UUID、trace_id 和呈现契约。
+- API 保存完整来源与追踪信息，回填模型的 JSON 只有 status、sources、partial；partial 在内部为布尔值，在 VoiceChat 边界为字符串 "true"/"false"，避免已部署数词转换器把布尔值变为 "one"/"zero"；每条 source 保留正文和必要上下文/条件。不发送审计 UUID、trace_id 和呈现契约。
 - 完成转写/音频用于记录与验收；播后证据检查不撤销已播放内容，也不封锁后续普通问答。一般回答不能标记为已验证的企业事实。
 - 原生 speech_started 清除门户已经排队的播放，继续收音、转发和执行查询。模型实际打断、工具等待期间的新请求理解仍须真实验证；不伪造等待修订能力。
 - 连接内多轮依赖 VoiceChat 保留上下文；达到既有连接资源上限或断线时可以重连，但不声称恢复了模型隐藏状态。

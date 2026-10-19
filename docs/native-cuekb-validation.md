@@ -78,3 +78,11 @@ docker logs --since "$WINDOW_START" --until "$WINDOW_END" "$VOICE_CONTAINER" 2>&
 ACK 的 audio.done 不是知识回答完成。API 的空闲轮换必须同时满足没有待观察的知识回答、工具已结清、输出队列已发送完；不会仅因 ACK 已结束而轮换。原有连接最大时间及 30 秒宽限仍保留，持续无回答可最终报 VOICE_SESSION_EXPIRED，不代表业务成功。
 
 04:56 UTC 现场已确认 10 次检索/回填、9 次结果队列注入完成，产品回答仍未完成。该循环的根因尚未确定，不能用本次轮换修正宣称已解决。进一步只读核对见 [VoiceChat 结果注入复核](voicechat/native-tool-selection-validation.md#7-2026-10-19-结果注入复核)。已有镜像可以执行该检查，无需为获取信息再次部署。
+
+## 6. 来源覆盖与布尔值兼容
+
+04:56:50 UTC 的第一组真实工具响应保留了三条来源文本，但 `partial:false` 被 VoiceChat 数词转换为 `partial:"zero"`。API 已将发给 VoiceChat 的该标记改为文本 "true"/"false"，内部审计仍是布尔值。无需修改 VoiceChat。
+
+Black Pig WAV 问价格、重量、酥皮层数及最佳食用时间；这组响应只有 18 层的资料，其余三项未出现。证据是原文完整片段，不等于覆盖了问题。已撤回原生检索强制 top_k<=3 的旧限制；遵守 CUEKB_TOP_K（默认 5）并在现有字节预算内保留来源，省略项如实标记 partial。不能保证第五条就足够，也不把这一改动当作工具循环已解决的证据。
+
+本次仅需重建 API 镜像，Web/VoiceChat 无须重建。沿用 §2、§3 的入口；回传四条 case、validation 及两份摘要。selected 不再固定等于 3；即使 answer_complete=passed，也须核对价格/重量/层数/最佳食用时间分别有依据回答或明确说明缺少资料，不能用猜测补齐。保留原 WAV，不降低用例要求。

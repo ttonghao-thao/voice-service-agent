@@ -85,7 +85,7 @@ docker exec "$VOICE_CONTAINER" sh -c '
 
 04:56 UTC 现场：同一输入产生 10 次原生调用，API 检索/回填和 backend 接收均为 10，全部在 ACK 阶段缓存；注入启动 10、返回 idle 与注入结束各 9、取消 1、decoder limit 0。两轮普通回答完成，产品回答未完成。API 约 105 秒触发轮换；取消与轮换的因果仍需同时间线判断，不能把第十次取消当作前九次重新调用的原因。
 
-已提供的 `format_tool_response_for_nemo` 接受 JSON 对象，并添加 `<TOOL_RESPONSE>[...]</TOOL_RESPONSE>` 后调用 `normalize_tool_response`。不能据此要求 API 再加数组或标签，否则可能产生重复封装。最终规范化尚未核实。
+已提供的 `format_tool_response_for_nemo` 接受 JSON 对象，并添加 `<TOOL_RESPONSE>[...]</TOOL_RESPONSE>` 后调用 `normalize_tool_response`。不能据此要求 API 再加数组或标签，否则可能产生重复封装。随后已取得规范化源码及实际 before/after：三条正文保留，partial 的布尔 false 被转换为字符串 "zero"。API 改用文本标记适配该数词转换边界，未修改本目录 VoiceChat 运行源码。
 
 在已部署的 VoiceChat 容器执行下列源码检查，不需要更新镜像、重建容器或重新跑 WAV。普通 Python 进程不一定具有 Triton backend 的模块路径；不要直接 import infer.utils，也不要为此安装 triton_python_backend_utils。下面只用标准库读取 AST，不加载 Torch/Triton，不执行模型代码。
 
@@ -119,3 +119,5 @@ if not found:
 只回传 normalizer_source 和函数源码；若规范化函数来自其他模块，回传 normalizer_import（或 not_found 后的导入列表），用于定位实际文件。本命令不生成 formatted_probe，不能用读取源码成功代替规范化行为已验证。此前直接导入报 ModuleNotFoundError 只证明该诊断进程无法导入 backend 模块，不能据此判断运行中的 Triton 服务缺少依赖。
 
 预期只增加一次工具响应封装，正文与数字保持完整。具体特殊标记映射应核对实际 normalizer 源码，不预设映射正确。若格式化和规范化均正确，再按 §4 的受控短结果探针对照；合成结果探针不能作为真实知识闭环验收。本轮不修改 VoiceChat 推理逻辑。
+
+04:56:50 UTC 的真实 after 证据只覆盖 Black Pig 录音所问四项中的酥皮 18 层；价格、重量、最佳食用时间未出现于这组响应。此事实说明这一组证据覆盖不足，但不证明后续九次响应也相同，或模型重复调用一定由它造成。当前恢复配置的检索数和完整有界来源；不得以 partial=false 推断问题已获充分回答。下一次应核对真实知识回答，而非继续要求用户逐个提供辅助函数。
