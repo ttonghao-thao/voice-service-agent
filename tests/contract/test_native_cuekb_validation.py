@@ -9,6 +9,7 @@ import pytest
 
 from scripts import run_native_cuekb_validation as entrypoint
 from scripts.run_native_cuekb_validation import (
+    backend_injection_line,
     case_line,
     classify,
     read_api_evidence,
@@ -17,6 +18,33 @@ from scripts.run_native_cuekb_validation import (
     summarize_voicechat_log,
 )
 from scripts.validate_native_cuekb import assess, load_cases, passed, summary_lines
+
+
+@pytest.mark.parametrize("cancel_last", [False, True])
+def test_backend_injection_summary_separates_received_from_completed_and_other_sequences(cancel_last):
+    rows = []
+    for sequence in (42, 420):
+        for index in range(10):
+            rows.extend([
+                f"seq_id: {sequence} response_chars=322 Token length:93",
+                f"Tool response buffered during speaking_ack (seq_id: {sequence}) (step: 20)",
+                f"[seq {sequence}] Fast response-token injection started",
+            ])
+            if sequence == 42 and index == 9 and cancel_last:
+                rows.append(f"[seq {sequence}] Response injection cancelled")
+            else:
+                rows.extend([
+                    f"Function call state transition: process_response -> idle (seq_id: {sequence}) (step: 30)",
+                    f"[seq {sequence}] Fast response-token injection done, state: idle",
+                ])
+    selected = read_voicechat_evidence(StringIO("\n".join(rows)))
+    line = backend_injection_line(selected, "42")
+    assert "received=10 buffered_ack=10 started=10" in line
+    assert f"returned_idle={9 if cancel_last else 10} done_idle={9 if cancel_last else 10}" in line
+    assert f"cancelled={int(cancel_last)} decoder_limit=0" in line
+    assert f"status={'incomplete' if cancel_last else 'complete'}" in line
+    assert "chars_min_max=322:322 tokens_min_max=93:93" in line
+    assert "status=unverified" in backend_injection_line(selected, "99")
 
 
 def test_committed_cases_use_current_public_tool_name():
@@ -203,7 +231,7 @@ def test_voicechat_log_summary_compares_prompt_chain_without_printing_raw_log():
 
     lines, ok = summarize_voicechat_log(log, "search_knowledge_base")
 
-    assert ok and len(lines) == 5
+    assert ok and len(lines) == 6
     assert lines[1] == (
         f"backend_prompt sequence=42 tools=search_knowledge_base chars=6123 "
         f"sha256={digest} match=passed"
@@ -231,7 +259,7 @@ def test_voicechat_log_summary_marks_absent_model_function_as_fault():
     lines, ok = summarize_voicechat_log(log, "search_knowledge_base")
 
     assert not ok
-    assert lines[-1] == "voicechat_diagnostic=failed fault=MODEL_FUNCTION_ABSENT"
+    assert lines[-1] == "voicechat_diagnostic=failed fault=MODEL_FUNCTION_ABSENT scope=tool_transport"
 
 
 def test_voicechat_log_input_discards_unrelated_lines_before_summary():
@@ -272,7 +300,7 @@ def test_voicechat_log_summary_flags_repeated_calls_without_tool_result():
     assert not ok
     assert "count=2 unique_sequences=42" in lines[2]
     assert "response_timeouts=1" in lines[3]
-    assert lines[-1] == "voicechat_diagnostic=failed fault=LEGACY_TOOL_REPLAY"
+    assert lines[-1] == "voicechat_diagnostic=failed fault=LEGACY_TOOL_REPLAY scope=tool_transport"
 
 
 def test_voicechat_log_summary_allows_sequential_tool_cases_on_one_sequence():
@@ -298,7 +326,7 @@ def test_voicechat_log_summary_allows_sequential_tool_cases_on_one_sequence():
 
     assert ok
     assert "count=2 unique_sequences=42" in lines[2]
-    assert lines[-1] == "voicechat_diagnostic=passed fault=NONE"
+    assert lines[-1] == "voicechat_diagnostic=passed fault=NONE scope=tool_transport"
 
 
 def test_voicechat_log_summary_filters_other_sequences_and_trailing_log_quote():
@@ -327,7 +355,7 @@ def test_voicechat_log_summary_filters_other_sequences_and_trailing_log_quote():
     lines, ok = summarize_voicechat_log(log, "search_knowledge_base")
 
     assert not ok
-    assert lines[-1] == "voicechat_diagnostic=failed fault=LEGACY_TOOL_REPLAY"
+    assert lines[-1] == "voicechat_diagnostic=failed fault=LEGACY_TOOL_REPLAY scope=tool_transport"
     assert lines[2] == (
         "model_function status=passed count=2 unique_sequences=42 "
         "tools=search_knowledge_base"
@@ -363,7 +391,7 @@ def test_voicechat_log_summary_fails_after_one_cached_result_replay():
 
     assert not ok
     assert "results_replayed=1 duplicate_acks_suppressed=0 replay_limit=1" in lines[3]
-    assert lines[-1] == "voicechat_diagnostic=failed fault=LEGACY_TOOL_REPLAY"
+    assert lines[-1] == "voicechat_diagnostic=failed fault=LEGACY_TOOL_REPLAY scope=tool_transport"
 
 
 def test_voicechat_log_summary_requires_duplicate_ack_suppression():
@@ -387,7 +415,7 @@ def test_voicechat_log_summary_requires_duplicate_ack_suppression():
     lines, ok = summarize_voicechat_log(log, "search_knowledge_base")
 
     assert not ok
-    assert lines[-1] == "voicechat_diagnostic=failed fault=LEGACY_TOOL_REPLAY"
+    assert lines[-1] == "voicechat_diagnostic=failed fault=LEGACY_TOOL_REPLAY scope=tool_transport"
 
 
 def test_voicechat_log_summary_requires_cached_replay_delivery():
@@ -413,7 +441,7 @@ def test_voicechat_log_summary_requires_cached_replay_delivery():
     lines, ok = summarize_voicechat_log(log, "search_knowledge_base")
 
     assert not ok
-    assert lines[-1] == "voicechat_diagnostic=failed fault=LEGACY_TOOL_REPLAY"
+    assert lines[-1] == "voicechat_diagnostic=failed fault=LEGACY_TOOL_REPLAY scope=tool_transport"
 
 
 def test_api_log_summary_rejects_multiple_ack_grant_restores_for_one_call():

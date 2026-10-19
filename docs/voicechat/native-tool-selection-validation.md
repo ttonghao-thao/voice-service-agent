@@ -48,7 +48,7 @@ docker logs --since "$WINDOW_START" --until "$WINDOW_END" "$VOICE_CONTAINER" 2>&
 
 预期最终 Prompt 与 backend 的工具名/hash 匹配，`function_parsed=new_calls=function_result`，旧 `duplicates_coalesced/results_replayed/duplicate_acks_suppressed/replay_limit` 全为 0。模型可能针对一个输入继续查询，不能仅凭调用数多于输入数判错。`LEGACY_TOOL_REPLAY` 表示旧补偿逻辑仍在运行。
 
-摘要只证明工具事件与回填数量匹配，不证明结果已完整注入模型、答案有依据或音频完成。业务完成必须同时满足 API case 的 `answer_complete=passed`。不要用提高 replay 上限或隐藏 ACK 消除错误。
+摘要新增 `backend_injection` 行，按同一 sequence 汇总接收、ACK 期间缓存、注入启动、返回 idle、取消及 token 长度。`status=complete` 仅表示观测到对应队列注入完成，不证明模型理解或事实正确；无后端日志则为 unverified。末行 `scope=tool_transport` 明确原检查只证明工具事件与回填数量匹配，不证明答案有依据或音频完成。业务完成必须同时满足 API case 的 `answer_complete=passed`。不要用提高 replay 上限或隐藏 ACK 消除错误。
 
 ## 4. 绕过应用工作流的协议对照
 
@@ -80,3 +80,28 @@ docker exec "$VOICE_CONTAINER" sh -c '
 ## 6. 现场放行
 
 四 WAV 连续验证通过后，在同一个 Web 通话中做产品代词追问及播放期间插话。记录同一连接是否保留、查询对象是否正确、回答是否完整、插话是否收到。CPU 契约测试与文件 hash 不能证明模型理解、真实全双工打断或听音质量。
+
+## 7. 2026-10-19 结果注入复核
+
+04:56 UTC 现场：同一输入产生 10 次原生调用，API 检索/回填和 backend 接收均为 10，全部在 ACK 阶段缓存；注入启动 10、返回 idle 与注入结束各 9、取消 1、decoder limit 0。两轮普通回答完成，产品回答未完成。API 约 105 秒触发轮换；取消与轮换的因果仍需同时间线判断，不能把第十次取消当作前九次重新调用的原因。
+
+已提供的 `format_tool_response_for_nemo` 接受 JSON 对象，并添加 `<TOOL_RESPONSE>[...]</TOOL_RESPONSE>` 后调用 `normalize_tool_response`。不能据此要求 API 再加数组或标签，否则可能产生重复封装。最终规范化尚未核实。
+
+在已部署的 VoiceChat 容器执行下列只读检查，不需要更新镜像、重建容器或重新跑 WAV。它输出规范化函数来源/实现及一条固定测试响应的结果，不涉及实际知识、query 或凭据：
+
+```sh
+docker exec "$VOICE_CONTAINER" python -c '
+import inspect
+import json
+import sys
+sys.path.insert(0, "/opt/tritonserver/backends/nemotron-voicechat")
+from infer.utils import format_tool_response_for_nemo
+normalize = format_tool_response_for_nemo.__globals__["normalize_tool_response"]
+print("normalizer_source=" + str(inspect.getsourcefile(normalize)))
+print(inspect.getsource(normalize))
+payload = {"status": "ok", "sources": [{"text": "The test product weighs 100 grams."}], "partial": False}
+print("formatted_probe=" + repr(format_tool_response_for_nemo(json.dumps(payload))))
+'
+```
+
+预期只增加一次工具响应封装，正文与数字保持完整。具体特殊标记映射应核对实际 normalizer 源码，不预设映射正确。若格式化和规范化均正确，再按 §4 的受控短结果探针对照；合成结果探针不能作为真实知识闭环验收。本轮不修改 VoiceChat 推理逻辑。

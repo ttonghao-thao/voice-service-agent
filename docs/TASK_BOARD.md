@@ -4,7 +4,7 @@
 
 ## 1. 当前结论与审计基线
 
-本版按用户确认的最小流程实现一期 native relay：连续音频收发、原生调用执行与原 call_id 回填。撤回一期发声许可及 ACK 补偿依赖，VoiceChat 撤回按工具名合并查询、自动结果重放和 ACK 隐藏。现场既有证据只证明工具注册、调用和 CueKB 检索成功，未证明完整语音回答；新版本待部署验证。hello.wav 句首丢词继续暂缓。
+本版按用户确认的最小流程实现一期 native relay：连续音频收发、原生调用执行与原 call_id 回填。撤回一期发声许可及 ACK 补偿依赖，VoiceChat 撤回按工具名合并查询、自动结果重放和 ACK 隐藏。现场已证明工具注册、调用、CueKB 检索及 9 次结果队列注入完成，未证明完整知识语音回答；简化 relay 已部署，但产品轮仍反复调用且无完整回答；新轮换修正待部署，结果规范化与模型续答继续核对。hello.wav 句首丢词继续暂缓。
 
 当前需求已确认：VoiceChat 自主决定直接回答或调用工具，后端只使用 VoiceChat，不引入独立 ASR/TTS，不根据最终转写自动启动业务。本次实现以 dual_tools/general_qa 为部署目标；旧 knowledge_required 现场证据属于严格模式，不能作为当前目标配置。先打通功能再优化时延，详见 [实施顺序](q1003-target-architecture.md#4-实施计划与决策门槛)。
 
@@ -20,7 +20,7 @@
 | D21-HANDSHAKE / RECOVERY | 字符串 tools 回显、空事件边界、错误/转写交付与重试；现场确认注册及可见超时，其余恢复矩阵待验 |
 | D21-PROBE / END | 连续送音探针、静态产物检查、WS/backend 隔离采集、可选 PAD 结束保护；CPU 证据不替代 GPU |
 | VoiceChat 交付规则 | 完整外部修改文件、manifest、容器命令已在 docs/voicechat；AGENTS 要求后续同步 |
-| 镜像内置验证材料 | API 内置单入口、底层验证/探针、case 配置和四段 WAV；VoiceChat 派生镜像内置客户端、静态检查器和相同输入。一次 `docker exec` 完成 API 项目验证并只返回窗口、ID、四条 case 和故障分类；同一 Python 可将 VoiceChat 日志窗口归纳为五行、API 工具生命周期归纳为三行 |
+| 镜像内置验证材料 | API 内置单入口、底层验证/探针、case 配置和四段 WAV；VoiceChat 派生镜像内置客户端、静态检查器和相同输入。一次 `docker exec` 完成 API 项目验证并只返回窗口、ID、四条 case 和故障分类；同一 Python 可将 VoiceChat 日志窗口归纳为六行（含后端注入计数）、API 工具生命周期归纳为三行 |
 | P1-A 严格提示一致性 | Provider/两份 voice prompt 统一授权口述与关联固定 ACK，legacy 保持 bridge；未经授权的问候/澄清/限制说明不放行，沉默时自动澄清与真实模型行为另行验证 |
 
 ## 3. 待完成与建议顺序

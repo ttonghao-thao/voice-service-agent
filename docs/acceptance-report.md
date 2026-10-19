@@ -1,6 +1,6 @@
 # 当前验收证据
 
-更新日期：2026-10-19。**真实知识语音闭环尚未放行。**现场已证明正确原生工具名、CueKB 检索和结果回填；2026-10-18 23:32 UTC 的重复 ACK 隐藏版本仍以 VOICE_ANSWER_TIMEOUT/VOICE_TOOL_REQUIRED 失败。旧“ACK 抢占许可”解释未获完整事件证据支持。本版将一期改为持续原生 relay，撤回发声许可、结果重放和 ACK 隐藏依赖；本地项目全量 518 项通过，真实 GPU、听音及完整四用例待部署验证。hello.wav 句首丢词继续暂缓。状态见 [任务板](TASK_BOARD.md)，操作见 [VoiceChat 验证](voicechat/native-tool-selection-validation.md)。
+更新日期：2026-10-19。**真实知识语音闭环尚未放行。**04:56 UTC 简化 relay 已部署：普通两轮完成；产品轮 10 次原生调用、检索及结果回填，backend 接收 10、队列注入完成 9、取消 1，仍无完整回答。已本地复现并修正 API 把“ACK 已结束”当作可轮换的缺口；不改变 VoiceChat 推理逻辑，也不将轮换问题认定为工具循环根因。最终规范化与模型续答仍待核实。hello.wav 句首丢词继续暂缓。状态见 [任务板](TASK_BOARD.md)，操作见 [VoiceChat 验证](voicechat/native-tool-selection-validation.md)。
 
 当前用户目标已改为 VoiceChat 自主决定直接回答或调用工具，部署采用 general_qa。qa-tools-v4 已修正模板冲突并补充部署策略检查；以下严格模式现场结果保留为历史证据，不能当作新模式的验收结果。
 
@@ -12,6 +12,8 @@
 
 | 日期 / 版本 | 实际结果 | 限制与证据位置 |
 | --- | --- | --- |
+| 2026-10-19 / 轮换与注入摘要修正（本地） | 先在真实 HTTP/WS 夹具复现 ACK 结束后提前轮换；修正后延迟知识回答正常完成。同 call_id 幂等、不同 ID 新查询、多轮、仅 ACK 不通过、断线结清及摘要按 sequence 隔离等 59 项定向测试通过；Ruff/diff 检查通过 | CPU/受控服务；不修改 VoiceChat 运行源码，不证明真实工具循环已修复。摘要新增 backend_injection，工具传输检查明确 scope=tool_transport |
+| 2026-10-19 04:56 UTC / 简化 relay 现场 | 前两个普通 case answer_complete=passed；产品 input 10 次原生调用、CueKB/回填各 10，后端接收/注入启动各 10、返回 idle/注入结束各 9、取消 1、decoder_limit=0。结果 322–881 字符、93–235 token。产品 answer_complete=unverified，约 105 秒触发 VOICE_SESSION_ROTATION_REQUIRED | 是真实日志证据；队列注入完成不证明语义理解。第四 case 未执行。第十次取消与连接关闭的时序需确认；工具循环根因未定，不能据此扩大超时或重放结果 |
 | 2026-10-19 / 简化原生 relay（本地） | 518 项 Python 全量回归通过；新增网络夹具在同一连接完成普通→知识→普通→知识指代追问，工具等待期间持续送音、重复 ACK 不消耗回答资格、回答延迟超过旧预算仍能完成；同 call_id 重复通知只执行一次，不同 call_id 的新查询实际执行。最终定向回归 105 项通过 | CPU/受控 HTTP、WS 与音频夹具；不是 Nano 推理、真实知识忠实性或麦克风全双工验收。load_utils.py 原样补收，LF/CRLF 校验等价；完整外部 GPU 依赖未执行 |
 | 2026-10-19 01:46（北京时间）/ 真实 CueKB 三用例 | 问候和 TCP/UDP 通过；产品轮工具选择、3 项检索、截断证据准入、唯一 API 调用和缓存结果重放均通过。VoiceChat `results_replayed=1 replay_limit=0`，API `results_submitted=1 ack_grants_restored=0`，最终仍为 `VOICE_TOOL_REQUIRED/VOICE_ANSWER_TIMEOUT` | 证明结果已经回到模型，也证明 API 未观察到可用于授权恢复的重复 ACK 边界。当时尝试在 VoiceChat 内部隐藏重复 ACK；后续 23:32 UTC 现场仍失败，本版已撤回该补偿。第四用例未运行，真实知识口述与完整四用例仍未通过 |
 | 2026-10-19 00:45（北京时间）/ 真实 CueKB 三用例 | 问候和 TCP/UDP 通过；产品轮 `selection/retrieval/voice_evidence/speech` 均 passed，`candidates=selected=3 limit=0`。VoiceChat 仅产生一个 API 新调用并接收一个结果，API `received=inputs=unique_calls=1 unbound=0`；工具名、Prompt、CueKB 和去重摘要均通过。模型仍解码两次 function call，当时怀疑重复 ACK 消耗最终回答许可，但摘要不能证实该因果；最终出现 `VOICE_TOOL_REQUIRED`，验证归类 `VOICE_RESPONSE_COMPLETION` | 用户现场真实 NVIDIA VoiceChat/CueKB。当时修复把同一输入限制为一次 API 调用、一次缓存结果重放和一次重复 ACK 授权归还；后续 01:46 轮次证明 ACK 授权归还没有触发，后续隐藏 ACK 仍未解决，本版已撤回上述补偿。第四用例未运行，真实知识口述与完整四用例仍未通过 |

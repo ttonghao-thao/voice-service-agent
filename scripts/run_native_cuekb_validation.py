@@ -71,6 +71,13 @@ VOICECHAT_LOG_MARKERS = (
     '"kind": "response.output_audio.done"',
     '"kind":"response.output_audio.done"',
     "Function call response timed out",
+    "response_chars=",
+    "Tool response buffered during speaking_ack",
+    "Fast response-token injection started",
+    "process_response -> idle",
+    "Fast response-token injection done",
+    "Response injection cancelled",
+    "Max decoder steps",
 )
 API_LOG_MARKERS = (
     "voice_tool_call_received",
@@ -189,6 +196,31 @@ def diagnostic_matches(entries, **wanted):
             if all(entry.get(key) == value for key, value in wanted.items())]
 
 
+def backend_injection_line(text, sequence_id):
+    # Backend messages use both '[seq N]' and 'seq_id: N'. Never mix
+    # warmup/other clients into the selected prompt sequence's counts.
+    pattern = re.compile(r"(?:\[seq |seq_id: )" + re.escape(str(sequence_id)) + r"(?=\]|\s|\))")
+    rows = [line for line in text.splitlines() if pattern.search(line)] if sequence_id is not None else []
+    markers = {
+        "received": "response_chars=", "buffered_ack": "Tool response buffered during speaking_ack",
+        "started": "Fast response-token injection started", "returned_idle": "process_response -> idle",
+        "done_idle": "Fast response-token injection done, state: idle", "cancelled": "Response injection cancelled",
+        "decoder_limit": "Max decoder steps",
+    }
+    counts = {key: sum(marker in line for line in rows) for key, marker in markers.items()}
+    sizes = [tuple(map(int, match.groups())) for line in rows
+             if (match := re.search(r"response_chars=(\d+).*Token length:(\d+)", line))]
+    status = ("unverified" if not any(counts.values()) else
+              "complete" if counts["received"] > 0
+              and counts["received"] == counts["returned_idle"] == counts["done_idle"]
+              and not counts["cancelled"] and not counts["decoder_limit"] else "incomplete")
+    chars = f"{min(s[0] for s in sizes)}:{max(s[0] for s in sizes)}" if sizes else "-"
+    tokens = f"{min(s[1] for s in sizes)}:{max(s[1] for s in sizes)}" if sizes else "-"
+    return (f"backend_injection sequence={sequence_id or '-'} status={status} "
+            + " ".join(f"{key}={value}" for key, value in counts.items())
+            + f" chars_min_max={chars} tokens_min_max={tokens}")
+
+
 def summarize_voicechat_log(text, expected_tool):
     prompts = PROMPT_RE.findall(text)
     backend = BACKEND_PROMPT_RE.findall(text)
@@ -278,7 +310,8 @@ def summarize_voicechat_log(text, expected_tool):
         result = ("failed", "TOOL_RESULT_WAIT_TIMEOUT")
     else:
         result = ("passed", "NONE")
-    lines.append(f"voicechat_diagnostic={result[0]} fault={result[1]}")
+    lines.append(backend_injection_line(text, sequence_id))
+    lines.append(f"voicechat_diagnostic={result[0]} fault={result[1]} scope=tool_transport")
     return lines, result[0] == "passed"
 
 

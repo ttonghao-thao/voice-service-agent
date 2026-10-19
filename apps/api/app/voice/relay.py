@@ -305,7 +305,15 @@ async def relay(gateway, ws, session, provider):
                 raise DomainError("AUDIO_BACKPRESSURE", "Audio capture stalled. Restart voice.", 409, True)
             elapsed = time.monotonic() - started
             if elapsed > gateway.settings.voice_session_max_seconds:
-                if input_state == "quiet" and not executing and calls.empty() and all(r["done"] for r in responses.values()):
+                # A finished ACK and an empty tool queue do not mean the
+                # model has finished answering. Reuse the existing observer;
+                # this controls idle rotation only, never permission to speak.
+                awaiting_answer = any(
+                    operation["turn"] in coordinator.awaiting_answers
+                    for operation in tool_inputs.values()
+                )
+                if (input_state == "quiet" and not executing and calls.empty() and not awaiting_answer
+                    and outgoing.empty() and all(r["sent_done"] for r in responses.values())):
                     raise DomainError("VOICE_SESSION_ROTATION_REQUIRED", "Reconnect to continue the conversation.", 409, True)
                 if elapsed > gateway.settings.voice_session_max_seconds + 30:
                     raise DomainError("VOICE_SESSION_EXPIRED", "Voice connection reached its time limit. Restart voice.", 409, True)

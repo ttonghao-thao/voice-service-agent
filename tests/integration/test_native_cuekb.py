@@ -462,6 +462,11 @@ async def test_continuous_native_conversation_survives_delayed_answers_and_repea
             await asyncio.sleep(.3)
             await speak(f"ack-{n}-1", "Let me check the documentation.")
             await speak(f"ack-{n}-2", "Let me check the documentation.")
+            if n == 4:
+                # Exercise the idle-rotation boundary after every ACK has ended.
+                # Shorten only this test's live setting; the hard cap stays bounded.
+                s.voice_session_max_seconds = 1
+                await asyncio.sleep(1.2)
             if answer_available:
                 await speak(f"answer-{n}", "Product AX supports 10 connections.")
             waiting = False
@@ -481,6 +486,7 @@ async def test_continuous_native_conversation_survives_delayed_answers_and_repea
                                   3: "Thank you.", 4: "What was its connection limit again?"}
                     await ws.send(json.dumps({"type": "conversation.item.input_audio_transcription.completed",
                                               "item_id": f"i{n}", "transcript": utterances[n]}))
+                    await ws.send(json.dumps({"type": "input_audio_buffer.speech_stopped", "item_id": f"i{n}"}))
                     if n in (1, 3):
                         await speak(f"answer-{n}", "Hello." if n == 1 else "You are welcome.")
                     else:
@@ -489,6 +495,7 @@ async def test_continuous_native_conversation_survives_delayed_answers_and_repea
                                 "arguments": json.dumps({"query": "Product AX connection limit"})}
                         await ws.send(json.dumps(call))
                         await ws.send(json.dumps(call))  # same ID must execute only once
+                        await speak(f"tool-{n}", "Let me check the documentation.")
                 elif event["type"] == "conversation.item.create":
                     results.append(event["item"])
                     if answer_available and event["item"]["call_id"] == "call-2":
@@ -499,6 +506,7 @@ async def test_continuous_native_conversation_survives_delayed_answers_and_repea
                             "call_id": "refined-2", "name": "search_knowledge_base",
                             "arguments": json.dumps({"query": "Product AX maximum simultaneous connections"}),
                         }))
+                        await speak("refine-2", "Let me check the documentation.")
                         continue
                     task = asyncio.create_task(answer(int(event["item"]["call_id"].split("-")[1])))
                     workers.add(task)
