@@ -296,11 +296,11 @@ class WeatherAdapter:
         if self.settings.weather_mode == "mock":
             return {
                 "status": "needs_clarification",
-                "message": "演示环境未接入真实天气。天气合成数据仅用于契约测试。",
+                "message": "Live weather is unavailable in this demo. Synthetic weather data is for contract tests only.",
                 "is_mock": True,
             }
         if not self.settings.weather_base_url or not self.settings.weather_api_key.get_secret_value():
-            raise DomainError("TOOL_NOT_CONFIGURED", "天气供应商尚未配置", 503)
+            raise DomainError("TOOL_NOT_CONFIGURED", "The weather provider is not configured", 503)
         base = self.settings.weather_base_url.rstrip("/")
         headers = {"Authorization": "Bearer " + self.settings.weather_api_key.get_secret_value()}
         places = PlacesResponse.model_validate(
@@ -316,7 +316,7 @@ class WeatherAdapter:
             return {
                 "status": "needs_clarification",
                 "places": [p.model_dump() for p in places.places],
-                "message": "请确认城市、国家或地区。",
+                "message": "Please confirm the city and country or region.",
             }
         place = places.places[0]
         try:
@@ -328,7 +328,7 @@ class WeatherAdapter:
             else:
                 target = date.fromisoformat(args.date)
         except (ValueError, ZoneInfoNotFoundError) as exc:
-            raise DomainError("TOOL_BAD_ARGUMENTS", "请提供明确日期或有效地点时区", 422) from exc
+            raise DomainError("TOOL_BAD_ARGUMENTS", "Provide an explicit date and a valid location timezone", 422) from exc
         key = (
             ctx.principal.user_id,
             place.id,
@@ -354,7 +354,7 @@ class WeatherAdapter:
                 or result.source.is_mock
                 or result.temperature.unit != ("C" if args.units == "metric" else "F")
             ):
-                raise DomainError("TOOL_BAD_RESPONSE", "天气地点、来源或单位不匹配", 502)
+                raise DomainError("TOOL_BAD_RESPONSE", "Weather location, source, or units do not match", 502)
             try:
                 valid = datetime.fromisoformat(result.valid_at.replace("Z", "+00:00"))
                 fetched = datetime.fromisoformat(result.fetched_at.replace("Z", "+00:00"))
@@ -369,7 +369,7 @@ class WeatherAdapter:
                 if (now() - fetched).total_seconds() > 300:
                     result.stale = True
             except ValueError as exc:
-                raise DomainError("TOOL_BAD_RESPONSE", "天气有效时间不匹配", 502) from exc
+                raise DomainError("TOOL_BAD_RESPONSE", "The weather validity time does not match the requested date", 502) from exc
             card = result.model_dump()
             if len(self.cache) >= 512:
                 self.cache.pop(next(iter(self.cache)))

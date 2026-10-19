@@ -2,6 +2,8 @@
 
 仅支持英文的全双工知识客服，支持连接内多轮对话。Python 3.12/FastAPI/Agents SDK；React/TypeScript/AudioWorklet；PostgreSQL/Redis。开发协作和文档可以使用中文；产品的语音输入、回答及门户交互仅支持英文。
 
+产品语言以 `en-US` 契约和英文提示词为准；不得从中文开发文档、历史记录或 Unicode 测试夹具推导出中文产品要求。修改用户可见文案或模型工具描述时使用英文。
+
 ## 按需读取
 
 1. 先 `git status --short`。范围明确就用 `rg` 找代码/调用方和对应主题；不明确再查 [文档索引](docs/README.md)。

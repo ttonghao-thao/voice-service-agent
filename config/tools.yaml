@@ -16,10 +16,10 @@ tools:
     retry_policy: {max_retries: 1}
     audit_policy: evidence_only
   - name: weather
-    display_name: 天气
+    display_name: Weather
     mode_ref: weather_mode
     version: '1'
-    description: 查询用户已确认地点的天气。date 为 ISO 日期、今天、明天或 null；地名歧义必须澄清。
+    description: Get weather for a user-confirmed location. date is an ISO date, today, tomorrow, or null; ambiguous locations require clarification.
     adapter_id: weather_http
     endpoint_ref: weather_base_url
     secret_ref: weather_api_key

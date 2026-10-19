@@ -10,6 +10,8 @@
 
 当前系统仅支持英文全双工知识客服及连接内多轮对话，支持并行收音与播放；工具等待阶段的语音交互能力单独验证。当前为单组织、只读知识与每通话临时 capability。VoiceChat-11B + nemotron-labs-voicechat + WS 是独立语音系统，CueKB 是独立知识系统。本项目控制授权、任务、知识执行与交付，不训练模型、管理 GPU 或直连 CueKB 索引。语音输入、回答及门户交互仅支持英文；中文不属于本期产品能力。
 
+语言约束有实际实现依据：[Settings](../apps/api/app/config.py) 的默认语言及要求语言、[ConversationInput](../apps/api/app/contracts.py) 的 locale 均限定为 `en-US`；VoiceGateway 拒绝其他语言会话；VoiceChat 注册提示和工具描述为英文；门户 HTML、组件库和新会话请求使用 `en-US`。中文协作文档、存储原文、旧日期别名和 Unicode 测试不改变该范围。当前 CueKB-only 路径不启用天气工具；保留的天气适配器也使用英文用户文案。配置和协议限制不等于模型已完成真实英文语音验收。
+
 Python/FastAPI/Agents SDK 与 React/TypeScript/AudioWorklet；生产状态为 PostgreSQL，租约为 Redis。Web 镜像内 Nginx 提供 HTTPS，同源代理到 API。端口、参数、镜像和迁移只看 [部署](deployment.md)，字段与客户端行为只看 [门户协议](portal-protocol.md)。
 
 ## 2. 模块与数据流

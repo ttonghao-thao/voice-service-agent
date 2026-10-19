@@ -242,6 +242,8 @@
 - Ruff：`apps/api`、`scripts`、`tests` 通过；生成 HTTP、上下行事件及答案 schema 后差异检查通过。
 - 前端：6 项 Node 音频测试通过；TypeScript/Vite 生产构建通过。
 - Playwright：启动隔离的开发 API/Vite 后 4 passed；覆盖中文文字/证据/刷新/窄屏、无依据、麦克风拒绝，以及合成麦克风连续帧/静音/停止播报/新 epoch 重建/释放。客户页面不含管理工作台；合成设备不证明真实语音质量。
+
+  范围澄清（2026-10-20）：上句保留历史测试事实，其中的中文文本不是中文语音产品能力的验收依据。当前产品仅支持英文全双工知识客服，见 [当前架构](../../architecture.md#1-产品与部署边界)。
 - Alembic：临时空 SQLite 执行 0001→0004、downgrade base、再次 upgrade head 通过；0004 新增 request revision、parent/native call、取消原因、delivery status 和输出抑制字段。真实 PostgreSQL 迁移仍未执行。
 - 发布脚本经 `sh -n` 静态检查；Compose 启动 API 后会在容器内核验 `/health/ready` 的真实非 mock 配置和 `ENABLED_TOOLS` 一致性。该检查没有执行 Docker，也不代表外部服务调用成功。
 - 探测脚本 CLI 通过；当前未配置/调用真实 VoiceChat，没有生成事件报告或音频，不将脚本存在当作能力通过。
