@@ -27,6 +27,8 @@ Content-Type: application/json
 
 不向上游发送自造 request_id/locale/deadline 并假定生效。HTTP 超时与应用 deadline 自行执行，取消本地等待不证明 CueKB 后台已停止。
 
+一期 native relay 按 input_item_id 限制最多两次查询（VOICE_MAX_RETRIEVALS_PER_INPUT，可设为 1），相同解析参数只查询一次；该路径 HTTP 自动重试关闭，超时、网络异常及 5xx 不额外发送请求。其他路径保留原有一次传输重试。同输入的累计有效来源用于语音结果及答案校验，补充检索为空不覆盖已知事实；权限失败或冲突证据不能靠缓存转为成功。有限查询未发现字段不代表整个知识库不存在该字段。
+
 ## 2. 结果映射
 
 | CueKB | 内部证据与回答处理 |

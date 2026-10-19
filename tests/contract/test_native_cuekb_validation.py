@@ -121,6 +121,28 @@ def test_console_summary_is_bounded_and_exit_requires_product_retrieval():
     assert not passed(report)
 
 
+def test_completed_audio_does_not_override_failed_source_check():
+    row = {"expected_tool": "search_knowledge_base", "answer_complete": "passed", "selection": "passed",
+           "arguments": "manual_review_required", "retrieval": "passed", "voice_evidence": "passed",
+           "speech_transport": "passed", "reason_code": "VOICE_UNSUPPORTED_NUMBER"}
+    assert not passed({"status": "observed", "cases": [row]})
+
+
+def test_budget_summary_reports_post_terminal_failure_instead_of_only_result_mismatch():
+    log = "\n".join([
+        "voice_search_state conversation_id=c1 input_item_id=i1 call_id=k1 retrieval_executions=1 "
+        "retrieval_limit=2 duplicate_queries=0 terminal_result_submitted=0 cumulative_sources=1",
+        "voice_search_state conversation_id=c1 input_item_id=i1 call_id=k2 retrieval_executions=1 "
+        "retrieval_limit=2 duplicate_queries=1 terminal_result_submitted=1 cumulative_sources=1",
+        "voice_search_post_terminal conversation_id=c1 input_item_id=i1 call_id=k3",
+    ])
+    lines, ok = summarize_api_log(read_api_evidence(StringIO(log)))
+    assert not ok
+    assert lines[-2] == ("api_search_budget inputs=1 retrieval_executions=1 duplicate_queries=1 "
+                         "terminal_results_submitted=1 post_terminal_calls=1")
+    assert lines[-1] == "api_diagnostic=failed fault=TOOL_LOOP_AFTER_TERMINAL"
+
+
 def test_single_entrypoint_classifies_missing_native_tool_with_bounded_evidence():
     row = {
         "case_id": "product", "expected_tool": "search_knowledge_base",
@@ -140,7 +162,9 @@ def test_single_entrypoint_classifies_missing_native_tool_with_bounded_evidence(
         "case=product expected=search_knowledge_base actual=- selection=failed "
         "arguments=unverified retrieval=unverified cuekb_evidence=- "
         "voice_evidence=- evidence_filter=- "
-        "speech=passed answer_complete=unverified reason=- "
+        "speech=passed answer_complete=unverified retrieval_executions=0 retrieval_limit=- "
+        "duplicate_queries=0 terminal_results_submitted=0 post_terminal_calls=0 cumulative_sources=0 "
+        "latest_retrieval=- reason=- "
         "portal_error=- elapsed_ms=1200 input_ids=input-1 trace_ids=-"
     )
 
@@ -488,7 +512,7 @@ def test_api_log_summary_reports_only_lifecycle_counts_and_trace():
         "ack_grants_restored=0 answers_completed=1"
     )
     assert lines[1] == "api_cuekb responses=1 statuses=ok hits=1 traces=z1 durations_ms=25"
-    assert lines[2] == "api_diagnostic=passed fault=NONE"
+    assert lines[-1] == "api_diagnostic=passed fault=NONE"
     assert "private" not in evidence
 
 

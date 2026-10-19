@@ -25,6 +25,7 @@ class RunContext:
     deadline: float | None = None
     retrieval_limit: int | None = None
     retrieval_calls: int = 0
+    native_voice_search: bool = False
     selected_tool: str | None = None
     effective_executor: str | None = None
     escalation_reason: str | None = None

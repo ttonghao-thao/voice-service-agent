@@ -15,7 +15,7 @@ from app.agent_runtime.native_cuekb import voice_result
 from app.config import ROOT, Settings
 from app.contracts import CueKBArguments, DomainError, Principal
 from app.main import create_app
-from app.storage.models import Record
+from app.storage.models import Record, Turn
 from app.tools.adapters import CueKBAdapter
 from fastapi import FastAPI, Request
 from fastapi.testclient import TestClient
@@ -581,3 +581,132 @@ async def test_continuous_native_conversation_survives_delayed_answers_and_repea
     assert all(row["answer_complete"] == "passed" for row in report["cases"])
     assert [r["answer_response_id"] for r in report["cases"]] == [f"answer-{n}" for n in range(1, 5)]
     assert all(row.get("reason_code") is None for row in report["cases"])
+
+
+@pytest.mark.parametrize("scenario", ["supplement", "empty", "duplicate", "post_terminal", "revoked", "one_search"])
+async def test_native_input_search_budget_and_cumulative_answer(tmp_path, scenario):
+    """Real API/HTTP/WS, deterministic provider; verifies control, not GPU speech."""
+    from scripts.simulate_full_flow import http_server
+    from scripts.validate_native_cuekb import passed, run
+
+    queries, results, registrations, histories = [], [], [], []
+    cuekb = FastAPI()
+
+    @cuekb.post("/v1/search")
+    async def search(request: Request):
+        queries.append((await request.json())["query"])
+        value = evidence(trace_id=f"00000000-0000-4000-8000-{len(queries):012d}")
+        if len(queries) == 2 and scenario == "empty":
+            value.update(retrieval_status="not_found", evidence_status="insufficient", hits=[])
+        elif len(queries) == 2 and scenario in ("supplement", "post_terminal"):
+            value["hits"][0].update(chunk_id="00000000-0000-4000-8000-000000000202",
+                                    source_text="Product AX has 18 layers.")
+        return value
+
+    async def voicechat(ws):
+        await ws.send(json.dumps({"type": "session.created"}))
+        registration = json.loads(await ws.recv())["session"]
+        registrations.append(registration)
+        await ws.send(json.dumps({"type": "session.updated", "session": registration}))
+        seen = set()
+
+        async def speak(rid, text):
+            await ws.send(json.dumps({"type": "response.output_audio_transcript.done", "response_id": rid, "transcript": text}))
+            await ws.send(json.dumps({"type": "response.output_audio.delta", "response_id": rid,
+                                      "delta": base64.b64encode(b"\x01\x00" * 1920).decode()}))
+            await ws.send(json.dumps({"type": "response.output_audio.done", "response_id": rid}))
+
+        async def call(cid, query):
+            event = {"type": "response.function_call_arguments.done", "response_id": cid, "call_id": cid,
+                     "name": "search_knowledge_base", "arguments": json.dumps({"query": query})}
+            await ws.send(json.dumps(event))
+            await ws.send(json.dumps(event))  # duplicate transport event is not another request
+            await speak(cid, "Let me check the documentation.")
+
+        async for raw in ws:
+            event = json.loads(raw)
+            if event["type"] == "input_audio_buffer.append":
+                n = base64.b64decode(event["audio"])[0]
+                if not n or n in seen:
+                    continue
+                seen.add(n)
+                await ws.send(json.dumps({"type": "input_audio_buffer.speech_started", "item_id": f"i{n}"}))
+                await ws.send(json.dumps({"type": "conversation.item.input_audio_transcription.completed",
+                                          "item_id": f"i{n}", "transcript": "Tell me about Product AX."}))
+                await ws.send(json.dumps({"type": "input_audio_buffer.speech_stopped", "item_id": f"i{n}"}))
+                await call(f"initial-{n}", "Product AX connection limit")
+            elif event["type"] == "conversation.item.create":
+                results.append(event["item"])
+                cid = event["item"]["call_id"]
+                if cid == "initial-1" and scenario != "one_search":
+                    if scenario == "revoked":
+                        app.state.registry.specs["search_knowledge"].enabled = False
+                    await call("second-1", "Product AX connection limit" if scenario in ("duplicate", "revoked")
+                               else "Product AX layer count")
+                elif cid == "second-1" and scenario == "post_terminal":
+                    await call("third-1", "Product AX price")
+                else:
+                    # Inspect the exact stored evidence used by the answer observer.
+                    async with app.state.store.sessions() as db:
+                        turns = (await db.execute(select(Turn).where(Turn.conversation_id == conversation_id()))).scalars()
+                        histories.append([{"input_item_id": t.input_item_id, "answer": t.answer} for t in turns])
+                    text = ("Product AX supports 10 connections and has 18 layers."
+                            if cid == "second-1" and scenario == "supplement"
+                            else "Product AX supports 10 connections. I cannot confirm the price from these excerpts.")
+                    await speak(f"answer-{cid}", text)
+
+    def conversation_id():
+        return next(iter(app.state.voice.sessions.values())).conversation_id
+
+    cases = []
+    for n in (1, 2):
+        path = tmp_path / f"budget-{n}.wav"
+        with wave.open(str(path), "wb") as wav:
+            wav.setparams((1, 2, 24000, 0, "NONE", "not compressed"))
+            wav.writeframes(bytes([n, 0]) * 1920)
+        cases.append({"case_id": str(n), "wav": path.name, "expected_tool": "search_knowledge_base"})
+    case_file = tmp_path / "cases.json"
+    case_file.write_text(json.dumps(cases))
+    async with serve(voicechat, "127.0.0.1", 0) as endpoint, http_server(cuekb) as cuekb_url:
+        s = configuration(tmp_path, voice_provider="nvidia", voicechat_api_key="fixture",
+                          voicechat_ws_url=f"ws://127.0.0.1:{endpoint.sockets[0].getsockname()[1]}",
+                          voice_max_retrievals_per_input=1 if scenario == "one_search" else 2)
+        s.cuekb_base_url = cuekb_url
+        app = create_app(s)
+        async with http_server(app) as base:
+            report = await run(Namespace(base_url=base, origin=s.public_origin, cases=case_file,
+                case_timeout=4, audio_dir=None, output=tmp_path / "report.json"))
+    assert len(registrations) == 1
+    if scenario == "post_terminal":
+        assert not passed(report)
+        assert report["cases"][0]["portal_error"] == "VOICE_TOOL_LOOP"
+        assert report["cases"][0]["post_terminal_calls"] == 1
+        assert len(results) == len(queries) == 2
+        return
+    if scenario == "revoked":
+        assert not passed(report)
+        assert len(results) == len(queries) == 1
+        return
+    assert passed(report), report
+    first = report["cases"][0]
+    assert first["reason_code"] is None
+    assert first["terminal_results_submitted"] == 1
+    assert first["post_terminal_calls"] == 0
+    assert first["retrieval_executions"] == (1 if scenario in ("duplicate", "one_search") else 2)
+    assert first["duplicate_queries"] == int(scenario == "duplicate")
+    assert report["cases"][1]["retrieval_executions"] == 1  # new input, same query, fresh budget
+    final = json.loads(results[0 if scenario == "one_search" else 1]["output"])
+    assert final["search_state"] == "finished"
+    assert "Do not call another tool" in final["instructions"]
+    assert "10 connections" in final["sources"][0]["text"]
+    if scenario == "supplement":
+        assert len(final["sources"]) == 2
+        assert "18 layers" in final["sources"][1]["text"]
+    if scenario == "empty":
+        assert final["partial"] == "true"
+        assert first["latest_retrieval_status"] == "not_found"
+        assert first["retrieval"] == "passed" and first["cumulative_sources"] == 1
+    # The completed first answer, not just the wire payload, retains old facts.
+    previous = next(t for t in histories[-1] if t["input_item_id"] == "i1" and t["answer"])
+    assert previous["answer"]["status"] == "answered"
+    assert len(previous["answer"]["citations"]) == (2 if scenario == "supplement" else 1)

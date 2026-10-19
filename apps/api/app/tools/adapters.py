@@ -23,14 +23,15 @@ from pydantic import TypeAdapter
 logger = logging.getLogger(__name__)
 
 
-async def bounded_json(client, method, url, *, limit=32768, error_map=None, **kwargs):
+async def bounded_json(client, method, url, *, limit=32768, error_map=None, retry=True, **kwargs):
     # Redirects are intentionally disabled: configured endpoints cannot redirect into arbitrary networks.
-    for attempt in range(2):
+    attempts = 2 if retry else 1
+    for attempt in range(attempts):
         try:
             async with client.stream(method, url, follow_redirects=False, **kwargs) as response:
                 if 300 <= response.status_code < 400:
                     raise DomainError("TOOL_BAD_RESPONSE", "Search service returned an unexpected redirect", 502)
-                if response.status_code >= 500 and attempt == 0:
+                if response.status_code >= 500 and attempt + 1 < attempts:
                     await response.aclose()
                     await asyncio.sleep(0.1)
                     continue
@@ -51,7 +52,7 @@ async def bounded_json(client, method, url, *, limit=32768, error_map=None, **kw
         except httpx.DecodingError as exc:
             raise DomainError("TOOL_BAD_RESPONSE", "Search service returned invalid encoded data", 502) from exc
         except (httpx.TimeoutException, httpx.NetworkError, httpx.RemoteProtocolError) as exc:
-            if attempt == 1:
+            if attempt + 1 == attempts:
                 raise DomainError("TOOL_UNAVAILABLE", "Search service connection failed", 502, True) from exc
             await asyncio.sleep(0.1)
     raise DomainError("TOOL_UNAVAILABLE", "Search service unavailable", 502)
@@ -140,6 +141,9 @@ class CueKBAdapter:
                 },
                 json=body.model_dump(mode="json"),
                 limit=262144,
+                # The native input budget also bounds real HTTP attempts.
+                # A timeout may already have reached CueKB; never send it twice.
+                retry=not ctx.native_voice_search,
                 error_map={
                     401: ("CUEKB_AUTH_FAILED", "Knowledge service authentication failed", 502, False),
                     403: ("CUEKB_FORBIDDEN", "Knowledge service cannot access the authorized scope", 502, False),

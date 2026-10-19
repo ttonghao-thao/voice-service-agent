@@ -13,6 +13,7 @@ import time
 import anyio
 from app.agent_runtime.direct import EvidenceReady
 from app.agent_runtime.native_cuekb import voice_result
+from app.agent_runtime.native_input import ANSWER_INSTRUCTIONS, FINAL_INSTRUCTIONS, NativeInputSearch
 from app.contracts import (
     AnswerBundle,
     DomainError,
@@ -36,6 +37,7 @@ async def relay(gateway, ws, session, provider):
     calls = asyncio.Queue(maxsize=16)
     upstream_lock = asyncio.Lock()
     inputs, seen_calls, responses, tool_inputs = {}, {}, {}, {}
+    searches = {}
     latest_input = None
     seq, client_seq, frames = 0, -1, 0
     started = last_input = time.monotonic()
@@ -116,9 +118,19 @@ async def relay(gateway, ws, session, provider):
             await store.record(cid, epoch, "native_tool_arguments", call_id, {
                 "name": payload["name"], "arguments": decision.arguments.model_dump(),
                 "input_item_id": item_id, "matches_final_transcript": request == decision.arguments.query})
+            search = searches.setdefault(item_id, NativeInputSearch(gateway.settings.voice_max_retrievals_per_input))
+            try:
+                execute_search = search.reserve(decision.tool.name, decision.arguments.model_dump())
+            except DomainError:
+                await store.record(cid, epoch, "native_search_limit", call_id, {
+                    "input_item_id": item_id, "reason_code": "VOICE_TOOL_LOOP"})
+                logger.warning("voice_search_post_terminal conversation_id=%s input_item_id=%s call_id=%s",
+                               cid, item_id, call_id)
+                raise
             logger.info("voice_bridge_started conversation_id=%s call_id=%s", cid, call_id)
             turn, task = await coordinator.submit(session.principal, cid, f"voice:{epoch}:{call_id}",
-                request, "voice", epoch, call_id, item_id, decision, voice_relay=True)
+                request, "voice", epoch, call_id, item_id, decision, voice_relay=True,
+                native_search=search, execute_search=execute_search)
             session.request_revision = turn.request_revision
             tool_inputs[item_id] = {"turn": turn.id, "call": call_id, "sent": False,
                                    "acks": decision.tool.ack_messages, "evidence": False}
@@ -129,7 +141,8 @@ async def relay(gateway, ws, session, provider):
                 result = voice_result(bundle)
                 tool_inputs[item_id]["evidence"] = True
             else:
-                result = {"status": bundle.status, "speech_text": bundle.speech_text}
+                result = {"status": bundle.status, "speech_text": bundle.speech_text,
+                          "search_state": "finished", "instructions": ANSWER_INSTRUCTIONS + FINAL_INSTRUCTIONS}
             text = json.dumps(result, ensure_ascii=True, separators=(",", ":"))
             async with coordinator.lock(cid):
                 await current()
@@ -139,7 +152,8 @@ async def relay(gateway, ws, session, provider):
                 if not decision.tool.required_tools <= allowed or decision.tool.permission_scope not in session.principal.scopes:
                     raise DomainError("FORBIDDEN", "Tool access changed before delivery.", 403)
                 # Registry invocation captures backend versions in the task context.
-                if any([await store.tool_revision(name) != version for name, version in versions.items()]):
+                if any([await store.tool_revision(name) != version
+                        for name, version in {**versions, **search.versions}.items()]):
                     raise DomainError("FORBIDDEN", "Tool configuration changed before delivery.", 403)
                 snapshot = await coordinator.runtime.catalog.snapshot(False)
                 if snapshot.revision != session.catalog_revision or snapshot.definitions != session.tool_definitions:
@@ -153,6 +167,17 @@ async def relay(gateway, ws, session, provider):
                     async with asyncio.timeout(2):
                         await provider.submit_tool_result(call_id, text)
                 await store.delivery(cid, epoch, call_id, "tool_result", "sent", turn.id, turn.request_revision)
+            counters = {"input_item_id": item_id, "retrieval_executions": search.executions,
+                        "retrieval_limit": search.limit, "duplicate_queries": search.duplicate_queries,
+                        "terminal_result_submitted": bool(search.terminal_reason),
+                        "terminal_reason": search.terminal_reason,
+                        "cumulative_sources": len(bundle.citations) if isinstance(bundle, EvidenceReady) else 0}
+            await store.record(cid, epoch, "native_search_state", call_id, counters, turn.id, turn.request_revision)
+            logger.info("voice_search_state conversation_id=%s input_item_id=%s call_id=%s "
+                        "retrieval_executions=%s retrieval_limit=%s duplicate_queries=%s "
+                        "terminal_result_submitted=%s cumulative_sources=%s",
+                        cid, item_id, call_id, search.executions, search.limit, search.duplicate_queries,
+                        int(bool(search.terminal_reason)), counters["cumulative_sources"])
             logger.info("voice_tool_result_submitted conversation_id=%s turn_id=%s call_id=%s bytes=%s",
                 cid, turn.id, call_id, len(text.encode()))
             logger.info("voice_bridge_finished conversation_id=%s turn_id=%s call_id=%s status=result_sent",

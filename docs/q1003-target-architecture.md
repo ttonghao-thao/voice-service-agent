@@ -12,14 +12,17 @@ VoiceChat 决定是否调用 `search_knowledge_base(query)`，负责英文理解
 
 一期采用 `voice/relay.py`，由 Gateway 在原生 CueKB/general_qa 会话选择，不增加部署开关。旧 bridge、lookup/reason 和 knowledge_required 路径仅维持兼容覆盖，不作为本期验收路径。
 
-一个语音会话保持一条 VoiceChat WebSocket。普通回复、ACK、知识回答都持续转发，回答结束后继续接收下一轮。响应 ID 只区分语音片段，不是一次性发声许可。同一原生 call_id 的重复事件幂等；不同 call_id/不同 query 是模型的新调用，不能按工具名合并或偷偷重放。
+一个语音会话保持一条 VoiceChat WebSocket。普通回复、ACK、知识回答都持续转发，回答结束后继续接收下一轮。响应 ID 只区分语音片段，不是一次性发声许可。同一原生 call_id 的重复事件幂等；不同 call_id 仍记为模型调用，但是否执行查询由当前输入的预算决定。不能按工具名合并不同查询或在 VoiceChat 内偷偷重放。
 
 ## 3. 可实施的契约改进
 
 - 音频输入、输出与工具 worker 并行；上游写入串行化，工具等待不停止音频时钟。
 - 检索仍有期限、权限、版本、租约和 epoch 检查；VoiceChat 的结果注入及说话时间不受检索期限控制。
 - 回答观察与连接同寿命，断线、明确取消和连接资源上限会结清任务。`QA_PROVIDER_ANSWER_TIMEOUT_MS` 仅用于旧工作流，不控制一期语音续答。
-- API 保存完整来源与追踪信息，回填模型的 JSON 只有 status、sources、partial；partial 在内部为布尔值，在 VoiceChat 边界为字符串 "true"/"false"，避免已部署数词转换器把布尔值变为 "one"/"zero"；每条 source 保留正文和必要上下文/条件。不发送审计 UUID、trace_id 和呈现契约。
+- API 保存完整来源与追踪信息，回填模型的 JSON 包含 status、sources、partial、search_state 和英文回答要求；partial 在内部为布尔值，在 VoiceChat 边界为字符串 "true"/"false"，避免已部署数词转换器把布尔值变为 "one"/"zero"；每条 source 保留正文和必要上下文/条件。不发送审计 UUID、trace_id 和呈现契约。
+- 每个 input_item_id 默认至多两次检索。解析后的工具名/参数完全相同则复用已授权证据并结束检索；预算耗尽时在本次结果中标明 finished。再调用则明确报 VOICE_TOOL_LOOP 并关闭异常连接，不无限回填缓存。新输入独立计数。
+- 该原生语音路径不自动重试 CueKB HTTP 请求，避免两次执行产生四次实际请求。网络异常、5xx 或超时直接失败，其他执行路径的传输重试不变。
+- 同一输入保留有界累计证据，由 Coordinator 同时交给模型、答案观察器和引用落库。第二次空检索保留之前事实；权限失败、证据冲突不当作成功缓存。合并不截断单条来源，省略标记 partial；有限检索未发现不等于知识库不存在。普通回答不需要耗尽检索预算。
 - 完成转写/音频用于记录与验收；播后证据检查不撤销已播放内容，也不封锁后续普通问答。一般回答不能标记为已验证的企业事实。
 - 原生 speech_started 清除门户已经排队的播放，继续收音、转发和执行查询。模型实际打断、工具等待期间的新请求理解仍须真实验证；不伪造等待修订能力。
 - 连接内多轮依赖 VoiceChat 保留上下文；达到既有连接资源上限或断线时可以重连，但不声称恢复了模型隐藏状态。

@@ -33,6 +33,7 @@ QA_PROVIDER_ANSWER_TIMEOUT_MS=30000
 | CUEKB_TOP_K | 默认 5；原生语音检索数量及证据项上限，仍受字节预算限制 |
 | QA_DIRECT_MAX_HITS | 默认 3；仅旧 direct 执行器使用，一期 native CueKB 不使用 |
 | QA_DIRECT_EVIDENCE_MAX_BYTES | 默认 6000；完整 ASCII 证据包上限 |
+| VOICE_MAX_RETRIEVALS_PER_INPUT | 默认 2，可设 1；一期 native relay 同一输入的检索上限，关闭该路径 HTTP 自动重试。相同参数不重复查询，终态后再次调用关闭异常连接；不是回答成功标志 |
 | AGENT_DEADLINE_MS | 示例 60000；检索执行期限，一期 relay 的模型续答不共用该期限 |
 | QA_PROVIDER_ANSWER_TIMEOUT_MS | 示例 30000；仅旧工作流使用，一期 relay 按连接生命周期观察回答 |
 

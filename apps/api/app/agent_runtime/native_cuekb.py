@@ -47,7 +47,10 @@ def voice_result(ready):
         sources.append(source)
     # Deployed VoiceChat verbalizes JSON booleans (observed false -> "zero").
     # Text flags survive that boundary; internal audit stays bool.
-    return {"status": "ok", "sources": sources, "partial": "true" if ready.envelope["partial"] else "false"}
+    result = {"status": "ok", "sources": sources, "partial": "true" if ready.envelope["partial"] else "false"}
+    if "search_state" in ready.envelope:
+        result.update(search_state=ready.envelope["search_state"], instructions=ready.envelope["instructions"])
+    return result
 
 
 class NativeCueKBExecutor:

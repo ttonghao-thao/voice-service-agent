@@ -1,8 +1,10 @@
 # 当前系统架构
 
-2026-10-19 核对一期原生 relay、Provider、Coordinator、Runtime 与部署边界。本页维护已实现架构；改进方案见 [实施设计](q1003-target-architecture.md)，工作状态见 [任务板](TASK_BOARD.md)。
+2026-10-20 核对一期原生 relay、Provider、Coordinator、Runtime 与部署边界。本页维护已实现架构；改进方案见 [实施设计](q1003-target-architecture.md)，工作状态见 [任务板](TASK_BOARD.md)。
 
 当前一期部署为 VoiceChat 原生单工具验证：只向模型注册 search_knowledge_base(query)，通过内部 NativeCueKBExecutor→Registry→CueKBAdapter 检索，直接回填精简证据，由 VoiceChat 生成语音。AGENT_PROVIDER=disabled，不运行额外答案模型；外置 SDK/文本模型路径仅保留兼容实现，不在下图的一期数据流中。原生工具选择、连续追问与实际口述验收见 [验证步骤](native-cuekb-validation.md)。
+
+原生 relay 按连接/input_item_id 保存有界检索状态，默认最多两次实际查询、相同参数不重复执行；该路径关闭 HTTP 自动重试。重复查询或预算耗尽的结果标为 finished，之后再次调用报 VOICE_TOOL_LOOP 并关闭异常连接。Coordinator 将同一输入的累计有效证据用于回填、答案校验和引用提交；空的补充检索不丢失既有事实。缓存复用仍复核权限和后端版本，不跨输入共享。硬性查询上限不等于模型已成功回答，实际语音闭环仍须验收。
 
 ## 1. 产品与部署边界
 

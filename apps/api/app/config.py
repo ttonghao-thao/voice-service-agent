@@ -50,6 +50,7 @@ class Settings(BaseSettings):
     voicechat_ws_url: str = ""
     voicechat_api_key: SecretStr = SecretStr("")
     voice_session_max_seconds: int = 105
+    voice_max_retrievals_per_input: int = Field(default=2, ge=1, le=2)
     max_voice_sessions: int = 8
     default_locale: Literal["en-US"] = "en-US"
     required_voice_languages: Literal["en-US"] = "en-US"

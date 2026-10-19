@@ -44,6 +44,37 @@ async def test_bounded_invalid_and_retry_response():
                 await bounded_json(c, "GET", "https://fixture.invalid")
 
 
+@pytest.mark.parametrize("native_voice", [False, True])
+@pytest.mark.parametrize("fault", ["503", "timeout", "network", "partial_body"])
+async def test_native_cuekb_disables_transport_retries_only_for_native_voice(app, native_voice, fault):
+    requests = []
+    settings = app.state.settings
+    settings.cuekb_mode, settings.cuekb_base_url = "real", "https://fixture.invalid"
+    settings.cuekb_api_key = SecretStr("test-only")
+    ctx = RunContext(dev_user(), "conversation", "turn", 0, native_voice_search=native_voice)
+
+    class InterruptedBody(httpx.AsyncByteStream):
+        async def __aiter__(self):
+            yield b'{"trace_id":'
+            raise httpx.RemoteProtocolError("incomplete body")
+
+    def handle(request):
+        requests.append(request)
+        if fault == "timeout":
+            raise httpx.ReadTimeout("response timed out", request=request)
+        if fault == "network":
+            raise httpx.ConnectError("connection failed", request=request)
+        if fault == "partial_body":
+            return httpx.Response(200, stream=InterruptedBody())
+        return httpx.Response(503)
+
+    async with httpx.AsyncClient(transport=httpx.MockTransport(handle)) as client:
+        with pytest.raises(DomainError) as error:
+            await CueKBAdapter(settings, client).invoke(CueKBSearchInput(query="Product AX price"), ctx)
+    assert error.value.code == "TOOL_UNAVAILABLE"
+    assert len(requests) == (1 if native_voice else 2)
+
+
 async def test_bounded_redirect_never_follows_even_with_redirecting_client():
     requests = []
 

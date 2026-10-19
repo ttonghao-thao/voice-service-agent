@@ -111,6 +111,8 @@ class SessionCoordinator:
         decision=None,
         revision_of=None,
         voice_relay=False,
+        native_search=None,
+        execute_search=True,
     ):
         async with self.lock(cid):
             await self.ensure_owner(principal, cid)
@@ -157,6 +159,7 @@ class SessionCoordinator:
                 deadline=deadline,
                 retrieval_limit=self.settings.qa_max_retrieval_calls if decision else None,
                 retrieval_calls=previous_ctx.retrieval_calls if previous_ctx else 0,
+                native_voice_search=native_search is not None,
                 answer_policy=conversation.answer_policy,
                 task_context=dict(turn.task_context or {}),
             )
@@ -167,7 +170,8 @@ class SessionCoordinator:
                 return turn, None
             self.contexts[turn.id] = ctx
             task = asyncio.create_task(
-                self.execute(ctx, request, conversation.history, channel, decision, voice_relay)
+                self.execute(ctx, request, conversation.history, channel, decision, voice_relay,
+                             native_search, execute_search)
             )
             self.tasks[cid] = task
             self.all_tasks.add(task)
@@ -197,7 +201,8 @@ class SessionCoordinator:
                 return TaskProgress(epoch=c.epoch, request_revision=c.request_revision,
                     turn_id=t.id if t else None, status=status, phase=phase, message=message)
 
-    async def execute(self, ctx, request, history, channel, decision=None, voice_relay=False):
+    async def execute(self, ctx, request, history, channel, decision=None, voice_relay=False,
+                      native_search=None, execute_search=True):
         started = time.monotonic()
 
         async def progress(message):
@@ -223,7 +228,11 @@ class SessionCoordinator:
             ]
             try:
                 async with asyncio.timeout_at(ctx.deadline or started + self.settings.agent_deadline_ms / 1000):
-                    if decision:
+                    if native_search:
+                        await native_search.authorize(self.runtime, ctx, decision)
+                    if native_search and not execute_search:
+                        bundle = native_search.ready
+                    elif decision:
                         bundle = await self.runtime.run_selected(
                             decision, request, ctx, runtime_history, progress if channel == "text" else None)
                     else:
@@ -231,6 +240,11 @@ class SessionCoordinator:
                             request, ctx, runtime_history, progress if channel == "text" else None)
             except TimeoutError:
                 bundle = self.runtime.failure("AGENT_TIMEOUT", "The request timed out. Please try again later.")
+            if native_search:
+                # Recheck after the backend call, before reusing any earlier
+                # evidence. The same bundle is then observed, stored and sent.
+                await native_search.authorize(self.runtime, ctx, decision)
+                bundle = native_search.combine(bundle, ctx, self.settings.qa_direct_evidence_max_bytes)
             if isinstance(bundle, EvidenceReady):
                 async with self.lock(ctx.conversation_id):
                     await self.coordination.check(ctx.conversation_id)

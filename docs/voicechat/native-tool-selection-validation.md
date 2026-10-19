@@ -1,6 +1,6 @@
 # VoiceChat 独立接入与验证
 
-2026-10-19：本期使用 VoiceChat 原生英文全双工和连接内多轮能力。应用接入采用 [简化设计](../q1003-target-architecture.md)，VoiceChat 不承担 CueKB 业务去重、结果缓存重放或回答授权。
+2026-10-20：本期使用 VoiceChat 原生英文全双工和连接内多轮能力。应用接入采用 [简化设计](../q1003-target-architecture.md)，VoiceChat 不承担 CueKB 业务去重、结果缓存重放或回答授权。本次检索预算及累计证据只修改 API，VoiceChat 源码及快照 hash 不变，无需重建 VoiceChat。
 
 ## 1. 已知事实与撤回的修改
 
@@ -9,7 +9,7 @@
 旧版本把原因归结为“重复 ACK 抢占唯一回答许可”，据此加入按工具名合并参数变体、自动重放缓存结果、隐藏重复 ACK。这些解释没有完整事件时间线证明，并且改变了原生调用含义。本版撤回三项逻辑，保留有序输出、响应 ID、尾帧刷新和不输出正文的诊断。
 
 - 模型产生的新调用逐个送至 API，不因工具名相同而合并。
-- API 只对同一个 call_id 的相同通知幂等；不同查询不会复用上次结果。
+- API 对同一个 call_id 的相同通知幂等；新增同输入的查询预算与精确参数去重：重复查询可回填累计证据并结束检索，不同查询最多实际执行两次。这不是 VoiceChat 内部重放。
 - 工具结果按原 call_id 回填一次，VoiceChat 不在内部重放。
 - ACK 与最终回答均正常发送；API 不以 ACK 分配或恢复发声许可。
 - 本次没有修改 Triton model.py、权重或 ASR。补收用户提供的完整 load_utils.py，保持附件代码不变，LF/CRLF 校验关系见 docker-run.md。hello.wav 句首丢词继续暂缓。
@@ -18,7 +18,7 @@
 
 完整文件位于本目录 `s2s/audio_server.py`，运行路径 `/s2s/audio_server.py`；测试在 `s2s/tests/test_response_lifecycle.py`。所有 hash 以 [snapshot-manifest.json](snapshot-manifest.json) 为准。[docker-run.md](docker-run.md) 维护构建、挂载和重建命令。
 
-本次更新 API 镜像，以及 VoiceChat 的 audio_server.py 并重建容器。已有 bind mount 会覆盖镜像内同路径文件，必须同时核对宿主挂载文件。Web 本次无需重建。
+本次只更新 API 镜像。下列检查用于确认现有 VoiceChat 的文件身份，不要求覆盖 audio_server.py 或重建容器。已有 bind mount 会覆盖镜像内同路径文件，因此文件 hash 以容器内实际文件为准。
 
 从宿主机执行，检查容器实际文件：
 
@@ -33,6 +33,10 @@ docker exec -e PYTHONPYCACHEPREFIX=/tmp/voice-validation/pycache "$VOICE_CONTAIN
 ```
 
 预期 hash 与 manifest 一致，模板环境值为 1，编译退出码为 0。无需复制测试文件到运行容器，编译缓存自动写入 /tmp。
+
+本次 API 结果会携带 search_state（available/finished）、累计来源及英文回答要求；现有 model.py 已调用 format_tool_response_for_nemo，现场日志也已有 `<TOOL_RESPONSE>`，不要再次添加包裹。是否根据终态结果回答属于待验证的模型行为；API 不发送未经验证支持的 tool_choice，也不宣称 session.update 能在运行中禁用模型工具。
+
+完成主项目的 [单入口验证](../native-cuekb-validation.md#2-从宿主机运行一次验证) 后，用该报告时间窗口执行本页 §3 的摘要命令。预期名称和 Prompt hash 一致；VoiceChat 内部 results_replayed=0。若 API 报 VOICE_TOOL_LOOP，最后一次模型调用可能因连接已关闭而没有结果；应记录为模型未在终态后收敛，不能通过重放或放宽上限消除错误。只提供摘要，不提供全部日志。
 
 ## 3. 本轮工具传输摘要
 

@@ -56,6 +56,14 @@ API_CUEKB_RE = re.compile(
 API_RESPONSE_COMPLETED_RE = re.compile(
     r"voice_response_completed conversation_id=(\S+) response_id=(\S+) input_item_id=(\S+) phase=(\S+) samples=(\d+)"
 )
+API_SEARCH_STATE_RE = re.compile(
+    r"voice_search_state conversation_id=(\S+) input_item_id=(\S+) call_id=(\S+) "
+    r"retrieval_executions=(\d+) retrieval_limit=(\d+) duplicate_queries=(\d+) "
+    r"terminal_result_submitted=(\d+) cumulative_sources=(\d+)"
+)
+API_POST_TERMINAL_RE = re.compile(
+    r"voice_search_post_terminal conversation_id=(\S+) input_item_id=(\S+) call_id=(\S+)"
+)
 VOICECHAT_LOG_MARKERS = (
     "Prompt prepared:",
     "System prompt received for sequence",
@@ -80,6 +88,8 @@ VOICECHAT_LOG_MARKERS = (
     "Max decoder steps",
 )
 API_LOG_MARKERS = (
+    "voice_search_state",
+    "voice_search_post_terminal",
     "voice_tool_call_received",
     "voice_bridge_started",
     "voice_bridge_finished",
@@ -123,6 +133,8 @@ def classify(report):
         return "PORTAL_CONNECT", "api_portal_connectivity"
     if any(row.get("portal_error") == "VOICE_TOOL_UNKNOWN" for row in cases):
         return "UNKNOWN_TOOL_NAME", "api_tool_name_validation"
+    if any(row.get("portal_error") == "VOICE_TOOL_LOOP" or row.get("post_terminal_calls", 0) for row in cases):
+        return "TOOL_LOOP_AFTER_TERMINAL", "provider_answer_after_search_finished"
     product = [row for row in cases if row.get("expected_tool") is not None]
     if any(
         not row.get("input_item_ids") and not row.get("input_items_observed")
@@ -167,6 +179,13 @@ def case_line(row):
         f"evidence_filter={evidence_filter_summary(row)}",
         f"speech={row.get('speech_transport')}",
         f"answer_complete={row.get('answer_complete', 'unverified')}",
+        f"retrieval_executions={row.get('retrieval_executions', 0)}",
+        f"retrieval_limit={row.get('retrieval_limit') or '-'}",
+        f"duplicate_queries={row.get('duplicate_queries', 0)}",
+        f"terminal_results_submitted={row.get('terminal_results_submitted', 0)}",
+        f"post_terminal_calls={row.get('post_terminal_calls', 0)}",
+        f"cumulative_sources={row.get('cumulative_sources', 0)}",
+        f"latest_retrieval={row.get('latest_retrieval_status') or '-'}",
         f"reason={row.get('reason_code') or '-'}",
         f"portal_error={row.get('portal_error') or '-'}",
         f"elapsed_ms={row.get('elapsed_ms')}",
@@ -335,6 +354,9 @@ def summarize_api_log(text):
     ack_restored = API_ACK_RESTORED_RE.findall(text)
     cuekb = API_CUEKB_RE.findall(text)
     completed = API_RESPONSE_COMPLETED_RE.findall(text)
+    search_states = API_SEARCH_STATE_RE.findall(text)
+    post_terminal = API_POST_TERMINAL_RE.findall(text)
+    last_search = {(row[0], row[1]): row for row in search_states}
     answer_inputs = {(row[0], row[2]) for row in completed if row[3] == "answer" and int(row[4]) > 0}
     conversation_ids = dict.fromkeys(
         row[0]
@@ -368,7 +390,18 @@ def summarize_api_log(text):
             f"durations_ms={csv(row[5] for row in cuekb)}"
         ),
     ]
-    if not received:
+    lines.append(
+        f"api_search_budget inputs={len(last_search)} "
+        f"retrieval_executions={sum(int(row[3]) for row in last_search.values())} "
+        f"duplicate_queries={sum(int(row[5]) for row in last_search.values())} "
+        f"terminal_results_submitted={sum(int(row[6]) for row in search_states)} "
+        f"post_terminal_calls={len(post_terminal)}"
+    )
+    if post_terminal:
+        result = ("failed", "TOOL_LOOP_AFTER_TERMINAL")
+    elif any(int(row[3]) > int(row[4]) for row in search_states):
+        result = ("failed", "SEARCH_BUDGET_EXCEEDED")
+    elif not received:
         result = ("failed", "TOOL_EVENT_ABSENT")
     elif not started:
         result = ("failed", "BRIDGE_NOT_STARTED")
@@ -431,7 +464,8 @@ async def execute(args):
         f"provider={capabilities.get('provider')} "
         f"mode={capabilities.get('qa_execution_mode')} "
         f"policy={capabilities.get('answer_policy')} "
-        f"tools={csv(capabilities.get('native_tools', []))} cases={len(cases)}"
+        f"tools={csv(capabilities.get('native_tools', []))} cases={len(cases)} "
+        f"retrieval_limit={settings.voice_max_retrievals_per_input}"
     )
     report = await run(args)
     finished = datetime.now(UTC).isoformat()

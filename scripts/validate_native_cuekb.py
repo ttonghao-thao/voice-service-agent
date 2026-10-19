@@ -62,6 +62,11 @@ def assess(case, history, seen_inputs, output_samples):
                 and r["payload"].get("input_item_id") in seen_inputs]
     evidence_checks = [r["payload"] for r in records if r["kind"] == "native_cuekb_voice_evidence"
                        and r["payload"].get("input_item_id") in seen_inputs]
+    search_states = [r["payload"] for r in records if r["kind"] == "native_search_state"
+                     and r["payload"].get("input_item_id") in seen_inputs]
+    limits = [r for r in records if r["kind"] == "native_search_limit"
+              and r["payload"].get("input_item_id") in seen_inputs]
+    search_state = search_states[-1] if search_states else {}
     actual = [t["selected_tool"] for t in turns]
     if not actual:
         actual = [entry["name"] for entry in [*args, *errors]]
@@ -87,8 +92,13 @@ def assess(case, history, seen_inputs, output_samples):
             "passed" if answer and answer.get("citations") else
             "not_applicable" if not wanted and not actual else "unverified")
     evidence_audit = evidence_checks[-1] if evidence_checks else None
+    # Empty supplemental retrievals do not erase admitted, cumulative evidence.
+    # Only the recorded cumulative bundle can establish this; not hit counts.
+    if search_state.get("cumulative_sources", 0) > 0 and retrieval == "insufficient_evidence":
+        retrieval = "passed"
     voice_evidence_status = (
         "not_applicable" if not wanted else
+        "passed" if search_state.get("cumulative_sources", 0) > 0 else
         "passed" if evidence_audit and evidence_audit.get("selected_count", 0) > 0 else
         "unavailable" if reason == "CUEKB_VOICE_EVIDENCE_UNAVAILABLE" else
         "unverified"
@@ -97,6 +107,13 @@ def assess(case, history, seen_inputs, output_samples):
             "retrieval": retrieval,
             "cuekb_evidence_status": searches[-1].get("evidence_status") if searches else None,
             "voice_evidence": voice_evidence_status,
+            "retrieval_executions": search_state.get("retrieval_executions", len(searches)),
+            "retrieval_limit": search_state.get("retrieval_limit"),
+            "duplicate_queries": search_state.get("duplicate_queries", 0),
+            "terminal_results_submitted": sum(bool(s.get("terminal_result_submitted")) for s in search_states),
+            "post_terminal_calls": len(limits),
+            "cumulative_sources": search_state.get("cumulative_sources", 0),
+            "latest_retrieval_status": searches[-1].get("status") if searches else None,
             "voice_evidence_filter": ({key: evidence_audit.get(key) for key in (
                 "candidate_count", "selected_count", "rejected_context_count",
                 "rejected_truncated_context_count", "rejected_omitted_context_count",
@@ -294,7 +311,11 @@ def passed(report):
         expected_retrieval = "not_applicable" if expected_tool is None else "passed"
         expected_voice_evidence = "not_applicable" if expected_tool is None else "passed"
         if (
-            row.get("answer_complete", "passed") != "passed"
+            row.get("reason_code") is not None
+            or row.get("post_terminal_calls", 0) > 0
+            or (row.get("retrieval_limit") is not None
+                and row.get("retrieval_executions", 0) > row["retrieval_limit"])
+            or row.get("answer_complete", "passed") != "passed"
             or
             row.get("selection") != "passed"
             or row.get("arguments") in ("failed", "unverified")
