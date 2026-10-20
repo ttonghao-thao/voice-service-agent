@@ -126,6 +126,58 @@ def test_completed_audio_does_not_override_failed_source_check():
            "arguments": "manual_review_required", "retrieval": "passed", "voice_evidence": "passed",
            "speech_transport": "passed", "reason_code": "VOICE_UNSUPPORTED_NUMBER"}
     assert not passed({"status": "observed", "cases": [row]})
+    assert classify({"status": "observed", "cases": [row]})[0] == "ANSWER_CONTENT_CHECK"
+
+
+def test_single_case_selection_preserves_original_wav_and_rejects_unknown_id():
+    path = Path(__file__).parents[2] / "artifacts/native-cuekb/cases.json"
+    all_cases = load_cases(path)
+    selected = load_cases(path, "black_pig_crisp_heart")
+    assert len(selected) == 1
+    assert selected[0] == next(c for c in all_cases if c["case_id"] == "black_pig_crisp_heart")
+    with pytest.raises(ValueError, match="Unknown case_id"):
+        load_cases(path, "not-a-case")
+
+
+@pytest.mark.parametrize("error", ["VOICE_SESSION_ROTATION_REQUIRED", "VOICE_SESSION_EXPIRED"])
+def test_explicit_lifetime_error_does_not_get_classified_as_asr_failure(error):
+    assert classify({"cases": [{"expected_tool": "search_knowledge_base",
+                               "input_item_ids": [], "portal_error": error}]})[0] == "VOICE_SESSION_LIMIT"
+
+
+@pytest.mark.parametrize("status,citations", [(None, 0), ("failed", 0), ("answered", 0)])
+def test_audio_completion_requires_committed_portal_answer_and_sources(status, citations):
+    row = {"expected_tool": "search_knowledge_base", "answer_complete": "passed", "selection": "passed",
+           "arguments": "passed", "retrieval": "passed", "voice_evidence": "passed",
+           "speech_transport": "passed", "reason_code": None, "input_item_ids": ["i1"],
+           "answer_status": status, "answer_citation_count": citations}
+    report = {"status": "observed", "cases": [row]}
+    assert not passed(report)
+    assert classify(report)[0] == "PORTAL_ANSWER_COMMIT"
+
+
+def test_condition_diagnostics_keep_required_conditions_and_source_restrictions():
+    from app.agent_runtime.evidence import EvidenceGate
+    source = SimpleNamespace(citation_id="C1", metadata={"product_model": "AX"},
+                             content="Product AX must not be opened.", context="Use only indoors unless supervised.")
+    failures = EvidenceGate.missing_conditions("Open it.", [source], {"software_version": "v2"})
+    assert {f["rule"] for f in failures} == {"source_metadata", "source_signal", "required_condition"}
+    assert {f["value"] for f in failures} == {"AX", "negation", "only", "unless", "v2"}
+    assert EvidenceGate.check_spoken("Open it.", [source]) == "VOICE_MISSING_CONDITION"
+
+
+def test_condition_diagnostics_remain_hidden_after_knowledge_scope_revocation():
+    from app.api.routes import _record_for_principal
+    from app.config import Settings
+    from app.contracts import Principal, now
+    kb = "00000000-0000-4000-8000-000000000001"
+    record = SimpleNamespace(kind="native_answer_check", epoch=1, source_id="turn", created_at=now(),
+                             payload={"_authorized_kb_ids": [kb], "condition_failures": [{"value": "private"}]})
+    user = Principal(user_id="operator", roles={"customer"}, scopes=set(), knowledge_base_ids=set())
+    assert _record_for_principal(record, user, Settings(_env_file=None)) is None
+    user = user.model_copy(update={"knowledge_base_ids": {kb}})
+    assert _record_for_principal(record, user, Settings(_env_file=None))["payload"] == {
+        "condition_failures": [{"value": "private"}]}
 
 
 def test_budget_summary_reports_post_terminal_failure_instead_of_only_result_mismatch():
@@ -162,7 +214,8 @@ def test_single_entrypoint_classifies_missing_native_tool_with_bounded_evidence(
         "case=product expected=search_knowledge_base actual=- selection=failed "
         "arguments=unverified retrieval=unverified cuekb_evidence=- "
         "voice_evidence=- evidence_filter=- "
-        "speech=passed answer_complete=unverified retrieval_executions=0 retrieval_limit=- "
+        "speech=passed answer_complete=unverified answer_status=- answer_sources=0 "
+        "retrieval_executions=0 retrieval_limit=- "
         "duplicate_queries=0 terminal_results_submitted=0 post_terminal_calls=0 cumulative_sources=0 "
         "latest_retrieval=- reason=- "
         "portal_error=- elapsed_ms=1200 input_ids=input-1 trace_ids=-"

@@ -251,11 +251,16 @@ async def test_native_query_reaches_cuekb_without_an_answer_model(tmp_path, monk
                 assert audit["accepted_truncated_source_count"] == 1
 
 
-@pytest.mark.parametrize("spoken,reason", [
-    ("Product AX supports 10 connections.", None),
-    ("Product AX supports 99 connections.", "VOICE_UNSUPPORTED_NUMBER"),
+@pytest.mark.parametrize("spoken,reason,context_mode", [
+    ("Product AX supports 10 connections.", None, "none"),
+    ("Product AX supports 99 connections.", "VOICE_UNSUPPORTED_NUMBER", "none"),
+    ("Product AX supports 10 connections.", None, "truncated"),
+    ("Product AX supports 99 connections.", "VOICE_UNSUPPORTED_NUMBER", "truncated"),
+    ("Product AX supports 10 connections.", "VOICE_MISSING_CONDITION", "complete"),
+    ("Product AX supports 10 connections only indoors.", None, "complete"),
+    ("It supports 10 connections.", "VOICE_MISSING_CONDITION", "none"),
 ])
-def test_pcm_through_real_adapter_native_call_cuekb_and_voice_reply(tmp_path, spoken, reason):
+def test_pcm_through_real_adapter_native_call_cuekb_and_voice_reply(tmp_path, spoken, reason, context_mode):
     s = configuration(tmp_path, voice_provider="nvidia", voicechat_api_key="fixture-voice-key")
     app = create_app(s)
     pcm = base64.b64encode(b"\x01\x00" * 1920).decode()
@@ -263,7 +268,15 @@ def test_pcm_through_real_adapter_native_call_cuekb_and_voice_reply(tmp_path, sp
 
     def search(request):
         requests.append(request)
-        return httpx.Response(200, json=evidence())
+        data = evidence()
+        if context_mode != "none":
+            hit = data["hits"][0]
+            hit.update(context="Only 99 connections in an unrelated neighboring passage."
+                       if context_mode == "truncated" else "Product AX supports 10 connections only indoors.",
+                       context_truncated=context_mode == "truncated",
+                       context_parts=[{"chunk_id": hit["chunk_id"], "source_text": hit["source_text"],
+                                       "title_path": [], "anchor": {}}])
+        return httpx.Response(200, json=data)
 
     async def voicechat(ws):
         await ws.send(json.dumps({"type": "session.created"}))
@@ -339,6 +352,26 @@ def test_pcm_through_real_adapter_native_call_cuekb_and_voice_reply(tmp_path, sp
                 assert turn["effective_executor"] == "native_cuekb"
                 assert turn["answer"]["reason_code"] == reason
                 assert turn["answer"]["verification_timing"] == "after_audio"
+                assert turn["answer"]["status"] == ("failed" if reason else "answered")
+                assert bool(turn["answer"]["citations"]) == (reason is None)
+                history = client.get(f"/api/v1/conversations/{cid}/messages").json()
+                audit = next(r["payload"] for r in history["records"] if r["kind"] == "native_answer_check")
+                assert audit["reason_code"] == reason
+                assert audit["evidence_basis"] == "delivered_sources"
+                if reason == "VOICE_MISSING_CONDITION":
+                    assert audit["condition_failures"][0]["rule"] == (
+                        "source_signal" if context_mode == "complete" else "source_metadata")
+                else:
+                    assert audit["condition_failures"] == []
+                from scripts.inspect_native_answer import inspect_answer
+                inspected = client.portal.call(inspect_answer, s, cid, "i2")
+                assert inspected["answer_text"] == spoken
+                assert inspected["delivered_check"] == reason
+                if context_mode == "truncated" and reason is None:
+                    assert inspected["original_check"] == "VOICE_MISSING_CONDITION"
+                    assert "context" not in json.loads(results[0]["output"])["sources"][0]
+                    assert turn["answer"]["citations"][0]["context_truncated"] is True
+                    assert "99" in turn["answer"]["citations"][0]["context"]
                 assert len(requests) == len(results) == 1
                 assert results[0]["call_id"] == "native-call"
                 assert json.loads(results[0]["output"])["status"] == "ok"
@@ -427,18 +460,22 @@ async def test_recording_validator_uses_portal_business_results_not_synthetic_re
         wav.writeframes(pcm)
     cases = tmp_path / "cases.json"
     cases.write_text(json.dumps([{"case_id": "fixture", "wav": "input.wav",
-        "expected_tool": "search_knowledge_base", "query_terms": ["AX"]}]))
+        "expected_tool": "search_knowledge_base", "query_terms": ["AX"]},
+        {"case_id": "excluded", "wav": "not-loaded.wav", "expected_tool": None}]))
     async with serve(voicechat, "127.0.0.1", 0) as endpoint, http_server(cuekb) as cuekb_url:
         s = configuration(tmp_path, voice_provider="nvidia", voicechat_api_key="fixture",
             voicechat_ws_url=f"ws://127.0.0.1:{endpoint.sockets[0].getsockname()[1]}")
         s.cuekb_base_url = cuekb_url
         app = create_app(s)
         async with http_server(app) as base:
-            report = await run(Namespace(base_url=base, origin=s.public_origin, cases=cases, case_timeout=10,
+            report = await run(Namespace(base_url=base, origin=s.public_origin, cases=cases, case_id="fixture", case_timeout=10,
                 audio_dir=tmp_path / "audio", output=tmp_path / "report.json"))
     assert report["status"] == "observed", report
     assert report["synthetic_tool_results"] is False
     row = report["cases"][0]
+    assert len(report["cases"]) == 1
+    assert row["answer_status"] == "answered" and row["answer_citation_count"] == 1
+    assert row["answer_check"]["reason_code"] is None
     assert row["selection"] == row["arguments"] == row["retrieval"] == "passed"
     assert row["speech_transport"] == "passed" and row["spoken_faithfulness"] == "manual_review_required"
     assert received[0]["call_id"] == "call"

@@ -1,19 +1,21 @@
 # 当前验收证据
 
-更新日期：2026-10-20。**真实知识语音闭环尚未放行。**04:56 UTC 简化 relay 已部署：普通两轮完成；产品轮 10 次原生调用、检索及结果回填，backend 接收 10、队列注入完成 9、取消 1，仍无完整回答。已本地复现并修正 API 把“ACK 已结束”当作可轮换的缺口；不改变 VoiceChat 推理逻辑，也不将轮换问题认定为工具循环根因。后续真实 before/after 确认 partial=false 被改成 "zero"，第一组来源只覆盖四项询问中的层数。API 适配布尔标记并撤回 top_k 强制三项限制；模型续答仍待验证。hello.wav 句首丢词继续暂缓。状态见 [任务板](TASK_BOARD.md)，操作见 [VoiceChat 验证](voicechat/native-tool-selection-validation.md)。
+更新日期：2026-10-20。**真实知识语音闭环尚未放行。**最新 04:48 UTC 现场 Black Pig 检索两次、终态后调用零次，answer_complete=passed，但 VOICE_MISSING_CONDITION 导致业务校验失败。第四轮被轮换阻断。当前只推进新连接中的单个 Black Pig 完整问答；本地修正校验依据与实际回填不一致，并增加精确失败诊断。该修正是否解释现场错误仍需检查已有答案；不能将局部代码缺陷直接认定为现场唯一根因。Golden Yolk、多轮打断和 hello 缺词均后置。状态见 [任务板](TASK_BOARD.md)，操作见 [单轮验证](native-cuekb-validation.md)。
 
 当前用户目标已改为 VoiceChat 自主决定直接回答或调用工具，部署采用 general_qa。qa-tools-v4 已修正模板冲突并补充部署策略检查；以下严格模式现场结果保留为历史证据，不能当作新模式的验收结果。
 
-本期 `cuekb-native-v1` 进一步限定为唯一公开工具 search_knowledge_base(query)，内部仍由 CueKB 执行检索，VoiceChat 直接消费证据，不调用额外答案模型；真实 VoiceChat/CueKB 录音验收尚未执行。步骤和判定见 [原生单工具验证](native-cuekb-validation.md)。
+本期 `cuekb-native-v1` 限定为唯一公开工具 search_knowledge_base(query)，内部仍由 CueKB 执行检索，VoiceChat 直接消费证据，不调用额外答案模型；已有真实录音测试，完整业务验收仍未通过。步骤和判定见 [原生单工具验证](native-cuekb-validation.md)。
 
 ## 0. 当前审计与证据索引
 
 以下是分别执行的验证，不累加成一个“当前全量通过数”，也不更新历史测试的执行日期。
 
-本次静态检查：`ruff check apps/api scripts tests`、`git diff --check` 通过；受影响文档 56 个本地链接与 17 个 Shell 代码块检查通过。直接 `ruff check .` 会包含原样维护的 VoiceChat 外部源码快照并报 95 项既有规范问题，本次未修改这些源码，不将其列为业务验收阻塞或声称全仓 Ruff 通过。
+本次静态检查：`ruff check apps/api scripts tests`、`git diff --check` 通过；更新的单轮验证手册五个 Shell 代码块语法检查通过。此前 `ruff check .` 包含原样维护的 VoiceChat 外部源码快照并报 95 项既有规范问题，本次未修改这些源码，不将其列为业务验收阻塞或声称全仓 Ruff 通过。
 
 | 日期 / 版本 | 实际结果 | 限制与证据位置 |
 | --- | --- | --- |
+| 2026-10-20 / 单轮证据校验对齐（本地） | 核心原生链路及报告测试 82 项通过。扩展到 QA、交付、交互和模拟流程，共 182 项中 181 项通过；一项旧兼容路径一秒等待测试记录为 VOICE_ANSWER_TIMEOUT，单独复核通过。覆盖排除的 context 不误加条件、不为新数字背书，已交付 only/产品条件仍拒绝遗漏，原始引用保留，诊断按 KB 权限隔离，单 case 原 WAV、门户答案和来源提交检查 | CPU/受控 HTTP、WS、SQLite；未连接现场模型、未真实听音，也未执行生产镜像构建。保留一次超时记录，不声称整组一次全绿。只读历史诊断不改数据库，不访问 CueKB/VoiceChat |
+| 2026-10-20 04:48 UTC / 用户现场报告 | Black Pig retrieval_executions=2、terminal_results_submitted=1、post_terminal_calls=0、累计来源 10，后端注入 2/2 完成，answer_complete=passed；reason=VOICE_MISSING_CONDITION。Golden Yolk 在 12ms 内收到 VOICE_SESSION_ROTATION_REQUIRED，未观察到输入 | 证明本轮查询收敛和回答传输完成，不证明内容/门户交付通过；两次注入均属于 Black Pig，不能作为 Golden Yolk 成功证据 |
 | 2026-10-20 / 输入级检索预算与累计证据（本地） | 191 项相关 pytest 通过：原生检索、验证摘要、工具契约、会话/交付、QA 兼容及工具目录。覆盖补充事实合并后通过校验并保留两条引用、第二次空检索保留第一次事实、不同 call_id 的精确重复不再次检索、终态后再次调用明确失败、权限撤回阻止缓存交付、同连接下一输入预算重置；原生 HTTP 5xx/超时/网络/响应中断只发送一次，其他路径仍两次 | CPU/受控 HTTP、WS、SQLite；不是 NVIDIA 模型、真实 CueKB、麦克风或听音验证。终态要求是软性模型引导，硬性执行上限仅证明查询受控；真实完整回答待验。VoiceChat 源码未修改 |
 | 2026-10-19 / 原生证据覆盖与类型适配（本地） | 61 项原生 CueKB/验证脚本及 44 项工具契约/QA 兼容测试通过，共 105 项；新增第 4、5 条事实保留及字节预算省略场景；内外 partial 类型分别核对 | 受控 HTTP/WS/SQLite 夹具；不是真实模型续答验收。VoiceChat 运行源码未改动，仅 API 适配文本标记并恢复配置检索数；不能保证多取两条即解决工具循环 |
 | 2026-10-19 / 真实规范化与来源覆盖复核 | 用户提供 04:56:50 UTC 的实际 before/after：来源正文保留，partial 的 false 被转为 "zero"；第一组来源只有标题、背景、18 层及肉料比例，未含录音要求的价格、重量、最佳食用时间 | 确认布尔类型转换问题及这一组证据覆盖不足；未证明它们是工具循环的充分原因，不能推断其余九组结果相同。API 改用文本 partial 标记，撤回压低 top_k 的应用限制，真实验收待执行 |

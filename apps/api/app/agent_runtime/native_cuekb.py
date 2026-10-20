@@ -53,6 +53,25 @@ def voice_result(ready):
     return result
 
 
+def spoken_citations(ready):
+    """Check admitted text/conditions while retaining raw citations for audit.
+
+    Context excluded from the model payload must neither impose additional
+    answer conditions nor authorize facts in the spoken answer.
+    """
+    if ready.envelope.get("schema_version") != "cuekb-evidence-v1":
+        return ready.citations
+    projected = []
+    for item, citation in zip(ready.envelope["items"], ready.citations, strict=True):
+        if item["citation_id"] != citation.citation_id:
+            raise ValueError("Native evidence and citation identities differ")
+        projected.append(citation.model_copy(update={
+            "content": item["text"], "context": item.get("context"),
+            "metadata": item.get("conditions", {}),
+        }))
+    return projected
+
+
 class NativeCueKBExecutor:
     def __init__(self, settings, registry):
         self.settings, self.registry = settings, registry

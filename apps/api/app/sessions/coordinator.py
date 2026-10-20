@@ -7,6 +7,7 @@ from datetime import timedelta
 from app.agent_runtime.context import RunContext
 from app.agent_runtime.direct import EvidenceReady
 from app.agent_runtime.evidence import EvidenceGate, presentation_contract
+from app.agent_runtime.native_cuekb import spoken_citations
 from app.contracts import AnswerBundle, DomainError, TaskProgress, now
 from app.storage.models import Conversation, Turn
 from app.task_context import combined_history, task_status, values
@@ -323,6 +324,8 @@ class SessionCoordinator:
 
     async def finish_provider(self, ctx, request, history, ready, future, voice_relay=False):
         try:
+            contract = presentation_contract("grounded", ctx.slots)
+            checked_evidence = spoken_citations(ready)
             budget = min(self.settings.qa_provider_answer_timeout_ms / 1000,
                          max(0, ready.deadline - time.monotonic()))
             try:
@@ -330,7 +333,7 @@ class SessionCoordinator:
                 # retrieval deadline must not cancel result injection or speech.
                 # Disconnect/explicit cancellation still cancels this observer.
                 text = await future if voice_relay else await asyncio.wait_for(future, budget)
-                code = EvidenceGate.check_presentation(text, presentation_contract("grounded", ctx.slots), ready.citations)
+                code = EvidenceGate.check_presentation(text, contract, checked_evidence)
             except TimeoutError:
                 text, code = "", "VOICE_ANSWER_TIMEOUT"
             allowed = await self.runtime.registry.allowed(ctx.principal)
@@ -338,6 +341,16 @@ class SessionCoordinator:
                 [await self.store.tool_revision(name) != ctx.tool_versions.get(name, 0) for name in ctx.invoked]
             ):
                 code = "FORBIDDEN"
+            if voice_relay:
+                await self.store.record(ctx.conversation_id, ctx.epoch, "native_answer_check", ctx.turn_id, {
+                    "input_item_id": ctx.task_context.get("input_source", {}).get("input_item_id"),
+                    "reason_code": code,
+                    "evidence_basis": "delivered_sources",
+                    "condition_failures": EvidenceGate.missing_conditions(
+                        text, checked_evidence, contract.required_conditions)
+                        if code == "VOICE_MISSING_CONDITION" else [],
+                    "_authorized_kb_ids": sorted(ctx.principal.knowledge_base_ids),
+                }, ctx.turn_id, ctx.request_revision)
             bundle = AnswerBundle(
                 answer_id=ready.answer_id, status="failed" if code else "answered",
                 display_text="The spoken response could not be verified. Please try again." if code else text,
@@ -346,7 +359,7 @@ class SessionCoordinator:
                 answer_kind="knowledge", composition="nano_grounded",
                 validation_level="source_checked", verification_timing="after_audio",
                 is_mock=any(c.is_mock for c in ready.citations),
-                presentation=presentation_contract("grounded", ctx.slots),
+                presentation=contract,
             )
             new_history = history + [{"role": "user", "content": request,
                 "context_sequence": ctx.task_context.get("input_source", {}).get("sequence", -1)},

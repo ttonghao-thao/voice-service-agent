@@ -20,6 +20,41 @@ def presentation_contract(mode, conditions=None):
 
 class EvidenceGate:
     @staticmethod
+    def missing_conditions(text, evidence, required=None):
+        """Explain lexical failures; these checks are not semantic proof."""
+        failures = []
+        for item in evidence:
+            for key in ("product_model", "software_version"):
+                value = item.metadata.get(key)
+                if isinstance(value, str) and value and not contains_condition(text, value):
+                    failures.append({"rule": "source_metadata", "citation_id": item.citation_id,
+                                     "field": key, "value": value})
+        signals = {"negation": r"\b(?:not|never|cannot|can't|doesn't|don't)\b",
+                   "only": r"\bonly\b", "unless": r"\bunless\b"}
+        for name, pattern in signals.items():
+            if re.search(pattern, text, re.I):
+                continue
+            for item in evidence:
+                fields = {"content": item.content, "context": item.context or "",
+                          **{key: str(item.metadata.get(key, ""))
+                             for key in ("product_model", "software_version")}}
+                matched = False
+                for key, value in fields.items():
+                    found = re.search(pattern, value, re.I)
+                    if found:
+                        failures.append({"rule": "source_signal", "citation_id": item.citation_id,
+                                         "field": key, "value": name,
+                                         "excerpt": value[max(0, found.start() - 60):found.end() + 100]})
+                        matched = True
+                        break
+                if matched:
+                    break
+        for key, value in (required or {}).items():
+            if not contains_condition(text, value):
+                failures.append({"rule": "required_condition", "field": key, "value": value})
+        return failures
+
+    @staticmethod
     def evaluate(result, ctx):
         if ctx.tool_errors or result.get("status") == "failed":
             return "failed"
@@ -57,13 +92,7 @@ class EvidenceGate:
                                   r"mbps|gbps|mhz|ghz|volts?|watts?|meters?|metres?|degrees?)\b", value, re.I))
         if {q.casefold() for q in quantities(text)} - {q.casefold() for q in quantities(source)}:
             return "VOICE_UNSUPPORTED_UNIT"
-        for item in evidence:
-            for key in ("product_model", "software_version"):
-                value = item.metadata.get(key)
-                if isinstance(value, str) and value and not contains_condition(text, value):
-                    return "VOICE_MISSING_CONDITION"
-        signals = (r"\b(?:not|never|cannot|can't|doesn't|don't)\b", r"\bonly\b", r"\bunless\b")
-        if any(re.search(signal, source, re.I) and not re.search(signal, text, re.I) for signal in signals):
+        if EvidenceGate.missing_conditions(text, evidence):
             return "VOICE_MISSING_CONDITION"
         return None
 

@@ -24,7 +24,7 @@ from scripts.probe_voicechat import read_wav
 from scripts.verify_deployment import validate_voice_policy
 
 
-def load_cases(path):
+def load_cases(path, case_id=None):
     path = Path(path)
     cases = json.loads(path.read_text())
     if not isinstance(cases, list) or not 1 <= len(cases) <= 20:
@@ -42,6 +42,11 @@ def load_cases(path):
         terms = case.get("query_terms", [])
         if not isinstance(terms, list) or any(not isinstance(term, str) or not term.strip() for term in terms):
             raise ValueError("query_terms must contain nonempty strings")
+    if case_id is not None:
+        cases = [case for case in cases if case["case_id"] == case_id]
+        if not cases:
+            raise ValueError(f"Unknown case_id: {case_id!r}")
+    for case in cases:
         case["wav"] = str((path.parent / case["wav"]).resolve())
         frames, digest = read_wav(case["wav"])
         if len(frames) > 375:
@@ -77,7 +82,11 @@ def assess(case, history, seen_inputs, output_samples):
     argument_status = ("failed" if any(e.get("stage", "arguments") == "arguments" for e in errors) else "passed" if len(queries) == 1 and terms
         and all(term.casefold() in queries[0].casefold() for term in terms)
         else "manual_review_required" if queries else "not_applicable" if not wanted else "unverified")
-    answer = next((t["answer"] for t in turns if t.get("answer")), None)
+    answered_turn = next((t for t in reversed(turns) if t.get("answer")), {})
+    answer = answered_turn.get("answer")
+    answer_check = next((r["payload"] for r in reversed(records)
+                         if r["kind"] == "native_answer_check"
+                         and r.get("source_id") == answered_turn.get("id")), None)
     reason = answer.get("reason_code") if answer else None
     if searches:
         source = searches[-1]
@@ -104,6 +113,9 @@ def assess(case, history, seen_inputs, output_samples):
         "unverified"
     )
     return {"selection": selection, "actual_tools": actual, "arguments": argument_status,
+            "answer_status": (answer or {}).get("status"),
+            "answer_citation_count": len((answer or {}).get("citations", [])),
+            "answer_check": answer_check,
             "retrieval": retrieval,
             "cuekb_evidence_status": searches[-1].get("evidence_status") if searches else None,
             "voice_evidence": voice_evidence_status,
@@ -133,7 +145,7 @@ def assess(case, history, seen_inputs, output_samples):
 async def run(args):
     if not 1 <= args.case_timeout <= 180:
         raise ValueError("case-timeout must be 1-180 seconds")
-    cases = load_cases(args.cases)
+    cases = load_cases(args.cases, getattr(args, "case_id", None))
     parts = urlsplit(args.base_url)
     origin = args.origin or urlunsplit((parts.scheme, parts.netloc, "", "", ""))
     report = {"tested_at": now().isoformat(), "mode": "deployed_portal", "synthetic_tool_results": False,
@@ -312,6 +324,8 @@ def passed(report):
         expected_voice_evidence = "not_applicable" if expected_tool is None else "passed"
         if (
             row.get("reason_code") is not None
+            or (expected_tool and "answer_status" in row and (
+                row["answer_status"] != "answered" or row.get("answer_citation_count", 0) == 0))
             or row.get("post_terminal_calls", 0) > 0
             or (row.get("retrieval_limit") is not None
                 and row.get("retrieval_executions", 0) > row["retrieval_limit"])
@@ -332,6 +346,7 @@ if __name__ == "__main__":
     parser.add_argument("--base-url", required=True, help="Portal origin, using its trusted TLS certificate")
     parser.add_argument("--origin", help="Configured PUBLIC_ORIGIN if different from base-url")
     parser.add_argument("--cases", required=True, help="JSON list with case_id, wav, expected_tool, optional query_terms")
+    parser.add_argument("--case-id", help="Run only this case, on a new conversation/connection")
     parser.add_argument("--case-timeout", type=float, default=90)
     parser.add_argument("--audio-dir", help="Optional authorized output recordings for listening")
     parser.add_argument("--output", default="artifacts/native-cuekb-validation.json")

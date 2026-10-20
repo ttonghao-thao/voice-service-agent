@@ -24,12 +24,15 @@ test -n "$API_IMAGE" && docker build -f deploy/Dockerfile.api -t "$API_IMAGE" . 
 
 ## 2. 从宿主机运行一次验证
 
+当前只验收 Black Pig 的一个完整问答：原始英文 WAV → 原生工具 → CueKB → 结果回填 → 有据口述完成 → 门户答案和来源提交。新建连接直接运行该用例，不先运行问候/通用问题，不修改原始问题、WAV 或检索预算。Golden Yolk、打断、跨轮上下文、hello 缺词及时延优化暂缓。
+
 在宿主机项目根目录执行：
 
 ```sh
 API_CONTAINER=$(docker compose --env-file .env -f deploy/compose.production.yaml ps -q api)
 test -n "$API_CONTAINER"
-if docker exec "$API_CONTAINER" python /app/scripts/run_native_cuekb_validation.py; then
+if docker exec "$API_CONTAINER" python /app/scripts/run_native_cuekb_validation.py \
+  --case-id black_pig_crisp_heart; then
   VALIDATION_EXIT=0
 else
   VALIDATION_EXIT=$?
@@ -37,14 +40,13 @@ fi
 printf 'host_exit_code=%s\n' "$VALIDATION_EXIT"
 ```
 
-默认在 API 容器访问 `http://127.0.0.1:8000`，Origin 读取容器 PUBLIC_ORIGIN。预检通过后，四条 WAV 在同一个 conversation/VoiceChat 连接中顺序发送，WAV 后持续送静音推动推理。
+默认在 API 容器访问 `http://127.0.0.1:8000`，Origin 读取容器 PUBLIC_ORIGIN。每次命令建立新 conversation/VoiceChat 连接；`--case-id` 从镜像内原 cases.json 选择用例，WAV 后持续送静音推动推理。不指定该参数仍保留四条 WAV 顺序模式，待单轮闭环通过后再启用。
 
 预期：
 
-- `preflight=passed ... cases=4`。
-- 问候、TCP/UDP 两行 `actual=- selection=passed`。
-- 两个产品 case 的工具为 search_knowledge_base，`retrieval=passed voice_evidence=passed`。
-- 四行均有 `answer_complete=passed`，最终 `validation=passed ... exit_code=0`。
+- `preflight=passed ... cases=1`。
+- 唯一的 `case=black_pig_crisp_heart` 工具为 search_knowledge_base，`selection=passed retrieval=passed voice_evidence=passed`。
+- `answer_complete=passed answer_status=answered answer_sources>0 reason=- portal_error=-`，最终 `validation=passed ... exit_code=0`。
 - 产品行 `retrieval_executions<=retrieval_limit`（默认 2），`post_terminal_calls=0`；`duplicate_queries` 可以为 1，相同查询不再次访问 CueKB。
 - `terminal_results_submitted=1` 表示已提交结束检索的结果，不证明模型服从。第一次查询即正常回答时可以为 0，无需人为耗尽预算。
 - 第二次查询为空时，`latest_retrieval=not_found` 可以与 `retrieval=passed cumulative_sources>0` 并存：前者是最近一次查询，后者表示累计仍有可用证据。原始失败/空结果保留在审计中。
@@ -52,9 +54,33 @@ printf 'host_exit_code=%s\n' "$VALIDATION_EXIT"
 
 `answer_complete` 要求当前 input 对应的非 ACK 完整转写、非零回答音频和音频结束。`speech=passed` 仅表示收到过音频，ACK 也可能产生该结果，不能单独验收。
 
-只需回传四条 `case=...` 行和 `validation=...`。若只出现三条，第四条尚未执行，不能算四用例通过。报告 JSON 和 WAV 留在容器内，无需全量回传。
+只需回传这一条 `case=...`、若有的 `answer_check=...` 和 `validation=...`。`answer_check` 最多输出三个具体失败条件，其余保留在报告中。`ANSWER_CONTENT_CHECK` 是内容校验失败；`PORTAL_ANSWER_COMMIT` 表示尚无成功答案或引用，音频已结束也不能通过；`VOICE_SESSION_LIMIT` 表示明确的轮换/过期，不能误归为 ASR 故障。
+
+单用例的回答音频为 `/tmp/native-cuekb/replies/case-01.wav`（编号按本次执行顺序），不是原四轮模式中的 case-03。报告 JSON 和 WAV 留在容器内；在重新创建容器前保存需要听音的文件，避免 tmpfs 清空。在宿主机执行：
+
+```sh
+docker exec "$API_CONTAINER" cat /tmp/native-cuekb/report.json > native-cuekb-report.json
+docker exec "$API_CONTAINER" cat /tmp/native-cuekb/replies/case-01.wav > black-pig-reply.wav
+```
+
+不将报告或录音提交到仓库。听音核对价格、重量、层数、最佳食用时间：有据部分准确，无依据部分明确无法确认，不以自动通过代替内容验收。
 
 ## 3. 失败时提取精简诊断
+
+若是 `VOICE_MISSING_CONDITION`，优先看 `answer_check` 的 `source_metadata`（来源元数据）、`source_signal`（来源中的否定/only/unless）或 `required_condition`（当前问题的条件）。本次修正只把答案校验依据对齐实际回填的文字、完整 context 与条件；已排除的截断 context 不再施加条件，也不能为新增数字背书。原始 citation 保留在审计及引用中。未删除对已交付条件的检查，也不认定所有此类错误都是误判。
+
+已有历史记录可以只读检查，不重新发送 WAV、不调用 CueKB。将下面两个变量设为对应报告中的真实 ID（两者必须属于同一次输入）：
+
+```sh
+CONVERSATION_ID=bb1f7cf1-8c05-4f0d-a066-7385690c404d
+INPUT_ITEM_ID=81e2c794-0ccc-416e-942d-6654582e0bb5
+docker exec "$API_CONTAINER" python /app/scripts/run_native_cuekb_validation.py \
+  --inspect-answer "$CONVERSATION_ID" --input-item-id "$INPUT_ITEM_ID"
+```
+
+只输出该输入的保存原因、原始/实际交付证据两种校验结果、最多三个失败条件、最终口述文本及当前配置时限。文本最多 8000 字符，截断时显式标记；数据库只读，不改历史答案。`original_check=VOICE_MISSING_CONDITION delivered_check=null` 才能证明该记录受排除 context 等证据视图差异影响，可以继续 §2 一次验证。若两者均失败，先回传这条只读输出，按具体条件核实真实遗漏或词法误判，不重复发送 WAV，也不能直接放宽门禁。若记录缺失或存在多条最终转写，返回 unavailable，不猜选答案；此时可运行 §2 一次获取新版本的精确判据。
+
+仅在故障属于工具传输、结果回填或回答未结束时，再使用下面的精简日志入口。
 
 验证入口将时间窗口写入报告。宿主机取得变量时仍由容器 Python 读取：
 
@@ -78,7 +104,7 @@ docker logs --since "$WINDOW_START" --until "$WINDOW_END" "$VOICE_CONTAINER" 2>&
 
 ## 4. 同一通话的麦克风验收
 
-固定 WAV 通过后，在 Web 门户保持同一通话，依次说：
+本项后置，不与当前单轮 Black Pig 定位同时进行。固定 WAV 和门户单问题答案/来源交付通过后，在 Web 门户保持同一通话，依次说：
 
 1. “Hello, how are you?”
 2. “Please introduce Black Pig Crisp Heart.”
@@ -102,14 +128,14 @@ ACK 的 audio.done 不是知识回答完成。API 的空闲轮换必须同时满
 
 Black Pig WAV 问价格、重量、酥皮层数及最佳食用时间；这组响应只有 18 层的资料，其余三项未出现。证据是原文完整片段，不等于覆盖了问题。已撤回原生检索强制 top_k<=3 的旧限制；遵守 CUEKB_TOP_K（默认 5）并在现有字节预算内保留来源，省略项如实标记 partial。不能保证第五条就足够，也不把这一改动当作工具循环已解决的证据。
 
-本次仅需重建 API 镜像，Web/VoiceChat 无须重建。沿用 §2、§3 的入口；回传四条 case、validation 及两份摘要。selected 不再固定等于 3；即使 answer_complete=passed，也须核对价格/重量/层数/最佳食用时间分别有依据回答或明确说明缺少资料，不能用猜测补齐。保留原 WAV，不降低用例要求。
+本次仅需重建 API 镜像，Web/VoiceChat 无须重建。按 §2 运行单个 Black Pig，只回传必要判定字段。selected 不再固定等于 3；即使 answer_complete=passed，也须核对价格/重量/层数/最佳食用时间分别有依据回答或明确说明缺少资料，不能用猜测补齐。保留原 WAV，不降低用例要求。
 
 ## 7. 本次验证的事实、假设与退出条件
 
-已知事实：历史产品轮反复查询且未完成回答；原代码每次新调用只用本次证据校验，可能遗漏早先已返回的事实。本次将累计证据与校验、落库统一，并限制检索。
+已知事实：2026-10-20 04:48 UTC 现场 Black Pig 实际检索两次、终态提交一次、终态后调用零次，answer_complete=passed，但 reason=VOICE_MISSING_CONDITION，业务尚未通过。第四轮 Golden Yolk 因轮换未形成输入。这不是四轮全绿，也不证明产品口述内容已通过。
 
-待现场验证的假设：有界检索、累计证据与结束检索要求能让当前 VoiceChat 完成英文回答。代码和 CPU 协议夹具不能证明模型会服从，也不能断言过去循环只由证据不足引起。已有后端负责 `<TOOL_RESPONSE>` 包裹，本次不修改其逻辑。
+本次确定的代码缺陷：原生回填已排除截断 context，但答案校验仍读取原始 citation.context。本版对齐校验视图并保留原始审计引用；这个缺陷是否触发了上述现场错误仍须通过 §3 只读比较确定。已交付片段中的条件检查保留。已有后端负责 `<TOOL_RESPONSE>` 包裹，本次不修改其逻辑。
 
 验收允许诚实的部分回答：有来源的事实正确口述，无法确认的字段明确说明“本次检索资料不足以确认”；不能说整个知识库没有，更不能编造或引导到未经确认有资料的门户页面。`answer_complete` 仍要求非 ACK 文本、非零音频和结束事件；内容准确性及听音仍人工核对。
 
-首次部署先运行一次 §2；失败仅回传四条 case（若中止则已出现的 case）、validation 与 §3 精简摘要。若终态后仍调用，不重复跑二十轮或调大预算；转入一次有明确对照条件的 VoiceChat 续答能力分析。同一思路两次无新增证据即停止，三种假设无解则评估设计/环境/技术路径。hello 缺词仍暂缓。
+重建 API 后，先用 §3 的只读入口检查已有记录，再只运行一次 §2 的单轮端到端验证。若失败，沿最早失败环节定位；不重复二十轮，不提高检索预算，不为获得通过更换问题或删掉限定条件。同一思路两次无新增证据即停止，三种假设无解则评估设计/环境/技术路径。完整内容和门户交付通过后，再恢复后置多轮测试。

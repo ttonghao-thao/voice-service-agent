@@ -1,8 +1,8 @@
-"""Run the complete fixed Native CueKB deployment check from the API image.
+"""Run a selected or complete Native CueKB deployment check from the API image.
 
 The command is intended to be started with one host-side ``docker exec``.  It
 checks the deployed API contract and the image-bundled inputs before sending
-the four real WAV cases through the portal.  Detailed JSON and reply audio stay
+the selected real WAV cases through the portal. Detailed JSON and reply audio stay
 under /tmp; stdout is a bounded set of fields used for fault localization.
 """
 
@@ -135,6 +135,13 @@ def classify(report):
         return "UNKNOWN_TOOL_NAME", "api_tool_name_validation"
     if any(row.get("portal_error") == "VOICE_TOOL_LOOP" or row.get("post_terminal_calls", 0) for row in cases):
         return "TOOL_LOOP_AFTER_TERMINAL", "provider_answer_after_search_finished"
+    if any(row.get("portal_error") in ("VOICE_SESSION_ROTATION_REQUIRED", "VOICE_SESSION_EXPIRED") for row in cases):
+        return "VOICE_SESSION_LIMIT", "api_voice_session_lifetime"
+    if any(row.get("reason_code") in (
+        "VOICE_MISSING_CONDITION", "VOICE_UNSUPPORTED_NUMBER", "VOICE_UNSUPPORTED_UNIT",
+        "VOICE_ANSWER_INVALID", "RAG_INVALID_CITATION", "VOICE_SPEECH_MISMATCH",
+    ) for row in cases):
+        return "ANSWER_CONTENT_CHECK", "delivered_evidence_and_spoken_answer"
     product = [row for row in cases if row.get("expected_tool") is not None]
     if any(
         not row.get("input_item_ids") and not row.get("input_items_observed")
@@ -161,6 +168,10 @@ def classify(report):
         )
     ):
         return "VOICE_RESPONSE_COMPLETION", "provider_response_or_api_relay"
+    if any("answer_status" in row and (
+        row["answer_status"] != "answered" or row.get("answer_citation_count", 0) == 0
+    ) for row in product):
+        return "PORTAL_ANSWER_COMMIT", "api_answer_status_and_sources"
     if passed(report):
         return "PASS", "human_transcription_and_spoken_faithfulness"
     return "INCOMPLETE", "report_json"
@@ -179,6 +190,8 @@ def case_line(row):
         f"evidence_filter={evidence_filter_summary(row)}",
         f"speech={row.get('speech_transport')}",
         f"answer_complete={row.get('answer_complete', 'unverified')}",
+        f"answer_status={row.get('answer_status') or '-'}",
+        f"answer_sources={row.get('answer_citation_count', 0)}",
         f"retrieval_executions={row.get('retrieval_executions', 0)}",
         f"retrieval_limit={row.get('retrieval_limit') or '-'}",
         f"duplicate_queries={row.get('duplicate_queries', 0)}",
@@ -436,7 +449,7 @@ def read_api_evidence(stream):
 
 
 async def preflight(args, settings):
-    cases = load_cases(args.cases)
+    cases = load_cases(args.cases, getattr(args, "case_id", None))
     async with httpx.AsyncClient(base_url=args.base_url, timeout=5, follow_redirects=False) as client:
         ready_response = await client.get("/health/ready")
         ready_response.raise_for_status()
@@ -477,6 +490,13 @@ async def execute(args):
     )
     for row in report.get("cases", []):
         print(case_line(row))
+        check = row.get("answer_check") or {}
+        if check.get("condition_failures"):
+            print("answer_check=" + json.dumps({
+                "case": row["case_id"], "basis": check.get("evidence_basis"),
+                "failures": check["condition_failures"][:3],
+                "omitted": max(0, len(check["condition_failures"]) - 3),
+            }, ensure_ascii=True))
     fault, focus = classify(report)
     exit_code = 0 if fault == "PASS" else 1
     print(
@@ -493,16 +513,36 @@ def main():
                         help="Read a bounded docker-log window from stdin and print five diagnostic lines")
     parser.add_argument("--summarize-api-log", action="store_true",
                         help="Read a bounded API docker-log window from stdin and print three diagnostic lines")
+    parser.add_argument("--inspect-answer", metavar="CONVERSATION_ID",
+                        help="Read a saved answer and compare original/delivered evidence checks; no voice test")
+    parser.add_argument("--input-item-id", help="Exact input ID for --inspect-answer")
     parser.add_argument("--expected-tool", default="search_knowledge_base")
     parser.add_argument("--base-url", default="http://127.0.0.1:8000")
     parser.add_argument("--origin", help="Defaults to the API container PUBLIC_ORIGIN")
     parser.add_argument("--cases", default="/app/validation/native-cuekb/cases.json")
+    parser.add_argument("--case-id", help="Run one image-bundled case on a fresh connection")
     parser.add_argument("--case-timeout", type=float, default=90)
     parser.add_argument("--audio-dir", default="/tmp/native-cuekb/replies")
     parser.add_argument("--output", default="/tmp/native-cuekb/report.json")
     args = parser.parse_args()
-    if args.summarize_voicechat_log and args.summarize_api_log:
-        parser.error("Select only one log summarizer")
+    if sum(bool(mode) for mode in (args.summarize_voicechat_log, args.summarize_api_log, args.inspect_answer)) > 1:
+        parser.error("Select only one diagnostic mode")
+    if args.inspect_answer:
+        if not args.input_item_id:
+            parser.error("--inspect-answer requires --input-item-id")
+        from scripts.inspect_native_answer import inspect_answer
+        try:
+            result = asyncio.run(inspect_answer(Settings(), args.inspect_answer, args.input_item_id))
+        except ValueError as exc:
+            print(f"answer_inspection=unavailable detail={safe_detail(exc)!r}")
+            raise SystemExit(2) from exc
+        except Exception as exc:
+            print(f"answer_inspection=unavailable error_type={type(exc).__name__}")
+            raise SystemExit(2) from exc
+        print("answer_inspection=" + json.dumps(result, ensure_ascii=True))
+        return
+    if args.input_item_id:
+        parser.error("--input-item-id requires --inspect-answer")
     if args.summarize_voicechat_log or args.summarize_api_log:
         try:
             evidence = (read_voicechat_evidence(sys.stdin) if args.summarize_voicechat_log
