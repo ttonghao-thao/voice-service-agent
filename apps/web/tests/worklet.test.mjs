@@ -5,7 +5,7 @@ import vm from "node:vm";
 import ts from "typescript";
 import { PlaybackRing, Resampler, pcm16 } from "../public/dsp.js";
 
-function audioHarness(rate = 48000) {
+function audioHarness(rate = 48000, capture = true) {
   let Processor;
   const messages = [];
   const source = readFileSync(
@@ -24,7 +24,7 @@ function audioHarness(rate = 48000) {
       Processor = implementation;
     },
   });
-  const processor = new Processor();
+  const processor = new Processor({ processorOptions: { capture } });
   const send = (data) => processor.port.onmessage({ data });
   const output = new Float32Array(128);
   const process = (input = new Float32Array(128)) => {
@@ -227,29 +227,66 @@ test("Audio done does not lose the identity of speech still buffered for playbac
 
 test("A drained buffer does not finish playback before provider audio done", () => {
   const { send, process, messages } = audioHarness();
-  send({ type: "audio", epoch: 1, response: "open", samples: new Float32Array(6000).fill(0.2) });
+  send({
+    type: "audio",
+    epoch: 1,
+    response: "open",
+    samples: new Float32Array(6000).fill(0.2),
+  });
   for (let i = 0; i < 240; i++) process();
-  const before = messages.filter((m) => m.type === "ack" && m.response === "open");
+  const before = messages.filter(
+    (m) => m.type === "ack" && m.response === "open",
+  );
   assert.ok(before.length && before.every((m) => m.done === false));
   send({ type: "done", epoch: 1, response: "open" });
   for (let i = 0; i < 240; i++) process();
-  const done = messages.filter((m) => m.type === "ack" && m.response === "open" && m.done);
+  const done = messages.filter(
+    (m) => m.type === "ack" && m.response === "open" && m.done,
+  );
   assert.equal(done.length, 1);
   assert.equal(done[0].samples, 6000);
 });
 
 test("An ACK ending cannot mark an overlapping unfinished answer complete", () => {
   const { send, process, messages } = audioHarness();
-  send({ type: "audio", epoch: 1, response: "ack", samples: new Float32Array(1920).fill(0.2) });
+  send({
+    type: "audio",
+    epoch: 1,
+    response: "ack",
+    samples: new Float32Array(1920).fill(0.2),
+  });
   send({ type: "done", epoch: 1, response: "ack" });
-  send({ type: "audio", epoch: 1, response: "answer", samples: new Float32Array(1920).fill(0.3) });
+  send({
+    type: "audio",
+    epoch: 1,
+    response: "answer",
+    samples: new Float32Array(1920).fill(0.3),
+  });
   for (let i = 0; i < 240; i++) process();
   const acks = messages.filter((m) => m.type === "ack");
   assert.equal(acks.find((m) => m.response === "ack")?.done, true);
   assert.equal(acks.find((m) => m.response === "answer")?.done, false);
   send({ type: "done", epoch: 1, response: "answer" });
   for (let i = 0; i < 240; i++) process();
-  const done = messages.filter((m) => m.type === "ack" && m.response === "answer" && m.done);
+  const done = messages.filter(
+    (m) => m.type === "ack" && m.response === "answer" && m.done,
+  );
   assert.equal(done.length, 1);
   assert.equal(done[0].samples, 1920);
+});
+
+test("File mode never emits microphone or resampled capture frames; playback still works", () => {
+  const { send, process, messages } = audioHarness(44100, false);
+  send({
+    type: "audio",
+    epoch: 1,
+    response: "file-answer",
+    samples: new Float32Array(6000).fill(0.5),
+  });
+  let audible = false;
+  for (let i = 0; i < 400; i++)
+    audible = process().some((x) => x > 0.1) || audible;
+  assert.equal(audible, true);
+  assert.equal(messages.filter((m) => m.type === "capture").length, 0);
+  assert.equal(messages.filter((m) => m.type === "playback.started").length, 1);
 });

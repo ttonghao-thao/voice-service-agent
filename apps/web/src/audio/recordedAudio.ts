@@ -10,7 +10,7 @@ export interface PreparedRecording {
   bitsPerSample: 16;
   sampleCount: number;
   durationSeconds: number;
-  samples: Float32Array;
+  pcm: Uint8Array;
 }
 
 function invalid(message: string): never {
@@ -86,9 +86,7 @@ export function parseRecording(
   const sampleCount = dataLength / 2;
   if (sampleCount > RECORDING_SAMPLE_RATE * MAX_RECORDING_SECONDS)
     invalid("The WAV recording must be no longer than 30 seconds.");
-  const samples = new Float32Array(sampleCount);
-  for (let i = 0; i < sampleCount; i++)
-    samples[i] = view.getInt16(dataOffset + i * 2, true) / 32768;
+  const pcm = bytes.slice(dataOffset, dataOffset + dataLength);
   return {
     name,
     byteLength: bytes.byteLength,
@@ -97,7 +95,7 @@ export function parseRecording(
     bitsPerSample: 16,
     sampleCount,
     durationSeconds: sampleCount / RECORDING_SAMPLE_RATE,
-    samples,
+    pcm,
   };
 }
 
@@ -105,4 +103,11 @@ export async function prepareRecording(file: File): Promise<PreparedRecording> {
   if (file.size > MAX_RECORDING_BYTES)
     invalid("The WAV file must be no larger than 2 MiB.");
   return parseRecording(await file.arrayBuffer(), file.name);
+}
+
+// Identical to probe_voicechat.read_wav: 1920 PCM16 samples, zero padded tail.
+export function recordingFrame(pcm: Uint8Array, index: number): Uint8Array {
+  const frame = new Uint8Array(3840);
+  frame.set(pcm.subarray(index * 3840, (index + 1) * 3840));
+  return frame;
 }

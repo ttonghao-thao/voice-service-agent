@@ -1,5 +1,5 @@
 import { api, PortalEvent } from "../api";
-import type { PreparedRecording } from "./recordedAudio";
+import { recordingFrame, type PreparedRecording } from "./recordedAudio";
 
 export type VoiceInput =
   { kind: "microphone" } | { kind: "file"; recording: PreparedRecording };
@@ -48,10 +48,9 @@ export class VoiceClient {
   private activeResponse = "";
   private stoppedResponses = new Set<string>();
   private input: VoiceInput = { kind: "microphone" };
-  private fileSource?: AudioBufferSourceNode;
+  private fileTimer?: ReturnType<typeof setTimeout>;
   private fileArmed = false;
-  private fileStarted = false;
-  private fileStartFrame = 0;
+  private diagnosticAudio = new Set<string>();
   private fileSourceEnded = false;
   private sentFileSamples = 0;
   private fileComplete = false;
@@ -90,55 +89,83 @@ export class VoiceClient {
       name: recording.name,
     });
   }
-  private armRecording() {
-    if (
-      this.input.kind !== "file" ||
-      !this.context ||
-      !this.node ||
-      this.fileArmed
-    )
-      return;
-    this.fileArmed = true;
-    this.fileStartFrame = Math.ceil(
-      (this.context.currentTime + 0.08) * this.context.sampleRate,
+  private diagnostic(event: string, fields: Record<string, unknown> = {}) {
+    if (this.input.kind !== "file") return;
+    console.info(
+      "voice_file",
+      JSON.stringify({
+        at: new Date().toISOString(),
+        event,
+        conversation_id: this.cid,
+        voice_session_id: this.sid,
+        epoch: this.epoch,
+        ...fields,
+      }),
     );
-    this.node.port.postMessage({
-      type: "file",
-      epoch: this.epoch,
-      startFrame: this.fileStartFrame,
-      sourceFrames: Math.ceil(
-        (this.input.recording.sampleCount * this.context.sampleRate) / 24000,
-      ),
-      totalSamples: this.input.recording.sampleCount,
-    });
   }
-  private startScheduledRecording(startFrame: number) {
-    if (
-      this.input.kind !== "file" ||
-      !this.context ||
-      !this.fileSource ||
-      this.fileStarted
-    )
-      return;
-    const startTime = this.fileStartFrame / this.context.sampleRate;
-    if (
-      startFrame !== this.fileStartFrame ||
-      this.context.currentTime >= startTime
-    ) {
+  private sendAudio(bytes: Uint8Array): boolean {
+    if (!this.ready || this.ws?.readyState !== WebSocket.OPEN) return false;
+    const clock = performance.now();
+    if (this.lastCapture && clock - this.lastCapture > 500) {
       void this.stop();
-      this.onError("File input scheduling fell behind. Restart the file call.");
-      return;
+      this.onError("Audio capture stalled. Restart voice.");
+      return false;
     }
+    this.lastCapture = clock;
+    if (this.ws.bufferedAmount > 32000) {
+      void this.stop();
+      this.onError("Network audio fell behind. Restart voice.");
+      return false;
+    }
+    let binary = "";
+    for (const b of bytes) binary += String.fromCharCode(b);
     try {
-      this.fileSource.start(startTime);
-      this.fileStarted = true;
-      this.emitRecording("sending");
+      this.ws.send(
+        JSON.stringify({
+          type: "portal.audio.append",
+          event_id: crypto.randomUUID(),
+          epoch: this.epoch,
+          seq: this.seq,
+          payload: { format: "pcm16", sample_rate: 24000, audio: btoa(binary) },
+        }),
+      );
+      this.seq++;
+      return true;
     } catch {
       void this.stop();
-      this.onError(
-        "The recording could not be started. Restart the file call.",
-      );
+      this.onError("Voice audio could not be sent. Restart the call.");
+      return false;
     }
+  }
+  private armRecording() {
+    if (this.input.kind !== "file" || this.fileArmed) return;
+    this.fileArmed = true;
+    const recording = this.input.recording;
+    const generation = this.generation;
+    let index = 0;
+    this.diagnostic("file.start", {
+      name: recording.name,
+      samples: recording.sampleCount,
+      frame_samples: 1920,
+      frame_ms: 80,
+    });
+    const send = () => {
+      if (generation !== this.generation || !this.ready) return;
+      // No AudioContext resampling, gain, quantization, or extra pre-roll.
+      // Continue sending silence after EOF, as the deployment probe does.
+      if (!this.sendAudio(recordingFrame(recording.pcm, index++))) return;
+      if (!this.fileComplete) {
+        this.sentFileSamples = Math.min(index * 1920, recording.sampleCount);
+        this.fileComplete = this.sentFileSamples === recording.sampleCount;
+        this.fileSourceEnded = this.fileComplete;
+        this.emitRecording(this.fileComplete ? "waiting_answer" : "sending");
+        if (this.fileComplete)
+          this.diagnostic("file.sent", { samples: this.sentFileSamples });
+      }
+      // Never catch up with a burst after a delayed callback.
+      this.fileTimer = setTimeout(send, 80);
+    };
+    send();
   }
   private visibility = () => {
     if (document.hidden) {
@@ -158,7 +185,7 @@ export class VoiceClient {
     this.cid = cid;
     this.input = input;
     this.fileArmed = false;
-    this.fileStarted = false;
+    this.diagnosticAudio.clear();
     this.fileSourceEnded = false;
     this.fileComplete = false;
     this.sentFileSamples = 0;
@@ -214,6 +241,7 @@ export class VoiceClient {
         numberOfInputs: 1,
         numberOfOutputs: 1,
         outputChannelCount: [1],
+        processorOptions: { capture: input.kind === "microphone" },
       });
       if (input.kind === "microphone") {
         context.createMediaStreamSource(this.media!).connect(this.node);
@@ -221,27 +249,13 @@ export class VoiceClient {
         const recording = input.recording;
         if (
           !recording.sampleCount ||
-          recording.sampleCount !== recording.samples.length ||
+          recording.sampleCount * 2 !== recording.pcm.length ||
           recording.sampleCount > 720000 ||
           recording.sampleRate !== 24000
         )
           throw new Error(
             "Choose a validated recording no longer than 30 seconds.",
           );
-        const buffer = context.createBuffer(1, recording.sampleCount, 24000);
-        buffer.getChannelData(0).set(recording.samples);
-        const source = context.createBufferSource();
-        source.buffer = buffer;
-        source.connect(this.node);
-        this.fileSource = source;
-        source.onended = () => {
-          if (generation !== this.generation || this.fileSource !== source)
-            return;
-          this.fileSourceEnded = true;
-          this.emitRecording(
-            this.fileComplete ? "waiting_answer" : "tail_pending",
-          );
-        };
       }
       this.node.connect(context.destination);
       const session = await api<{
@@ -284,68 +298,10 @@ export class VoiceClient {
           d.epoch !== this.epoch
         )
           return;
-        if (d.type === "file.ready") {
-          this.startScheduledRecording(d.startFrame);
-          return;
-        }
-        if (d.type === "capture") {
-          const clock = performance.now();
-          if (this.lastCapture && clock - this.lastCapture > 500) {
-            void this.stop();
-            this.onError("Audio capture stalled. Restart voice.");
-            return;
-          }
-          this.lastCapture = clock;
-          if (this.ws.bufferedAmount > 32000) {
-            void this.stop();
-            this.onError("Network audio fell behind. Restart voice.");
-            return;
-          }
-          const bytes = new Uint8Array(d.pcm);
-          let binary = "";
-          for (const b of bytes) binary += String.fromCharCode(b);
-          try {
-            this.ws.send(
-              JSON.stringify({
-                type: "portal.audio.append",
-                event_id: crypto.randomUUID(),
-                epoch: this.epoch,
-                seq: this.seq,
-                payload: {
-                  format: "pcm16",
-                  sample_rate: 24000,
-                  audio: btoa(binary),
-                },
-              }),
-            );
-          } catch {
-            void this.stop();
-            this.onError("Voice audio could not be sent. Restart the call.");
-            return;
-          }
-          this.seq++;
-          if (this.input.kind === "file" && this.fileStarted) {
-            const total = this.input.recording.sampleCount;
-            if (
-              Number.isInteger(d.fileSamples) &&
-              d.fileSamples >= 0 &&
-              d.fileSamples <= total
-            )
-              this.sentFileSamples = Math.max(
-                this.sentFileSamples,
-                d.fileSamples,
-              );
-            if (d.fileComplete === true && this.sentFileSamples === total)
-              this.fileComplete = true;
-            if (!this.recordingStopped)
-              this.emitRecording(
-                this.fileComplete
-                  ? "waiting_answer"
-                  : this.fileSourceEnded
-                    ? "tail_pending"
-                    : "sending",
-              );
-          }
+        if (d.type === "playback.started") {
+          this.diagnostic("playback.started", { response_id: d.response });
+        } else if (d.type === "capture" && this.input.kind === "microphone") {
+          this.sendAudio(new Uint8Array(d.pcm));
         } else if (d.type === "ack" && !this.suppressed) {
           if (d.done && this.activeResponse === d.response)
             this.activeResponse = "";
@@ -373,6 +329,22 @@ export class VoiceClient {
           return;
         }
         if (event.epoch !== this.epoch) return;
+        if (
+          [
+            "portal.transcript.done",
+            "portal.speech_text.done",
+            "portal.audio.done",
+            "portal.error",
+          ].includes(event.type)
+        ) {
+          const p = event.payload;
+          this.diagnostic(event.type, {
+            input_item_id: p.input_item_id || p.item_id,
+            response_id: p.response_id,
+            phase: p.phase,
+            code: p.code,
+          });
+        }
         this.requestRevision = Math.max(
           this.requestRevision,
           event.request_revision || 0,
@@ -387,6 +359,10 @@ export class VoiceClient {
         }
         if (event.type === "portal.audio.delta" && !this.suppressed) {
           const response = String(event.payload.response_id);
+          if (!this.diagnosticAudio.has(response)) {
+            this.diagnosticAudio.add(response);
+            this.diagnostic("audio.first", { response_id: response });
+          }
           if (this.stoppedResponses.has(response)) return;
           this.activeResponse = response;
           const binary = atob(String(event.payload.audio));
@@ -425,7 +401,10 @@ export class VoiceClient {
             event.payload.code === "VOICE_TOOL_CONFIGURATION_CHANGED"
           ) {
             this.onEvent(event);
-            void this.rotate(generation, event.payload.code === "VOICE_TOOL_CONFIGURATION_CHANGED");
+            void this.rotate(
+              generation,
+              event.payload.code === "VOICE_TOOL_CONFIGURATION_CHANGED",
+            );
             return;
           }
           this.clear();
@@ -502,9 +481,11 @@ export class VoiceClient {
     const cid = this.cid;
     if (this.input.kind === "file") {
       await this.stop();
-      this.onError(toolsChanged
-        ? "The voice tools changed. Start a new file call to register them; the recording was not replayed."
-        : "The file call reached its session limit. Start a new file call to run it again.");
+      this.onError(
+        toolsChanged
+          ? "The voice tools changed. Start a new file call to register them; the recording was not replayed."
+          : "The file call reached its session limit. Start a new file call to run it again.",
+      );
       return;
     }
     this.onState("reconnecting");
@@ -539,20 +520,8 @@ export class VoiceClient {
     this.sid = "";
     this.ws?.close();
     this.ws = undefined;
-    if (this.fileSource) {
-      const source = this.fileSource;
-      this.fileSource = undefined;
-      source.onended = null;
-      if (this.fileStarted) {
-        try {
-          source.stop();
-        } catch {
-          // The source may already have ended naturally.
-        }
-      }
-      source.disconnect();
-      source.buffer = null;
-    }
+    if (this.fileTimer !== undefined) clearTimeout(this.fileTimer);
+    this.fileTimer = undefined;
     this.node?.disconnect();
     this.node = undefined;
     this.media?.getTracks().forEach((t) => t.stop());

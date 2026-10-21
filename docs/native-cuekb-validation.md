@@ -1,5 +1,8 @@
 # 英文全双工与 CueKB 验证
 
+当前 Web 上传与脚本对照按 [四文件操作与必要结果](web-wav-comparison.md) 执行：本次需要重建 Web 和 API，VoiceChat 不变；四个文件分别新建连接，Golden Yolk 两段仍保留在同一 WAV/连接。下文的“仅重建 API”是上一期证据校验修正的部署范围，不能用于本次升级。
+
+
 本期路径为 Web ⇄ API relay ⇄ VoiceChat；VoiceChat 原生调用 `search_knowledge_base` 后，API 查询 CueKB 并按原 call_id 回填。普通回答和多轮上下文由同一 VoiceChat 连接承载。
 
 ## 1. 部署与输入

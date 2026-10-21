@@ -84,6 +84,9 @@ async def relay(gateway, ws, session, provider):
             async with asyncio.timeout(2):
                 await ws.send_json(event)
             if kind == "portal.audio.delta":
+                if response["sent"] == 0:
+                    logger.info("voice_audio_first_sent conversation_id=%s response_id=%s input_item_id=%s",
+                        cid, rid, response["input"])
                 response["sent"] += len(base64.b64decode(body["audio"])) // 2
             elif kind == "portal.audio.done":
                 response["sent_done"] = True
@@ -196,6 +199,7 @@ async def relay(gateway, ws, session, provider):
                 if input_state == "speaking":
                     latest_input = body["item_id"]
                     input_future(latest_input)
+                    logger.info("voice_input_started conversation_id=%s input_item_id=%s", cid, latest_input)
                     # Clear already-buffered playback on native speech start;
                     # continue receiving and forwarding the provider's stream.
                     emit("playback.clear", {"message": "Customer speaking"})
@@ -207,6 +211,7 @@ async def relay(gateway, ws, session, provider):
                     latest_input = item_id
                 future = input_future(item_id)
                 if event.kind == "transcript.done":
+                    logger.info("voice_input_transcribed conversation_id=%s input_item_id=%s", cid, item_id)
                     await store.utterance(session.principal, cid, epoch, item_id, text=body["text"])
                     if not future.done():
                         future.set_result(body["text"])
@@ -244,6 +249,10 @@ async def relay(gateway, ws, session, provider):
                 continue
             rid = body["response_id"]
             response = response_for(rid)
+            if event.kind == "audio.delta" and not response.get("audio_received"):
+                response["audio_received"] = True
+                logger.info("voice_audio_first_received conversation_id=%s response_id=%s input_item_id=%s",
+                    cid, rid, response["input"])
             operation = tool_inputs.get(response["input"])
             if session.suppress_next_response:
                 session.suppressed_responses.add(rid)

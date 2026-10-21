@@ -125,3 +125,10 @@ if not found:
 预期只增加一次工具响应封装，正文与数字保持完整。具体特殊标记映射应核对实际 normalizer 源码，不预设映射正确。若格式化和规范化均正确，再按 §4 的受控短结果探针对照；合成结果探针不能作为真实知识闭环验收。本轮不修改 VoiceChat 推理逻辑。
 
 04:56:50 UTC 的真实 after 证据只覆盖 Black Pig 录音所问四项中的酥皮 18 层；价格、重量、最佳食用时间未出现于这组响应。此事实说明这一组证据覆盖不足，但不证明后续九次响应也相同，或模型重复调用一定由它造成。当前恢复配置的检索数和完整有界来源；不得以 partial=false 推断问题已获充分回答。下一次应核对真实知识回答，而非继续要求用户逐个提供辅助函数。
+
+
+## 10. Web 与自动脚本的阶段时间线
+
+本轮不修改 VoiceChat 代码、Prompt 或快照，无需重建 VoiceChat。使用已有 `voice_ws_diagnostic` 的 input_item_id/sequence_id 及后端 Prompt/function/injection 日志，与新增 API 阶段日志关联。由宿主机 `docker logs --timestamps` 读取，交给 API 镜像中的 `summarize_voice_timeline.py`；全部操作及预期字段见 [对照操作 §2–4](../web-wav-comparison.md)。
+
+预期：`session_match=passed`，backend_prompts 中 `tool_names=search_knowledge_base`。Black Pig 的模型解码、VoiceChat function.call、API received 应能逐个关联；结果回填后可观察 function.result 和注入起止。没有模型调用时计数应为 0，不把“不调用”报告为传输通过；无法关联 sequence 时应显示 unverified。Golden Yolk 同一 sequence 可以有多个 input_item_id，第二段需独立确认实际调用。注入完成不证明完整回答，仍需 API 的对应非 ACK 回答完成及门户提交。

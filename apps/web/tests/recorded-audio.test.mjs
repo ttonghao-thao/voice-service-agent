@@ -7,7 +7,8 @@ import {
   waveFormat,
 } from "./recording-fixtures.mjs";
 
-const { parseRecording, prepareRecording } = loadRecordingModule();
+const { parseRecording, prepareRecording, recordingFrame } =
+  loadRecordingModule();
 
 test("PCM WAV validation preserves source samples and tolerates padded metadata chunks", () => {
   const bytes = recordingWave(4, {
@@ -23,10 +24,11 @@ test("PCM WAV validation preserves source samples and tolerates padded metadata 
   assert.equal(recording.bitsPerSample, 16);
   assert.equal(recording.sampleCount, 4);
   assert.equal(recording.durationSeconds, 4 / 24000);
-  assert.equal(recording.samples[0], -1);
-  assert.ok(recording.samples[1] < 0 && recording.samples[1] > -0.001);
-  assert.equal(recording.samples[2], 0);
-  assert.ok(recording.samples[3] > 0.999 && recording.samples[3] <= 1);
+  const pcm = new DataView(recording.pcm.buffer);
+  assert.deepEqual(
+    Array.from({ length: 4 }, (_, i) => pcm.getInt16(i * 2, true)),
+    [-32768, -1, 0, 32767],
+  );
 });
 
 test("Thirty seconds is accepted while one additional sample is rejected", () => {
@@ -137,4 +139,17 @@ test("Empty, unaligned, duplicate or missing PCM chunks are rejected", () => {
     [fmt, pcm, pcm],
   ])
     assert.throws(() => parseRecording(riffWave(chunks)));
+});
+
+test("File frames preserve every PCM byte, pad only the tail and continue with silence", () => {
+  const source = parseRecording(
+    recordingWave(1923, { sample: (i) => ((i * 37) % 65536) - 32768 }),
+  );
+  const first = recordingFrame(source.pcm, 0);
+  const last = recordingFrame(source.pcm, 1);
+  assert.equal(first.length, 3840);
+  assert.equal(last.length, 3840);
+  assert.deepEqual([...first, ...last.slice(0, 6)], [...source.pcm]);
+  assert.ok(last.slice(6).every((value) => value === 0));
+  assert.ok(recordingFrame(source.pcm, 2).every((value) => value === 0));
 });

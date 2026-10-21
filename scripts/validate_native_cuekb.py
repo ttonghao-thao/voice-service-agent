@@ -186,7 +186,8 @@ async def run(args):
                         started = time.monotonic()
                         seen_inputs, audio = set(), bytearray()
                         samples = 0
-                        response_samples, answer_responses = {}, set()
+                        response_samples, answer_responses = {}, {}
+                        latest_case_input = None
                         row["answer_complete"] = "unverified"
                         primary_sent = asyncio.Event()
                         answer_ended = False
@@ -217,7 +218,17 @@ async def run(args):
                                     except TimeoutError:
                                         continue
                                     body = event["payload"]
-                                    if event["type"] == "portal.transcript.done":
+                                    if (event["type"] == "portal.input.state" and body.get("state") == "speaking"):
+                                        # A pause may split one WAV into multiple native inputs.
+                                        # An earlier answer must not finish the later question.
+                                        answer_ended = False
+                                        row["answer_complete"] = "unverified"
+                                        latest_case_input = None
+                                    elif event["type"] == "portal.transcript.done":
+                                        if body["item_id"] != latest_case_input:
+                                            answer_ended = False
+                                            row["answer_complete"] = "unverified"
+                                        latest_case_input = body["item_id"]
                                         seen_inputs.add(body["item_id"])
                                     elif event["type"] == "portal.audio.delta":
                                         raw = base64.b64decode(body["audio"], validate=True)
@@ -231,12 +242,15 @@ async def run(args):
                                         raise ValueError("Portal voice error")
                                     elif (event["type"] == "portal.speech_text.done" and body.get("phase") == "answer"
                                           and body.get("input_item_id") in seen_inputs and body.get("text", "").strip()):
-                                        answer_responses.add(body["response_id"])
+                                        answer_responses[body["response_id"]] = body["input_item_id"]
                                     elif (event["type"] == "portal.audio.done" and body.get("phase") == "answer"
-                                          and body["response_id"] in answer_responses
+                                          and latest_case_input is not None
+                                          and answer_responses.get(body["response_id"]) == latest_case_input
                                           and response_samples.get(body["response_id"], 0) > 0):
-                                        answer_ended = True
-                                        row["answer_complete"] = "passed"
+                                        # Never stop on a response completed while the WAV
+                                        # still contains unprocessed speech (e.g. Golden Yolk).
+                                        answer_ended = primary_sent.is_set()
+                                        row["answer_complete"] = "passed" if answer_ended else "unverified"
                                         row["answer_response_id"] = body["response_id"]
                                         row["answer_samples"] = response_samples[body["response_id"]]
                                         if not primary_sent.is_set():

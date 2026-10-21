@@ -13,6 +13,7 @@ COPY scripts/probe_voicechat.py scripts/probe_voicechat.py
 COPY scripts/validate_native_cuekb.py scripts/validate_native_cuekb.py
 COPY scripts/run_native_cuekb_validation.py scripts/run_native_cuekb_validation.py
 COPY scripts/inspect_native_answer.py scripts/inspect_native_answer.py
+COPY scripts/summarize_voice_timeline.py scripts/summarize_voice_timeline.py
 COPY artifacts/native-cuekb/cases.json validation/native-cuekb/cases.json
 COPY artifacts/native-cuekb/*.wav validation/native-cuekb/
 ENV PYTHONPATH=/app/apps/api:/app PYTHONUNBUFFERED=1
