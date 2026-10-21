@@ -1,6 +1,6 @@
 # 一期交付说明
 
-更新：2026-10-21，分支 `codex/q1003`。本文明确交付范围；实际架构见 [architecture.md](architecture.md)，待办与证据分别见 [任务板](TASK_BOARD.md) 和 [验收记录](acceptance-report.md)。代码完成、现场验证和产品放行是三个不同状态。
+更新：2026-10-21，开发主线 `main`，基线来自 `codex/q1003`。本文明确交付范围；实际架构见 [architecture.md](architecture.md)，待办与证据分别见 [任务板](TASK_BOARD.md) 和 [验收记录](acceptance-report.md)。代码完成、现场验证和产品放行是三个不同状态。
 
 ## 1. 需求与目的
 

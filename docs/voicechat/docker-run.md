@@ -1,6 +1,6 @@
 # VoiceChat 验证容器启动命令
 
-本命令用于当前 `codex/q1003` VoiceChat 现场验证。它加载本目录收录的 `model.py` 收尾修改，并显式固定与该修改相关的三个已有运行参数。示例宿主目录 `/home/thao/voice` 应替换为现场实际挂载目录，运行文件必须与本目录对应文件一致；模型和 GPU 分配沿用现场已经验证的配置。VoiceChat 应使用本项目派生镜像，使官方诊断客户端、静态检查器、`cases.json` 和四段固定 WAV 随镜像发布，验证时不再复制宿主机测试文件。
+本命令用于当前 `main` 开发主线的 VoiceChat 现场验证。它加载本目录收录的 `model.py` 收尾修改，并显式固定与该修改相关的三个已有运行参数。示例宿主目录 `/home/thao/voice` 应替换为现场实际挂载目录，运行文件必须与本目录对应文件一致；模型和 GPU 分配沿用现场已经验证的配置。VoiceChat 应使用本项目派生镜像，使官方诊断客户端、静态检查器、`cases.json` 和四段固定 WAV 随镜像发布，验证时不再复制宿主机测试文件。
 
 2026-10-21 批次修正必须同时更新 API、Web 和本目录完整 `s2s/audio_server.py`。model.py/Prompt 未新增修改。下面仍将宿主 `/home/thao/voice/audio_server.py` 挂载到实际加载路径 `/s2s/audio_server.py`；更新该宿主文件后重建容器。若不用挂载，须先将完整文件同步到 Speech 构建上下文，不能只更新本项目 docs 就认为运行镜像已改变。批次预期见 [独立验证 §2](native-tool-selection-validation.md#2-原生批次聚合结果验证)。
 

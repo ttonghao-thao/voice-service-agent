@@ -4,6 +4,8 @@
 
 产品语音、门户交互和新会话语言均为英文（`en-US`）。中文开发文档、历史测试文本及 Unicode 数据兼容不代表产品支持中文语音；实现约束见 [架构的产品边界](docs/architecture.md#1-产品与部署边界)。
 
+后续开发统一在 `main` 演进，基线来自 `codex/q1003`。
+
 Codex 从 [AGENTS](AGENTS.md) 开始，按任务查 [文档索引](docs/README.md)；跨模块关系见 [架构](docs/architecture.md)。当前任务归 [任务板](docs/TASK_BOARD.md)，已执行测试及真实服务边界归 [验收](docs/acceptance-report.md)。
 
 ## 本机验证
