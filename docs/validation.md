@@ -8,6 +8,8 @@
 
 本次包含尚未部署的回答覆盖度与结果注入时延、Web 流式文字展示，并补充同一通话连续发送 WAV、页面转后台不主动结束。Golden Yolk 自动/Web 第二段已有闭环现场证据；本轮在同一 WAV 上各执行一次，对比实际回答、结果 token/注入时间，以及文字是否在回答结束前出现。需要完整四文件对照时，执行第 5 节；不要同时执行两套方案。
 
+后台持续播报按用户决定暂缓，作为非阻塞待优化项；保留页面隐藏不主动结束及回前台尝试恢复的现有实现。本轮 Web 验证保持前台，不要求切后台或锁屏，不将后台连续播放作为放行条件。
+
 输入唯一来源是本仓库 `artifacts/native-cuekb/` 的 `cases.json` 和四个 WAV。API 镜像内对应 `/app/validation/native-cuekb/`。所有 Python 在容器内执行；宿主机只需 Bash、Docker Compose、Git 和常用 shell 工具。**不使用 docker cp，不在容器创建输入目录，不使用历史 ZIP。** 输出目录由脚本自动创建，API 的只读根文件系统不受影响。
 
 宿主机执行入口是 `bash scripts/validate_deployment.sh`；它自动调用 `docker exec`，寻找 API 容器、检查固定文件、提取本次时间窗口和会话、采集匹配的 VoiceChat sequence、查询已保存答案。不会新增模型请求或 CueKB 请求，只有 `auto` 会发送测试语音。默认 VoiceChat 容器名为 `nemotron-labs-voicechat`。
@@ -87,7 +89,7 @@ bash scripts/validate_deployment.sh auto golden_yolk
 
 `voice_file` 用于补充浏览器的发送、首文字（speech_text.first）、首音频包和播放开始时刻。服务端首包时间不能替代浏览器开始播放，更不能替代实际扬声器听音。如果终端阶段没有延迟而浏览器仍等待，开发者才依据这些行进一步定位。
 
-## 4.1 补充：同一通话发送两个文件并切后台
+## 4.1 补充：同一通话发送两个文件
 
 本操作单独运行一次，不与上面的 Golden Yolk 窗口混用。仍使用仓库固定文件，整个测试只点一次 Start file call，不要求操作者判断回答准确性。约一分钟内结束，避免故意撞上原有 105 秒限制。
 
@@ -99,7 +101,7 @@ bash scripts/validate_deployment.sh auto golden_yolk
 
 2. 门户 Audio file → Choose WAV，选择 `artifacts/native-cuekb/hello.wav`，点击 Start file call。等待 **10 秒**。
 3. 同一页面点击 Choose WAV，选择 `artifacts/native-cuekb/tcp_udp.wav`，点击新按钮 **Send recording**。不要再点 Start file call 或 End call。
-4. 切换到其他应用/标签页，等待 **10 秒**，返回门户。不要锁屏或强制关闭浏览器。再等待 **25 秒**，点击 End call。
+4. 保持门户前台，等待 **35 秒**，点击 End call。不切后台、不锁屏。
 5. 宿主机执行：
 
    ```bash
@@ -111,13 +113,13 @@ bash scripts/validate_deployment.sh auto golden_yolk
    ```text
    files=hello.wav,tcp_udp.wav
    history=两轮都在 / 第一轮消失 / 其他页面现象
-   background=返回仍连接 / 页面提示原文
+   page_error=页面提示原文（没有则写无）
    heard_audio=有声音 / 没声音
    ```
 
 开发者检查两次 file.start/file.sent 的 conversation_id、voice_session_id、epoch 一致，file_id 不同，后端有两份输入记录，原历史未被清空。query 是否出现依具体问题；hello/TCP 都可正常无工具回答。选择下一文件只在当前 WAV 全部发送后开放；下一份只在明确点击 Send recording 后发送，选择文件本身不发送、不重建会话，不自动重播。
 
-页面隐藏事件不再停止 session。文件改由 AudioWorklet 渲染时钟发送相同 80 ms 原始 PCM，不通过麦克风/重采样。这里的浏览器事件测试不证明所有手机都能无限后台运行：系统冻结音频、真实断流、网络错误及原来的连接上限仍生效。出现这些提示只回传对应精简行，本轮不修改保护阈值、不自动补发旧录音。
+文件由 AudioWorklet 渲染时钟发送相同 80 ms 原始 PCM，不通过麦克风/重采样。后台持续播报暂缓，不在本操作验证；系统冻结音频、真实断流、网络错误及原来的连接上限仍生效。出现提示只回传对应精简行，本轮不修改保护阈值、不自动补发旧录音。
 
 ## 5. 完整四文件对照（开发者要求时执行）
 
@@ -207,6 +209,7 @@ SH
 - 同两轮第二段到正式音频首包分别 35.43/35.56 秒，两次注入合计 28.54/28.47 秒；CueKB 合计 201/192 ms。注入结果为 390–437 tokens，1573–1726 字符，作为本轮对照基线，不承诺线性提速。
 - 同两轮回答没有回应运输；只有两条标题性来源节选，尚不能核定其余内容。新采集器输出已保存的 query 和准入证据，开发者判断逐项覆盖，不能以 answered 冒充内容通过。
 - 用户要求保留单连接上限：默认 105 秒，繁忙时固定额外 30 秒，超过约 135 秒强制结束。120 秒只是测试等待。该机制标为待优化，本轮不改时长配置、watchdog、到期轮换和对应错误提示；另按补充需求移除页面隐藏触发的主动结束。
+- 后台持续播报按用户决定暂缓，标记为非阻塞待优化项；页面隐藏不主动结束和回前台尝试恢复的代码保留。当前事件测试不证明手机切应用或锁屏仍持续播放，后台等待结果后开始播报也未实机验收；本轮只做前台功能验证。
 - Web 最新对照确认 Black Pig 出现 Checking knowledge；先前“始终不调用”的概括已不成立。回答准确性和重复响应仍需分析。
 - Golden Yolk 的排队调用曾在终态回填前约 195 ms 到达，被旧实现按出队状态误判；该历史误判经批次修正后，上述两次部署测试已完成第二段闭环；内容与时延另行核定。
 - 已观测 CueKB 单次约 0.1 秒，不能把估算的约 30 秒等待全部归因于检索。上述关联时间线已将主要等待定位到逐 token 结果注入，而非 CueKB 请求。
