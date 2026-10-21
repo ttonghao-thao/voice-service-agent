@@ -64,6 +64,12 @@ API_SEARCH_STATE_RE = re.compile(
 API_POST_TERMINAL_RE = re.compile(
     r"voice_search_post_terminal conversation_id=(\S+) input_item_id=(\S+) call_id=(\S+)"
 )
+API_BATCH_RESULT_RE = re.compile(
+    r"voice_batch_result_submitted conversation_id=(\S+) input_item_id=(\S+) batch_id=(\S+) calls=(\d+) injections=1"
+)
+API_BATCH_SETTLED_RE = re.compile(
+    r"voice_batch_call_settled conversation_id=(\S+) input_item_id=(\S+) call_id=(\S+) batch_id=(\S+)"
+)
 VOICECHAT_LOG_MARKERS = (
     "Prompt prepared:",
     "System prompt received for sequence",
@@ -88,6 +94,8 @@ VOICECHAT_LOG_MARKERS = (
     "Max decoder steps",
 )
 API_LOG_MARKERS = (
+    "voice_batch_result_submitted",
+    "voice_batch_call_settled",
     "voice_search_state",
     "voice_search_post_terminal",
     "voice_tool_call_received",
@@ -197,6 +205,8 @@ def case_line(row):
         f"duplicate_queries={row.get('duplicate_queries', 0)}",
         f"terminal_results_submitted={row.get('terminal_results_submitted', 0)}",
         f"post_terminal_calls={row.get('post_terminal_calls', 0)}",
+        f"queued_calls_settled={row.get('queued_calls_settled', 0)}",
+        f"tool_batches_submitted={row.get('tool_batches_submitted', 0)}",
         f"cumulative_sources={row.get('cumulative_sources', 0)}",
         f"latest_retrieval={row.get('latest_retrieval_status') or '-'}",
         f"reason={row.get('reason_code') or '-'}",
@@ -266,7 +276,7 @@ def summarize_voicechat_log(text, expected_tool):
         and prompt[1] == expected_tool and prompt[1:] == received[1:]
         else "failed" if prompt and received else "unverified"
     )
-    decoded_names = [name for _, name in decoded]
+    decoded_names = [name for _, names in decoded for name in names.split(",")]
     decoded_sequences = [sequence for sequence, _ in decoded]
     sequence_id = received[0] if received else None
     diagnostics = voicechat_diagnostics(text, sequence_id)
@@ -276,7 +286,9 @@ def summarize_voicechat_log(text, expected_tool):
     new_call_count = len(new_calls)
     new_call_input_count = len({entry.get("input_item_id") for entry in new_calls
                                 if entry.get("input_item_id")})
-    result_count = len(diagnostic_matches(diagnostics, event="function.result"))
+    results = diagnostic_matches(diagnostics, event="function.result")
+    result_count = len(results)
+    settled_calls = sum(entry.get("calls", 1) for entry in results)
     coalesced_count = len(diagnostic_matches(
         diagnostics, event="function.duplicate", action="coalesced"
     ))
@@ -294,7 +306,7 @@ def summarize_voicechat_log(text, expected_tool):
         diagnostics, event="output.sent", kind="response.output_audio.done"
     ))
     model_function = (
-        "passed" if expected_tool in decoded_names
+        "passed" if decoded_names and all(name == expected_tool for name in decoded_names)
         else "wrong_name" if decoded_names else "absent"
     )
     lines = [
@@ -336,7 +348,7 @@ def summarize_voicechat_log(text, expected_tool):
         result = ("failed", "FUNCTION_FORWARDING_GAP")
     elif result_count == 0:
         result = ("failed", "TOOL_RESULT_NOT_RECEIVED")
-    elif result_count != new_call_count:
+    elif settled_calls != new_call_count:
         result = ("failed", "TOOL_RESULT_COUNT_MISMATCH")
     elif text.count("Function call response timed out"):
         result = ("failed", "TOOL_RESULT_WAIT_TIMEOUT")
@@ -359,6 +371,8 @@ def read_voicechat_evidence(stream):
 
 def summarize_api_log(text):
     received = API_TOOL_RECEIVED_RE.findall(text)
+    batch_results = API_BATCH_RESULT_RE.findall(text)
+    batch_settled = API_BATCH_SETTLED_RE.findall(text)
     started = API_BRIDGE_STARTED_RE.findall(text)
     finished = API_BRIDGE_FINISHED_RE.findall(text)
     failed = API_BRIDGE_FAILED_RE.findall(text)
@@ -408,7 +422,8 @@ def summarize_api_log(text):
         f"retrieval_executions={sum(int(row[3]) for row in last_search.values())} "
         f"duplicate_queries={sum(int(row[5]) for row in last_search.values())} "
         f"terminal_results_submitted={sum(int(row[6]) for row in search_states)} "
-        f"post_terminal_calls={len(post_terminal)}"
+        f"post_terminal_calls={len(post_terminal)} "
+        f"queued_calls_settled={len(batch_settled)} result_injections={len(batch_results)}"
     )
     if post_terminal:
         result = ("failed", "TOOL_LOOP_AFTER_TERMINAL")

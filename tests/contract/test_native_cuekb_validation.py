@@ -191,7 +191,7 @@ def test_budget_summary_reports_post_terminal_failure_instead_of_only_result_mis
     lines, ok = summarize_api_log(read_api_evidence(StringIO(log)))
     assert not ok
     assert lines[-2] == ("api_search_budget inputs=1 retrieval_executions=1 duplicate_queries=1 "
-                         "terminal_results_submitted=1 post_terminal_calls=1")
+                         "terminal_results_submitted=1 post_terminal_calls=1 queued_calls_settled=0 result_injections=0")
     assert lines[-1] == "api_diagnostic=failed fault=TOOL_LOOP_AFTER_TERMINAL"
 
 
@@ -216,7 +216,7 @@ def test_single_entrypoint_classifies_missing_native_tool_with_bounded_evidence(
         "voice_evidence=- evidence_filter=- "
         "speech=passed answer_complete=unverified answer_status=- answer_sources=0 "
         "retrieval_executions=0 retrieval_limit=- "
-        "duplicate_queries=0 terminal_results_submitted=0 post_terminal_calls=0 cumulative_sources=0 "
+        "duplicate_queries=0 terminal_results_submitted=0 post_terminal_calls=0 queued_calls_settled=0 tool_batches_submitted=0 cumulative_sources=0 "
         "latest_retrieval=- reason=- "
         "portal_error=- elapsed_ms=1200 input_ids=input-1 trace_ids=-"
     )
@@ -678,3 +678,30 @@ def test_diagnostic_stages_do_not_masquerade_as_tool_selection_failure(scenario,
     result = assess(case, history, {"i1"}, samples)
     assert tuple(result[key] for key in ("selection", "arguments", "retrieval", "speech_transport")) == expected
     assert result["spoken_faithfulness"] == "manual_review_required"
+
+
+def test_voicechat_batch_summary_counts_members_separately_from_injections():
+    digest = "a" * 64
+    log = "\n".join((
+        "Prompt prepared: tools_count=1 tool_names=search_knowledge_base "
+        f"prompt_chars=6000 prompt_sha256={digest}",
+        "System prompt received for sequence 42: tool_names=search_knowledge_base "
+        f"chars=6000 sha256={digest}",
+        "Function call decoded from model for sequence 42: "
+        "tool_names=search_knowledge_base,search_knowledge_base",
+        'voice_ws_diagnostic {"sequence_id":42,"event":"function.parsed","calls":2}',
+        'voice_ws_diagnostic {"sequence_id":42,"event":"function.call","action":"queued","input_item_id":"i1"}',
+        'voice_ws_diagnostic {"sequence_id":42,"event":"function.call","action":"queued","input_item_id":"i1"}',
+        'voice_ws_diagnostic {"sequence_id":42,"event":"function.result","calls":2,"native_batch_id":"b1"}',
+    ))
+    lines, ok = summarize_voicechat_log(log, "search_knowledge_base")
+    assert ok
+    assert "function_parsed=2 new_calls=2 new_call_inputs=1 function_result=1" in lines[3]
+    assert "tools=search_knowledge_base" in lines[2]
+    lines, ok = summarize_voicechat_log(log.replace(
+        "tool_names=search_knowledge_base,search_knowledge_base",
+        "tool_names=search_knowledge_base,unknown_tool",
+    ), "search_knowledge_base")
+    assert not ok and "MODEL_FUNCTION_WRONG_NAME" in lines[-1]
+    lines, ok = summarize_voicechat_log(log.replace('"calls":2,"native_batch_id"', '"calls":1,"native_batch_id"'), "search_knowledge_base")
+    assert not ok and "TOOL_RESULT_COUNT_MISMATCH" in lines[-1]

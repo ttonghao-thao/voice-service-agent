@@ -12,12 +12,13 @@ import sys
 API_EVENTS = (
     "voice_input_started", "voice_input_transcribed", "voice_tool_call_received",
     "voice_bridge_started", "cuekb_response_validated", "voice_tool_result_submitted",
-    "voice_bridge_finished", "voice_bridge_failed", "voice_audio_first_received",
+    "voice_bridge_finished", "voice_bridge_failed", "voice_batch_result_submitted",
+    "voice_batch_call_settled", "voice_audio_first_received",
     "voice_audio_first_sent", "voice_response_completed", "voice_search_post_terminal",
 )
 FIELDS = (
     "conversation_id", "input_item_id", "call_id", "turn_id", "response_id", "tool",
-    "trace_id", "retrieval_status", "hit_count", "duration_ms", "phase", "samples", "status",
+    "batch_id", "calls", "injections", "trace_id", "retrieval_status", "hit_count", "duration_ms", "phase", "samples", "status",
 )
 BACKEND = {
     "response_chars=": "backend.result_received",
@@ -53,8 +54,12 @@ def summarize(lines, conversation_id):
             backend.append((at, line))
         if len(api) + len(voice) + len(backend) > 10000:
             raise ValueError("Too many diagnostic events; narrow the time window")
+    call_ids = {row["call_id"] for row in api if "call_id" in row}
+    response_ids = {row["response_id"] for row in api if "response_id" in row}
     for _, entry in voice:
-        if entry.get("input_item_id") in inputs and entry.get("sequence_id") is not None:
+        matched = (entry.get("input_item_id") in inputs or entry.get("call_id") in call_ids
+                   or entry.get("response_id") in response_ids)
+        if matched and entry.get("sequence_id") is not None:
             sequences.add(str(entry["sequence_id"]))
     rows = list(api)
     model_calls = 0
@@ -62,9 +67,9 @@ def summarize(lines, conversation_id):
     for at, entry in voice:
         if str(entry.get("sequence_id")) not in sequences:
             continue
-        if entry.get("event") in ("function.call", "function.result"):
+        if entry.get("event") in ("function.parsed", "function.call", "function.result", "function.batch_result"):
             rows.append({"at": at, "event": "voicechat." + entry["event"],
-                         **{k: entry[k] for k in ("sequence_id", "input_item_id", "call_id", "tool", "at_ms") if k in entry}})
+                         **{k: entry[k] for k in ("sequence_id", "input_item_id", "call_id", "native_batch_id", "native_batch_size", "output_index", "calls", "tool", "at_ms") if k in entry}})
     for at, line in backend:
         match = re.search(r"(?:for sequence |\[seq |seq_id: )(\d+)(?=[:\]\s])", line)
         if not match or match[1] not in sequences:
@@ -86,7 +91,8 @@ def summarize(lines, conversation_id):
               "sequence_ids": sorted(sequences), "session_match": "passed" if sequences else "unverified",
               "model_function_count": model_calls if sequences else None,
               "api_tool_calls": sum(r["event"] == "voice_tool_call_received" for r in api),
-              "backend_prompts": prompts, "timestamp_basis": "docker_log_observed_utc"}
+              "backend_prompts": prompts, "voicechat_diagnostic_events": len(voice),
+              "backend_log_candidates": len(backend), "timestamp_basis": "docker_log_observed_utc"}
     rows.sort(key=lambda row: row["at"])
     header["truncated"] = len(rows) > 120
     return header, rows[:120]

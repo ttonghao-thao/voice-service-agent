@@ -1,14 +1,14 @@
 # Web 上传与自动脚本：同一 WAV 对照操作
 
-本轮只解决输入路径差异并收集一次可关联的证据。Web 与自动脚本统一使用 WAV 原始 24 kHz/mono/PCM16，1920 samples（80 ms）一帧，末帧补零；session.ready 后开始，EOF 后持续送静音。不重采样、不增益、不加前置静音、不删除 Golden Yolk 的停顿。浏览器发送若停滞超过 500 ms 或网络积压则明确失败，不突发补发。
+当前批次修正和最小复测以 [批次验收](native-tool-batch-validation.md) 为准；下文保留四文件完整对照方法。输入路径已统一，当前继续补全批次和阶段关联。Web 与自动脚本统一使用 WAV 原始 24 kHz/mono/PCM16，1920 samples（80 ms）一帧，末帧补零；session.ready 后开始，EOF 后持续送静音。不重采样、不增益、不加前置静音、不删除 Golden Yolk 的停顿。浏览器发送若停滞超过 500 ms 或网络积压则明确失败，不突发补发。
 
-两者使用同一个 API Relay、工具目录、VoiceChat 和 CueKB。它们不是相同的运行环境：浏览器负责真实播放和播放回执，脚本只记录音频；浏览器计时器也不能保证与 Python 调度逐毫秒一致。统一 PCM 不等于已经证明模型必然做相同选择。麦克风仍保留必要的重采样；本轮不改 VoiceChat、提示词、检索预算或产品问题。
+两者使用同一个 API Relay、工具目录、VoiceChat 和 CueKB。它们不是相同的运行环境：浏览器负责真实播放和播放回执，脚本只记录音频；浏览器计时器也不能保证与 Python 调度逐毫秒一致。统一 PCM 不等于已经证明模型必然做相同选择。麦克风仍保留必要的重采样；当前只调整 VoiceChat audio_server 的批次传输，不改模型、提示词、检索预算或产品问题。
 
 自动验证器原先可能沿用第一段回答的完成标记。本版在新输入开始时重置，只接受最新输入的非 ACK 回答，并且不因 WAV 尚未发送完时结束的回答提前结束验证。不能用 Golden Yolk 第一段普通回答证明第二段知识回答完成。
 
 ## 1. 部署准备（宿主机项目根目录）
 
-需要重新构建并重建 **Web 和 API**。API 增加无正文的阶段日志、时间线脚本及验证器修正；不改数据库结构，不重建 VoiceChat。
+需要重新构建并重建 **Web 和 API**。API 增加批次结清和阶段诊断，Web 修正输出 item_id 的诊断字段；不改数据库结构。还必须按 [VoiceChat 启动命令](voicechat/docker-run.md) 同步 audio_server.py 并重建 VoiceChat。
 
 ```sh
 API_IMAGE=$(docker compose --env-file .env -f deploy/compose.production.yaml config --images | sed -n '/^voice-service-agent-api:/ {p;q;}')
@@ -97,7 +97,7 @@ done
 - 自动脚本：`preflight`、窗口/CID、`case=`、`validation=`、`host_exit_code`；Black Pig 与 Golden Yolk 保留时间线。
 - 内容准确性：仅引用数大于零还不够；产品回答须核对 Sources 的原文、数值、条件和缺失信息声明。自动回答完成不代替人工听音。
 
-时间线只选该 CID 的 API 日志，并由 input_item_id 找对应 VoiceChat sequence。`session_match=unverified` 表示日志证据不够，**不能**当作模型调用数零。`truncated=true` 表示输出不完整；缩小窗口读取已有日志，不重复发送 WAV。时间戳来自 Docker 日志，适合秒级阶段定位；不同机器时钟或日志缓冲会影响精确差值，不能据此推断 GPU 精确执行耗时。
+时间线只选该 CID 的 API 日志，并由 input_item_id、call_id 或 response_id 找对应 VoiceChat sequence。`session_match=unverified` 表示日志证据不够，**不能**当作模型调用数零。`truncated=true` 表示输出不完整；缩小窗口读取已有日志，不重复发送 WAV。时间戳来自 Docker 日志，适合秒级阶段定位；不同机器时钟或日志缓冲会影响精确差值，不能据此推断 GPU 精确执行耗时。
 
 | 观察 | 可以作出的判断 |
 | --- | --- |
@@ -120,4 +120,4 @@ done
 
 `response_id` 必须一致，并用 `voice_response_completed phase=answer` / `portal.speech_text.done phase=answer` 区分真正回答与 ACK；首包到达时尚不能确定是否 ACK，不把任何首包都当答案。浏览器与服务器的绝对时间不能未经时钟校准直接相减。
 
-此次修改只消除已知输入处理差异和验证器提前退出风险，尚不能宣称解决模型不选工具或 30 秒等待。按上述两组各做一次后，沿最早出现差异的阶段分析，不调整预算、不重写问题、不无限重跑。VoiceChat 的独立说明见 [原生工具验证](voicechat/native-tool-selection-validation.md#10-web-与自动脚本的阶段时间线)。
+输入统一和验证器结束条件已经修正；最新批次修正仍不能宣称解决模型不选工具或 30 秒等待。按上述两组各做一次后，沿最早出现差异的阶段分析，不调整预算、不重写问题、不无限重跑。VoiceChat 的独立说明见 [原生工具验证](voicechat/native-tool-selection-validation.md#10-web-与自动脚本的阶段时间线)。

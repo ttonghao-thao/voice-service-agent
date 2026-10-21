@@ -523,6 +523,8 @@ def function_call_harness():
     session._response_active = False
     session._response_id = None
     session.function_call_output = deque()
+    session.function_batches = {}
+    session.function_call_batches = {}
     session.tools = json.dumps([{"name": "search_knowledge_base"}])
     session._input_item_id = "input-1"
     session.events = []

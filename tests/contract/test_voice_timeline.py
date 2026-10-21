@@ -31,3 +31,16 @@ def test_missing_sequence_is_not_reported_as_zero_model_calls():
     assert header['session_match'] == 'unverified'
     assert header['model_function_count'] is None
     assert rows == []
+
+
+def test_call_or_response_id_correlates_sequence_without_asr_diagnostic():
+    header, rows = summarize([
+        '2026-10-21T00:00:00Z voice_tool_call_received conversation_id=chosen input_item_id=i1 call_id=c1 tool=search_knowledge_base',
+        '2026-10-21T00:00:01Z voice_ws_diagnostic ' + json.dumps({
+            'event': 'function.batch_result', 'sequence_id': 123, 'call_id': 'c1', 'calls': 2}),
+        '2026-10-21T00:00:02Z [seq 123] Fast response-token injection started',
+    ], 'chosen')
+    assert header['session_match'] == 'passed'
+    assert header['sequence_ids'] == ['123']
+    assert header['voicechat_diagnostic_events'] == 1
+    assert rows[-1]['event'] == 'backend.inject_started'

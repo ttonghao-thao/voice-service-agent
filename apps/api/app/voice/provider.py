@@ -110,10 +110,17 @@ def normalize(event):
     if kind == "response.function_call_arguments.done":
         if not isinstance(event.get("call_id"), str) or not 0 < len(event["call_id"]) <= 128:
             raise DomainError("VOICE_PROTOCOL_ERROR", "Voice tool request lacks a valid call identifier", 502)
+        batch = {}
+        if any(key in event for key in ("native_batch_id", "native_batch_size")):
+            bid, size, index = event.get("native_batch_id"), event.get("native_batch_size"), event.get("output_index")
+            if (not isinstance(bid, str) or not 0 < len(bid) <= 128 or type(size) is not int
+                or not 1 <= size <= 16 or type(index) is not int or not 0 <= index < size):
+                raise DomainError("VOICE_PROTOCOL_ERROR", "Invalid native tool batch", 502)
+            batch = {"native_batch_id": bid, "native_batch_size": size, "output_index": index}
         return VoiceEvent(
             "tool",
             {
-                **ids,
+                **ids, **batch,
                 "call_id": event["call_id"],
                 "name": event.get("name"),
                 "arguments": event.get("arguments"),
@@ -244,7 +251,7 @@ class NvidiaVoiceChatAdapter:
             json.dumps({"type": "input_audio_buffer.append", "event_id": uid(), "audio": audio})
         )
 
-    async def submit_tool_result(self, call_id, text):
+    async def submit_tool_result(self, call_id, text, *, batch_id=None, call_ids=None):
         try:
             result = json.loads(text)
         except ValueError as exc:
@@ -256,7 +263,8 @@ class NvidiaVoiceChatAdapter:
                 {
                     "type": "conversation.item.create",
                     "event_id": uid(),
-                    "item": {"type": "function_call_output", "call_id": call_id, "output": text},
+                    "item": {"type": "function_call_output", "call_id": call_id, "output": text,
+                             **({"native_batch_id": batch_id, "native_call_ids": call_ids} if batch_id else {})},
                 },
                 ensure_ascii=True,
             )

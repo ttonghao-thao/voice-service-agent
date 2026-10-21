@@ -71,6 +71,10 @@ def assess(case, history, seen_inputs, output_samples):
                      and r["payload"].get("input_item_id") in seen_inputs]
     limits = [r for r in records if r["kind"] == "native_search_limit"
               and r["payload"].get("input_item_id") in seen_inputs]
+    settled = [r for r in records if r["kind"] == "native_batch_call_settled"
+               and r["payload"].get("input_item_id") in seen_inputs]
+    batches = [r for r in records if r["kind"] == "native_tool_batch"
+               and r["payload"].get("input_item_id") in seen_inputs]
     search_state = search_states[-1] if search_states else {}
     actual = [t["selected_tool"] for t in turns]
     if not actual:
@@ -124,6 +128,8 @@ def assess(case, history, seen_inputs, output_samples):
             "duplicate_queries": search_state.get("duplicate_queries", 0),
             "terminal_results_submitted": sum(bool(s.get("terminal_result_submitted")) for s in search_states),
             "post_terminal_calls": len(limits),
+            "queued_calls_settled": len(settled),
+            "tool_batches_submitted": len(batches),
             "cumulative_sources": search_state.get("cumulative_sources", 0),
             "latest_retrieval_status": searches[-1].get("status") if searches else None,
             "voice_evidence_filter": ({key: evidence_audit.get(key) for key in (

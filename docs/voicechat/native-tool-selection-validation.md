@@ -132,3 +132,26 @@ if not found:
 本轮不修改 VoiceChat 代码、Prompt 或快照，无需重建 VoiceChat。使用已有 `voice_ws_diagnostic` 的 input_item_id/sequence_id 及后端 Prompt/function/injection 日志，与新增 API 阶段日志关联。由宿主机 `docker logs --timestamps` 读取，交给 API 镜像中的 `summarize_voice_timeline.py`；全部操作及预期字段见 [对照操作 §2–4](../web-wav-comparison.md)。
 
 预期：`session_match=passed`，backend_prompts 中 `tool_names=search_knowledge_base`。Black Pig 的模型解码、VoiceChat function.call、API received 应能逐个关联；结果回填后可观察 function.result 和注入起止。没有模型调用时计数应为 0，不把“不调用”报告为传输通过；无法关联 sequence 时应显示 unverified。Golden Yolk 同一 sequence 可以有多个 input_item_id，第二段需独立确认实际调用。注入完成不证明完整回答，仍需 API 的对应非 ACK 回答完成及门户提交。
+
+## 11. 原生批次聚合结果验证
+
+本节替代 §10 的“不修改 VoiceChat”部署结论。此次仅修改完整 `s2s/audio_server.py` 和 CPU 回归文件；model.py、load_utils.py、Prompt、训练格式转换均不变。完整来源/hash 由 snapshot-manifest.json 维护，实际挂载及重建命令见 [docker-run.md](docker-run.md)。API 与 audio_server 必须一起升级。
+
+宿主机执行以下只读检查，无需导入 Torch/Triton 或复制验证输入：
+
+```sh
+VOICE_CONTAINER=nemotron-labs-voicechat
+docker exec "$VOICE_CONTAINER" sha256sum /s2s/audio_server.py
+docker exec -e PYTHONPYCACHEPREFIX=/tmp/voice-validation/pycache "$VOICE_CONTAINER" \
+  python -m py_compile /s2s/audio_server.py
+```
+
+hash 必须等于 [启动手册](docker-run.md#启动前核对) 的 audio_server 值；编译退出 0。然后只运行 [批次验收](../native-tool-batch-validation.md) 的 Golden Yolk 自动/Web 各一次，使用该次窗口取得 `--summarize-voicechat-log` 和时间线，无需另外运行官方客户端或全量日志。
+
+预期：同一解码输出的 function.call 共享 native_batch_id，size/index 一致；一个完整结果对应一次 function.batch_result、一次 function.result 和一次 backend 注入。若该输出含两个调用，function_parsed/new_calls 增加 2，function_result 只增加 1，是正常行为。缺失或错误成员列表会报 invalid_tool_result_batch 并结束连接，不静默等待；已结清批次的重复回填拒绝。
+
+时间线现在可用 call_id 或 response_id 关联 sequence，不依赖 ASR 日志恰好包含 input_item_id。未关联仍标记 unverified；voicechat_diagnostic_events/backend_log_candidates 仅表示窗口中存在候选日志，不证明属于当前会话。工具传输 passed 也不证明答案完成或准确，必须核对第二段对应的答案文本、音频结束和引用。
+
+本地 CPU 只验证传输顺序及拒绝规则。真实模型是否在聚合结果后完成有据回答、较长等待是否发生在 ACK/注入/后续生成，仍需现场本轮证据。未取得证据前不修改模型续答逻辑。
+
+不要回传完整 `docker logs`；只保留同一窗口的诊断摘要。

@@ -339,7 +339,12 @@ export class VoiceClient {
         ) {
           const p = event.payload;
           this.diagnostic(event.type, {
-            input_item_id: p.input_item_id || p.item_id,
+            input_item_id:
+              event.type === "portal.transcript.done"
+                ? p.item_id
+                : p.input_item_id,
+            output_item_id:
+              event.type === "portal.audio.done" ? p.item_id : undefined,
             response_id: p.response_id,
             phase: p.phase,
             code: p.code,

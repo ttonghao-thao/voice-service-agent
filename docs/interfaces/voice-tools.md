@@ -56,3 +56,13 @@ Adapter 接受 session.updated.tools 的 JSON 数组回显或官方文档中的 
 针对性回归：`tests/integration/test_native_tool_catalog.py` 验证三工具注册/执行、原始 call_id、全局可见与执行权限、持久化/跨目录实例、CAS、启停/reload、活动连接刷新、无效候选保留旧配置及注册回显失败；迁移回归见 `test_qa_migration.py`。浏览器刷新/文件不重播见 `voice-audio.spec.ts`/`voice-file.spec.ts`。
 
 没有 function_call_arguments.done：检查实际注册、最终模板和模型 function channel；已有调用但失败：检查参数/权限/执行；结果已回填但没有回答：检查原始 call_id、结果内容、续答边界/超时。描述不全主要影响选择和参数，不能直接据此断定 CueKB 响应或 function head 有故障。真实 GPU、ASR/工具质量和听音仍归 D07。
+
+## 4. 原生函数批次传输
+
+2026-10-21：VoiceChat 一个解码后的 function 输出可包含多个调用。audio_server 为每份输出分配 `native_batch_id`，每个 `response.function_call_arguments.done` 附带 `native_batch_size`（1–16）和从零开始的 `output_index`，各成员仍有独立 call_id。同 ID 相同事件幂等；字段冲突、乱序、混入其他输入或 5 秒未收齐明确失败。最多 16 个未收齐批次，连接原有 128 调用资源上限保留。不用到达时间接近猜测批次。
+
+API 在接收首成员时记录该 input 是否已经提交终态；不是等工具 worker 出队后才判断。完整批次按成员顺序处理，同一 input 累计最多两次实际 CueKB 查询。超额且提前收到的成员仅结清为 not_executed，不新建查询；精确重复可复用并结束检索。终态提交后到达的新批次仍报 VOICE_TOOL_LOOP。累计来源和授权/版本校验不因聚合而省略。
+
+回填仍是 `conversation.item.create` 的 `function_call_output`：`call_id` 为首成员，另附同一 `native_batch_id` 与完整、有序的 `native_call_ids`。`output` 是一份累计证据 JSON，多成员时增加 `call_results`，仅包含字符串 index/status（executed/reused/not_executed）及必要的 reason。调用 ID 留在传输元数据，不作为知识正文交给模型。VoiceChat 校验完整成员后只向原函数通道注入一次，继续使用既有训练格式转换，不重复包裹 TOOL_RESPONSE。
+
+兼容边界：未声明批次的旧事件仅按单调用处理，不能靠缓存重放兼容旧版的排队超额调用；此情况明确报 VOICE_TOOL_BATCH_REQUIRED。新版 VoiceChat 可接收旧客户端的单成员结果，但多成员只接受完整聚合结果。部署必须协同更新 API 和 audio_server。`results_submitted` 按 call_id 结清计数；`result_injections`/VoiceChat `function_result` 按批次计数，两者不必相等。步骤和判据见 [批次验收](../native-tool-batch-validation.md)。

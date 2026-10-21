@@ -25,6 +25,7 @@ class NativeInputSearch:
     terminal_reason: str | None = None
     duplicate_queries: int = 0
     executions: int = 0
+    result_overhead: int = 0
 
     def reserve(self, name, arguments):
         if self.terminal_reason:
@@ -58,6 +59,7 @@ class NativeInputSearch:
         ctx.effective_executor = "native_cuekb"
 
     def combine(self, bundle, ctx, max_bytes):
+        max_bytes -= self.result_overhead
         previous = self.ready
         reused_after_empty = False
         self.executions += ctx.retrieval_calls

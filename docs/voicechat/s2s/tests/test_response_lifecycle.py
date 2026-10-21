@@ -285,3 +285,28 @@ async def test_tool_never_reuses_an_initial_greeting_response(boundary_text):
     greeting_done = next(i for i, e in enumerate(events) if e["type"] == "response.done" and e["response"]["id"] == greeting)
     tool_index = events.index(call)
     assert greeting_done < tool_index
+
+
+@pytest.mark.asyncio
+async def test_native_batch_has_explicit_boundary_and_one_aggregate_injection():
+    session = server.AudioSession("test", Socket())
+    await session._process_function_text(json.dumps([
+        {"name": "search_knowledge_base", "arguments": {"query": "Product price"}},
+        {"name": "search_knowledge_base", "arguments": {"query": "Product storage"}},
+    ]))
+    calls = [e for e in pending(session) if e["type"] == "response.function_call_arguments.done"]
+    assert len({e["native_batch_id"] for e in calls}) == 1
+    assert [e["output_index"] for e in calls] == [0, 1]
+    assert all(e["native_batch_size"] == 2 for e in calls)
+    with pytest.raises(ValueError, match="complete aggregate"):
+        await session.handle_function_call_output({"call_id": calls[0]["call_id"], "output": "{}"})
+    assert not session.function_call_output
+    result = {"call_id": calls[0]["call_id"], "native_batch_id": calls[0]["native_batch_id"],
+              "native_call_ids": [e["call_id"] for e in calls], "output": '{"status":"ok","sources":[]}'}
+    await session.handle_function_call_output(result)
+    assert len(session.function_call_output) == 1
+    assert session.function_call_output[0]["output"] == result["output"]
+    assert not session.function_call_batches and not session.function_batches
+    with pytest.raises(ValueError, match="already settled"):
+        await session.handle_function_call_output(result)
+    assert len(session.function_call_output) == 1

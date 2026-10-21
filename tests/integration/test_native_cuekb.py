@@ -620,7 +620,7 @@ async def test_continuous_native_conversation_survives_delayed_answers_and_repea
     assert all(row.get("reason_code") is None for row in report["cases"])
 
 
-@pytest.mark.parametrize("scenario", ["supplement", "empty", "duplicate", "post_terminal", "revoked", "one_search"])
+@pytest.mark.parametrize("scenario", ["supplement", "empty", "duplicate", "post_terminal", "revoked", "one_search", "batch", "batch_revoked"])
 async def test_native_input_search_budget_and_cumulative_answer(tmp_path, scenario):
     """Real API/HTTP/WS, deterministic provider; verifies control, not GPU speech."""
     from scripts.simulate_full_flow import http_server
@@ -638,6 +638,8 @@ async def test_native_input_search_budget_and_cumulative_answer(tmp_path, scenar
         elif len(queries) == 2 and scenario in ("supplement", "post_terminal"):
             value["hits"][0].update(chunk_id="00000000-0000-4000-8000-000000000202",
                                     source_text="Product AX has 18 layers.")
+        if len(queries) == 2 and scenario == "batch_revoked":
+            app.state.registry.specs["search_knowledge"].enabled = False
         return value
 
     async def voicechat(ws):
@@ -678,8 +680,21 @@ async def test_native_input_search_budget_and_cumulative_answer(tmp_path, scenar
                 if cid == "initial-1" and scenario != "one_search":
                     if scenario == "revoked":
                         app.state.registry.specs["search_knowledge"].enabled = False
-                    await call("second-1", "Product AX connection limit" if scenario in ("duplicate", "revoked")
-                               else "Product AX layer count")
+                    if scenario in ("batch", "batch_revoked"):
+                        # A single native output contains two requests. Both
+                        # arrive before the second query result is available.
+                        for index, (call_id, query) in enumerate([
+                            ("second-1", "Product AX layer count"), ("third-1", "Product AX price")]):
+                            call_event = {"type": "response.function_call_arguments.done", "response_id": "batch-ack",
+                                          "call_id": call_id, "name": "search_knowledge_base",
+                                          "arguments": json.dumps({"query": query}),
+                                          "native_batch_id": "batch-1", "native_batch_size": 2, "output_index": index}
+                            await ws.send(json.dumps(call_event))
+                            await ws.send(json.dumps(call_event))
+                        await speak("batch-ack", "Let me check the documentation.")
+                    else:
+                        await call("second-1", "Product AX connection limit" if scenario in ("duplicate", "revoked")
+                                   else "Product AX layer count")
                 elif cid == "second-1" and scenario == "post_terminal":
                     await call("third-1", "Product AX price")
                 else:
@@ -720,6 +735,10 @@ async def test_native_input_search_budget_and_cumulative_answer(tmp_path, scenar
         assert report["cases"][0]["post_terminal_calls"] == 1
         assert len(results) == len(queries) == 2
         return
+    if scenario == "batch_revoked":
+        assert not passed(report)
+        assert len(queries) == 2 and len(results) == 1
+        return
     if scenario == "revoked":
         assert not passed(report)
         assert len(results) == len(queries) == 1
@@ -729,6 +748,16 @@ async def test_native_input_search_budget_and_cumulative_answer(tmp_path, scenar
     assert first["reason_code"] is None
     assert first["terminal_results_submitted"] == 1
     assert first["post_terminal_calls"] == 0
+    if scenario == "batch":
+        assert first["queued_calls_settled"] == 1
+        assert first["tool_batches_submitted"] == 2
+        assert len(results) == 3  # two batches for input 1; one for the next input
+        assert len(queries) == 3  # two actual queries + next input; never the price query
+        batch_result = results[1]
+        assert batch_result["native_batch_id"] == "batch-1"
+        assert batch_result["native_call_ids"] == ["second-1", "third-1"]
+        outcomes = json.loads(batch_result["output"])["call_results"]
+        assert [row["status"] for row in outcomes] == ["executed", "not_executed"]
     assert first["retrieval_executions"] == (1 if scenario in ("duplicate", "one_search") else 2)
     assert first["duplicate_queries"] == int(scenario == "duplicate")
     assert report["cases"][1]["retrieval_executions"] == 1  # new input, same query, fresh budget

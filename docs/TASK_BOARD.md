@@ -1,12 +1,12 @@
 # 当前任务板
 
-更新：2026-10-20；本次原生单工具实现基于 `codex/q1003`。本页唯一维护状态；具体实施及依赖见 [方案 §4](q1003-target-architecture.md#4-实施计划与决策门槛)，实际证据见 [验收](acceptance-report.md)。部署准备与真实验证分开记录。
+更新：2026-10-21；本次原生单工具实现基于 `codex/q1003`。本页唯一维护状态；具体实施及依赖见 [方案 §4](q1003-target-architecture.md#4-实施计划与决策门槛)，实际证据见 [验收](acceptance-report.md)。部署准备与真实验证分开记录。
 
 ## 1. 当前结论与审计基线
 
-当前只推进 Black Pig 单轮英文知识问答闭环。2026-10-20 04:48 UTC 现场已观察到两次检索、一次终态回填、终态后零调用和 answer_complete=passed；但 VOICE_MISSING_CONDITION 导致答案校验失败。Golden Yolk 被会话轮换阻断，不能算多轮通过。本次编码修正“模型未收到的截断 context 仍参与答案校验”的不一致，保留原始引用与已交付条件校验；新增精确条件诊断、已有答案只读检查、原 WAV 单用例入口及门户答案/来源提交判据。该不一致是否解释现场错误仍需只读对比，不能提前宣告通过。只需重建 API，VoiceChat/Web 不改动。
+当前推进原 WAV 知识问答闭环。Black Pig 单 case 自动测试已现场通过（answered、10 条引用）；最新 Web 对照也观察到工具查询，不能继续认定其始终不调用。内容准确性和重复回答仍未完成验收。Golden Yolk 第二段的第 3 调用在第 2 结果提交前已入队，旧 worker 误判为终态后调用；本次用明确原生批次边界修正，并让 audio_server 每批只接收/注入一份累计结果。API、Web 诊断和完整 VoiceChat audio_server 快照已同步；真实部署验收待完成，具体范围与最小操作见 [批次验收](native-tool-batch-validation.md)。
 
-已部署基础机制：同输入默认两次查询、精确重复提前收口、终态后调用报 VOICE_TOOL_LOOP；累计证据不被空补充查询覆盖；原生 CueKB HTTP 无自动重试。持续音频 relay 按原 call_id 回填，未恢复 VoiceChat 合并/重放/ACK 隐藏。此前 191 项相关本地回归不替代现场内容验收。Golden Yolk、停顿打断、跨轮上下文、hello 缺词和时延优化均后置，不能在单轮阻塞未明确时同时展开。
+同输入默认两次实际查询、精确重复提前收口、累计证据和权限校验保持；超额排队成员不再查询，真正终态后新批次仍报 VOICE_TOOL_LOOP。没有恢复查询缓存无限重放、ACK 隐藏或回答授权状态机，不改 model.py/Prompt。hello 缺词、通用打断/上下文、重复回答及性能优化后置；本次只补齐定位等待阶段所需的关联，不声称已解决时延。
 
 当前需求已确认：VoiceChat 自主决定直接回答或调用工具，后端只使用 VoiceChat，不引入独立 ASR/TTS，不根据最终转写自动启动业务。本次实现以 dual_tools/general_qa 为部署目标；旧 knowledge_required 现场证据属于严格模式，不能作为当前目标配置。先打通功能再优化时延，详见 [实施顺序](q1003-target-architecture.md#4-实施计划与决策门槛)。
 
@@ -29,7 +29,7 @@
 
 | 任务 | 当前状态 | 下一步完成条件 |
 | --- | --- | --- |
-| VoiceChat 一期原生单工具 | 2026-10-20 单独 Black Pig 自动验证已通过（answered、10 条引用）；Web 同题有正确 Prompt 但零模型调用。已统一 Web 原始 PCM 发送并修正多段 WAV 验证结束条件，新增按输入关联的时间线 | 按 [Web/脚本对照](web-wav-comparison.md) 各执行一次四文件测试，确认 Black Pig 调用发生层及 Golden Yolk 第二段调用/等待阶段；真实部署结果待用户复测 |
+| VoiceChat 一期原生单工具 | Black Pig 自动闭环通过，最新 Web 已有查询；Golden Yolk 排队调用误判已编码修复，批次聚合 CPU 回归通过 | 按 [批次验收](native-tool-batch-validation.md) 协同部署，Golden Yolk 自动/Web 各一次；核对第二段有据回答、两次检索上限、批次注入与必要阶段耗时 |
 | P0-A/B：现场部署与两类验证 | 严格配置已确认；两类现场日志已分析 | 补运行 hash；严格知识闭环与 PAD A/B 分开报告 |
 | P1-A：严格提示与授权一致 | 编码及本地回归完成；现场拒绝保护生效 | 保留显式严格模式；当前自主回答部署改用 general_qa，不要求每次先调用工具 |
 | P1-B：ASR/function 首差异修复 | 原生路径追加排查暂停；算子未确定 | 仅在重新投入原生路径时恢复，不阻塞提示与应用契约修正 |

@@ -469,6 +469,8 @@ class AudioSession:
 
         # Function calling state variables
         self.function_call_output = deque()
+        self.function_batches = {}
+        self.function_call_batches = {}
         self.tools = "[]"
 
     def _create_codec(self, format: str, sample_rate: int) -> AudioCodec:
@@ -1439,7 +1441,9 @@ class AudioSession:
                 output_str = output if isinstance(output, str) else json.dumps(output)
                 logger.info(f"Client {self.client_id}: Sending function call output to Triton: chars={len(output_str)}")
                 self._voice_diagnostic("function.result", chars=len(output_str),
-                                       call_id=str(function_call_item.get("call_id", ""))[:128])
+                                       call_id=str(function_call_item.get("call_id", ""))[:128],
+                                       native_batch_id=function_call_item.get("native_batch_id"),
+                                       calls=len(function_call_item.get("native_call_ids", [None])))
                 inputs[2].set_data_from_numpy(np.array([[output_str.encode("utf-8")]], dtype=object))
             else:
                 inputs[2].set_data_from_numpy(np.array([[b""]], dtype=object))
@@ -1621,12 +1625,18 @@ class AudioSession:
 
         if not calls:
             return
+        if len(calls) > 16 or len(self.function_call_batches) + len(calls) > 128:
+            raise ValueError("Too many pending native tool calls")
         if not all(isinstance(call, dict) for call in calls):
             raise ValueError("Tool calls must be JSON objects")
         self._voice_diagnostic("function.parsed", chars=len(function_text), calls=len(calls))
         if not self._response_active:
             await self._emit_response_created()
         response_id = self._response_id
+        batch_id = str(uuid.uuid4())
+        call_ids = [str(uuid.uuid4()) for _ in calls]
+        self.function_batches[batch_id] = call_ids
+        self.function_call_batches.update({call_id: batch_id for call_id in call_ids})
         for output_index, call in enumerate(calls):
             arguments = call.get("arguments", call.get("parameters", {}))
             if isinstance(arguments, str):
@@ -1639,11 +1649,15 @@ class AudioSession:
                 "response_id": response_id,
                 "item_id": str(uuid.uuid4()),
                 "output_index": output_index,
-                "call_id": str(uuid.uuid4()),
+                "call_id": call_ids[output_index],
+                "native_batch_id": batch_id,
+                "native_batch_size": len(calls),
                 "name": call.get("name", ""),
                 "arguments": json.dumps(arguments),
             }
             self._voice_diagnostic("function.call", action="queued", tool=call.get("name", ""),
+                                   call_id=call_ids[output_index], native_batch_id=batch_id,
+                                   native_batch_size=len(calls), output_index=output_index,
                                    input_item_id=str(self._input_item_id or "")[:128])
             self._queue_output_event(fn_done)
 
@@ -1781,7 +1795,22 @@ class AudioSession:
     async def handle_function_call_output(self, item: dict):
         """Handle a function_call_output conversation item"""
         if item:
+            call_id = item.get("call_id")
+            batch_id = self.function_call_batches.get(call_id)
+            expected = self.function_batches.get(batch_id)
+            if not expected:
+                raise ValueError("Unknown or already settled tool result")
+            if len(expected) > 1 or "native_batch_id" in item:
+                if (item.get("native_batch_id") != batch_id or item.get("native_call_ids") != expected):
+                    raise ValueError("Native batch requires exactly one complete aggregate result")
             output = item.get("output", "")
+            # One function-channel injection per decoded model batch. The API
+            # has already applied budgets and assembled cumulative evidence.
+            for member in expected:
+                del self.function_call_batches[member]
+            del self.function_batches[batch_id]
+            self._voice_diagnostic("function.batch_result", native_batch_id=batch_id,
+                                   calls=len(expected), call_id=call_id)
             logger.info(f"Client {self.client_id}: Function call output received: "
                         f"call_id={str(item.get('call_id', ''))[:128]} "
                         f"chars={len(output if isinstance(output, str) else json.dumps(output))}")
@@ -2013,6 +2042,12 @@ async def handle_websocket(websocket: WebSocket):
                     logger.error(f"Client {client_id}: Invalid JSON: {e}")
                 except Exception as e:
                     logger.error(f"Client {client_id}: Error processing message: {e}", exc_info=True)
+                    if message_type == "conversation.item.create":
+                        # Never leave a rejected/partial batch waiting silently.
+                        await session._emit_error(error_message="Invalid tool result batch",
+                                                  error_type="invalid_request_error",
+                                                  error_code="invalid_tool_result_batch")
+                        break
 
             except asyncio.TimeoutError:
                 continue  # Re-check audio duration at top of loop
