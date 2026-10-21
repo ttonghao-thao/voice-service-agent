@@ -6,44 +6,11 @@
 
 后续开发统一在 `main` 演进，基线来自 `codex/q1003`。
 
-Codex 从 [AGENTS](AGENTS.md) 开始，按任务查 [文档索引](docs/README.md)；跨模块关系见 [架构](docs/architecture.md)。当前任务归 [任务板](docs/TASK_BOARD.md)，已执行测试及真实服务边界归 [验收](docs/acceptance-report.md)。
+Codex 从 [AGENTS](AGENTS.md) 开始，按任务查 [文档索引](docs/README.md)；跨模块关系见 [架构](docs/architecture.md)。当前任务归 [任务板](docs/TASK_BOARD.md)，已执行测试及真实服务边界归 [验收](docs/validation.md)。
 
-## 本机验证
+## 验证
 
-Python 3.12；下面集中列出安装和完整回归命令，日常按改动选择相关测试。夹具由测试显式注入，正常部署使用独立服务。
-
-```sh
-python3.12 -m venv .venv
-.venv/bin/python -m pip install --disable-pip-version-check -r requirements-dev.txt
-npm ci --prefix apps/web
-.venv/bin/python -m pytest -q
-.venv/bin/ruff check apps/api tests scripts
-npm test --prefix apps/web
-npm run build --prefix apps/web
-PYTHONPATH=apps/api .venv/bin/python scripts/export_contracts.py
-```
-
-预录语音入口的定向验证使用实际 Chromium Web Audio 和受控 HTTP/WS 夹具。先在一个终端启动门户：
-
-```sh
-npm run dev --prefix apps/web -- --port 5173
-```
-
-再在另一个终端执行：
-
-```sh
-cd apps/web
-PLAYWRIGHT_CHROMIUM_EXECUTABLE=/usr/bin/chromium \
-  npm run test:e2e -- voice-file.spec.ts
-```
-
-若 Playwright 已安装自己的 Chromium，可省略 `PLAYWRIGHT_CHROMIUM_EXECUTABLE`。
-
-手工验证：打开门户后选择 `Audio file` → `Choose WAV`，使用不超过 30 秒/2 MiB 的 24 kHz 单声道 PCM16 WAV → `Start file call`。应先显示等待连接，再按实时速率推进至 `Recording sent. Waiting for reply`；文件模式不应请求麦克风。`Stop playback` 不停止文件上行，`End call` 结束本次输入。该入口在浏览器内解析并复用实时 WS，不把文件上传到本项目服务器。
-
-夹具监听独立 CueKB HTTP、VoiceChat WS、兼容模型 HTTP，本项目使用实际网络适配器和 Alembic。ASR、工具决策、口述与 PCM 由脚本生成，不是模型正确率或实际听音。浏览器启动/命令见 [模拟 §3](docs/simulated-full-flow.md#3-复现步骤)；真实探针及授权录音步骤见 [接入 §3.4](docs/integration.md#34-语言版本和能力验证)。产物只留忽略目录。
-
-一期验证使用 `VoiceChat → search_knowledge_base(query) → CueKB → VoiceChat`，公开工具名采用完整英文单词，内部可信实现仍为 CueKB。直接回答与工具选择均由 VoiceChat 完成，AGENT_PROVIDER=disabled，不需要独立文本答案模型。真实录音的运行命令和结果分类见 [原生单工具验证](docs/native-cuekb-validation.md)。旧四端点模拟脚本保留双工具工作流兼容测试，不能作为一期模型验收。
+所有自动验证、Web 文件操作、VoiceChat 核对、开发回归和回传格式统一在 [验证操作手册](docs/validation.md)。操作者按顺序执行即可；脚本自动关联会话并输出精简证据，不需要选取全量日志或判断故障。
 
 ## 云端部署
 

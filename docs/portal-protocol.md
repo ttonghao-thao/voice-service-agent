@@ -106,4 +106,4 @@ finished=true 只在该 response 收到 audio.done 且 Worklet 对应队列排�
 - 语音错误在上游关闭/存储清理前发送，携带递增 server_seq；发送任务被取消时，仅有界补送仍有效的客户 final ASR。门户保留转写、显示 code/message 并清除等待状态；未收到错误的意外 WS close 也显示重试提示。用户主动结束保持正常关闭，重试必须显式操作，不自动重播录音或提交转写。
 - Answer/Turn/来源面板使用一致业务终态；错误响应只公开稳定 code/message/retryable/trace_id，不转发上游原文、密钥或堆栈。完整枚举和验证约束以代码/生成 schema 为准。
 
-修改后按场景查 `tests/contract/test_protocol.py`、`tests/integration/test_voice.py`/`test_live_agent_interactions.py`、`tests/e2e/portal.spec.ts`/`voice-audio.spec.ts`/`voice-file.spec.ts` 与 `apps/web/tests/recorded-audio.test.mjs`/`worklet.test.mjs`。真实音频标准归 [验收清单](development/validation.md)，不在接口页复制测试数量。
+修改后按场景查 `tests/contract/test_protocol.py`、`tests/integration/test_voice.py`/`test_live_agent_interactions.py`、`tests/e2e/portal.spec.ts`/`voice-audio.spec.ts`/`voice-file.spec.ts` 与 `apps/web/tests/recorded-audio.test.mjs`/`worklet.test.mjs`。真实音频标准归 [统一验证手册](validation.md)，不在接口页复制测试数量。

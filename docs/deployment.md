@@ -1,6 +1,6 @@
 # 部署与运行
 
-> 本页维护一期原生 Function Calling 的配置、构建、迁移及运行操作。VoiceChat 决定直接回答或调用唯一工具 search_knowledge_base，不配置额外答案模型；服务端仍通过 CueKB 执行检索。真实语音验收见 [单工具验证](native-cuekb-validation.md)。
+> 本页维护一期原生 Function Calling 的配置、构建、迁移及运行操作。VoiceChat 决定直接回答或调用唯一工具 search_knowledge_base，不配置额外答案模型；服务端仍通过 CueKB 执行检索。真实语音验收见 [单工具验证](validation.md)。
 
 ## 部署方式边界
 
@@ -50,21 +50,13 @@ python /app/scripts/configure_native_cuekb.py --apply
 
 手工 docker 部署在迁移完成后，先用新 API 镜像的相同数据库环境运行这条命令，再启动 API。已有旧目录且 AGENT_PROVIDER=disabled 时，API 会明确提示先应用目录，而不是静默注册双工具。
 
-### 启动及新会话检查
-
-API、Web 和 VoiceChat audio_server 必须使用配套版本；完整文件同步、hash 和容器重建见 [VoiceChat 启动](voicechat/docker-run.md)。已有 Prompt 保留，不能只更新 API 忽略批次传输层。
-
-部署脚本检查 readiness/capabilities。当前只按 [批次验收](native-tool-batch-validation.md) 运行 Golden Yolk 自动/Web 各一次，所有 Python 经宿主机 docker exec 在 API 容器执行；不先顺序跑四 case 消耗连接时长。完整四文件对照是后续 [扩展操作](web-wav-comparison.md)，不能用 preflight 通过代替回答完成。
-
-**结束旧通话并新建 Conversation。** 模式/策略在创建时快照，旧 knowledge_required 会话不会因重连或刷新页面变成 general_qa。
-
-现场录音、连续追问、失败归类和输出听音步骤见 [原生单工具验证](native-cuekb-validation.md)。固定脚本、case 配置和授权 WAV 已打入 API 镜像的只读 `/app`，宿主机只用 `docker exec` 启动验证；无需创建输入目录、复制测试文件或依赖宿主机 Python。JSON 报告和回答 WAV 才写入 `/tmp`，且默认控制台只输出总状态和每个 case 的核心字段。knowledge_required、双工具及外置 SDK 的兼容实现保留，但不属于本期部署或自动 fallback。
+验证步骤和版本核对统一在 [验证操作手册](validation.md)。
 
 ## 镜像构建与部署
 
 本项目发布 API/Web，VoiceChat 独立镜像。先同步 [完整 VoiceChat 文件](../deploy/voicechat/README.md)，构建/重建独立服务，再发布配套 API/Web；清理浏览器旧页面缓存，新建通话验证。模型权重和 GPU 参数沿用现场配置，本次不重新转换模型。
 
-当前实际门户若通过另一 HTTPS 入口暴露，应核对 PUBLIC_ORIGIN、证书和同源 API 路由，不据截图修改默认端口。记录 API/Web/VoiceChat 镜像及挂载 hash；按 [验收标准](development/validation.md) 分别确认当前单轮和后续多轮能力。
+当前实际门户若通过另一 HTTPS 入口暴露，应核对 PUBLIC_ORIGIN、证书和同源 API 路由，不据截图修改默认端口。记录 API/Web/VoiceChat 镜像及挂载 hash；按 [验收标准](validation.md) 分别确认当前单轮和后续多轮能力。
 
 API/Web 镜像在构建机独立构建，同一发布使用唯一标签；云端 Compose 只消费预构建镜像，迁移复用 API 镜像：
 
@@ -112,114 +104,9 @@ chmod 600 .env
 
 Web 的容器内健康探针用 wget -Y off 直接访问 127.0.0.1，避免继承代理导致误报不健康。探针对本机 IP 不核对证书；正式 HTTPS 客户端仍须验证证书链与域名，不能沿用该探针作为 TLS 验收证据。
 
-```sh
-docker compose --env-file .env -f deploy/compose.production.yaml ps
-docker compose --env-file .env -f deploy/compose.production.yaml logs --tail=200 api web
-```
-
 `AGENT_MODEL` 是 BusinessRuntime 后台文本 Agent 调用的模型标识，用于理解任务、选择 `search_knowledge` 并组织有依据的答案；它不是 VoiceChat 的实时语音模型。`AGENT_PROVIDER=openai` 时使用官方端点，无需 `AGENT_BASE_URL`；只有接 OpenAI-compatible 服务时才改为 `compatible` 并填写该 HTTP/HTTPS 基地址，两者不需要同时独立部署。`CUEKB_BASE_URL` 是独立 CueKB HTTP/HTTPS 基地址，应用附加 `/v1/search`；HTTP 仅用于已隔离、受控的内部网络。`VOICECHAT_WS_URL` 是 API 到独立语音服务的 WS/WSS endpoint，不由门户域名推断；WS 仅用于同主机或受控隔离内网，且对应端口不得公网暴露。浏览器公网入口仍强制 HTTPS/WSS。本期固定只开放 `search_knowledge`，无需天气配置。数据库/Redis 凭据使用 URL 安全字符，容器内连接串由 Compose 构造。
 
-本期部署直接开放已配置的英文全双工链路，不再用人工填写的“已验证”布尔值阻止启动。部署后按下节以固定 VoiceChat API 版本、镜像 digest 和实际会话快照运行探针，人工复核输出音频，再通过门户验证实际录音→CueKB→口述。探针报告负责记录证据，运行配置只负责连接服务；真实失败不回退 mock。Web Nginx 直接终止 HTTPS，并处理 SSE buffering、WS upgrade、请求大小和安全头；不得记录凭据或语音票据。
-
-## VoiceChat 诊断探针与部署产物核验
-
-源码依据及证据边界见 [VoiceChat 源码交付](voicechat/README.md)。先记录实际镜像 digest、挂载源码和模板 hash；以下脚本不会远程证明版本，不自动开启能力或部署服务。
-
-本期真实 CueKB 验收使用 [API 容器单入口流程](native-cuekb-validation.md#2-单-case-入口)。以下是额外的合成结果协议探针，同样从宿主机通过 `docker exec` 在 API 容器内运行，不要求宿主机 Python。脚本和固定 WAV 已包含在 API 镜像中；多工具 `session.update` 直接由容器内实际持久化目录生成，不再从宿主机复制脚本、管理员 JSON 或 WAV：
-
-```sh
-API_CONTAINER=$(docker compose --env-file .env \
-  -f deploy/compose.production.yaml ps -q api)
-test -n "$API_CONTAINER"
-
-docker exec -i \
-  -e PYTHONPATH=/app/apps/api:/app \
-  "$API_CONTAINER" python - <<'PYTHON'
-import asyncio
-import json
-from pathlib import Path
-
-import httpx
-from app.agent_runtime.runtime import BusinessRuntime
-from app.config import Settings
-from app.storage.store import Store
-from app.tools.registry import ToolRegistry
-from app.voice.provider import session_update
-
-async def main():
-    settings = Settings()
-    store = Store(settings.database_url)
-    try:
-        async with httpx.AsyncClient() as client:
-            runtime = BusinessRuntime(settings, ToolRegistry(settings, client, store))
-            snapshot = await runtime.catalog.snapshot()
-            update = session_update(
-                tools=snapshot.definitions,
-                answer_policy=settings.answer_policy,
-            )
-            target = Path("/tmp/voicechat-probe/session-update.json")
-            target.parent.mkdir(parents=True, exist_ok=True)
-            target.write_text(json.dumps(update, ensure_ascii=True))
-            print("snapshot=passed tools=" + ",".join(snapshot.tools))
-    finally:
-        await store.engine.dispose()
-
-asyncio.run(main())
-PYTHON
-
-docker exec \
-  -w /app \
-  -e PYTHONPATH=/app/apps/api:/app \
-  "$API_CONTAINER" \
-  python scripts/probe_voicechat.py \
-    --wav /app/validation/native-cuekb/black_pig_crisp_heart.wav \
-    --session-update /tmp/voicechat-probe/session-update.json \
-    --api-version ACTUAL_API_REVISION --image-digest ACTUAL_IMAGE_DIGEST \
-    --tool-delay-seconds 5 --tool-wait-timeout 20 --post-result-seconds 20 \
-    --output-wav /tmp/voicechat-probe/authorized-response.wav \
-    --output /tmp/voicechat-probe/voicechat-probe.json
-```
-
-API 容器读取自身已有的 `VOICECHAT_WS_URL`/凭据，不把 Key 放入命令或报告。首条命令应只输出 `snapshot=passed tools=search_knowledge_base`；探针随后只回传以下三行，不提供完整报告：
-
-```text
-probe_status=... phase=... reason=... connected=... tools=...
-checks={...}
-audio_output_samples=... pending_calls=... timeline_dropped=... output_wav_truncated=...
-```
-
-完整 JSON 保存在 `/tmp/voicechat-probe/voicechat-probe.json`。只有这三行不足以定位时才加 `--print-report`。legacy 可不传快照；dual_tools 缺快照直接失败，避免误测 bridge。需要插话协议观察时使用镜像内另一条明确授权 WAV；报告只说明输入时序，不能证明新问题影响了模型回答。
-
-探针在等待工具和回填时持续送静音，默认再观察 20 秒续答，时长参数有上限。合成工具结果不经过 CueKB/业务授权，不是端到端验收。报告 `partial` 表示只完成部分协议观察，不能改写为模型通过；检查 `reason`、`phase`、`pending_call_ids_at_close`、`timeline_dropped` 和 `output_wav_truncated`。输入样本 hash 包含最后一帧补零，静音单独计数；报告不保存转写或工具参数正文。原探针在这些等待阶段停止送音，其“无工具”结果需重测。
-
-静态检查脚本已随 VoiceChat 派生镜像写入只读 `/opt/voice-validation`。直接用 `docker exec` 检查该容器实际挂载的模型产物；替换为容器内实际转换后 vLLM LLM 路径，每个分片重复传 `--checkpoint`：
-
-```sh
-VOICE_CONTAINER=nemotron-labs-voicechat
-docker exec "$VOICE_CONTAINER" \
-  python /opt/voice-validation/inspect_voicechat_artifacts.py \
-  --config /actual/converted-llm/config.json \
-  --tokenizer /actual/converted-llm/tokenizer.json \
-  --checkpoint /actual/converted-llm/model.safetensors \
-  --voicechat-config /actual/voicechat-checkpoint/config.json \
-  --output /tmp/voicechat-artifacts.json
-```
-
-默认只回传以下三行，完整 JSON 保存在 `/tmp/voicechat-artifacts.json`：
-
-```text
-artifact_checks={...}
-fusion_status=... paper_weight_alignment=...
-checkpoint_count=... missing_required_outputs=[]
-```
-
-正常结果中 `artifact_checks` 的必需项应为 `passed`，且 `missing_required_outputs=[]`；只有三行互相矛盾时才加 `--print-report`。该脚本无需 GPU/NeMo，只读配置和 safetensors header。可选 `--voicechat-config` 必须是含 `model.stt.model` 的原始 VoiceChat 配置，不是转换后的 vLLM config；它将声明值/公开 wrapper 缺省值与论文 1/1/2 融合权重比较，返回 `matches/differs/unverified`，不会自动改配置。固定公开配置的检查结果不能代替现场运行配置。`missing/mismatch/unverified` 定位提供文件的契约差异；`passed` 也不证明权重正确加载、实际 tokenizer 编码、RNNT 或 function 推理正确。它不修改模型，头部 hash 不代表权重内容 hash。真实定位仍需同 sequence 的输入帧、RNNT raw token 和 runtime function key/token 证据。
-
-`function_outputs_contract` 仅检查当前 backend 必需的 `text_logits`、`function_tokens`；`function_output_declarations` 保存实际声明及缺失的必需字段。可选的 `function_logits` 单独报告为 `function_scores_declared`，缺失只代表没有声明诊断分数，不能据此判定原生工具不可用。不能为可选诊断输出缺失直接修改模型配置。即使声明了分数，仍需验证运行时实际返回。
-
-## 约 3 秒查询的分段复测
-
-分段日志与复测步骤统一见 [故障排查 §2–3](operations/troubleshooting.md#2-延迟分解与可观测边界)；超时配置不是已测时延。
+本期部署直接开放已配置的英文全双工链路，不再用人工填写的“已验证”布尔值阻止启动。部署后只按 [统一验证手册](validation.md) 执行和采集；运行配置只负责连接服务，真实失败不回退 mock。Web Nginx 直接终止 HTTPS，并处理 SSE buffering、WS upgrade、请求大小和安全头；不得记录凭据或语音票据。
 
 ## 副本、容量与故障恢复
 
@@ -239,10 +126,6 @@ Redis 持有每个 conversation 的独占租约，15 秒 TTL、4 秒续约。未
 4. 单独执行 `alembic upgrade head`，再启动新副本。标准 `./scripts/deploy-cloud.sh .env` 在 PG/Redis 就绪后运行 Compose 的 migrate 服务，再启动 API/Web；仅推送 Git 代码不会修改部署数据库。0010 是本项目数据库表结构迁移版本，新增全局工具目录表并保留现有业务记录。
 5. 回滚按已记录的 API/Web/VoiceChat 组合执行；恢复已知整场 response 缺陷的旧 VoiceChat 时语音仍不能放行。数据库回滚与镜像回滚分开；当前迁移到 **0010**：0005 为每通话 capability，0006 为输入关联，0007 为问答策略/执行字段、Utterance 和 DeliveryAttempt，0008 为来源上下文/任务快照，0009 为交付/口述/播放审计，0010 为全局工具目录。旧数据迁移默认 legacy/knowledge_required，nullable 字段不伪造已验证关联或已播放，旧 slots 不伪造确认来源。0010 downgrade 删除工具目录配置，0009 downgrade 删除新增审计字段，均不是无损回滚；需要破坏式回滚时用已验证备份恢复。
 
-当前没有等待期语音的部署开关：NVIDIA ProviderCapabilities 全部保持 false。门户进度可用；未来只有可信 Adapter 对四项真实能力完成验证后才启用工具的 operation 扩展，见 [Live §3](live-agent-implementation.md#3-等待进度与自然修订)。正常上游关闭、发送完成和播放排空估计分开记录；真实 PG/Redis、长会话轮换/断线仍须按 [验收要求](development/validation.md) 单独验证。
+当前没有等待期语音的部署开关：NVIDIA ProviderCapabilities 全部保持 false。门户进度可用；未来只有可信 Adapter 对四项真实能力完成验证后才启用工具的 operation 扩展，见 [Live §3](live-agent-implementation.md#3-等待进度与自然修订)。正常上游关闭、发送完成和播放排空估计分开记录；真实 PG/Redis、长会话轮换/断线仍须按 [验收要求](validation.md) 单独验证。
 
 健康接口：`/health/live` 为应用存活；`/health/ready` 检查数据库、归属协调和 drain，分别返回文字配置、语音配置和本地容量。管理页健康端点探测只说明可达，不冒充真实推理/工具调用成功。
-
-## D07 分阶段执行设计
-
-D07-A–F 顺序、V01–V12 与 Q07 验收矩阵统一见 [真实服务验收](development/validation.md)。本页只维护运行配置和部署操作；执行结果写验收报告，不把 readiness 当作真实知识/音频闭环通过。

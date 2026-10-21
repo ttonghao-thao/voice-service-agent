@@ -1,6 +1,6 @@
 # 一期交付说明
 
-更新：2026-10-21，开发主线 `main`，基线来自 `codex/q1003`。本文明确交付范围；实际架构见 [architecture.md](architecture.md)，待办与证据分别见 [任务板](TASK_BOARD.md) 和 [验收记录](acceptance-report.md)。代码完成、现场验证和产品放行是三个不同状态。
+更新：2026-10-21，开发主线 `main`，基线来自 `codex/q1003`。本文明确交付范围；实际架构见 [architecture.md](architecture.md)，待办与证据分别见 [任务板](TASK_BOARD.md) 和 [统一验证手册](validation.md)。代码完成、现场验证和产品放行是三个不同状态。
 
 ## 1. 需求与目的
 
@@ -26,7 +26,7 @@
 
 本次代码修正“先收到、后出队”的调用被误判为终态后新调用；补充明确批次协议，每批只向 VoiceChat 注入一次累计结果。保留两次查询预算和累计授权证据，不增加重试或模型。
 
-必须配套更新 API、Web 和 VoiceChat `s2s/audio_server.py`；外部完整文件、SHA-256、挂载路径与容器启动命令一起交付。model.py、load_utils.py 和 Prompt 本次不修改。数据库无需新增迁移。部署/命令统一见 [批次验收](native-tool-batch-validation.md) 与 [VoiceChat 启动](voicechat/docker-run.md)。
+必须配套更新 API、Web 和 VoiceChat `s2s/audio_server.py`；外部完整文件、SHA-256、挂载路径与容器启动命令一起交付。model.py、load_utils.py 和 Prompt 本次不修改。数据库无需新增迁移。部署/命令统一见 [统一验证手册](validation.md) 与 [VoiceChat 启动](voicechat/docker-run.md)。
 
 ## 4. 已知事实与未解决问题
 

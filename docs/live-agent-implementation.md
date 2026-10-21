@@ -26,4 +26,4 @@ API 能持续收发，不等于模型在工具等待期间会理解新的语音�
 
 ## 4. 验证入口
 
-本轮按 [批次验收](native-tool-batch-validation.md) 核对 Golden Yolk 第二段；长期标准见 [验收清单](development/validation.md)。兼容路径中的批准文本/续答许可、增强 Provider 模拟实现仍有测试，本页不将它们描述为一期原生路径。
+本轮按 [统一验证手册](validation.md) 核对 Golden Yolk 第二段；长期标准见 [统一验证手册](validation.md)。兼容路径中的批准文本/续答许可、增强 Provider 模拟实现仍有测试，本页不将它们描述为一期原生路径。

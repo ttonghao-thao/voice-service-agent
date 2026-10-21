@@ -141,12 +141,11 @@ def test_cloud_deployment_uses_prebuilt_images():
     voicechat_readme = (ROOT / "deploy/voicechat/README.md").read_text()
     assert "--build-context agent_repo=/path/to/voice-service-agent" in voicechat_readme
     voicechat_runbook = (ROOT / "docs/voicechat/docker-run.md").read_text()
-    assert "voicechat_validation_bundle=passed" in voicechat_runbook
     assert '"$VOICECHAT_RELEASE_IMAGE"' in voicechat_runbook
-    selection_runbook = (ROOT / "docs/voicechat/native-tool-selection-validation.md").read_text()
-    assert "python /app/scripts/run_native_cuekb_validation.py" in selection_runbook
-    assert "--summarize-voicechat-log" in selection_runbook
-    assert "不要回传完整 `docker logs`" in selection_runbook
+    selection_runbook = (ROOT / "docs/validation.md").read_text()
+    assert "bash scripts/validate_deployment.sh auto golden_yolk" in selection_runbook
+    assert "bash scripts/validate_deployment.sh web-end" in selection_runbook
+    assert "COPY scripts/collect_validation_summary.py scripts/collect_validation_summary.py" in dockerfile
     assert "configure_native_cuekb.py --apply" in script
     nginx = (ROOT / "deploy/nginx.conf").read_text()
     assert "listen 8087 ssl;" in nginx

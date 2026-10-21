@@ -75,7 +75,7 @@ speech 输出 FIFO 中每条事件在生成时固定 response/item，单发送�
 
 基础验收要求每轮 ID/结束、同 call 工具往返、最终 ASR 绑定、英文音频、停止后继续和旧连接隔离。增强能力另测延迟工具期间的新问题、改问、取消和旧结果抑制，固定 ACK 不算新问题回答。
 
-`scripts/probe_voicechat.py` 使用授权 24 kHz WAV、实际 session.update 快照、固定 API revision/digest 和可控工具延迟，持续送静音推进等待/续答，记录有界无正文事件时间线，可保存授权输出音频；多工具模式不再默认测试 legacy bridge。命令与静态产物核验见 [部署](deployment.md#voicechat-诊断探针与部署产物核验)，固定上游实现核对见 [VoiceChat 源码交付](voicechat/README.md)。它的工具结果是合成的，不能代替真实 CueKB 闭环。检索任务和模型续答的期限分开，应用 env 不自动改变 GPU 服务的超时。
+`scripts/probe_voicechat.py` 使用授权 24 kHz WAV、实际 session.update 快照、固定 API revision/digest 和可控工具延迟，持续送静音推进等待/续答，记录有界无正文事件时间线，可保存授权输出音频；多工具模式不再默认测试 legacy bridge。当前验证统一见 [验证操作手册](validation.md)，固定上游实现核对见 [VoiceChat 源码交付](voicechat/README.md)。它的工具结果是合成的，不能代替真实 CueKB 闭环。检索任务和模型续答的期限分开，应用 env 不自动改变 GPU 服务的超时。
 
 公开参考：[API](https://github.com/NVIDIA-NeMo/Speech/blob/nemotron-labs-voicechat/voicechat_realtime_instructions/api-reference.md)、[部署](https://github.com/NVIDIA-NeMo/Speech/blob/nemotron-labs-voicechat/voicechat_realtime_instructions/deploy.md)。原 adapter 文档基线为 NVIDIA revision `097dfe9e2f55baf653b83035868bdc89849f1b47`；实际服务以用户 speech 源码与发布 hash 为准，不能仅由公开文档推断私有镜像行为。
 
@@ -93,7 +93,7 @@ Runtime、ToolRegistry、CueKB adapter 与 VoiceGateway 记录脱敏阶段日志
 
 ### 4.1 查询延迟与优化边界
 
-按 Turn 关联模型、工具、CueKB、提交与 SSE；日志字段、包含关系和复测步骤只在 [故障排查 §2–3](operations/troubleshooting.md#2-延迟分解与可观测边界) 维护。
+按 Turn 关联模型、工具、CueKB、提交与 SSE；日志字段、包含关系和复测步骤只在 [统一验证手册](validation.md) 维护。
 
 ## 5. 第三方扩展（D06）
 

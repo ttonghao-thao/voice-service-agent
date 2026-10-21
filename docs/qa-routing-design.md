@@ -30,6 +30,6 @@ VoiceChat 根据来源回答；有限检索无法确认的字段应明确说明�
 
 ## 5. 修改与验收
 
-执行入口：`agent_runtime/native_cuekb.py`、`native_input.py`、`voice/relay.py`；批次协议见 [工具契约 §4](interfaces/voice-tools.md#4-原生函数批次传输)。本地覆盖预算、重复、空检索、累计来源、授权撤销和新输入重置，真实结果按 [验收清单](development/validation.md) 检查。
+执行入口：`agent_runtime/native_cuekb.py`、`native_input.py`、`voice/relay.py`；批次协议见 [工具契约 §4](interfaces/voice-tools.md#4-原生函数批次传输)。本地覆盖预算、重复、空检索、累计来源、授权撤销和新输入重置，真实结果按 [统一验证手册](validation.md) 检查。
 
 仓库中 legacy/lookup/reason/SDK 等兼容实现仍在代码和测试中；本期不需要外置文本模型、不启用直查升级或多业务分类。删除旧设计文档不表示已经删除这些代码。

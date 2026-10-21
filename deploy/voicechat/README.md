@@ -8,7 +8,7 @@
 
 先保存现场源码，再将 `docs/voicechat/` 中受维护的完整文件同步到 Speech 的相同相对路径。不要覆盖整个 Speech 工程，也不要只应用早期 response-lifecycle.patch 代替最新完整文件。历史 patch/manifest 仅保留给固定基线回归和追溯，不作为当前运行文件 hash。
 
-宿主机实际文件同步、卷挂载、完整 docker run 及容器内 hash/编译命令统一见 [启动手册](../../docs/voicechat/docker-run.md)。若文件通过 bind mount 加载，必须更新挂载源；更新镜像不会覆盖旧挂载。
+宿主机实际文件同步、卷挂载和完整 docker run统一见 [启动手册](../../docs/voicechat/docker-run.md)。若文件通过 bind mount 加载，必须更新挂载源；更新镜像不会覆盖旧挂载。
 
 ## 更新运行镜像并启动
 
@@ -35,6 +35,6 @@ docker build --build-arg VOICECHAT_BASE_IMAGE="$voicechat_base_image" \
 
 ## 本地与现场验证
 
-外部 CPU 测试依赖固定在 `docs/voicechat/s2s/tests/requirements.txt`，生命周期/诊断测试不需安装到 GPU 运行环境。当前真正业务验证只按 [批次验收](../../docs/native-tool-batch-validation.md) 做 Golden Yolk 自动/Web 各一次，独立检查见 [VoiceChat 验证](../../docs/voicechat/native-tool-selection-validation.md)。
+外部 CPU 测试依赖固定在 `docs/voicechat/s2s/tests/requirements.txt`，生命周期/诊断测试不需安装到 GPU 运行环境。所有验证只使用 [统一验证手册](../../docs/validation.md)，不在本目录维护独立检查步骤。
 
 注册/Prompt 一致、CPU 回归、容器启动均不能替代有据语音回答。API 收到的调用、实际查询、每批注入、答案完成和人工内容核对分别记录；不增加查询上限、不给模型追加未经验证的控制参数。回滚使用已记录的 API/Web/VoiceChat 组合，不能混版测试批次协议。

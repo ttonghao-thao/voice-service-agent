@@ -2,7 +2,7 @@
 
 2026-10-21 核对一期原生 relay、批次协议、Provider、Coordinator 与 Runtime。本页维护已实现架构；需求和交付边界见 [交付说明](delivery.md)，工作状态见 [任务板](TASK_BOARD.md)。
 
-当前一期部署为 VoiceChat 原生单工具验证：只向模型注册 search_knowledge_base(query)，通过内部 NativeCueKBExecutor→Registry→CueKBAdapter 检索，直接回填精简证据，由 VoiceChat 生成语音。AGENT_PROVIDER=disabled，不运行额外答案模型；外置 SDK/文本模型路径仅保留兼容实现，不在下图的一期数据流中。原生工具选择、连续追问与实际口述验收见 [验证步骤](native-cuekb-validation.md)。
+当前一期部署为 VoiceChat 原生单工具验证：只向模型注册 search_knowledge_base(query)，通过内部 NativeCueKBExecutor→Registry→CueKBAdapter 检索，直接回填精简证据，由 VoiceChat 生成语音。AGENT_PROVIDER=disabled，不运行额外答案模型；外置 SDK/文本模型路径仅保留兼容实现，不在下图的一期数据流中。原生工具选择、连续追问与实际口述验收见 [验证步骤](validation.md)。
 
 原生 relay 按连接/input_item_id 保存有界检索状态，默认最多两次实际查询、相同参数不重复执行；该路径关闭 HTTP 自动重试。重复查询或预算耗尽的结果标为 finished，终态提交后到达的新批次报 VOICE_TOOL_LOOP 并关闭异常连接；提交前已收到的批次成员在预算内执行，超额仅结清。Coordinator 将同一输入的累计有效证据用于回填、答案校验和引用提交；空的补充检索不丢失既有事实。缓存复用仍复核权限和后端版本，不跨输入共享。硬性查询上限不等于模型已成功回答，实际语音闭环仍须验收。
 
@@ -79,4 +79,4 @@ VoiceChat 内部并非 ASR 文本驱动 LLM：16 kHz 音频经共享 encoder 分
 
 ## 5. 演进与验收入口
 
-Black Pig 单 case 已有现场 answered/引用提交成功；Golden Yolk 批次修复目前只有本地回归证据。按 [批次验收](native-tool-batch-validation.md) 完成当前闭环，再按 [验收清单](development/validation.md) 验证连续多轮、知识追问、内容和听音。hello 句首问题暂缓，不把 CPU 通过当作真实模型修复。
+Black Pig 单 case 已有现场 answered/引用提交成功；Golden Yolk 批次修复目前只有本地回归证据。按 [统一验证手册](validation.md) 先完成当前闭环，再验证连续多轮、知识追问、内容和听音。hello 句首问题暂缓，不把 CPU 通过当作真实模型修复。
