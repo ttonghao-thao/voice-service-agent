@@ -1,14 +1,14 @@
 # 后端服务与工具接入
 
-2026-10-07 按 `f498fa4` 核对。本页维护 VoiceChat/文本模型接入与授权边界；CueKB 请求映射单列，配置只在部署维护。原因见 [关键决策](decisions/architecture-decisions.md)，状态归 [任务板](TASK_BOARD.md)。
+2026-10-21 按一期原生路径整理。本页维护 VoiceChat/CueKB 接入与授权边界；CueKB 请求映射单列，配置只在部署维护。原因见 [关键决策](decisions/architecture-decisions.md)，状态归 [任务板](TASK_BOARD.md)。
 
 ## 1. 运行依赖与配置状态
 
 | 依赖 | 最终职责 | 当前实现状态 |
 | --- | --- | --- |
-| VoiceChat | 独立实时语音服务，原生选择工具或直接回答 | legacy/dual_tools 与有序响应许可本地完成，真实选择/续答/音频待 D07/Q07-E |
-| CueKB | 知识检索与版本来源 | 专用 adapter、契约和受控测试已实现；真实服务/ACL 待 D07 |
-| 文本模型 | legacy、reasoned、直查升级和严格知识路径 | openai / compatible 已实现；合格 D2 直查零外置调用，部署仍要求真实文本模型 |
+| VoiceChat | 独立实时语音服务，原生选择工具或直接回答 | 连续 relay 和显式批次处理；真实验收状态见验收记录 |
+| CueKB | 知识检索与版本来源 | 专用 adapter 与真实检索已有证据；完整权限/恢复验收仍待完成 |
+| 文本模型 | legacy、reasoned、直查升级和严格知识路径 | 兼容实现保留；本期 AGENT_PROVIDER=disabled，不配置外置模型 |
 | 第三方工具 | 本期不启用 | 天气代理代码仍保留，生产默认无需天气配置 |
 | 通话 capability | 每次测试通话的独立 owner/token 与服务端 KB 范围 | 标签页内存 token 已实现；正式客户身份服务暂缓 |
 
@@ -26,7 +26,7 @@
 
 API 通过 `VOICECHAT_WS_URL` 连接独立服务的 `/v1/realtime`。受控同主机/隔离网络可用 WS，其它非受控链路使用 WSS；浏览器始终访问本项目同源 HTTPS/WSS。VoiceChat 端口与公网门户端口不能混为一谈。
 
-握手固定为 `session.created → session.update → session.updated`。legacy 注册 `consult_service_agent(user_request)`；dual_tools 注册后台配置的全局目录，两个知识工具只是初始配置。Adapter 用 flat name/description/parameters/ack_messages 定义及 instructions，验证 `audio/pcm`、24000 Hz 与工具/指令回显一致性；不发送 `tool_choice`、未证实的 response.cancel、动态 TTS 或后台推送字段。目录与刷新规则见 [原生工具契约](interfaces/voice-tools.md)，不是每个音频帧重复发送。
+握手固定为 `session.created → session.update → session.updated`。legacy 注册 `consult_service_agent(user_request)`；dual_tools 注册后台配置的全局目录，本期只启用 search_knowledge_base(query)。Adapter 用 flat name/description/parameters/ack_messages 定义及 instructions，验证 `audio/pcm`、24000 Hz 与工具/指令回显一致性；不发送 `tool_choice`、未证实的 response.cancel、动态 TTS 或后台推送字段。目录与刷新规则见 [原生工具契约](interfaces/voice-tools.md)，不是每个音频帧重复发送。
 
 握手与流事件必须是带有效 `type` 的 JSON 对象；非法结构、音频格式、标识或 PCM16/base64 返回 `VOICE_PROTOCOL_ERROR` 并关闭连接。事件 `response_id` / `item_id` 若出现，须为 1–128 字符的字符串，输出 PCM16 chunk 限 48000 bytes；合法的未知事件类型仍可忽略。这些校验在供应商 Adapter 内完成，不将错误包交给浏览器处理，也不切换到 mock。
 
@@ -47,7 +47,7 @@ API 通过 `VOICECHAT_WS_URL` 连接独立服务的 `/v1/realtime`。受控同�
 
 Provider 根据会话快照选择 `config/voice-prompt.txt`（legacy）或 `config/voice-qa-prompt.txt`（双工具），严格策略追加知识要求。模型可见参数及三种执行规则只在 [知识执行 §1–2](qa-routing-design.md#1-模式与工具边界) 维护。
 
-Gateway 按 input item 绑定 native call，并最多等待 5 秒最终 ASR；最终 ASR 覆盖 user_request，是业务输入和用户气泡依据。型号/版本须在最终输入或本会话已确认条件中，否则澄清。无输入不建 Turn，ASR 完成不重复启动查询。ToolDispatcher 按会话快照里的名称和 schema 分派，不进行第二次语义分类。
+Gateway 按 input item 绑定 native call，并最多等待 5 秒最终 ASR；最终 ASR 是业务输入归属和用户气泡依据，原生模型 query 不被覆盖。无输入不建 Turn，ASR 完成不重复启动查询。ToolDispatcher 按会话快照里的名称和 schema 分派，不进行第二次语义分类。
 
 同一推理批次需按 ASR → 工具 → ACK/回答输出。原生 response.function_call_arguments.done 的 call_id 用于 conversation.item.create / function_call_output 回填；解析 arguments 对象再编码一次，避免双重编码。客户端应用负责工具执行；VoiceChat runtime 负责原生脚本解析和结果上下文注入。
 
@@ -59,17 +59,9 @@ speech 保留现有 USE_JINJA_TEMPLATE_PROMPT=1 分支、AVAILABLE_TOOLS/TOOLCAL
 
 speech 输出 FIFO 中每条事件在生成时固定 response/item，单发送器按序发送。旧音频即使遇到慢网络，也不能因全局 ID 更新而被标成下一轮。默认两步输出出现相邻 EOS/BOS 时按确切的两个 80 ms codec 帧拆分；无法确定帧边界的异常批次显式失败，不猜测切割位置。
 
-网关授权规则：
+一期 relay 持续转发当前 input/response 的普通回答、ACK 与知识回答，不采用一次性发声许可。工具批次结清后，等待对应非 ACK 回答文本/音频结束，由 Coordinator 按实际交付证据检查并提交。ACK 不能当作答案；一般回答不能伪造企业来源。旧 legacy/knowledge_required 规则只保留兼容，不进入一期路径。
 
-1. 初始无输入输出被抑制；legacy/knowledge_required 中未经工具授权的实质性回答返回 VOICE_TOOL_REQUIRED。
-2. general_qa 无工具回答须绑定一个明确的当前输入和有序 response 生命周期；保存 Utterance/字幕，不创建知识 Turn。歧义或 ID 复用失败关闭，不能永久授权整场输出。
-3. 合法工具响应承载固定 ACK；写回结果前记录 DeliveryAttempt 并安装受限续答许可，避免供应商即时回应竞态。结果最多授权随后一个回答；同 response 回答结束也回收多余许可。
-4. D2 回填 EvidenceReady 后保持知识任务待原生答案，聚合字幕、audio.done 后校验并唯一提交；不再写第二份工具结果或播报第二次答案。失败/超时清除该 response 剩余播放，其他合法 response 不受该 clear 影响。
-5. 新 speech_started 不直接取消有效任务；revision/epoch/租约/权限与工具版本仍复核。无工具旧响应不能借新输入获得许可。
-
-legacy ACK 为 Please wait while I check the knowledge base.；新模式为 Please wait while I check that.，按配置短语和阶段识别为状态提示，不当答案正文。prepared/write_started/sent 与播放 samples 独立记录；崩溃后未确认写回记 unknown、不重发，sent 或字幕到达都不证明已听到。
-
-QA_PROVIDER_ANSWER_TIMEOUT_MS 默认 10000：D2 续答取它与业务剩余预算的较小值；一般无工具响应从已开始输出后计算期限，缺结束边界记失败。尚未开始的无工具回答不属于此独立超时，不自动补启动检索。
+音频和工具结果写入串行化，台账区分发送与未知状态，不因断线自动重放。查询任务有执行期限，模型续答观察与连接同寿命；QA_PROVIDER_ANSWER_TIMEOUT_MS 属于旧工作流，不控制本期原生续答。连接轮换、取消及权限失效仍是明确边界。
 
 ### 3.4 语言、版本和能力验证
 
@@ -77,25 +69,21 @@ QA_PROVIDER_ANSWER_TIMEOUT_MS 默认 10000：D2 续答取它与业务剩余预�
 
 用户已确认现场云端与本机 `speech` 源码同源，且原生 HTML 已能对话、插话和逐句展示文字。自然让话不由本项目重新实现；普通发声不取消业务任务，显式停止清本地缓冲，明确取消/改问另由 Coordinator 处理。
 
-原生 HTML 不检查 response ID，按 transcript.done 分气泡；这不能证明音频也具备相同结束边界。原 WebSocket 音频队列与直接发送的字幕可能错序、ID 跨轮复用，adapter 无法仅凭现有事件可靠重建逐轮采样归属。当前确认基线采用 WebSocket 层修复以保留严格业务授权，模型本身不改；其他已满足有序归属的供应商版本无需此补丁。
+原生 HTML 不检查 response ID，按 transcript.done 分气泡；这不能证明音频也具备相同结束边界。原 WebSocket 音频队列与直接发送的字幕可能错序、ID 跨轮复用，adapter 无法仅凭现有事件可靠重建逐轮采样归属。当前维护版本在 WebSocket 层保留逐轮身份和顺序，模型本身不改；其他已满足有序归属的供应商版本无需此补丁。
 
-D19 上游补丁、适用源码 hash、CPU 测试与发布方式见 [VoiceChat 补丁交付](../deploy/voicechat/README.md)。本项目 API/Web 和独立 VoiceChat 必须分别重建发布，不引入第二套本项目 Compose 配置；云端实际运行 hash/digest 与听音仍须记录。
+维护的完整文件、适用源码 hash、CPU 测试与发布方式见 [VoiceChat 补丁交付](../deploy/voicechat/README.md)。本项目 API/Web 和独立 VoiceChat 必须分别重建发布，不引入第二套本项目 Compose 配置；云端实际运行 hash/digest 与听音仍须记录。
 
 基础验收要求每轮 ID/结束、同 call 工具往返、最终 ASR 绑定、英文音频、停止后继续和旧连接隔离。增强能力另测延迟工具期间的新问题、改问、取消和旧结果抑制，固定 ACK 不算新问题回答。
 
-`scripts/probe_voicechat.py` 使用授权 24 kHz WAV、实际 session.update 快照、固定 API revision/digest 和可控工具延迟，持续送静音推进等待/续答，记录有界无正文事件时间线，可保存授权输出音频；多工具模式不再默认测试 legacy bridge。命令与静态产物核验见 [部署](deployment.md#voicechat-诊断探针与部署产物核验)，固定上游实现核对见 [源码记录](voicechat-upstream-analysis.md)。它的工具结果是合成的，不能代替真实 CueKB 闭环。当前业务总预算默认 30 秒，独立模型源码的工具等待超时是另一预算；必须通过延迟探针核对，不能假定本项目 env 自动改变 GPU 服务。
+`scripts/probe_voicechat.py` 使用授权 24 kHz WAV、实际 session.update 快照、固定 API revision/digest 和可控工具延迟，持续送静音推进等待/续答，记录有界无正文事件时间线，可保存授权输出音频；多工具模式不再默认测试 legacy bridge。命令与静态产物核验见 [部署](deployment.md#voicechat-诊断探针与部署产物核验)，固定上游实现核对见 [VoiceChat 源码交付](voicechat/README.md)。它的工具结果是合成的，不能代替真实 CueKB 闭环。检索任务和模型续答的期限分开，应用 env 不自动改变 GPU 服务的超时。
 
 公开参考：[API](https://github.com/NVIDIA-NeMo/Speech/blob/nemotron-labs-voicechat/voicechat_realtime_instructions/api-reference.md)、[部署](https://github.com/NVIDIA-NeMo/Speech/blob/nemotron-labs-voicechat/voicechat_realtime_instructions/deploy.md)。原 adapter 文档基线为 NVIDIA revision `097dfe9e2f55baf653b83035868bdc89849f1b47`；实际服务以用户 speech 源码与发布 hash 为准，不能仅由公开文档推断私有镜像行为。
-
-2026-10-13 已重新深读并对比 [论文 v2](https://arxiv.org/html/2609.21967v2)：§2–4、§7 和附录 A–D 与 v1 文本相同，仍明确工具执行期间输入不参与回答条件化，因而不支持该阶段 barge-in；不能因论文版本号更新开启等待能力。共享 encoder、1/1/2 融合、训练与参数指标对本项目的改进见 [v2 设计记录](voicechat-paper-v2-review.md)。
-
-2026-09-28 文献复核：[新论文 §7、附录 B](https://arxiv.org/html/2609.21967v1) 记录当时版本在工具执行期间不支持 barge-in；持续收音、字幕或固定 ACK 不代表新音频参与响应生成。当时核对的 backend 工具期限另有帧数/推理批次时间单位风险，不能推定新版本仍相同。详细证据见 [Q05 分析](archive/2026-09-28/voicechat-research-review.md)，不能据此宣称增强能力通过。
 
 当前应用已有 ProviderCapabilities 门槛与进度/修订处理；**生产 NVIDIA 仍全部 false**，知识实现不暴露 operation，不发送 tool_choice/任意播报命令；工具数量独立由后台目录决定。只有明确验证等待进度、修订、call 关联与旧调用安全结清的可信 Adapter 才使用 operation 扩展；没有 env/browser 绕过。SimulatedWaitAdapter 的 parent_call_id 是独立测试协议扩展，不是 NVIDIA 已公开字段。详细调用状态及真实启用条件见 [Live §3](live-agent-implementation.md#3-等待进度与自然修订)。基础关闭只依据 output_audio.done 与 WS 正常 close handshake；异常关闭仍是 unknown，不等于已播放。
 
 ## 4. 文本模型与业务 Agent
 
-当前 `AGENT_PROVIDER=openai` 使用 Responses API，明确配置模型/API key；`compatible` 配置独立 HTTP base URL 并使用 Chat Completions。这些是本仓库适配器行为，真实供应商必须另验工具调用、结构化输出、streaming 和错误语义。VoiceChat WS/WSS 地址不能代替文本模型 endpoint。
+以下仅说明尚存的兼容实现，不是本期部署依赖。`AGENT_PROVIDER=openai` 使用 Responses API，明确配置模型/API key；`compatible` 配置独立 HTTP base URL 并使用 Chat Completions。这些是本仓库适配器行为，真实供应商必须另验工具调用、结构化输出、streaming 和错误语义。VoiceChat WS/WSS 地址不能代替文本模型 endpoint。
 
 Runtime 复用授权工具和证据校验，输出 display_text、短 speech_text、引用和业务状态；SDK 的工具循环与耗时受整轮 deadline 约束。当前没有知识子 Agent；后续引入须重新评审权限、预算及唯一提交边界。
 
@@ -124,7 +112,7 @@ Runtime、ToolRegistry、CueKB adapter 与 VoiceGateway 记录脱敏阶段日志
 
 本期默认 `ENABLED_TOOLS=search_knowledge`。已有天气示例契约仍见 [weather-openapi.yaml](../contracts/weather-openapi.yaml)，但天气不属于本期产品范围，现存代码/schema 仅保留供后续需求评估，不对客户开放。
 
-只读 HTTP 按剩余预算做有限重试；当前对网络/5xx 最多一次，429/4xx/错误 JSON/超大正文不自动重试。缓存必须包含权限范围、查询条件、供应商和有效期，不能把历史数字作为新实时事实。
+一期原生 CueKB HTTP 不自动重试。其他兼容路径的只读 HTTP 按剩余预算有限重试；429/4xx/错误 JSON/超大正文不自动重试。缓存必须包含权限范围、查询条件、供应商和有效期，不能把历史数字作为新实时事实。
 
 ## 6. 独立通话与知识范围（D02、D13）
 
@@ -135,13 +123,3 @@ Runtime、ToolRegistry、CueKB adapter 与 VoiceGateway 记录脱敏阶段日志
 每条新知识引用记录本轮服务端授权 KB 范围。历史消息和 SSE 重放在读取时复核当前范围；范围被缩小后，涉及已撤销范围的整个旧答案会替换为 `KB_ACCESS_REVOKED`，不只隐藏链接。送入后续 Agent 的历史也执行相同裁剪，避免旧证据通过上下文再次泄露。升级前没有范围标签的旧引用不向 customer 展示；operator/admin 仅在仍拥有部署完整 KB 范围时兼容读取。
 
 本地测试覆盖两次通话 token 不同、交叉访问失败、结束后 token 失效、管理 API 拒绝、KB 范围由服务端确定，以及历史/SSE 的范围复核逻辑；真实 CueKB Key/ACL、多人并发语音和未来正式客户身份接入仍需另行验收。
-
-## 7. Q04：原件查看的后续设计
-
-状态：建议，未实现；不影响当前逐块证据展示。本仓库尚无原件下载代理，CueKB 原件读取的具体 API、版本固定与权限语义需先核对目标服务契约，不在此发明 URL。
-
-若业务确需查看原件，由门户提交本项目 conversation 与 citation 标识，服务端检查会话归属、当前客户 KB 范围、部署范围及受限 Key；从已存引用取 document/version/anchor，不能接受浏览器提供任意上游 URL。通过受信任 Adapter 获取对应版本，旧版本不可用时明确说明，不能静默跳到最新文档。
-
-下载响应限制大小、超时、内容类型和缓存权限；撤权后拒绝原件访问。优先受控附件下载，不把未知 HTML 内联为同源页面，不泄漏供应商 Key/私网 URL。若采用临时链接，须先确认其有效期和撤权语义；不能因已有链接而绕过当前授权。
-
-实施顺序：确认业务需要与上游契约 → 设计本项目只读接口与错误映射 → Adapter/鉴权/门户入口 → 导出契约和受控测试 → 云端权限/版本验证。测试覆盖越权、撤权、旧版本缺失、上游失败及恶意 URL；未知契约前保持现有证据片段展示。

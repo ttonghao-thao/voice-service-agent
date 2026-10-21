@@ -4,7 +4,7 @@
 
 ## 1. 按症状定位
 
-当前产品录音故障直接查 [定位分支](../voicechat-fault-recovery-design.md)；最新事实是注册已恢复、句首缺失、function 全 PAD、无回答结束及可见超时。下面为通用排查，不把不同日期通话拼接成一个因果链。
+当前已知问题和本次复测见 [批次验收](../native-tool-batch-validation.md)，最新状态见 [任务板](../TASK_BOARD.md)。工具注册、检索、回填已有现场正面证据，不能沿用“所有 function 全 PAD”的早期结论。
 
 | 症状 | 先查什么 | 代码与下一层证据 |
 | --- | --- | --- |
@@ -23,34 +23,12 @@
 
 ## 2. 延迟分解与可观测边界
 
+一期不使用外置答案模型。按同一 conversation/input/call/response/batch 分开观察：输入结束→原生调用；API 接收→CueKB 返回；结果准备→批次提交；VoiceChat 接收→ACK 等待→后端注入；注入→有效回答首包；API 转发→浏览器起播。ACK 首包不算答案首包。
 
-历史反馈曾约 3 秒，没有对应 turn 的完整分段日志；这不是当前性能基线。默认按提交文字到完整答案分析：HTTP/鉴权/建 Turn → 模型生成检索参数 → CueKB 检索 → 模型生成结构化答案 → 证据/权限复核与提交 → SSE → 渲染。通常含检索规划和最终回答两次串行模型请求（与 [SDK agent loop](https://developers.openai.com/api/docs/guides/agents/running-agents) 一致）；额外工具轮次、上游排队/网络、有限重试会增加耗时。语音还包含说话结束判定、最终 ASR、原生工具提取、结果注入/TTS 和播放缓冲；ACK 不计作最终答案。
+CueKB duration_ms 是客户端请求测量，不能解释结果提交后的等待。阶段有包含关系，不把多个 duration 重复相加；浏览器与服务器时钟未经校准不能直接相减。时间线缺 sequence 匹配时保留 unverified，不写成模型零调用。
 
-原页面固定 300 ms 数据库轮询，并在 final 事件后再 GET messages 才显示聊天答案。现在事务提交后唤醒同进程 SSE，通知只作为加速，持久化 Event/server_seq 仍是事实来源；回滚不通知，跨进程或漏通知保留 300 ms 补查，重连按 cursor 补读。页面对已加载 Turn 直接应用鉴权过滤后的 final，未知 Turn 才补取；晚到的 running 快照不能覆盖已收到的 final，新 epoch/revision 不能被旧请求覆盖。
+## 3. 精简复测
 
-这消除了同进程 0–300 ms 的轮询等待和已有气泡的一次 HTTP 往返，但不承诺总耗时从 3 秒降到某个数。legacy、文字和复杂路径保留模型规划；Q07 直查使用最终输入和已确认条件，经 EvidenceGate 决定 Nano 续答或升级，不先请求外置分类模型。直查的质量、升级率及实际时延仍需同样本实测，不能因少了调用就宣称整体效果已优化。
+只使用 [批次验收](../native-tool-batch-validation.md) 或 [Web 对照](../web-wav-comparison.md) 的同窗口摘要/时间线。先找最早缺失阶段，再决定是否修改；已有日志能回答的问题不要重新跑 WAV。当前没有经过真实测量的全链路 SLA，不把配置超时当实际时延。
 
-每个 `conversation_id/turn_id` 关联以下无正文日志：
-
-| 阶段 | 日志与字段 | 解释 |
-| --- | --- | --- |
-| 每次模型调用 | `agent_model_call_finished`：call_index/status/duration_ms | 模型网络往返和完整输出；失败/取消也结束计时，不代表 TTFT |
-| CueKB | `cuekb_response_validated`：trace_id/duration_ms/service_total_ms | 本项目往返含重试与解析；服务 total 若缺失为 null，不视为 0 |
-| 工具 | `tool_run_finished`：status/duration_ms | 权限、当前任务检查及 adapter；其范围包含 CueKB，不能重复相加 |
-| Agent | `agent_pipeline_finished`：model_calls/duration_ms | SDK 循环及结果校验，含模型与工具 |
-| 提交与总计 | `answer_delivery_finished`：commit_ms/total_ms/committed | total 从 Coordinator execute 开始，含业务链和提交；不含浏览器网络/渲染 |
-
-先收集同模型/KB/问题集的冷、热请求 p50/p95，按 turn 对齐。若模型阶段主导，再实测降低回答长度、模型服务排队与缓存；若 CueKB 主导，依据其 trace/timings 优化检索路径；若只在浏览器等待，检查 Nginx SSE 缓冲与额外代理。不得把 30 秒超时预算当实际等待，或把减少模型调用当不影响检索质量的已验证优化。
-
-
-## 3. 复测步骤
-
-
-代码成本与字段定义见 [查询延迟](../integration.md#41-查询延迟与优化边界)。发布后使用同一组英文问题，分别记录文字“提交→完整答案”和语音“说完→最终答案开始口述”（不计 ACK），各自统计冷启动和热请求。用同一 turn 关联日志，不把不同请求的时间相加：
-
-```sh
-docker compose --env-file .env -f deploy/compose.production.yaml logs --no-color api \
-  | rg 'agent_model_call_finished|cuekb_response_validated|tool_run_finished|agent_pipeline_finished|answer_delivery_finished'
-```
-
-时间包含关系：Agent 内含模型和工具，工具内含 CueKB，提交 total 内含 Agent；不能把所有 duration 相加。浏览器通过 Network 的 SSE/HTTP 时间线补足提交后的网络和渲染。此前 300 ms 轮询改为同进程提交通知，跨进程补查保留；final 已含答案时不再等待 messages GET。部署 Nginx 已关闭 SSE 缓冲，额外的 9002 代理仍需现场核对。没有真实分段日志前，不给各阶段虚构占比，不承诺优化后的实际总耗时。
+模型不调用时核对同 session 的 Prompt/解码/事件；已调用则核对实际查询、批次结果及注入，不再次排查注册。终态前排队调用与真正终态后调用必须按接收时间区分。若单轮已完成却后续重复回答，保留同 input 下的 response ID 和结束事件，记录为独立未解决问题，不扩大当前修复。

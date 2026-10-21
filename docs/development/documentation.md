@@ -1,37 +1,21 @@
-# 文档维护与按需读取
+# 文档维护规则
 
-2026-10-15。维护文档体系时读取本页，常规编码直接按 AGENTS 与主题入口定位。历史整理报告可从 Git 追溯，不作为每次任务的上下文。
+交付文档只描述本期需求、实际实现及明确未验证的问题；历史通过 Git 追溯，不另复制排障流水或旧方案。
 
-## 1. 信息归属
-
-| 信息 | 唯一维护位置 |
+| 信息 | 维护位置 |
 | --- | --- |
-| 跨任务规则、外部 VoiceChat 同步 | 根 AGENTS.md |
-| 按需导航 | docs/README.md |
-| 当前模块/数据流/状态边界 | architecture.md |
-| 改进决策与实施依赖 | q1003-target-architecture.md；取舍及替代原因归 decisions/architecture-decisions.md |
-| 实现与待验证状态 | TASK_BOARD.md |
-| 故障诊断分支 / 固定现场事实 | voicechat-fault-recovery-design.md / 日期证据文件 |
-| 实际测试结果 / 验收要求 | acceptance-report.md / development/validation.md |
-| 字段、schema、路由 | contracts.py、工具 schema、routes.py 及生成契约；主题解释语义 |
-| 配置默认值 / 部署操作 | config.py / deployment.md；.env.example 为模板 |
-| 外部 VoiceChat 完整文件/hash/启动 | docs/voicechat 源码树、snapshot-manifest.json、docker-run.md |
-| 历史方案与过程 | Git 历史；已有 archive 不作为当前依据 |
+| 开发边界与外部源码同步 | 根 AGENTS.md |
+| 导航 | docs/README.md |
+| 需求、目的、范围、交付结论 | delivery.md |
+| 实际架构与关键取舍 | architecture.md、decisions/architecture-decisions.md |
+| 未解决事项与优先级 | TASK_BOARD.md |
+| 已执行证据 / 放行标准 | acceptance-report.md / development/validation.md |
+| 配置默认值 / 操作 | config.py / deployment.md、专题操作手册 |
+| 接口字段与协议 | 代码、生成 contracts、interfaces 与 portal-protocol.md |
+| 外部 VoiceChat 完整文件/hash/启动 | docs/voicechat 源码、snapshot-manifest.json、docker-run.md |
 
-相对路径从 docs 起算；代码和入口文件从仓库根起算。主题页引用以上来源，不再维护第二份状态表、测试流水或启动参数清单。
+先查代码和最新现场证据，再修正文档。已知事实、合理推断、设计建议、未验证结果分开写。实现状态变化更新任务板；实际新验证才更新证据，不能将旧测试换日期或将模拟声明为真实通过。
 
-## 2. 修改与阅读规则
+删除被替代正文，避免反复追加“以前/后来/本轮修正”。兼容代码若仍存在，明确其非本期范围，不把删除文档说成已删除代码。文档整理不能顺带改变业务、预算或验收标准。
 
-先看 git status。任务明确时直接 rg 定位符号/文件；不明确先查索引。长文先查标题，再读命中章节；只有实际调用、共享状态、权限或协议依赖才扩读。索引中的链接不是必读清单。不能为节约上下文省略必要证据，也不设任意固定文件数/Token 上限。
-
-当前事实、设计建议和未知问题必须明确区分。核对时修正错误结论，删除重复、失效和无效过程；不在活动正文中不断追加“后来又修正”。有价值的决策只保留原因、代价、重新评审条件及替代说明；无需把删除正文复制成新档案。既有日期证据保留事件事实，后续分析明确注明日期和证据等级。
-
-局部内部改动只更新受影响主题；状态改变才更新任务板，新验证才更新验收。字段/事件变化才导出契约；真实迁移变化才做迁移验证。VoiceChat 外部源码修改按 AGENTS 同步完整文件、hash、来源和启动命令，不能只给补丁。
-
-文档重组检查本地链接/锚点、代码路径、围栏、示例与 git diff --check。纯文档不重跑应用测试，也不更新旧测试执行日期。上下文减少可用固定范围的字节数辅助说明，但不能称为实测 Token、延迟或成本节省。
-
-## 3. 本次整理范围
-
-核对基线 63e7059。活动文档删除旧的无恢复提示故障链、固定两工具假设、过时实施阶段、重复验证过程和先前文档整理流水；保留模型研究与已执行证据的按需入口。
-
-架构方案纠正输入分类即可授权开放式回答的假设，记录严格提示与 Gateway 行为不一致，区分已实现授权、待测模型可靠性和实际口述约束。新方案及任务表不等于代码修改或现场修复。精简前文本可从 Git 63e7059 直接追溯，无需默认加载历史。
+修改后检查本地链接/锚点、代码路径、围栏与 shell 语法、diff。纯文档不重跑应用回归。外部源码修改必须同步完整文件、manifest hash/来源和启动命令，不能仅交补丁。

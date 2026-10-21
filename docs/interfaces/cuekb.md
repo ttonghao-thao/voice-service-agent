@@ -14,7 +14,7 @@ Content-Type: application/json
 
 ```json
 {
-  "query": "用户问题与已确认条件",
+  "query": "What are the documented ingredients of the product?",
   "kb_ids": ["00000000-0000-4000-8000-000000000001"],
   "mode": "auto",
   "top_k": 5,
@@ -23,7 +23,7 @@ Content-Type: application/json
 }
 ```
 
-示例 UUID 仅说明类型。实际 KB UUID 来自服务端授权映射；旧 `kb_support` 不能直接传入。当前 CueKB query 上限 2000 字符，top_k 支持 1–20；所有路径遵守 CUEKB_TOP_K（默认 5）。原生语音不再用旧 direct 执行器的 3 个槽位压低检索数量；在请求数量及现有字节预算内保留完整来源，真实省略才标记 partial。减少检索数量不能证明证据已充分，也不能用于隐藏裁剪标记。工具输入目前只开放 `product_model`、`software_version`，由 BusinessRuntime 从明确输入或已确认上下文传入；Adapter 不从自然语言猜测。CueKB 支持的 `document_ids` 暂不开放给模型。`relations` 是 CueKB M3 的可选请求字段；本项目可接收其返回的关系证据，但暂不让模型生成实体 UUID、关系类型或时间条件。
+示例 UUID 仅说明类型。实际 KB UUID 来自服务端授权映射；旧 `kb_support` 不能直接传入。当前 CueKB query 上限 2000 字符，top_k 支持 1–20；所有路径遵守 CUEKB_TOP_K（默认 5）。原生语音不再用旧 direct 执行器的 3 个槽位压低检索数量；在请求数量及现有字节预算内保留完整来源，真实省略才标记 partial。减少检索数量不能证明证据已充分，也不能用于隐藏裁剪标记。一期原生工具只开放 query；product_model/software_version 是兼容路径中的结构化过滤条件，需有明确输入或确认来源，Adapter 不从自然语言猜测。CueKB 支持的 `document_ids` 暂不开放给模型。`relations` 是 CueKB M3 的可选请求字段；本项目可接收其返回的关系证据，但暂不让模型生成实体 UUID、关系类型或时间条件。
 
 不向上游发送自造 request_id/locale/deadline 并假定生效。HTTP 超时与应用 deadline 自行执行，取消本地等待不证明 CueKB 后台已停止。
 

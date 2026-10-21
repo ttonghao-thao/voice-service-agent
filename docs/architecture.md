@@ -1,10 +1,10 @@
 # 当前系统架构
 
-2026-10-20 核对一期原生 relay、Provider、Coordinator、Runtime 与部署边界。本页维护已实现架构；改进方案见 [实施设计](q1003-target-architecture.md)，工作状态见 [任务板](TASK_BOARD.md)。
+2026-10-21 核对一期原生 relay、批次协议、Provider、Coordinator 与 Runtime。本页维护已实现架构；需求和交付边界见 [交付说明](delivery.md)，工作状态见 [任务板](TASK_BOARD.md)。
 
 当前一期部署为 VoiceChat 原生单工具验证：只向模型注册 search_knowledge_base(query)，通过内部 NativeCueKBExecutor→Registry→CueKBAdapter 检索，直接回填精简证据，由 VoiceChat 生成语音。AGENT_PROVIDER=disabled，不运行额外答案模型；外置 SDK/文本模型路径仅保留兼容实现，不在下图的一期数据流中。原生工具选择、连续追问与实际口述验收见 [验证步骤](native-cuekb-validation.md)。
 
-原生 relay 按连接/input_item_id 保存有界检索状态，默认最多两次实际查询、相同参数不重复执行；该路径关闭 HTTP 自动重试。重复查询或预算耗尽的结果标为 finished，之后再次调用报 VOICE_TOOL_LOOP 并关闭异常连接。Coordinator 将同一输入的累计有效证据用于回填、答案校验和引用提交；空的补充检索不丢失既有事实。缓存复用仍复核权限和后端版本，不跨输入共享。硬性查询上限不等于模型已成功回答，实际语音闭环仍须验收。
+原生 relay 按连接/input_item_id 保存有界检索状态，默认最多两次实际查询、相同参数不重复执行；该路径关闭 HTTP 自动重试。重复查询或预算耗尽的结果标为 finished，终态提交后到达的新批次报 VOICE_TOOL_LOOP 并关闭异常连接；提交前已收到的批次成员在预算内执行，超额仅结清。Coordinator 将同一输入的累计有效证据用于回填、答案校验和引用提交；空的补充检索不丢失既有事实。缓存复用仍复核权限和后端版本，不跨输入共享。硬性查询上限不等于模型已成功回答，实际语音闭环仍须验收。
 
 ## 1. 产品与部署边界
 
@@ -40,7 +40,7 @@ VoiceChat 内部并非 ASR 文本驱动 LLM：16 kHz 音频经共享 encoder 分
 | 代码模块 | 职责 | 修改时读 |
 | --- | --- | --- |
 | `api/auth.py`、`routes.py` | 通话归属/范围、HTTP/SSE/WS、受权历史、管理隔离 | 门户协议 / 接入 §6 |
-| `voice/provider.py`、`gateway.py`、`relay.py` | 供应商事件归一化、连续收发、原生调用/结果回填、输入审计、背压 | 接入 §3 / 口述与交付 |
+| `voice/provider.py`、`gateway.py`、`relay.py`、`batches.py` | 供应商事件归一化、连续收发、原生调用/批次结清/结果回填、输入审计、背压 | 接入 §3 / 口述与交付 |
 | `sessions/coordinator.py`、`coordination.py` | 唯一业务提交、幂等、epoch/revision、任务/租约、共享期限 | 本页 §3 / 上下文 / 交付 |
 | `agent_runtime/` | 原生工具静态分派、直查或 SDK 推理、证据/呈现检查 | 知识执行 / 交付 §1 |
 | `agent_runtime/tool_catalog.py` | 全局后台目录、可信实现映射、revision；语音连接冻结注册快照 | 工具目录 |
@@ -56,7 +56,7 @@ VoiceChat 内部并非 ASR 文本驱动 LLM：16 kHz 音频经共享 encoder 分
 
 1. Start call 创建绑定 conversation/epoch/Origin 的一次性票据，建立一条 VoiceChat 连接并确认工具目录。
 2. 持续转发输入音频与模型输出；普通问答、ACK、知识回复不消耗一次性发声许可。保留同一连接供多轮与指代追问。
-3. 模型原生调用才触发业务。按原 call_id 幂等，校验工具/参数与权限，使用模型 query 查询 CueKB，原 call_id 回填必要证据。
+3. 模型原生调用才触发业务。按原 call_id 幂等，校验工具/参数与权限，使用模型 query 查询 CueKB。VoiceChat 显式声明一次解码的调用批次，API 收齐后按预算处理，保留所有 call_id、每批回填一份累计结果；详见 [批次契约](interfaces/voice-tools.md#4-原生函数批次传输)。
 4. Coordinator 唯一提交业务记录。检索有期限，模型续答不共用检索期限；连接结束或明确取消会结清等待观察的任务。
 5. 回答文本/音频完成用于审计，来源检查不伪装为播前事实保证，也不阻断后续普通问答。Web 同时收音与播放；原生 speech_started 清除已排队播放，查询不中止。
 
@@ -79,4 +79,4 @@ VoiceChat 内部并非 ASR 文本驱动 LLM：16 kHz 音频经共享 encoder 分
 
 ## 5. 演进与验收入口
 
-当前现场已证明工具名、原生调用与检索走通，但工具后完整回答仍需在新 relay 上验收。现有补丁撤回和 CPU 通过不能证明 GPU 已修复。按 [实施设计](q1003-target-architecture.md) 与 [单入口验证](native-cuekb-validation.md) 完成英文连续多轮、知识追问、实际听音和打断；hello 句首问题单独暂缓。
+Black Pig 单 case 已有现场 answered/引用提交成功；Golden Yolk 批次修复目前只有本地回归证据。按 [批次验收](native-tool-batch-validation.md) 完成当前闭环，再按 [验收清单](development/validation.md) 验证连续多轮、知识追问、内容和听音。hello 句首问题暂缓，不把 CPU 通过当作真实模型修复。

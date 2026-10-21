@@ -1,6 +1,6 @@
 # Voice Service Agent · 英文全双工知识客服
 
-本系统仅支持英文实时全双工语音问答与连接内多轮对话，客服为首个场景。独立 NVIDIA VoiceChat 负责实时语音和原生工具选择，独立 CueKB 提供检索；本项目处理会话、权限、知识执行与交付。部署模板启用可配置多工具模式；未配置模式的旧部署仍兼容 legacy。工具数量、后台管理与动态刷新见 [工具目录](docs/interfaces/voice-tools.md)，执行行为见 [知识执行](docs/qa-routing-design.md)。
+本系统面向英文实时全双工知识问答与连接内多轮对话。独立 NVIDIA VoiceChat 负责语音和原生工具选择，独立 CueKB 提供检索；本项目处理 Web 门户、会话、权限、有限检索及有来源答案交付。当前部署为 `dual_tools/general_qa`，单工具 `search_knowledge_base`，不需要外置答案模型。具体需求、已实现设计及未解决问题统一见 [交付说明](docs/delivery.md)。
 
 产品语音、门户交互和新会话语言均为英文（`en-US`）。中文开发文档、历史测试文本及 Unicode 数据兼容不代表产品支持中文语音；实现约束见 [架构的产品边界](docs/architecture.md#1-产品与部署边界)。
 

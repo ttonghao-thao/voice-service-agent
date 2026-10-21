@@ -26,7 +26,7 @@ CueKB 与 NVIDIA Speech / nemotron-labs-voicechat 保持独立服务职责。测
 - PCM 是 500 Hz 合成音，24 kHz、PCM16、80 ms、3840 bytes。浏览器使用合成麦克风和实际 AudioWorklet/传输流程；不验证真实 ASR、TTS、语义、听感或设备麦克风。
 - SSE 取消回归单独在真实 SQLite 驱动中设置短暂查询屏障，稳定模拟断开竞态；只有该数据库时序用例注入 Session 子类，外部 API 适配器仍走网络。
 
-P1/P2 的额外网络矩阵见 [Live §4](live-agent-implementation.md#4-验证与维护入口)：实际口述关联、结束/播放估计、unknown 恢复、进度/更正及旧调用隔离。默认夹具仍走 NVIDIA 当前 schema；只有显式 `SimulationHarness(wait_interaction=True)` 注入独立扩展 Adapter，其额外关联字段不能当作生产 VoiceChat 协议或真实等待期能力。没有新增部署模式。
+P1/P2 的额外网络矩阵见 [Live §4](live-agent-implementation.md#4-验证入口)：实际口述关联、结束/播放估计、unknown 恢复、进度/更正及旧调用隔离。默认夹具仍走 NVIDIA 当前 schema；只有显式 `SimulationHarness(wait_interaction=True)` 注入独立扩展 Adapter，其额外关联字段不能当作生产 VoiceChat 协议或真实等待期能力。没有新增部署模式。
 
 ## 2. 覆盖和断言
 
@@ -106,4 +106,4 @@ PLAYWRIGHT_CHROMIUM_EXECUTABLE=/usr/bin/chromium \
 
 ## 4. 验证限制
 
-这套测试验证本项目 API 交互、编排、授权、终态、持久化及浏览器集成。不验证真实 Nano 工具漏/误调用率、真实知识正确性、GPU 音频生成、工具等待期间自由交谈、跨主机/TLS/Nginx、防火墙、PostgreSQL/Redis、Docker、并发容量、生产 p50/p95 或实际听音。真实验收仍归 D07/Q07-E；本地计数和合成音时序不能作为生产性能数据。
+这套测试验证本项目 API 交互、编排、授权、终态、持久化及浏览器集成。不验证真实 Nano 工具漏/误调用率、真实知识正确性、GPU 音频生成、工具等待期间自由交谈、跨主机/TLS/Nginx、防火墙、PostgreSQL/Redis、Docker、并发容量、生产 p50/p95 或实际听音。真实验收仍按 [验收要求](development/validation.md) 执行；本地计数和合成音时序不能作为生产性能数据。

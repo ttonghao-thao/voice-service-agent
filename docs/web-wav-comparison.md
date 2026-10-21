@@ -120,4 +120,4 @@ done
 
 `response_id` 必须一致，并用 `voice_response_completed phase=answer` / `portal.speech_text.done phase=answer` 区分真正回答与 ACK；首包到达时尚不能确定是否 ACK，不把任何首包都当答案。浏览器与服务器的绝对时间不能未经时钟校准直接相减。
 
-输入统一和验证器结束条件已经修正；最新批次修正仍不能宣称解决模型不选工具或 30 秒等待。按上述两组各做一次后，沿最早出现差异的阶段分析，不调整预算、不重写问题、不无限重跑。VoiceChat 的独立说明见 [原生工具验证](voicechat/native-tool-selection-validation.md#10-web-与自动脚本的阶段时间线)。
+输入统一和验证器结束条件已经修正；最新批次修正仍不能宣称解决模型不选工具或 30 秒等待。按上述两组各做一次后，沿最早出现差异的阶段分析，不调整预算、不重写问题、不无限重跑。VoiceChat 的独立说明见 [原生工具验证](voicechat/native-tool-selection-validation.md)。

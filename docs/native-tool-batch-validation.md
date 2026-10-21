@@ -14,7 +14,7 @@
 
 1. 按 [Web/API 构建命令](web-wav-comparison.md#1-部署准备宿主机项目根目录) 更新两个镜像并重建容器。
 2. 同时按 [VoiceChat 启动命令](voicechat/docker-run.md) 更新挂载的完整 `audio_server.py` 并重建 VoiceChat；若使用镜像内文件，则先同步到 Speech 构建上下文再制作镜像。旧 API 不能正确结清新 VoiceChat 的多成员批次，不能混版验收。
-3. 核对 [VoiceChat 独立验证 §11](voicechat/native-tool-selection-validation.md#11-原生批次聚合结果验证)。数据库、模型、Prompt、检索预算不需要调整。
+3. 核对 [VoiceChat 独立验证 §2](voicechat/native-tool-selection-validation.md#2-原生批次聚合结果验证)。数据库、模型、Prompt、检索预算不需要调整。
 
 输入仍是镜像内固定 WAV/cases.json。无需在容器创建输入目录或拷文件。保持默认 `VOICE_MAX_RETRIEVALS_PER_INPUT=2`，不要为使测试通过而提高预算或延长连接寿命。
 
@@ -71,10 +71,10 @@ docker logs --since "$WINDOW_START" --until "$WINDOW_END" "$VOICE_CONTAINER" 2>&
 retrieval_executions=2 retrieval_limit=2
 queued_calls_settled=1 tool_batches_submitted=2
 terminal_results_submitted=1 post_terminal_calls=0
-answer_complete=passed answer_status=answered answer_sources=>0
+answer_complete=passed answer_status=answered
 ```
 
-最后一行 `answer_sources=>0` 表示数量必须大于零，不是输出字面值。API 可记录 received=3/results_submitted=3（按 call_id 结清），实际 result_injections=2；VoiceChat function_parsed=3/new_calls=3/function_result=2（两次注入），这不是回填缺失。第二批模型结果保留累计来源和 executed/not_executed 成员状态。
+另需 `answer_sources` 大于零。API 可记录 received=3/results_submitted=3（按 call_id 结清），实际 result_injections=2；VoiceChat function_parsed=3/new_calls=3/function_result=2（两次注入），这不是回填缺失。第二批模型结果保留累计来源和 executed/not_executed 成员状态。
 
 模型输出可能变化，不能强求上述次数。固定判据是：每 input 实际查询不超过 2、每完整批次只注入一次、预先收到的超额成员不误报 VOICE_TOOL_LOOP、第二段真实非 ACK 回答文本/音频/结束事件齐全并提交有来源的答案。内容仍须人工复核，不能以终态已回填代替回答完成。`session_match=unverified` 不是模型零调用。
 

@@ -1,143 +1,12 @@
-# VoiceChat 独立接入与验证
+# VoiceChat 独立验证
 
-2026-10-20：本期使用 VoiceChat 原生英文全双工和连接内多轮能力。应用接入采用 [简化设计](../q1003-target-architecture.md)，VoiceChat 不承担 CueKB 业务去重、结果缓存重放或回答授权。本次检索预算及累计证据只修改 API，VoiceChat 源码及快照 hash 不变，无需重建 VoiceChat。
+本期使用私有 VoiceChat 的原生英文语音和工具能力；CueKB 查询预算与累计证据由 API 执行。VoiceChat 仅保持音频/响应顺序、工具批次边界和结果注入，不做业务去重或缓存重放。
 
-## 1. 已知事实与撤回的修改
+## 1. 文件与部署核对
 
-用户多轮现场报告已经证明：`search_knowledge_base` 名称正确、两层 Prompt hash 一致、模型能原生调用工具、CueKB 可在约 100ms 返回证据。证据过滤修正后仍未完成知识语音回答。历史汇总中的 `speech=passed` 包含 ACK 音频，`audio_done` 是整个窗口的总数；它们不足以证明业务答案完成。
+完整运行文件见本目录，SHA-256 与修改来源见 [manifest](snapshot-manifest.json)，实际挂载/启动命令见 [docker-run.md](docker-run.md)。本次只修改 audio_server.py 的批次传输，API 必须同时升级；model.py、load_utils.py、Prompt 与格式化函数不新增修改。
 
-旧版本把原因归结为“重复 ACK 抢占唯一回答许可”，据此加入按工具名合并参数变体、自动重放缓存结果、隐藏重复 ACK。这些解释没有完整事件时间线证明，并且改变了原生调用含义。本版撤回三项逻辑，保留有序输出、响应 ID、尾帧刷新和不输出正文的诊断。
-
-- 模型产生的新调用逐个送至 API，不因工具名相同而合并。
-- API 对同一个 call_id 的相同通知幂等；新增同输入的查询预算与精确参数去重：重复查询可回填累计证据并结束检索，不同查询最多实际执行两次。这不是 VoiceChat 内部重放。
-- 工具结果按原 call_id 回填一次，VoiceChat 不在内部重放。
-- ACK 与最终回答均正常发送；API 不以 ACK 分配或恢复发声许可。
-- 本次没有修改 Triton model.py、权重或 ASR。补收用户提供的完整 load_utils.py，保持附件代码不变，LF/CRLF 校验关系见 docker-run.md。hello.wav 句首丢词继续暂缓。
-
-## 2. 更新范围与文件身份
-
-完整文件位于本目录 `s2s/audio_server.py`，运行路径 `/s2s/audio_server.py`；测试在 `s2s/tests/test_response_lifecycle.py`。所有 hash 以 [snapshot-manifest.json](snapshot-manifest.json) 为准。[docker-run.md](docker-run.md) 维护构建、挂载和重建命令。
-
-本次只更新 API 镜像。下列检查用于确认现有 VoiceChat 的文件身份，不要求覆盖 audio_server.py 或重建容器。已有 bind mount 会覆盖镜像内同路径文件，因此文件 hash 以容器内实际文件为准。
-
-从宿主机执行，检查容器实际文件：
-
-```sh
-VOICE_CONTAINER=nemotron-labs-voicechat
-
-docker exec "$VOICE_CONTAINER" sha256sum /s2s/audio_server.py /s2s/prompt_template.jinja \
-  /opt/tritonserver/backends/nemotron-voicechat/checkpoint_utils/load_utils.py
-docker exec "$VOICE_CONTAINER" printenv USE_JINJA_TEMPLATE_PROMPT
-docker exec -e PYTHONPYCACHEPREFIX=/tmp/voice-validation/pycache "$VOICE_CONTAINER" \
-  python -m py_compile /s2s/audio_server.py
-```
-
-预期 hash 与 manifest 一致，模板环境值为 1，编译退出码为 0。无需复制测试文件到运行容器，编译缓存自动写入 /tmp。
-
-本次 API 结果会携带 search_state（available/finished）、累计来源及英文回答要求；现有 model.py 已调用 format_tool_response_for_nemo，现场日志也已有 `<TOOL_RESPONSE>`，不要再次添加包裹。是否根据终态结果回答属于待验证的模型行为；API 不发送未经验证支持的 tool_choice，也不宣称 session.update 能在运行中禁用模型工具。
-
-完成主项目的 [单入口验证](../native-cuekb-validation.md#2-从宿主机运行一次验证) 后，用该报告时间窗口执行本页 §3 的摘要命令。预期名称和 Prompt hash 一致；VoiceChat 内部 results_replayed=0。若 API 报 VOICE_TOOL_LOOP，最后一次模型调用可能因连接已关闭而没有结果；应记录为模型未在终态后收敛，不能通过重放或放宽上限消除错误。只提供摘要，不提供全部日志。
-
-## 3. 本轮工具传输摘要
-
-先运行 [API 单入口](../native-cuekb-validation.md#2-从宿主机运行一次验证)，报告会记录窗口。宿主机执行：
-
-```sh
-WINDOW_START=$(docker exec "$API_CONTAINER" python -c 'import json; print(json.load(open("/tmp/native-cuekb/report.json"))["window_start"])')
-WINDOW_END=$(docker exec "$API_CONTAINER" python -c 'import json; print(json.load(open("/tmp/native-cuekb/report.json"))["window_end"])')
-
-docker logs --since "$WINDOW_START" --until "$WINDOW_END" "$VOICE_CONTAINER" 2>&1 |
-  docker exec -i "$API_CONTAINER" python /app/scripts/run_native_cuekb_validation.py --summarize-voicechat-log
-```
-
-预期最终 Prompt 与 backend 的工具名/hash 匹配，`function_parsed=new_calls=function_result`，旧 `duplicates_coalesced/results_replayed/duplicate_acks_suppressed/replay_limit` 全为 0。模型可能针对一个输入继续查询，不能仅凭调用数多于输入数判错。`LEGACY_TOOL_REPLAY` 表示旧补偿逻辑仍在运行。
-
-摘要新增 `backend_injection` 行，按同一 sequence 汇总接收、ACK 期间缓存、注入启动、返回 idle、取消及 token 长度。`status=complete` 仅表示观测到对应队列注入完成，不证明模型理解或事实正确；无后端日志则为 unverified。末行 `scope=tool_transport` 明确原检查只证明工具事件与回填数量匹配，不证明答案有依据或音频完成。业务完成必须同时满足 API case 的 `answer_complete=passed`。不要用提高 replay 上限或隐藏 ACK 消除错误。
-
-## 4. 绕过应用工作流的协议对照
-
-仅在 API 单入口失败时，使用 [独立 VoiceChat 探针](../deployment.md#voicechat-诊断探针与部署产物核验)。该页命令全部从宿主机 docker exec，在 API 容器读取现有工具目录和凭据，直接连接 VoiceChat；脚本自动创建 /tmp 输出目录，输入使用镜像内的 WAV。
-
-探针返回的是明确标记的合成工具结果，不执行 CueKB，不能当作业务验收。只回传：
-
-```text
-probe_status=... phase=... reason=... connected=... tools=...
-checks=...
-audio_output_samples=... pending_calls=... timeline_dropped=... output_wav_truncated=...
-```
-
-对照的意义：直接探针也无工具续答时查 VoiceChat 原生能力；直接探针完成而 API 失败时查真实结果包和 API 接入。两组必须固定镜像、模板、输入和时间窗口，不用旧会话的计数比较。
-
-## 5. 官方客户端工具调用文件
-
-`--function-text-output` 属于官方客户端启动选项，不是 audio_server.py 的服务端开关。先在实际容器确认客户端版本支持：
-
-```sh
-docker exec "$VOICE_CONTAINER" sh -c '
-  python /opt/voice-validation/nemotron-voicechat-client.py --help |
-    grep -F -- --function-text-output
-'
-```
-
-有输出才证明当前客户端提供此选项；运行该客户端时才会生成其工具调用文件。它不会自动记录 API 发起的另一条 WebSocket 会话，因此当前应用验证使用上述同窗口服务端摘要。不要用另一客户端的 function_calls.jsonl 证明本轮 API 结果。
-
-## 6. 现场放行
-
-四 WAV 连续验证通过后，在同一个 Web 通话中做产品代词追问及播放期间插话。记录同一连接是否保留、查询对象是否正确、回答是否完整、插话是否收到。CPU 契约测试与文件 hash 不能证明模型理解、真实全双工打断或听音质量。
-
-## 7. 2026-10-19 结果注入复核
-
-04:56 UTC 现场：同一输入产生 10 次原生调用，API 检索/回填和 backend 接收均为 10，全部在 ACK 阶段缓存；注入启动 10、返回 idle 与注入结束各 9、取消 1、decoder limit 0。两轮普通回答完成，产品回答未完成。API 约 105 秒触发轮换；取消与轮换的因果仍需同时间线判断，不能把第十次取消当作前九次重新调用的原因。
-
-已提供的 `format_tool_response_for_nemo` 接受 JSON 对象，并添加 `<TOOL_RESPONSE>[...]</TOOL_RESPONSE>` 后调用 `normalize_tool_response`。不能据此要求 API 再加数组或标签，否则可能产生重复封装。随后已取得规范化源码及实际 before/after：三条正文保留，partial 的布尔 false 被转换为字符串 "zero"。API 改用文本标记适配该数词转换边界，未修改本目录 VoiceChat 运行源码。
-
-在已部署的 VoiceChat 容器执行下列源码检查，不需要更新镜像、重建容器或重新跑 WAV。普通 Python 进程不一定具有 Triton backend 的模块路径；不要直接 import infer.utils，也不要为此安装 triton_python_backend_utils。下面只用标准库读取 AST，不加载 Torch/Triton，不执行模型代码。
-
-```sh
-docker exec "$VOICE_CONTAINER" python -c '
-import ast
-from pathlib import Path
-
-path = Path("/opt/tritonserver/backends/nemotron-voicechat/infer/utils.py")
-source = path.read_text()
-tree = ast.parse(source)
-name = "normalize_tool_response"
-found = False
-for node in tree.body:
-    if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)) and node.name == name:
-        print("normalizer_source=" + str(path))
-        print(ast.get_source_segment(source, node))
-        found = True
-    elif isinstance(node, (ast.Import, ast.ImportFrom)):
-        if any((alias.asname or alias.name) == name for alias in node.names):
-            print("normalizer_import=" + ast.get_source_segment(source, node))
-            found = True
-if not found:
-    print("normalizer_definition=not_found")
-    for node in tree.body:
-        if isinstance(node, (ast.Import, ast.ImportFrom)):
-            print(ast.get_source_segment(source, node))
-'
-```
-
-只回传 normalizer_source 和函数源码；若规范化函数来自其他模块，回传 normalizer_import（或 not_found 后的导入列表），用于定位实际文件。本命令不生成 formatted_probe，不能用读取源码成功代替规范化行为已验证。此前直接导入报 ModuleNotFoundError 只证明该诊断进程无法导入 backend 模块，不能据此判断运行中的 Triton 服务缺少依赖。
-
-预期只增加一次工具响应封装，正文与数字保持完整。具体特殊标记映射应核对实际 normalizer 源码，不预设映射正确。若格式化和规范化均正确，再按 §4 的受控短结果探针对照；合成结果探针不能作为真实知识闭环验收。本轮不修改 VoiceChat 推理逻辑。
-
-04:56:50 UTC 的真实 after 证据只覆盖 Black Pig 录音所问四项中的酥皮 18 层；价格、重量、最佳食用时间未出现于这组响应。此事实说明这一组证据覆盖不足，但不证明后续九次响应也相同，或模型重复调用一定由它造成。当前恢复配置的检索数和完整有界来源；不得以 partial=false 推断问题已获充分回答。下一次应核对真实知识回答，而非继续要求用户逐个提供辅助函数。
-
-
-## 10. Web 与自动脚本的阶段时间线
-
-本轮不修改 VoiceChat 代码、Prompt 或快照，无需重建 VoiceChat。使用已有 `voice_ws_diagnostic` 的 input_item_id/sequence_id 及后端 Prompt/function/injection 日志，与新增 API 阶段日志关联。由宿主机 `docker logs --timestamps` 读取，交给 API 镜像中的 `summarize_voice_timeline.py`；全部操作及预期字段见 [对照操作 §2–4](../web-wav-comparison.md)。
-
-预期：`session_match=passed`，backend_prompts 中 `tool_names=search_knowledge_base`。Black Pig 的模型解码、VoiceChat function.call、API received 应能逐个关联；结果回填后可观察 function.result 和注入起止。没有模型调用时计数应为 0，不把“不调用”报告为传输通过；无法关联 sequence 时应显示 unverified。Golden Yolk 同一 sequence 可以有多个 input_item_id，第二段需独立确认实际调用。注入完成不证明完整回答，仍需 API 的对应非 ACK 回答完成及门户提交。
-
-## 11. 原生批次聚合结果验证
-
-本节替代 §10 的“不修改 VoiceChat”部署结论。此次仅修改完整 `s2s/audio_server.py` 和 CPU 回归文件；model.py、load_utils.py、Prompt、训练格式转换均不变。完整来源/hash 由 snapshot-manifest.json 维护，实际挂载及重建命令见 [docker-run.md](docker-run.md)。API 与 audio_server 必须一起升级。
-
-宿主机执行以下只读检查，无需导入 Torch/Triton 或复制验证输入：
+宿主机执行，不复制测试材料、不导入 Torch/Triton：
 
 ```sh
 VOICE_CONTAINER=nemotron-labs-voicechat
@@ -146,12 +15,33 @@ docker exec -e PYTHONPYCACHEPREFIX=/tmp/voice-validation/pycache "$VOICE_CONTAIN
   python -m py_compile /s2s/audio_server.py
 ```
 
-hash 必须等于 [启动手册](docker-run.md#启动前核对) 的 audio_server 值；编译退出 0。然后只运行 [批次验收](../native-tool-batch-validation.md) 的 Golden Yolk 自动/Web 各一次，使用该次窗口取得 `--summarize-voicechat-log` 和时间线，无需另外运行官方客户端或全量日志。
+预期 hash 与启动手册一致、编译退出 0。这只证明文件身份/语法，不证明模型运行正确。API 镜像单入口为 `python /app/scripts/run_native_cuekb_validation.py`；业务复测按 [批次验收](../native-tool-batch-validation.md)。
 
-预期：同一解码输出的 function.call 共享 native_batch_id，size/index 一致；一个完整结果对应一次 function.batch_result、一次 function.result 和一次 backend 注入。若该输出含两个调用，function_parsed/new_calls 增加 2，function_result 只增加 1，是正常行为。缺失或错误成员列表会报 invalid_tool_result_batch 并结束连接，不静默等待；已结清批次的重复回填拒绝。
+## 2. 原生批次聚合结果验证
 
-时间线现在可用 call_id 或 response_id 关联 sequence，不依赖 ASR 日志恰好包含 input_item_id。未关联仍标记 unverified；voicechat_diagnostic_events/backend_log_candidates 仅表示窗口中存在候选日志，不证明属于当前会话。工具传输 passed 也不证明答案完成或准确，必须核对第二段对应的答案文本、音频结束和引用。
+Golden Yolk 自动/Web 各一次，各自取得窗口与 conversation_id，按批次验收命令提取时间线及 `--summarize-voicechat-log`。不要回传完整 `docker logs`，不要用另一个客户端的日志证明本次 API 会话。
 
-本地 CPU 只验证传输顺序及拒绝规则。真实模型是否在聚合结果后完成有据回答、较长等待是否发生在 ACK/注入/后续生成，仍需现场本轮证据。未取得证据前不修改模型续答逻辑。
+预期：
 
-不要回传完整 `docker logs`；只保留同一窗口的诊断摘要。
+- 同次 session 的 Prompt 工具名与 SHA-256 在 audio_server/backend 两侧一致；这只证明传递一致。
+- 同一解码输出的 function.call 共享 native_batch_id，size/index 连续；一个完整结果对应一次 function.batch_result、function.result 和 backend 注入。
+- 若一批有两个调用，function_parsed/new_calls 增加 2，function_result 增加 1，不是回填缺失。成员缺失/错误或重复结清明确拒绝，不静默等待。
+- 时间线可用 input_item_id、call_id 或 response_id 关联 sequence；未关联仍为 unverified，不能报告模型零调用。
+- 工具传输 passed 不证明第二段回答完成或准确；还要有非 ACK 文本、非空音频、结束事件及答案/来源提交，随后听音核实。
+
+VoiceChat 后端已调用 format_tool_response_for_nemo，对 API JSON 添加既有 TOOL_RESPONSE 包裹。不要重复添加。API partial 使用字符串以适配现有数词规范化；不据此前 false→zero 日志推定用户已经听到 zero。
+
+## 3. 官方客户端日志边界
+
+可以在容器只读确认选项存在：
+
+```sh
+docker exec "$VOICE_CONTAINER" sh -c '
+  python /opt/voice-validation/nemotron-voicechat-client.py --help |
+    grep -F -- --function-text-output
+'
+```
+
+`--function-text-output function_calls.jsonl` 只记录该客户端自己的连接，不会旁路记录门户/API 的另一连接。当前业务验证使用同窗口服务端摘要，不需要再启动官方客户端重跑。
+
+CPU 回归覆盖批次完整性、单次注入及拒绝重复。真实模型在聚合结果后是否完整回答、等待发生在 ACK/注入/生成的哪一段，仍需本次部署证据。未取得证据前不调整模型逻辑。

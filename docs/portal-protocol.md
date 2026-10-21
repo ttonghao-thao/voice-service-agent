@@ -1,6 +1,6 @@
 # 门户与 HTTP/SSE/WS 契约
 
-2026-10-07 按 `f498fa4` 核对。定义源为 [contracts.py](../apps/api/app/contracts.py)、[routes.py](../apps/api/app/api/routes.py)；完整 [OpenAPI](../contracts/openapi.json)、[上行](../contracts/portal-client-events.schema.json)/[下行](../contracts/portal-events.schema.json) 由脚本生成，按对象查阅，不整读 JSON。本文维护消息含义和 UI 关联，配置归部署，Provider 原始事件归接入。
+2026-10-21 按一期持续 relay 与原始 PCM 文件输入整理。定义源为 [contracts.py](../apps/api/app/contracts.py)、[routes.py](../apps/api/app/api/routes.py)；完整 [OpenAPI](../contracts/openapi.json)、[上行](../contracts/portal-client-events.schema.json)/[下行](../contracts/portal-events.schema.json) 由脚本生成，按对象查阅，不整读 JSON。本文维护消息含义和 UI 关联，配置归部署，Provider 原始事件归接入。
 
 ## 1. 通话与界面
 
@@ -10,7 +10,7 @@
 
 `portal.presentation.updated` 的失败结果显示独立警告，不用正确文字掩盖错误口述；历史 speech_validation 按授权过滤。已知 Turn 的 SSE final 原位更新，未知 Turn 才补 GET messages；迟到 running 快照不覆盖 final。向上阅读不强制滚到底部，引用按实际 citation 展示片段/上下文/版本，不能凭无 URL 的证据生成原件下载地址。
 
-Stop playback 保留查询和正文；Cancel search 使当前任务失效；End call 释放设备并撤销 capability。Check progress 读取真实状态，不检索、不调用模型、不报虚构百分比。文字提交会结束当前语音，UI 明示这一行为。异常恢复重新开始通话，不恢复录音或旧播放队列。
+Stop playback 保留查询和正文；Cancel search 使当前任务失效；End call 释放设备并撤销 capability。Check progress 读取真实状态，不检索、不调用模型、不报虚构百分比。本期 AGENT_PROVIDER=disabled 时文字提交关闭；兼容文字入口启用时，提交会结束当前语音。异常恢复重新开始通话，不恢复录音或旧播放队列。
 
 ## 2. HTTP 与 SSE
 
@@ -57,7 +57,7 @@ SSE 由持久 Event/server_seq/cursor 支持重放；同进程事务提交后唤
 
 门户可在 Microphone / Audio file 间选择。文件只在浏览器内存解析，不新增 API 上传或服务端录音存储；仅接受不超过 30 秒、2 MiB 的 24 kHz 单声道 PCM16 RIFF WAV，并校验 RIFF 长度、chunk 边界/填充、唯一 fmt/data 及 PCM 参数。用户选择文件后仍须点击 Start file call，才创建独立 conversation/capability 和 voice session。
 
-文件经 `AudioBufferSourceNode → 现有 AudioWorklet → portal.audio.append` 按音频时钟实时发送，公开 WS 格式、seq、背压和生产授权规则均不变。音源必须等 `portal.session.ready` 及 Worklet 的未来起点确认后从第一个样本启动；EOF 后继续发送静音，直到 FIR 尾部和不足整帧的有效样本进入一次成功的 `ws.send`，此后显示等待回答。`fileSamples/fileComplete` 只是 Worklet 与 VoiceClient 的本地进度元数据，不进入公开 payload。
+文件直接按原始 24 kHz PCM16 以 80 ms 帧实时发送，末帧补零；不经过 AudioBufferSourceNode/麦克风重采样，不做增益处理。必须等 portal.session.ready 后从首样本开始，完整发送 WAV 后继续送静音推动推理。发送停滞或积压明确失败，不突发补发；进度仅表示已送出，不代表模型理解或回答完成。
 
 文件模式不请求麦克风，运行中不能切换输入源。Stop playback 只清下行播放，不能中断文件上行；End call、错误、断线或 session 轮换停止文件并显示完整/未完整状态，首版不会自动续播或重播。固定文件适合复现同一输入，但不验证麦克风权限、AEC/NS/AGC、真实声学或供应商正确率。
 
@@ -95,14 +95,14 @@ finished=true 只在该 response 收到 audio.done 且 Worklet 对应队列排�
 
 页面静音只影响上行麦克风，音量只影响本地播放。播放环有界、短尾帧须可排空；积压显式报错，不以无限缓冲掩盖延迟。Worklet 的内部 done 转为公开 finished ACK，按响应独立处理；不能因 ACK 提示播完而让业务答案提前完成。
 
-普通 speech_started/quiet 不取消查询。工具只有绑定最终 ASR 后才执行；输出须持有当前许可，ACK 不消耗最终答案许可。精确上游时序归 [接入 §3](integration.md#3-voicechat-接入与能力门槛)。轮换/重连和无确认状态归 [交付 §2](live-agent-implementation.md#2-结束确认台账与恢复)，不能把 audio.done 当作设备已经播放完。
+普通 speech_started/quiet 不取消查询。工具只有绑定最终 ASR 后才执行；一期输出按当前 input/response 关联，ACK 不作为最终答案完成。精确上游时序归 [接入 §3](integration.md#3-voicechat-接入与能力门槛)。轮换/重连和无确认状态归 [交付 §2](live-agent-implementation.md#2-结束确认台账与恢复)，不能把 audio.done 当作设备已经播放完。
 
 ## 4. 兼容与错误
 
 - v1 的已定义字段和音频格式不能暗改；新格式/二进制协议须协商或新版本。可选字段兼容旧数据，未知非关键展示事件可忽略，未知客户端控制必须拒绝。
-- 401/403、429、契约错误、超时和未命中分开处理；不把所有错误显示为无知识。VoiceChat 失败可以显式使用文字入口，不能回退 mock。
+- 401/403、429、契约错误、超时和未命中分开处理；不把所有错误显示为无知识。VoiceChat 失败不回退 mock；本期 AGENT_PROVIDER=disabled 时文字提交关闭。
 - VOICE_TOOL_REQUIRED 是严格模式未满足工具许可；一般模式合法无工具回答不触发它。未知工具、参数错误、原生回答超时和证据检查失败按各自路径结束，不自动补查或伪造成功。
-- 空音频 delta 和尚无非空输出的 response 结束边界不构成回答，不触发工具许可拒绝，也不消耗后续工具续答许可；结束 ID 仍不可复用。非空输出保持原有授权要求。
+- 空音频 delta 和尚无非空输出的 response 结束边界不构成回答，不构成成功答案；结束 ID 仍不可复用。非空输出仍需当前会话/输入关联和权限检查。
 - 语音错误在上游关闭/存储清理前发送，携带递增 server_seq；发送任务被取消时，仅有界补送仍有效的客户 final ASR。门户保留转写、显示 code/message 并清除等待状态；未收到错误的意外 WS close 也显示重试提示。用户主动结束保持正常关闭，重试必须显式操作，不自动重播录音或提交转写。
 - Answer/Turn/来源面板使用一致业务终态；错误响应只公开稳定 code/message/retryable/trace_id，不转发上游原文、密钥或堆栈。完整枚举和验证约束以代码/生成 schema 为准。
 
