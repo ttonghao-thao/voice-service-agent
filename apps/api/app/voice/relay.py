@@ -92,6 +92,11 @@ async def relay(gateway, ws, session, provider):
                     logger.info("voice_audio_first_sent conversation_id=%s response_id=%s input_item_id=%s",
                         cid, rid, response["input"])
                 response["sent"] += len(base64.b64decode(body["audio"])) // 2
+            elif kind == "portal.speech_text.delta" and body.get("phase") == "answer" and body.get("text"):
+                if not response.get("text_logged"):
+                    response["text_logged"] = True
+                    logger.info("voice_text_first_sent conversation_id=%s response_id=%s input_item_id=%s",
+                        cid, rid, response["input"])
             elif kind == "portal.audio.done":
                 response["sent_done"] = True
                 logger.info("voice_response_completed conversation_id=%s response_id=%s input_item_id=%s phase=%s samples=%s",
@@ -309,7 +314,16 @@ async def relay(gateway, ws, session, provider):
                 session.suppress_next_response = False
             if event.kind.startswith("speech_text"):
                 acks = response["acks"] or (operation["acks"] if operation else ())
-                if event.kind == "speech_text.done":
+                if event.kind == "speech_text.delta":
+                    response["stream_text"] += body["text"]
+                    normalized = " ".join(response["stream_text"].split())
+                    # Withhold a possible fixed ACK prefix, not arbitrary speech.
+                    # If it diverges, release its complete buffered text once.
+                    response["ack"] = any(ack.startswith(normalized) for ack in acks)
+                    if not response["ack"]:
+                        body["text"] = response["stream_text"][response["streamed_chars"]:]
+                        response["streamed_chars"] = len(response["stream_text"])
+                else:
                     response["text"] = body["text"]
                     response["ack"] = " ".join(body["text"].split()) in acks
                     if not response["ack"]:
@@ -337,7 +351,7 @@ async def relay(gateway, ws, session, provider):
             if len(responses) >= 1024:
                 raise DomainError("VOICE_SESSION_ROTATION_REQUIRED", "Reconnect to continue the conversation.", 409, True)
             responses[rid] = {"input": latest_input, "text": "", "ack": False, "acks": (),
-                              "sent": 0, "done": False, "sent_done": False}
+                              "sent": 0, "done": False, "sent_done": False, "streamed_chars": 0, "stream_text": ""}
         return responses[rid]
 
     async def browser():

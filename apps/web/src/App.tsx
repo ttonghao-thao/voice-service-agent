@@ -97,13 +97,13 @@ export default function App() {
     Record<string, { text: string; done: boolean }>
   >({});
   const [spoken, setSpoken] = useState<
-    Record<string, { turnId: string; text: string; done: boolean }>
+    Record<string, { turnId: string; inputKey?: string; answerKind?: string; text: string; done: boolean }>
   >({});
   const [timeline, setTimeline] = useState<string[]>([]);
   const [atBottom, setAtBottom] = useState(true);
   const [finishedTurns, setFinishedTurns] = useState<Set<string>>(new Set());
   const [presentations, setPresentations] = useState<Record<string, {
-    turnId: string; status: string; reason: string;
+    turnId: string; inputKey?: string; status: string; reason: string;
   }>>({});
   const epoch = useRef(0),
     requestRevision = useRef(0),
@@ -116,6 +116,8 @@ export default function App() {
     followBottom = useRef(true);
   const knownTurns = useRef(new Set<string>());
   const revokedTurns = useRef(new Set<string>());
+  const revokedInputs = useRef(new Set<string>());
+  const turnInputs = useRef(new Map<string, string>());
   const finalAnswers = useRef(
     new Map<string, { epoch: number; revision: number; answer: Answer }>(),
   );
@@ -146,6 +148,9 @@ export default function App() {
     setBefore(data.next_before);
     data.items = data.items.map((turn) => {
       knownTurns.current.add(turn.id);
+      if (turn.input_item_id) turnInputs.current.set(turn.id, `input:${turn.epoch}:${turn.input_item_id}`);
+      if (turn.answer?.reason_code === "KB_ACCESS_REVOKED" && turn.input_item_id)
+        revokedInputs.current.add(`input:${turn.epoch}:${turn.input_item_id}`);
       const final = finalAnswers.current.get(turn.id);
       return final &&
         final.epoch === turn.epoch &&
@@ -174,11 +179,12 @@ export default function App() {
         if (r.kind !== "speech_validation") continue;
         next[`${r.epoch}:${r.source_id}`] = {
           turnId: r.payload.turn_id || `input:${r.epoch}:${r.payload.input_item_id}`,
+          inputKey: r.payload.input_item_id ? `input:${r.epoch}:${r.payload.input_item_id}` : undefined,
           status: r.payload.status || "unverified", reason: r.payload.reason_code || "",
         };
       }
       const revoked = new Set(data.items.filter((t) => t.answer?.reason_code === "KB_ACCESS_REVOKED").map((t) => t.id));
-      for (const [key, item] of Object.entries(next)) if (revoked.has(item.turnId)) delete next[key];
+      for (const [key, item] of Object.entries(next)) if (revoked.has(item.turnId) || (item.inputKey && revokedInputs.current.has(item.inputKey))) delete next[key];
       return next;
     });
     setInputs((previous) => {
@@ -199,17 +205,19 @@ export default function App() {
       );
       for (const id of revoked) revokedTurns.current.add(id);
       for (const [key, part] of Object.entries(next)) {
-        if (revoked.has(part.turnId)) delete next[key];
+        if (revoked.has(part.turnId) || (part.inputKey && revokedInputs.current.has(part.inputKey))) delete next[key];
       }
       for (const record of records) {
         if (
           record.kind !== "voicechat_transcript" ||
           (!record.payload.turn_id && !record.payload.input_item_id) ||
-          !record.payload.text
+          !record.payload.text || record.payload.phase === "status" ||
+          (record.payload.input_item_id && revokedInputs.current.has(`input:${record.epoch}:${record.payload.input_item_id}`))
         )
           continue;
-        const key = `${record.epoch}:${record.source_id}`;
+        const key = `${record.epoch}:${record.source_id}:${record.payload.segment_index || 0}`;
         next[key] = {
+          inputKey: record.payload.input_item_id ? `input:${record.epoch}:${record.payload.input_item_id}` : undefined,
           turnId: record.payload.turn_id || `input:${record.epoch}:${record.payload.input_item_id}`,
           text: record.payload.text,
           done: true,
@@ -268,13 +276,16 @@ export default function App() {
         if (event.request_revision < requestRevision.current) return;
         setProgress("");
         const answer = event.payload as unknown as Answer;
-        if (answer.reason_code === "KB_ACCESS_REVOKED" && event.turn_id)
+        if (answer.reason_code === "KB_ACCESS_REVOKED" && event.turn_id) {
           revokedTurns.current.add(event.turn_id);
+          const inputKey = turnInputs.current.get(event.turn_id);
+          if (inputKey) revokedInputs.current.add(inputKey);
+        }
         if (answer.reason_code === "KB_ACCESS_REVOKED" && event.turn_id)
           setSpoken((old) =>
             Object.fromEntries(
               Object.entries(old).filter(
-                ([, part]) => part.turnId !== event.turn_id,
+                ([, part]) => part.turnId !== event.turn_id && !(part.inputKey && revokedInputs.current.has(part.inputKey)),
               ),
             ),
           );
@@ -331,15 +342,21 @@ export default function App() {
         const key = `${event.epoch}:${event.payload.response_id}`;
         setPresentations((old) => ({ ...old, [key]: {
           turnId: event.turn_id || `input:${event.epoch}:${event.payload.input_item_id}`,
+          inputKey: event.payload.input_item_id ? `input:${event.epoch}:${event.payload.input_item_id}` : undefined,
           status: String(event.payload.status), reason: String(event.payload.reason_code || ""),
         } }));
       }
       if (
         event.type === "portal.audio.done" &&
-        event.turn_id &&
+        (event.turn_id || event.payload.input_item_id) &&
         event.payload.phase !== "status"
       ) {
-        setFinishedTurns((old) => new Set(old).add(event.turn_id!));
+        setFinishedTurns((old) => {
+          const next = new Set(old);
+          if (event.turn_id) next.add(event.turn_id);
+          if (event.payload.input_item_id) next.add(`input:${event.epoch}:${event.payload.input_item_id}`);
+          return next;
+        });
       }
       if (event.type.startsWith("portal.transcript.")) {
         const item = String(event.payload.item_id || "");
@@ -363,23 +380,30 @@ export default function App() {
       }
       if (event.type.startsWith("portal.speech_text.")) {
         if (event.request_revision < requestRevision.current) return;
+        const key = `${event.epoch}:${event.payload.response_id}:${event.payload.segment_index || 0}`;
+        const inputKey = event.payload.input_item_id ? `input:${event.epoch}:${event.payload.input_item_id}` : undefined;
         if (event.payload.phase === "status") {
           setProgress("Checking knowledge");
+          // A final ACK classification replaces any provisional prefix for this response only.
+          setSpoken((old) => { const next = { ...old }; delete next[key]; return next; });
           return;
         }
         if (
           (!event.turn_id && !event.payload.input_item_id) ||
           !event.payload.response_id ||
-          (event.turn_id && revokedTurns.current.has(event.turn_id))
+          (event.turn_id && revokedTurns.current.has(event.turn_id)) ||
+          (inputKey && revokedInputs.current.has(inputKey))
         )
           return;
-        const key = `${event.epoch}:${event.payload.response_id}:${event.payload.segment_index || 0}`;
-        if (!event.turn_id) setSelected(null);
+        setProgress("");
+        if (!event.turn_id && event.payload.answer_kind !== "knowledge") setSelected(null);
         const done = event.type.endsWith(".done");
         setSpoken((old) => ({
           ...old,
           [key]: {
-            turnId: event.turn_id || `input:${event.epoch}:${event.payload.input_item_id}`,
+            turnId: event.turn_id || inputKey!,
+            inputKey,
+            answerKind: String(event.payload.answer_kind || "general"),
             text: done
               ? String(event.payload.text || "")
               : old[key]?.done
@@ -487,8 +511,8 @@ export default function App() {
       setTurns([]);
       setSelected(null);
       setInputs({});
-    setSpoken({});
-    setPresentations({});
+      setSpoken({});
+      setPresentations({});
       setTimeline([]);
       setFinishedTurns(new Set());
       followBottom.current = true;
@@ -498,6 +522,8 @@ export default function App() {
       lastEvent.current.clear();
       knownTurns.current.clear();
       revokedTurns.current.clear();
+      revokedInputs.current.clear();
+      turnInputs.current.clear();
       finalAnswers.current.clear();
       setCid(c.id);
       setSidebar(false);
@@ -951,14 +977,14 @@ export default function App() {
                   : null;
                 if (!t && !input) return null;
                 const speechParts = Object.values(spoken).filter(
-                  (part) => part.turnId === (t?.id || key),
+                  (part) => part.inputKey ? part.inputKey === key : part.turnId === (t?.id || key),
                 );
                 const speech = speechParts
                   .map((part) => part.text)
                   .filter(Boolean)
                   .join(" ");
                 const presentationFailed = Object.values(presentations).some(
-                  (item) => item.turnId === (t?.id || key) && item.status === "failed",
+                  (item) => (item.inputKey ? item.inputKey === key : item.turnId === (t?.id || key)) && item.status === "failed",
                 );
                 return (
                   <article className="turn" key={key}>
@@ -984,10 +1010,10 @@ export default function App() {
                     {!t && speech && (
                       <div className="assistant-message">
                         <div className="assistant-label">
-                          <strong>Answer</strong><Tag>Model general answer</Tag>
+                          <strong>Answer</strong><Tag>{speechParts.some((part) => part.answerKind === "knowledge") ? "Knowledge reply" : "Model general answer"}</Tag>
                         </div>
                         <p aria-live="polite">{speech}</p>
-                        <small className="muted">No company sources were checked.</small>
+                        <small className="muted">{speechParts.some((part) => part.answerKind === "knowledge") ? "Sources are pending." : "No company sources were checked."}</small>
                       </div>
                     )}
                     {t && (
@@ -1006,8 +1032,8 @@ export default function App() {
                                   : "default"
                             }
                           >
-                            {statuses[visibleTurnStatus(t)] ||
-                              visibleTurnStatus(t)}
+                            {speechParts.some((part) => !part.done) ? "Speaking" :
+                              statuses[visibleTurnStatus(t)] || visibleTurnStatus(t)}
                           </Tag>
                         </div>
                         {t.channel === "voice" ? (
@@ -1028,7 +1054,7 @@ export default function App() {
                             ) : t.answer ? (
                               <p className="muted">
                                 {voiceState === "ready" &&
-                                !finishedTurns.has(t.id) &&
+                                !finishedTurns.has(t.id) && !finishedTurns.has(key) &&
                                 t.answer.status !== "failed"
                                   ? "Answer ready. Waiting for spoken reply."
                                   : "Voice reply unavailable. The full answer is below."}

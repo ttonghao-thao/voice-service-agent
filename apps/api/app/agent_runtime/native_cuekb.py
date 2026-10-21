@@ -42,8 +42,13 @@ def voice_result(ready):
     for item in ready.envelope["items"]:
         source = {"text": item["text"]}
         for key in ("title", "context", "conditions"):
-            if item.get(key) and item[key] != item["text"]:
-                source[key] = item[key]
+            value = item.get(key)
+            # A generic adapter title adds no evidence. Preserve meaningful titles,
+            # complete contexts and every condition; never shorten source passages.
+            if key == "title" and value == "Source excerpt":
+                continue
+            if value and value != item["text"]:
+                source[key] = value
         sources.append(source)
     # Deployed VoiceChat verbalizes JSON booleans (observed false -> "zero").
     # Text flags survive that boundary; internal audit stays bool.

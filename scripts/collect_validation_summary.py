@@ -58,8 +58,12 @@ def log_summary(text, conversation_id):
         subset = [row for row in rows if row.get("input_item_id") == input_id]
         completed = [row for row in subset if row["event"] == "voice_response_completed"
                      and row.get("phase") == "answer"]
-        response_ids = {row.get("response_id") for row in completed}
+        # A prior non-ACK response can end before a supplementary search.
+        # Measure the latest completed response, not the first response of this input.
+        response_ids = {completed[-1].get("response_id")} if completed else set()
         audio = [row for row in subset if row["event"] == "voice_audio_first_sent"
+                 and row.get("response_id") in response_ids]
+        texts = [row for row in subset if row["event"] == "voice_text_first_sent"
                  and row.get("response_id") in response_ids]
         calls = [row for row in subset if row["event"] == "voice_tool_call_received"]
         call_ids = {row.get("call_id") for row in calls}
@@ -71,12 +75,14 @@ def log_summary(text, conversation_id):
                   "first_call": calls[0]["at"] if calls else None,
                   "last_result": results[-1]["at"] if results else None,
                   "answer_audio": audio[0]["at"] if audio else None,
+                  "answer_text": texts[0]["at"] if texts else None,
                   "answer_done": completed[-1]["at"] if completed else None}
         emit("input_timing", {"input_item_id": input_id, **stamps,
                               "question_to_call_ms": milliseconds(stamps["transcribed"], stamps["first_call"]),
                               "last_result_to_audio_ms": milliseconds(stamps["last_result"], stamps["answer_audio"])
                               if stamps["last_result"] and stamps["answer_audio"]
                               and stamps["last_result"] <= stamps["answer_audio"] else None,
+                              "text_before_done_ms": milliseconds(stamps["answer_text"], stamps["answer_done"]),
                               "basis": "server_log_not_speaker", "incomplete": header["truncated"]})
     # Bounded injection milestones expose ACK wait separately from injection work.
     milestones = [r for r in rows if r["event"].startswith("backend.")]
@@ -96,9 +102,15 @@ async def saved_answers(conversation_id, window_start, window_end):
                 Turn.conversation_id == conversation_id,
                 Turn.created_at >= window_start, Turn.created_at <= window_end,
             ).order_by(Turn.created_at.desc()).limit(9)))
+            queries = list(await db.scalars(select(Record).where(
+                Record.conversation_id == conversation_id,
+                Record.created_at >= window_start, Record.created_at <= window_end,
+                Record.kind == "native_tool_arguments",
+            ).order_by(Record.created_at).limit(9)))
         emit("saved", {"conversation_id": conversation_id, "records_shown": min(len(records), 16),
                        "turns_shown": min(len(turns), 8), "records_truncated": len(records) > 16,
-                       "turns_truncated": len(turns) > 8})
+                       "turns_truncated": len(turns) > 8,
+                       "queries_shown": min(len(queries), 8), "queries_truncated": len(queries) > 8})
         for record in records[:16]:
             payload = record.payload
             emit("record", {"kind": record.kind, "epoch": record.epoch,
@@ -115,12 +127,26 @@ async def saved_answers(conversation_id, window_start, window_end):
                           "answer_sources": len(answer.get("citations") or []),
                           "retrieved_sources": len(citations),
                           "traces": sorted({c.get("trace_id", "") for c in citations})[:4]})
-        # Source samples are diagnostic evidence, never a declaration of answer faithfulness.
+        for record in queries[:8]:
+            emit("query", {"input_item_id": record.payload.get("input_item_id"),
+                           "call_id": record.source_id,
+                           **clipped(record.payload.get("arguments", {}).get("query"), 500)})
+        # Keep the admitted view (including conditions), not excluded surrounding context.
+        # Samples are bounded diagnostics and do not certify semantic faithfulness.
         latest = next((t for t in turns if t.answer and t.evidence), None)
-        citations = (latest.evidence if latest else {}).get("citations", [])
-        emit("source_samples", {"sample_only": True, "total": len(citations),
-                                "items": [{"citation_id": c.get("citation_id"),
-                                           **clipped(c.get("content"), 600)} for c in citations[:2]]})
+        items = (latest.evidence if latest else {}).get("envelope", {}).get("items", [])
+        samples, remaining = [], 6000
+        for item in items[:8]:
+            value = {key: item[key] for key in ("citation_id", "text", "title", "context", "conditions")
+                     if item.get(key)}
+            encoded = json.dumps(value, ensure_ascii=True)
+            if len(encoded) > remaining:
+                break
+            samples.append(value)
+            remaining -= len(encoded)
+        emit("admitted_evidence", {"input_item_id": latest.input_item_id if latest else None,
+                                   "total": len(items), "items": samples,
+                                   "omitted": len(items) - len(samples), "coverage": "manual_review_required"})
     finally:
         await engine.dispose()
 

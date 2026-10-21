@@ -5,7 +5,7 @@ import sys
 from pathlib import Path
 
 import pytest
-from app.storage.models import Base, Conversation, Record
+from app.storage.models import Base, Conversation, Record, Turn
 from sqlalchemy.ext.asyncio import async_sessionmaker, create_async_engine
 
 from scripts import collect_validation_summary as collector
@@ -28,6 +28,7 @@ def test_summary_separates_sessions_and_does_not_count_ack_as_answer(capsys):
         f'2026-10-21T00:00:06Z voice_tool_result_submitted conversation_id={CHOSEN} turn_id=t1 call_id=c1 bytes=200',
         f'2026-10-21T00:00:07Z voice_tool_call_received conversation_id={OTHER} call_id=c2 tool=unrelated input_item_id=i2',
         f'2026-10-21T00:00:08Z voice_audio_first_sent conversation_id={CHOSEN} response_id=answer input_item_id=i1',
+        f'2026-10-21T00:00:09Z voice_text_first_sent conversation_id={CHOSEN} response_id=answer input_item_id=i1',
         f'2026-10-21T00:00:10Z voice_response_completed conversation_id={CHOSEN} response_id=answer input_item_id=i1 phase=answer samples=500',
     ]
     collector.log_summary('\n'.join(logs), CHOSEN)
@@ -36,6 +37,8 @@ def test_summary_separates_sessions_and_does_not_count_ack_as_answer(capsys):
     assert '"model_function_count":1' in output
     assert '"last_result_to_audio_ms":2000' in output
     assert '"answer_audio":"2026-10-21T00:00:08Z"' in output
+    assert '"answer_text":"2026-10-21T00:00:09Z"' in output
+    assert '"text_before_done_ms":1000' in output
 
 
 def test_unknown_sequence_and_missing_answer_remain_unverified(capsys):
@@ -61,12 +64,27 @@ async def test_saved_records_exclude_prior_epoch_outside_window(tmp_path, monkey
         for day, text in ((20, 'OLD_PRIVATE_TEXT'), (21, 'current question')):
             db.add(Record(conversation_id=CHOSEN, epoch=day, kind='user_transcript', source_id=str(day),
                           payload={'item_id': str(day), 'text': text}, created_at=datetime(2026, 10, day, tzinfo=UTC)))
+        db.add(Record(conversation_id=CHOSEN, epoch=2, kind='native_tool_arguments', source_id='query',
+                      payload={'input_item_id': 'current', 'arguments': {'query': 'Can Product AX be shipped?'}},
+                      created_at=datetime(2026, 10, 21, tzinfo=UTC)))
+        db.add(Turn(conversation_id=CHOSEN, epoch=2, request_revision=1, input_item_id='current',
+                    idempotency_key='test-query', request_hash='test', user_text='Can it be shipped?', channel='voice',
+                    status='answered', answer={'status': 'answered'},
+                    evidence={'envelope': {'items': [{'citation_id': 'C1', 'text': 'Ship locally only.',
+                        'conditions': {'product_model': 'AX'}}]},
+                              'citations': [{'context': 'EXCLUDED_CONTEXT_MUST_NOT_APPEAR', 'trace_id': 'trace'}]},
+                    created_at=datetime(2026, 10, 21, tzinfo=UTC)))
         await db.commit()
     await engine.dispose()
     monkeypatch.setattr(collector, 'Settings', lambda: SimpleNamespace(database_url=url))
     await collector.saved_answers(CHOSEN, datetime(2026, 10, 21, tzinfo=UTC), datetime(2026, 10, 22, tzinfo=UTC))
     output = capsys.readouterr().out
     assert 'current question' in output and 'OLD_PRIVATE_TEXT' not in output
+    assert 'Can Product AX be shipped?' in output
+    assert 'EXCLUDED_CONTEXT_MUST_NOT_APPEAR' not in output
+    admitted = json.loads(next(row.split('=', 1)[1] for row in output.splitlines() if row.startswith('admitted_evidence=')))
+    assert admitted['items'] == [{'citation_id': 'C1', 'text': 'Ship locally only.', 'conditions': {'product_model': 'AX'}}]
+    assert admitted['omitted'] == 0 and admitted['coverage'] == 'manual_review_required'
 
 
 @pytest.fixture
@@ -149,3 +167,17 @@ def test_mismatch_stops_before_audio_and_pending_web_blocks_auto(fake_docker):
     ended = run_host(fake_docker, 'web-end')
     assert ended.returncode == 0 and 'collection=complete' in ended.stdout
     assert 'web_capture_not_started' in run_host(fake_docker, 'web-end').stdout
+
+
+def test_timing_uses_last_answer_instead_of_a_reply_before_supplementary_search(capsys):
+    events = [
+        ('00:00:01', f'voice_audio_first_sent conversation_id={CHOSEN} response_id=early input_item_id=i1'),
+        ('00:00:02', f'voice_response_completed conversation_id={CHOSEN} response_id=early input_item_id=i1 phase=answer samples=100'),
+        ('00:00:04', f'voice_audio_first_sent conversation_id={CHOSEN} response_id=final input_item_id=i1'),
+        ('00:00:05', f'voice_text_first_sent conversation_id={CHOSEN} response_id=final input_item_id=i1'),
+        ('00:00:08', f'voice_response_completed conversation_id={CHOSEN} response_id=final input_item_id=i1 phase=answer samples=300'),
+    ]
+    collector.log_summary('\n'.join(f'2026-10-21T{at}Z {row}' for at, row in events), CHOSEN)
+    output = capsys.readouterr().out
+    assert '"answer_audio":"2026-10-21T00:00:04Z"' in output
+    assert '"text_before_done_ms":3000' in output

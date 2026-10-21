@@ -51,6 +51,7 @@ export class VoiceClient {
   private fileTimer?: ReturnType<typeof setTimeout>;
   private fileArmed = false;
   private diagnosticAudio = new Set<string>();
+  private diagnosticText = new Set<string>();
   private fileSourceEnded = false;
   private sentFileSamples = 0;
   private fileComplete = false;
@@ -186,6 +187,7 @@ export class VoiceClient {
     this.input = input;
     this.fileArmed = false;
     this.diagnosticAudio.clear();
+    this.diagnosticText.clear();
     this.fileSourceEnded = false;
     this.fileComplete = false;
     this.sentFileSamples = 0;
@@ -329,6 +331,13 @@ export class VoiceClient {
           return;
         }
         if (event.epoch !== this.epoch) return;
+        if (event.type === "portal.speech_text.delta" && event.payload.phase === "answer" && event.payload.text) {
+          const response = String(event.payload.response_id || "");
+          if (response && !this.diagnosticText.has(response)) {
+            this.diagnosticText.add(response);
+            this.diagnostic("speech_text.first", { response_id: response, input_item_id: event.payload.input_item_id });
+          }
+        }
         if (
           [
             "portal.transcript.done",

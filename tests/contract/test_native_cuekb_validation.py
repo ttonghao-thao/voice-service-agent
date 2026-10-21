@@ -705,3 +705,30 @@ def test_voicechat_batch_summary_counts_members_separately_from_injections():
     assert not ok and "MODEL_FUNCTION_WRONG_NAME" in lines[-1]
     lines, ok = summarize_voicechat_log(log.replace('"calls":2,"native_batch_id"', '"calls":1,"native_batch_id"'), "search_knowledge_base")
     assert not ok and "TOOL_RESULT_COUNT_MISMATCH" in lines[-1]
+
+
+def test_voice_payload_compacts_wrapping_without_cutting_evidence():
+    from types import SimpleNamespace
+
+    from app.agent_runtime.native_cuekb import voice_result
+    from app.agent_runtime.native_input import ANSWER_INSTRUCTIONS, FINAL_INSTRUCTIONS
+
+    passages = [
+        "Product AX may be shipped only within the city; keep refrigerated at 2-5 C.",
+        "After opening, consume within 24 hours. Do not freeze.",
+        "Shelf life is 7 days only when unopened and refrigerated.",
+    ]
+    items = [{"text": text, "title": "Source excerpt", "context": None, "conditions": {}}
+             for text in passages]
+    items[1].update(title="Opened package", conditions={"product_model": "AX"})
+    items[2]["context"] = "This shelf life applies only to the sealed package."
+    ready = SimpleNamespace(envelope={"items": items, "partial": False,
+        "search_state": "finished", "instructions": ANSWER_INSTRUCTIONS + FINAL_INSTRUCTIONS})
+    payload = voice_result(ready)
+    assert [item["text"] for item in payload["sources"]] == passages
+    assert payload["sources"][1]["title"] == "Opened package"
+    assert payload["sources"][1]["conditions"] == {"product_model": "AX"}
+    assert payload["sources"][2]["context"] == items[2]["context"]
+    # Generic titles carry no facts; no source or qualification is removed to save bytes.
+    assert "Source excerpt" not in json.dumps(payload)
+    assert payload["partial"] == "false" and payload["search_state"] == "finished"

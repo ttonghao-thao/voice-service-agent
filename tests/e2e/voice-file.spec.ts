@@ -38,7 +38,7 @@ interface FileFrame {
 
 interface FileConnection {
   frames: FileFrame[];
-  emit(type: string, payload?: Record<string, unknown>): void;
+  emit(type: string, payload?: Record<string, unknown>, revision?: number): void;
   close(): void;
 }
 
@@ -48,6 +48,7 @@ async function filePortal(
     beforeConversation?: () => Promise<void>;
     beforeText?: () => Promise<void>;
     textConfigured?: boolean;
+    messages?: () => unknown;
   } = {},
 ) {
   const calls: string[] = [];
@@ -60,6 +61,7 @@ async function filePortal(
   const errors: string[] = [];
   page.on("pageerror", (error) => errors.push(error.message));
   await page.addInitScript(() => {
+    // Raw file frames use the 80ms PCM sender, never an AudioBufferSource/microphone path.
     const counters = { microphone: 0, sourceStarts: 0 };
     const target = window as typeof window & {
       __fileTest?: typeof counters;
@@ -162,11 +164,8 @@ async function filePortal(
     } else if (path.endsWith("/messages")) {
       await route.fulfill({
         json: {
-          epoch: 0,
-          request_revision: textRevision,
-          items: [],
-          records: [],
-          next_before: null,
+          ...(options.messages?.() || { epoch: 0, request_revision: textRevision,
+            items: [], records: [], next_before: null }),
         },
       });
     } else if (request.method() === "DELETE") {
@@ -184,7 +183,7 @@ async function filePortal(
       const connection: FileConnection = {
         frames: [],
         close() { socket.close({ code: 1000 }); },
-        emit(type, payload = {}) {
+        emit(type, payload = {}, revision = 0) {
           socket.send(
             JSON.stringify({
               type,
@@ -192,7 +191,7 @@ async function filePortal(
               payload,
               server_seq: ++serverSeq,
               event_id: `file-event-${serverSeq}`,
-              request_revision: 0,
+              request_revision: revision,
               conversation_id: calls.at(-1),
               turn_id: null,
             }),
@@ -399,7 +398,7 @@ test("Real file source waits for ready, streams in real time without microphone 
     await page.evaluate(
       () => (window as typeof window & { __fileTest?: unknown }).__fileTest,
     ),
-  ).toEqual({ microphone: 0, sourceStarts: 1 });
+  ).toEqual({ microphone: 0, sourceStarts: 0 });
   expect(fixture.errors).toEqual([]);
 });
 
@@ -456,7 +455,7 @@ test("Rejection and session rotation end an incomplete file; an explicit rerun c
     await page.evaluate(
       () => (window as typeof window & { __fileTest?: unknown }).__fileTest,
     ),
-  ).toEqual({ microphone: 0, sourceStarts: 2 });
+  ).toEqual({ microphone: 0, sourceStarts: 0 });
   expect(fixture.errors).toEqual([]);
 });
 
@@ -541,7 +540,7 @@ test("Tool configuration refresh stops file input without replaying it; explicit
   await expect(page.getByRole("alert")).toContainText("the recording was not replayed");
   expect(fixture.connections).toHaveLength(1);
   expect(await page.evaluate(() => (window as typeof window & { __fileTest?: unknown }).__fileTest))
-    .toEqual({ microphone: 0, sourceStarts: 1 });
+    .toEqual({ microphone: 0, sourceStarts: 0 });
   const next = await startFile(page, fixture, 1);
   await expect.poll(() => next.frames.length).toBeGreaterThan(2);
   expect(fixture.calls).toEqual(["file-call-1", "file-call-2"]);
@@ -589,6 +588,84 @@ test("A pending text submission prevents starting a competing file call", async 
       text: "Controlled pending text request",
     },
   ]);
+  await page.getByRole("button", { name: "End call", exact: true }).click();
+  expect(fixture.errors).toEqual([]);
+});
+
+test("Native knowledge text streams before done, survives a new search turn, and refreshes once", async ({ page }) => {
+  const question = "Can Product AX be shipped, and how should it be stored?";
+  const text = "It can be shipped locally. Store it refrigerated at 2-5 C.";
+  const base = { epoch: 1, request_revision: 1, input_item_id: "product-input", channel: "voice",
+    user_text: question, status: "running", answer: null, delivery_status: "pending_validation",
+    parent_task_id: null, cancellation_reason: null, output_suppressed: false };
+  let snapshot: any = { epoch: 1, request_revision: 0, items: [], records: [], next_before: null };
+  const fixture = await filePortal(page, { messages: () => snapshot });
+  await selectWave(page, 2400);
+  const connection = await startFile(page, fixture);
+  connection.emit("portal.transcript.done", { item_id: "product-input", text: question });
+  snapshot = { ...snapshot, request_revision: 1, items: [{ ...base, id: "search-one" }] };
+  connection.emit("portal.tool.started", { message: "Checking knowledge" }, 1);
+  const answer = page.locator(".assistant-message");
+  await expect(answer).toContainText("Checking knowledge");
+  connection.emit("portal.speech_text.delta", { input_item_id: "product-input", response_id: "ack",
+    segment_index: 0, phase: "status", text: "Let me check the documentation." }, 1);
+  await expect(answer).not.toContainText("Let me check the documentation.");
+  connection.emit("portal.speech_text.delta", { input_item_id: "product-input", response_id: "reply",
+    segment_index: 0, phase: "answer", text: "It can be shipped locally. " }, 1);
+  // No text.done or audio.done has been sent. The live body must already be visible.
+  await expect(answer.locator("p").first()).toHaveText("It can be shipped locally.");
+  await expect(answer).toContainText("Speaking");
+  await expect(answer).not.toContainText("Checking knowledge");
+  await expect(answer.locator("details")).toHaveCount(0);
+
+  snapshot = { ...snapshot, request_revision: 2, items: [
+    { ...base, id: "search-one", status: "superseded" },
+    { ...base, id: "search-two", request_revision: 2 },
+  ] };
+  connection.emit("portal.tool.started", { message: "Checking knowledge" }, 2);
+  await expect(answer.locator("p").first()).toHaveText("It can be shipped locally.");
+  connection.emit("portal.speech_text.delta", { input_item_id: "product-input", response_id: "reply",
+    segment_index: 0, phase: "answer", text: "Store it refrigerated at 2-5 C." }, 2);
+  await expect(answer.locator("p").first()).toHaveText(text);
+  connection.emit("portal.speech_text.done", { input_item_id: "product-input", response_id: "reply",
+    segment_index: 0, phase: "answer", text }, 2);
+  connection.emit("portal.audio.done", { input_item_id: "product-input", response_id: "reply", phase: "answer" }, 2);
+
+  const final = { answer_id: "answer", status: "answered", display_text: text, speech_text: text,
+    citations: [], cards: [], is_mock: true, reason_code: null, verification_timing: "after_audio" };
+  snapshot = { ...snapshot, items: [snapshot.items[0], { ...snapshot.items[1], status: "answered", answer: final }],
+    records: [{ kind: "voicechat_transcript", epoch: 1, source_id: "reply",
+      created_at: "2026-10-21T00:00:00Z", payload: { input_item_id: "product-input", text } }] };
+  connection.emit("portal.tool.started", { message: "Checking knowledge" }, 2); // reload the same saved response
+  await expect(answer).toContainText("Answered");
+  await expect(answer.locator(":scope > p")).toHaveCount(1);
+  await expect(answer.locator(":scope > p")).toHaveText(text); // no stream/history duplicate
+  await expect(answer).not.toContainText("Waiting for spoken reply");
+
+  // A principal-filtered revoked answer must remove live text linked only by input ID too.
+  snapshot = { ...snapshot, items: [snapshot.items[0], { ...snapshot.items[1], status: "failed",
+    answer: { ...final, status: "failed", reason_code: "KB_ACCESS_REVOKED", display_text: "Access was revoked." } }] };
+  connection.emit("portal.tool.started", { message: "Checking knowledge" }, 2);
+  await expect(answer).not.toContainText(text);
+  connection.emit("portal.speech_text.delta", { input_item_id: "product-input", response_id: "late",
+    phase: "answer", text: "Late private text" }, 2);
+  await expect(answer).not.toContainText("Late private text");
+  await page.getByRole("button", { name: "End call", exact: true }).click();
+  expect(fixture.errors).toEqual([]);
+});
+
+test("Native knowledge subtitle is not labeled as a general answer while its turn is loading", async ({ page }) => {
+  const fixture = await filePortal(page);
+  await selectWave(page, 2400);
+  const connection = await startFile(page, fixture);
+  connection.emit("portal.transcript.done", { item_id: "loading-input", text: "Can Product AX be shipped?" });
+  connection.emit("portal.speech_text.delta", { input_item_id: "loading-input", response_id: "loading-reply",
+    phase: "answer", answer_kind: "knowledge", text: "It can be shipped locally." });
+  const answer = page.locator(".assistant-message");
+  await expect(answer).toContainText("It can be shipped locally.");
+  await expect(answer).toContainText("Knowledge reply");
+  await expect(answer).not.toContainText("Model general answer");
+  await expect(answer).not.toContainText("No company sources were checked.");
   await page.getByRole("button", { name: "End call", exact: true }).click();
   expect(fixture.errors).toEqual([]);
 });

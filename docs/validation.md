@@ -6,7 +6,7 @@
 
 ## 1. 本次范围与执行顺序
 
-当前首先验证一个完整知识问答闭环，特别是 Golden Yolk 第二段。固定执行一次自动验证、一次 Web 文件验证。需要完整四文件对照时，执行第 5 节；不要同时执行两套方案。
+当前只验证两项：回答覆盖度与结果注入时延、Web 流式文字展示。Golden Yolk 自动/Web 第二段已有闭环现场证据；本轮在同一 WAV 上各执行一次，对比实际回答、结果 token/注入时间，以及文字是否在回答结束前出现。需要完整四文件对照时，执行第 5 节；不要同时执行两套方案。
 
 输入唯一来源是本仓库 `artifacts/native-cuekb/` 的 `cases.json` 和四个 WAV。API 镜像内对应 `/app/validation/native-cuekb/`。所有 Python 在容器内执行；宿主机只需 Bash、Docker Compose、Git 和常用 shell 工具。**不使用 docker cp，不在容器创建输入目录，不使用历史 ZIP。** 输出目录由脚本自动创建，API 的只读根文件系统不受影响。
 
@@ -16,7 +16,7 @@
 
 所有命令在**宿主机项目根目录**执行，保持同一主机、目录和用户。先结束已有测试通话；本次采集期间不要有其他测试用户通话。
 
-本次统一入口增加了 API 镜像内的精简采集器，因此需要重新制作 API 镜像。下面同时构建 Web，避免浏览器对照使用旧前端。假定 `.env` 和既有部署已经可用；不改变数据库结构、工具预算和 VoiceChat 推理逻辑。
+本轮修改 API 会话提示、回填和字幕转发，以及 Web 字幕关联，必须重新制作 API 和 Web 镜像；下面命令同时完成两者。假定 `.env` 和既有部署已经可用；不改变数据库结构、工具预算和 VoiceChat 推理逻辑。
 
 ```bash
 bash <<'SH'
@@ -43,7 +43,7 @@ SH
 
 正常会输出 `deployment=passed`、`preparation=passed` 和容器镜像/启动时间。运行文件或材料不一致时输出 `version=failed file=... expected=... actual=...`；环境不完整时输出 `collection=failed stage=...`。**失败后停止本次验证，只回传这些行，不自行替换文件或选择日志。** 如需构建失败详情，开发者后续只索取该阶段的必要报错，不能默认索取完整构建日志。
 
-VoiceChat 已部署本仓库完整快照是本次验证前提；该检查会逐个比对六个运行文件，包括 audio_server、模板、model、loader、runtime_setup 和 data_types，并检查 Jinja/诊断开关。若不匹配，交给开发者修正部署，不在验证期间修改推理代码或猜测 GPU、模型挂载参数。本次文档与采集器更新不要求重建已匹配的 VoiceChat。
+VoiceChat 已部署本仓库完整快照是本次验证前提；该检查会逐个比对六个运行文件，包括 audio_server、模板、model、loader、runtime_setup 和 data_types，并检查 Jinja/诊断开关。若不匹配，交给开发者修正部署，不在验证期间修改推理代码或猜测 GPU、模型挂载参数。本轮不修改 VoiceChat 源码和模板，不要求重建已匹配的 VoiceChat。会话提示由 API 在新通话注册，因此更新后必须新建通话。
 
 ## 3. 操作一：自动验证一次 Golden Yolk
 
@@ -55,7 +55,7 @@ bash scripts/validate_deployment.sh auto golden_yolk
 
 入口会在全新连接中发送原始 WAV，保留中间停顿；完整发送后等待最新输入的非 ACK 回答完成。120 秒是验证器等待上限，不改变服务端会话时限。每次使用独立报告路径，失败不会误读上一次报告。即使验证失败，仍尝试采集这次的摘要。
 
-终端输出包括：版本准备、`preflight`、`case`、`validation`、退出码、`session`、API 预算与检索、`backend_injection`、每输入 `input_timing`、有界 `backend_stages`、保存的输入/回答/业务状态、少量来源节选。`local_artifacts` 指向本次宿主机私有目录；原始日志只保存在这里，不直接打印。
+终端输出包括：版本准备、`preflight`、`case`、`validation`、退出码、`session`、API 预算与检索、`backend_injection`、每输入 `input_timing`、有界 `backend_stages`、保存的输入/回答/业务状态、模型 query 和实际准入证据 `admitted_evidence`。证据总长度最多 6000 字符、8 个块，超出明确标记 omitted；不要另外打印全量检索响应。`local_artifacts` 指向本次宿主机私有目录；原始日志只保存在这里，不直接打印。
 
 ## 4. 操作二：Web 上传同一 WAV 一次
 
@@ -67,7 +67,7 @@ bash scripts/validate_deployment.sh auto golden_yolk
    ```
 
 3. 门户选择 **Audio file → Choose WAV**，选择仓库 `artifacts/native-cuekb/golden_yolk.wav`，点击 **Start file call**。不要点 Stop playback/Cancel search，不要在 WAV 中间停顿时结束通话。
-4. 从点击 Start file call 起等待 **120 秒**，再点 **End call**。即使页面提前报错，也不重新开始、不重试；把页面提示保留下来。固定等待是为了不要求操作者判断回答是否完整，不是要求服务端必须运行满 120 秒。
+4. 从点击 Start file call 起等待 **120 秒**，再点 **End call**。即使页面提前报错，也不重新开始、不重试；把页面提示保留下来。固定等待是为了不要求操作者判断回答是否完整。当前连接默认约 105 秒空闲轮换，所以可能在等待期间出现 session limit 提示；照常记录即可，不重新测试。本轮按用户要求保留该限制，120 秒并非引擎固有限制。
 5. 在宿主机执行：
 
    ```bash
@@ -80,11 +80,12 @@ bash scripts/validate_deployment.sh auto golden_yolk
    test_file=golden_yolk.wav
    heard_audio=有声音 / 没声音
    page_error=页面提示原文（没有则写无）
+   text_during_speech=播放时已逐步出现 / 播放结束才出现 / 没有文字
    ```
 
 同一时间窗口最多自动汇总四个会话，逐个标注 CID；无法匹配时明确输出 unavailable，不挑一个会话冒充本次结果。保存的转写和业务状态由采集器只读获取。音频内容与来源由开发者分析；本页不要求操作者裁决答案是否准确。
 
-`voice_file` 用于补充浏览器的发送、首包和播放开始时刻。服务端首包时间不能替代浏览器开始播放，更不能替代实际扬声器听音。如果终端阶段没有延迟而浏览器仍等待，开发者才依据这些行进一步定位。
+`voice_file` 用于补充浏览器的发送、首文字（speech_text.first）、首音频包和播放开始时刻。服务端首包时间不能替代浏览器开始播放，更不能替代实际扬声器听音。如果终端阶段没有延迟而浏览器仍等待，开发者才依据这些行进一步定位。
 
 ## 5. 完整四文件对照（开发者要求时执行）
 
@@ -145,9 +146,10 @@ SH
 | 工具结果是否回来 | api_cuekb 状态、命中、trace、耗时；results_submitted/result_injections 与 backend_injection 分层核对 |
 | Golden Yolk 第二段是否调用 | 按 record 的输入正文和 input_item_id 关联工具、预算、回答；不拿第一段答案放行 |
 | 时间卡在哪里 | input_timing 给出转写→首次调用、末次结果→非 ACK 首包；backend_stages 给出 ACK 缓冲/注入/idle；结合浏览器 voice_file 的播放阶段 |
-| 回答是否来自知识库 | turn 的工具、提交状态、引用与 trace，加回答正文/来源节选；数量只能证明关联，节选不能证明所有事实受支持 |
+| 回答是否来自知识库 | turn、trace、query、实际准入的 admitted_evidence，与回答逐项对照；omitted 大于零时不能声称已完整核验 |
+| 流式文字 | input_timing.answer_text 为正式回答首文字发送时间；text_before_done_ms 应大于零；浏览器 speech_text.first 应早于对应 speech_text.done；最后用操作者的文字出现观察确认显示 |
 
-时间基于 Docker 日志观察时刻，不是 GPU 内部精确计时。多次检索间隔可能包含 ACK 和模型决策；没有对应 response 的完成记录时，不把未分类音频当成最终答案。摘要明确标注 truncated/omitted 的部分不作完整证据。需要某条引用或回答的完整内容时，开发者应给出**只提取该 input/response/citation** 的只读命令，不能转而要求全量日志。
+时间基于 Docker 日志观察时刻，不是 GPU 内部精确计时。多次检索间隔可能包含 ACK 和模型决策；没有对应 response 的完成记录时，不把未分类音频当成最终答案。摘要明确标注 truncated/omitted 的部分不作完整证据。首文字时间不是全文完成时间，也不是 DOM 已渲染的证明。需要某条引用或回答的完整内容时，开发者应给出**只提取该 input/response/citation** 的只读命令，不能转而要求全量日志。
 
 ### 放行标准
 
@@ -169,9 +171,13 @@ SH
 截至 2026-10-21，以下是历史证据摘要，**不是本次文档整理后的新部署结果**：
 
 - Black Pig 自动单 case 曾现场通过：2026-10-20 15:20 UTC，CID `6d9dfaa1-1f84-4df6-94dc-65a3f711bdf3`，2 次查询、10 条来源、终态 1、终态后调用 0、answer_complete=passed、answer_status=answered。不能推导 Web/所有产品/连续多轮通过。
+- 2026-10-21 新部署的 Golden Yolk 自动（CID 7337b531-c299-41e0-87e1-7826b8518807）和 Web（CID afbf9a21-b167-4160-a673-b95ba2e78caf）均完成两次查询、两批注入、一个超额成员结清、零终态后调用，提交 5 条引用。该版批次闭环在这两轮通过。
+- 同两轮第二段到正式音频首包分别 35.43/35.56 秒，两次注入合计 28.54/28.47 秒；CueKB 合计 201/192 ms。注入结果为 390–437 tokens，1573–1726 字符，作为本轮对照基线，不承诺线性提速。
+- 同两轮回答没有回应运输；只有两条标题性来源节选，尚不能核定其余内容。新采集器输出已保存的 query 和准入证据，开发者判断逐项覆盖，不能以 answered 冒充内容通过。
+- 用户要求保留单连接上限：默认 105 秒，繁忙时固定额外 30 秒，超过约 135 秒强制结束。120 秒只是测试等待。该机制标为待优化，本轮不改配置、watchdog、自动结束或错误提示。
 - Web 最新对照确认 Black Pig 出现 Checking knowledge；先前“始终不调用”的概括已不成立。回答准确性和重复响应仍需分析。
-- Golden Yolk 的排队调用曾在终态回填前约 195 ms 到达，被旧实现按出队状态误判；显式批次与聚合结果修正已完成本地协议测试，真实第二段闭环待验收。
-- 已观测 CueKB 单次约 0.1 秒，不能把估算的约 30 秒等待全部归因于检索。关联后的时间线尚需现场证据。
+- Golden Yolk 的排队调用曾在终态回填前约 195 ms 到达，被旧实现按出队状态误判；该历史误判经批次修正后，上述两次部署测试已完成第二段闭环；内容与时延另行核定。
+- 已观测 CueKB 单次约 0.1 秒，不能把估算的约 30 秒等待全部归因于检索。上述关联时间线已将主要等待定位到逐 token 结果注入，而非 CueKB 请求。
 - hello 开头缺词按用户要求暂缓；不为本次闭环另开调试分支。
 
 历史逐轮记录、旧设计和重复验证手册已删除，Git 保留追溯。外部 VoiceChat 源码、manifest 和接口快照保留，属于运行文件与协议资产，不是另一份操作手册。
@@ -202,3 +208,7 @@ python3.12 -m venv /tmp/voicechat-cpu-tests
 ```
 
 兼容的旧双工具模拟脚本不属于本期验收，不再维护独立操作手册。本次采集入口的定向回归使用 `.venv/bin/python -m pytest -q tests/contract/test_validation_collection.py tests/contract/test_deployment.py`。本次本地执行 18 项通过，Shell 语法、Markdown 链接与 VoiceChat manifest 检查通过；未执行现场 GPU/CueKB 验证。定向回归验证会话隔离、摘要边界、失败保留与镜像打包，不验证真实推理。
+
+本轮本地回归覆盖原生 ACK/正文流式发送、回答完成前不提交、两次预算/累计证据及权限；浏览器用受控 HTTP/WS 夹具检查结束事件前正文可见、补充查询 Turn 更替、历史不重复与权限撤销。稳定事实规则保留在会话提示，结果内只发送逐项覆盖和搜索状态说明，删除 Source excerpt 通用标题，保留所有准入正文、有效标题、上下文和条件。实际 token、时延与语义覆盖只能由新部署测试证明。
+
+本轮实际执行的本地结果：后端相关回归 159 项通过；Node 音频测试 30 项通过；Chromium 文件入口全组 9 项通过，另 1 项异步加载中的知识字幕场景定向通过（覆盖正文流式、Turn 更替、历史去重与撤权）；Web 构建通过。后续针对时间摘要的定向检查与上述组有覆盖重叠，不累加为全量计数。终态说明本地长度由 488 降至 199 字节，约减少 59%；这是说明文本的字节比较，不是整个结果或实际注入时延降低 59%。本轮新代码尚未部署到现场，不能继承旧版 answered 作为本轮内容验收。

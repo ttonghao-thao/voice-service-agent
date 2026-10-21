@@ -255,12 +255,16 @@ async def test_native_query_reaches_cuekb_without_an_answer_model(tmp_path, monk
     ("Product AX supports 10 connections.", None, "none"),
     ("Product AX supports 99 connections.", "VOICE_UNSUPPORTED_NUMBER", "none"),
     ("Product AX supports 10 connections.", None, "truncated"),
+    ("Let me explain: Product AX supports 10 connections.", None, "truncated"),
     ("Product AX supports 99 connections.", "VOICE_UNSUPPORTED_NUMBER", "truncated"),
     ("Product AX supports 10 connections.", "VOICE_MISSING_CONDITION", "complete"),
     ("Product AX supports 10 connections only indoors.", None, "complete"),
     ("It supports 10 connections.", "VOICE_MISSING_CONDITION", "none"),
 ])
 def test_pcm_through_real_adapter_native_call_cuekb_and_voice_reply(tmp_path, spoken, reason, context_mode):
+    import asyncio
+
+    release_answer = None
     s = configuration(tmp_path, voice_provider="nvidia", voicechat_api_key="fixture-voice-key")
     app = create_app(s)
     pcm = base64.b64encode(b"\x01\x00" * 1920).decode()
@@ -304,8 +308,20 @@ def test_pcm_through_real_adapter_native_call_cuekb_and_voice_reply(tmp_path, sp
                         "arguments": json.dumps({"query": "How many connections does Product AX support?"})}
                     await ws.send(json.dumps(call))
                     await ws.send(json.dumps(call))
+                    for text in ("Let ", "me check ", "the documentation."):
+                        await ws.send(json.dumps({"type": "response.output_audio_transcript.delta",
+                            "response_id": "tool", "delta": text}))
+                    await ws.send(json.dumps({"type": "response.output_audio_transcript.done",
+                        "response_id": "tool", "transcript": "Let me check the documentation."}))
+                    await ws.send(json.dumps({"type": "response.output_audio.done", "response_id": "tool"}))
             elif event["type"] == "conversation.item.create":
                 results.append(event["item"])
+                # The final text is withheld until the test has seen live answer deltas.
+                for text in (["Let ", "me explain: ", spoken[len("Let me explain: "):]]
+                             if spoken.startswith("Let me explain:") else [spoken[:10], spoken[10:]]):
+                    await ws.send(json.dumps({"type": "response.output_audio_transcript.delta",
+                        "response_id": "answer", "delta": text}))
+                await release_answer.wait()
                 await ws.send(json.dumps({"type": "response.output_audio_transcript.done", "response_id": "answer",
                                           "transcript": spoken}))
                 await ws.send(json.dumps({"type": "response.output_audio.delta", "response_id": "answer", "delta": pcm}))
@@ -315,6 +331,8 @@ def test_pcm_through_real_adapter_native_call_cuekb_and_voice_reply(tmp_path, sp
         http = httpx.AsyncClient(transport=httpx.MockTransport(search))
         app.state.registry.adapters["cuekb_http"] = CueKBAdapter(s, http)
         async def start():
+            nonlocal release_answer
+            release_answer = asyncio.Event()
             return await serve(voicechat, "127.0.0.1", 0)
         server = client.portal.call(start)
         s.voicechat_ws_url = f"ws://127.0.0.1:{server.sockets[0].getsockname()[1]}"
@@ -331,17 +349,28 @@ def test_pcm_through_real_adapter_native_call_cuekb_and_voice_reply(tmp_path, sp
                     ws.send_json({"type": "portal.audio.append", "epoch": issued["epoch"], "seq": seq,
                         "payload": {"format": "pcm16", "sample_rate": 24000, "audio": pcm}})
                     events = []
-                    for _ in range(15):
+                    released = False
+                    for _ in range(40):
                         event = ws.receive_json()
                         events.append(event)
                         assert event["type"] != "portal.error", event
-                        if event["type"] == "portal.audio.done":
+                        if seq == 1 and event["type"] == "portal.speech_text.delta" and event["payload"]["phase"] == "answer" and not released:
+                            assert event["payload"]["response_id"] == "answer"
+                            turn = client.get(f"/api/v1/conversations/{cid}/messages").json()["items"][-1]
+                            assert turn["answer"] is None  # live text is not a committed answer
+                            client.portal.call(release_answer.set)
+                            released = True
+                        if event["type"] == "portal.audio.done" and event["payload"]["phase"] == "answer":
                             break
                     else:
                         pytest.fail("Voice reply did not end")
                     assert any(e["type"] == "portal.audio.delta" for e in events)
                     if seq == 0:
                         assert not requests and not results
+                ack_parts = [e["payload"] for e in events if e["type"] == "portal.speech_text.delta" and e["payload"]["response_id"] == "tool"]
+                assert ack_parts and all(p["phase"] == "status" for p in ack_parts)
+                answer_parts = [e["payload"]["text"] for e in events if e["type"] == "portal.speech_text.delta" and e["payload"]["phase"] == "answer"]
+                assert "".join(answer_parts) == spoken  # shared ACK prefixes are released without loss
                 deadline = time.monotonic() + 2
                 while time.monotonic() < deadline:
                     turn = client.get(f"/api/v1/conversations/{cid}/messages").json()["items"][0]

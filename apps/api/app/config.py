@@ -49,6 +49,8 @@ class Settings(BaseSettings):
     voice_provider: Literal["disabled", "mock", "nvidia"] = "mock"
     voicechat_ws_url: str = ""
     voicechat_api_key: SecretStr = SecretStr("")
+    # Pending optimization: retain the 105s connection limit and relay's fixed
+    # 30s active-answer grace. Coverage/streaming changes must not raise these.
     voice_session_max_seconds: int = 105
     voice_max_retrievals_per_input: int = Field(default=2, ge=1, le=2)
     max_voice_sessions: int = 8

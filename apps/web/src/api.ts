@@ -72,6 +72,7 @@ export interface RecordItem {
     turn_id?: string;
     input_item_id?: string;
     phase?: string;
+    segment_index?: number;
     played_samples?: number;
     status?: string;
     mode?: string;

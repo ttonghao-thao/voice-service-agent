@@ -79,4 +79,8 @@ VoiceChat 内部并非 ASR 文本驱动 LLM：16 kHz 音频经共享 encoder 分
 
 ## 5. 演进与验收入口
 
-Black Pig 单 case 已有现场 answered/引用提交成功；Golden Yolk 批次修复目前只有本地回归证据。按 [统一验证手册](validation.md) 先完成当前闭环，再验证连续多轮、知识追问、内容和听音。hello 句首问题暂缓，不把 CPU 通过当作真实模型修复。
+Black Pig 单 case 已有现场 answered/引用提交成功；Golden Yolk 批次修复已有自动/Web 第二段闭环现场证据，当前改进范围是逐项回答和结果注入时延、流式正文展示。按 [统一验证手册](validation.md) 先完成当前闭环，再验证连续多轮、知识追问、内容和听音。hello 句首问题暂缓，不把 CPU 通过当作真实模型修复。
+
+原生正文字幕以 epoch/input_item_id/response_id 关联，业务 Turn 更替不改变输入归属；历史恢复沿用实时的响应键。固定 ACK 前缀仅作为状态，正文前缀若与 ACK 分歧则一次释放，不丢字符。字幕流不触发正式答案提交，提交仍要求最终正文和音频结束并由 Coordinator 校验。
+
+单连接时长保留 Settings 默认 105 秒及 Relay 固定额外 30 秒活动宽限。该机制标为待优化，本轮不改变 watchdog、客户端文件结束或自动重连行为。
