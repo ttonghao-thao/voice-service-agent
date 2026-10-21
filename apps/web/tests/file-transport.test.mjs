@@ -3,19 +3,31 @@ import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
 import vm from "node:vm";
 import ts from "typescript";
+import { PlaybackRing, Resampler, pcm16 } from "../public/dsp.js";
 import { loadRecordingModule, recordingWave } from "./recording-fixtures.mjs";
 
 const recordingModule = loadRecordingModule();
-function harness() {
+function harness(rate = 48000) {
   const exports = {},
     messages = [],
-    timers = new Map(),
     errors = [],
     progress = [];
   let socket,
     clock = 1000,
     options,
-    timer = 0;
+    processor,
+    port,
+    context;
+  const apiCalls = [];
+  const listeners = new Map();
+  const document = { hidden: false, addEventListener: (name, fn) => listeners.set(name, fn),
+    removeEventListener: (name) => listeners.delete(name) };
+  let Processor;
+  const worklet = readFileSync(new URL("../public/audio-worklet.js", import.meta.url), "utf8")
+    .replace(/^import .*;\n/, "");
+  vm.runInNewContext(worklet, { Resampler, PlaybackRing, pcm16, sampleRate: rate,
+    AudioWorkletProcessor: class { port = { postMessage: (data) => port?.onmessage?.({ data }) }; },
+    registerProcessor: (_name, implementation) => { Processor = implementation; } });
   const source = ts.transpileModule(
     readFileSync(
       new URL("../src/audio/VoiceClient.ts", import.meta.url),
@@ -47,46 +59,38 @@ function harness() {
   }
   vm.runInNewContext(source, {
     exports,
-    require: (name) =>
-      name.endsWith("recordedAudio")
-        ? recordingModule
-        : {
-            api: async () => ({
-              voice_session_id: "sid",
-              epoch: 1,
-              request_revision: 0,
-              ws_url: "/stream",
-            }),
-          },
+    require: () => ({ api: async (path, options) => {
+      apiCalls.push({ path, options });
+      return { voice_session_id: "sid", epoch: 1, request_revision: 0, ws_url: "/stream" };
+    } }),
     AudioContext: class {
+      state = "running";
+      resumes = 0;
+      constructor() { context = this; }
       audioWorklet = { addModule: async () => {} };
-      resume = async () => {};
+      resume = async () => { this.resumes++; this.state = "running"; };
       close = async () => {};
       // No createBuffer/BufferSource: files must not enter the resampler.
     },
     AudioWorkletNode: class {
-      port = { postMessage() {} };
       connect() {}
       disconnect() {}
       constructor(_context, _name, config) {
         options = config;
+        processor = new Processor(config);
+        this.port = port = { postMessage: (data) => processor.port.onmessage({ data }) };
       }
     },
     WebSocket: Socket,
     URL,
     location: { href: "https://example.test", protocol: "https:" },
-    document: { addEventListener() {}, removeEventListener() {} },
+    document,
     window: { addEventListener() {}, removeEventListener() {} },
     performance: { now: () => clock },
     crypto: { randomUUID: () => "event" },
     btoa,
     console: { info() {} },
-    setTimeout: (callback, delay) => {
-      assert.equal(delay, 80);
-      timers.set(++timer, callback);
-      return timer;
-    },
-    clearTimeout: (id) => timers.delete(id),
+    setTimeout: () => { throw new Error("File audio must not depend on window timers"); },
   });
   const client = new exports.VoiceClient(
     () => {},
@@ -100,20 +104,22 @@ function harness() {
     messages,
     errors,
     progress,
-    timers,
+    apiCalls,
+    context: () => context,
+    visibility(hidden) { document.hidden = hidden; listeners.get("visibilitychange")?.(); },
+    frame(data) { port.onmessage({ data }); },
     socket: () => socket,
     options: () => options,
     tick(ms = 80) {
       clock += ms;
-      const [id, callback] = timers.entries().next().value;
-      timers.delete(id);
-      callback();
+      for (let i = 0; i < Math.round(ms * rate / 1000 / 128); i++)
+        processor.process([[]], [[new Float32Array(128)]]);
     },
   };
 }
 
-test("File waits for ready, sends exact padded frames then silence, and stops without replay", async () => {
-  const h = harness();
+for (const rate of [44100, 48000]) test(`File preserves raw PCM, tail and EOF silence at ${rate} Hz without replay`, async () => {
+  const h = harness(rate);
   const recording = recordingModule.parseRecording(
     recordingWave(1923, { sample: (i) => i - 1000 }),
     "input.wav",
@@ -142,7 +148,9 @@ test("File waits for ready, sends exact padded frames then silence, and stops wi
   h.socket().emit("portal.session.ready");
   assert.equal(h.messages.length, 3, "duplicate ready must not replay the WAV");
   await h.client.stop();
-  assert.equal(h.timers.size, 0);
+  const stoppedCount = h.messages.length;
+  h.tick();
+  assert.equal(h.messages.length, stoppedCount);
   assert.deepEqual(h.errors, []);
 });
 
@@ -155,7 +163,65 @@ test("A stalled file clock fails explicitly instead of sending a catch-up burst"
   h.socket().emit("portal.session.ready");
   h.tick(600);
   assert.equal(h.messages.length, 1);
-  assert.equal(h.timers.size, 0);
   assert.match(h.errors[0], /stalled/);
   assert.equal(h.progress.at(-1).stage, "incomplete");
+});
+
+test("A second WAV uses the same session and sequence without replacing an unfinished file", async () => {
+  const h = harness();
+  const first = recordingModule.parseRecording(recordingWave(1923, { sample: i => i - 1000 }), "first.wav");
+  const second = recordingModule.parseRecording(recordingWave(1921, { sample: () => -1234 }), "second.wav");
+  await h.client.start("cid", { kind: "file", recording: first });
+  h.socket().emit("portal.session.ready");
+  assert.throws(() => h.client.sendRecording(second), /finish sending/);
+  h.client.stopPlayback(); // Output reset must not restart or stop raw file input.
+  h.tick();
+  const before = h.messages.filter(m => m.type === "portal.audio.append").length;
+  h.client.sendRecording(second);
+  h.frame({ type: "file.frame", epoch: 1, id: 1, pcm: first.pcm.buffer, sentSamples: first.sampleCount });
+  h.tick();
+  h.tick();
+  const sent = h.messages.filter(m => m.type === "portal.audio.append");
+  assert.deepEqual(sent.map(m => m.seq), sent.map((_, i) => i));
+  assert.ok(sent.every(m => m.epoch === 1));
+  const frames = sent.map(m => Buffer.from(m.payload.audio, "base64"));
+  assert.deepEqual([...frames[0], ...frames[1].subarray(0, 6)], [...first.pcm]);
+  assert.deepEqual([...frames[before], ...frames[before + 1].subarray(0, 2)], [...second.pcm]);
+  assert.ok(frames[before + 2].every(b => b === 0));
+  assert.equal(h.apiCalls.length, 1, "sending the next file must not recreate/delete a session");
+  assert.equal(h.progress.at(-1).name, "second.wav");
+  assert.equal(h.progress.at(-1).sentSamples, second.sampleCount);
+  assert.deepEqual(h.errors, []);
+  await h.client.stop();
+});
+
+test("Hiding and restoring the page keeps the file session and audio clock alive", async () => {
+  const h = harness();
+  await h.client.start("cid", { kind: "file", recording: recordingModule.parseRecording(recordingWave(9600)) });
+  h.socket().emit("portal.session.ready");
+  h.visibility(true);
+  h.tick();
+  h.tick();
+  assert.equal(h.socket().readyState, 1);
+  assert.equal(h.apiCalls.length, 1);
+  assert.equal(h.messages.length, 3);
+  h.visibility(false);
+  h.tick();
+  assert.equal(h.messages.length, 4);
+  assert.deepEqual(h.errors, []);
+  await h.client.stop();
+});
+
+for (const state of ["suspended", "interrupted"]) test(`Returning resumes a ${state} audio context without recreating the call`, async () => {
+  const h = harness();
+  await h.client.start("cid", { kind: "file", recording: recordingModule.parseRecording(recordingWave(2400)) });
+  h.socket().emit("portal.session.ready");
+  h.context().state = state;
+  h.visibility(false);
+  assert.equal(h.context().state, "running");
+  assert.equal(h.context().resumes, 2); // initial activation and foreground recovery
+  assert.equal(h.socket().readyState, 1);
+  assert.equal(h.apiCalls.length, 1);
+  assert.deepEqual(h.errors, []);
+  await h.client.stop();
 });

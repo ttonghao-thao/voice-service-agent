@@ -55,11 +55,11 @@ SSE 由持久 Event/server_seq/cursor 支持重放；同进程事务提交后唤
 
 #### 预录 WAV 输入
 
-门户可在 Microphone / Audio file 间选择。文件只在浏览器内存解析，不新增 API 上传或服务端录音存储；仅接受不超过 30 秒、2 MiB 的 24 kHz 单声道 PCM16 RIFF WAV，并校验 RIFF 长度、chunk 边界/填充、唯一 fmt/data 及 PCM 参数。用户选择文件后仍须点击 Start file call，才创建独立 conversation/capability 和 voice session。
+门户可在 Microphone / Audio file 间选择。文件只在浏览器内存解析，不新增 API 上传或服务端录音存储；仅接受不超过 30 秒、2 MiB 的 24 kHz 单声道 PCM16 RIFF WAV，并校验 RIFF 长度、chunk 边界/填充、唯一 fmt/data 及 PCM 参数。首次选择文件后点击 Start file call，创建本标签页的 conversation/capability 和 voice session；当前文件发送完成后，可再 Choose WAV 并 Send recording，沿用同一 conversation、epoch、WebSocket 与递增 seq，不重建会话或清空历史。
 
-文件直接按原始 24 kHz PCM16 以 80 ms 帧实时发送，末帧补零；不经过 AudioBufferSourceNode/麦克风重采样，不做增益处理。必须等 portal.session.ready 后从首样本开始，完整发送 WAV 后继续送静音推动推理。发送停滞或积压明确失败，不突发补发；进度仅表示已送出，不代表模型理解或回答完成。
+文件由 AudioWorklet 渲染时钟驱动，直接按原始 24 kHz PCM16 以 80 ms 帧实时发送，末帧补零；不经过 AudioBufferSourceNode/麦克风重采样，不做增益处理。必须等 portal.session.ready 后从首样本开始，完整发送 WAV 后继续送静音推动推理。发送停滞或积压明确失败，不突发补发；进度仅表示已送出，不代表模型理解或回答完成。
 
-文件模式不请求麦克风，运行中不能切换输入源。Stop playback 只清下行播放，不能中断文件上行；End call、错误、断线或 session 轮换停止文件并显示完整/未完整状态，首版不会自动续播或重播。固定文件适合复现同一输入，但不验证麦克风权限、AEC/NS/AGC、真实声学或供应商正确率。
+文件模式不请求麦克风，运行中不能切换输入源。Stop playback 只清下行播放，不能中断文件上行；End call、错误、断线或 session 轮换停止文件并显示完整/未完整状态，不自动续播或重播。文件发送完成即可手动发送下一份，模型仍按自然语音端点划分输入，文件边界不强制生成一轮；正在发送的文件不能被另一文件覆盖。固定文件适合复现同一输入，但不验证麦克风权限、AEC/NS/AGC、真实声学或供应商正确率。
 
 finished=true 只在该 response 收到 audio.done 且 Worklet 对应队列排空后发送；服务端要求未抑制、发送结束且样本数等于 sent_samples。排空不是实际听到，部分样本不能确认完成。
 
@@ -107,3 +107,5 @@ finished=true 只在该 response 收到 audio.done 且 Worklet 对应队列排�
 - Answer/Turn/来源面板使用一致业务终态；错误响应只公开稳定 code/message/retryable/trace_id，不转发上游原文、密钥或堆栈。完整枚举和验证约束以代码/生成 schema 为准。
 
 修改后按场景查 `tests/contract/test_protocol.py`、`tests/integration/test_voice.py`/`test_live_agent_interactions.py`、`tests/e2e/portal.spec.ts`/`voice-audio.spec.ts`/`voice-file.spec.ts` 与 `apps/web/tests/recorded-audio.test.mjs`/`worklet.test.mjs`。真实音频标准归 [统一验证手册](validation.md)，不在接口页复制测试数量。
+
+页面 visibilitychange 只记录状态，回前台时尝试恢复被浏览器暂停的 AudioContext，不直接 stop/DELETE session，也不清对话或重新发送已发送 WAV。文件时钟不依赖后台窗口 setTimeout；设备采集仍使用 AudioWorklet。浏览器/系统真正冻结音频、网络断线或原有 105 秒连接保护仍可能结束连接，不能将“隐藏不主动结束”描述为所有手机后台持续运行已通过。

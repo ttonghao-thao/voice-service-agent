@@ -19,8 +19,16 @@ class PortalAudioProcessor extends AudioWorkletProcessor {
     this.sourceSamples = new Map();
     this.resamplers = new Map();
     this.ended = new Set();
+    this.inputReady = false;
+    this.file = null;
+    this.fileTicks = 0;
     this.port.onmessage = ({ data: d }) => {
       if (d.type === "reset") {
+        if (this.epoch !== d.epoch) {
+          this.inputReady = false;
+          this.file = null;
+          this.fileTicks = 0;
+        }
         this.epoch = d.epoch;
         this.suppressed = d.suppressed !== false;
         this.ring.clear();
@@ -32,7 +40,15 @@ class PortalAudioProcessor extends AudioWorkletProcessor {
         this.response = null;
         this.finished = false;
       }
-      if (d.type === "ready" && d.epoch === this.epoch) this.suppressed = false;
+      if (d.type === "ready" && d.epoch === this.epoch) {
+        this.suppressed = false;
+        this.inputReady = true;
+      }
+      if (d.type === "file" && !this.captureEnabled && this.inputReady && d.epoch === this.epoch) {
+        this.file = { id: d.id, pcm: new Uint8Array(d.pcm), offset: 0 };
+        this.fileTicks = 0;
+        this.sendFileFrame();
+      }
       if (d.type === "mute") this.muted = d.value;
       if (d.type === "volume") this.volume = d.value;
       if (d.type === "audio" && !this.suppressed && d.epoch === this.epoch) {
@@ -78,6 +94,19 @@ class PortalAudioProcessor extends AudioWorkletProcessor {
       }
     };
   }
+  sendFileFrame() {
+    if (!this.file || !this.inputReady) return;
+    const frame = new Uint8Array(3840);
+    const file = this.file;
+    const bytes = file.pcm;
+    if (bytes) {
+      frame.set(bytes.subarray(file.offset, file.offset + 3840));
+      file.offset = Math.min(file.offset + 3840, bytes.length);
+      if (file.offset === bytes.length) file.pcm = null;
+    }
+    this.port.postMessage({ type: "file.frame", epoch: this.epoch, id: file.id,
+      pcm: frame.buffer, sentSamples: file.offset / 2 }, [frame.buffer]);
+  }
   process(inputs, outputs) {
     const output = outputs[0][0];
     if (!output) return true;
@@ -95,6 +124,14 @@ class PortalAudioProcessor extends AudioWorkletProcessor {
           ]);
           this.used = 0;
         }
+      }
+    } else if (this.inputReady && this.file) {
+      // Drive raw 24k PCM frames from the render clock, not background-throttled
+      // window timers. File samples never pass through the audio resampler.
+      this.fileTicks += output.length;
+      if (this.fileTicks >= sampleRate * 0.08) {
+        this.fileTicks -= sampleRate * 0.08;
+        this.sendFileFrame();
       }
     }
     if (this.suppressed) output.fill(0);

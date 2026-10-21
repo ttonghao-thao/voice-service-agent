@@ -1,5 +1,5 @@
 import { api, PortalEvent } from "../api";
-import { recordingFrame, type PreparedRecording } from "./recordedAudio";
+import type { PreparedRecording } from "./recordedAudio";
 
 export type VoiceInput =
   { kind: "microphone" } | { kind: "file"; recording: PreparedRecording };
@@ -48,7 +48,7 @@ export class VoiceClient {
   private activeResponse = "";
   private stoppedResponses = new Set<string>();
   private input: VoiceInput = { kind: "microphone" };
-  private fileTimer?: ReturnType<typeof setTimeout>;
+  private fileId = 0;
   private fileArmed = false;
   private diagnosticAudio = new Set<string>();
   private diagnosticText = new Set<string>();
@@ -138,42 +138,50 @@ export class VoiceClient {
       return false;
     }
   }
+  private validateRecording(recording: PreparedRecording) {
+    if (!recording.sampleCount || recording.sampleCount * 2 !== recording.pcm.length ||
+      recording.sampleCount > 720000 || recording.sampleRate !== 24000)
+      throw new Error("Choose a validated recording no longer than 30 seconds.");
+  }
   private armRecording() {
     if (this.input.kind !== "file" || this.fileArmed) return;
-    this.fileArmed = true;
     const recording = this.input.recording;
-    const generation = this.generation;
-    let index = 0;
+    this.validateRecording(recording);
+    this.fileArmed = true;
+    this.fileComplete = false;
+    this.fileSourceEnded = false;
+    this.sentFileSamples = 0;
+    this.recordingStage = undefined;
+    this.recordingStopped = false;
+    ++this.fileId;
+    this.emitRecording("sending");
     this.diagnostic("file.start", {
-      name: recording.name,
-      samples: recording.sampleCount,
-      frame_samples: 1920,
-      frame_ms: 80,
+      name: recording.name, samples: recording.sampleCount, file_id: this.fileId,
+      frame_samples: 1920, frame_ms: 80,
     });
-    const send = () => {
-      if (generation !== this.generation || !this.ready) return;
-      // No AudioContext resampling, gain, quantization, or extra pre-roll.
-      // Continue sending silence after EOF, as the deployment probe does.
-      if (!this.sendAudio(recordingFrame(recording.pcm, index++))) return;
-      if (!this.fileComplete) {
-        this.sentFileSamples = Math.min(index * 1920, recording.sampleCount);
-        this.fileComplete = this.sentFileSamples === recording.sampleCount;
-        this.fileSourceEnded = this.fileComplete;
-        this.emitRecording(this.fileComplete ? "waiting_answer" : "sending");
-        if (this.fileComplete)
-          this.diagnostic("file.sent", { samples: this.sentFileSamples });
-      }
-      // Never catch up with a burst after a delayed callback.
-      this.fileTimer = setTimeout(send, 80);
-    };
-    send();
+    // Transfer a copy so an explicit later send can still use the selected WAV.
+    const pcm = recording.pcm.slice();
+    this.node!.port.postMessage({ type: "file", epoch: this.epoch,
+      id: this.fileId, pcm: pcm.buffer, samples: recording.sampleCount }, [pcm.buffer]);
+  }
+  sendRecording(recording: PreparedRecording) {
+    if (!this.ready || this.input.kind !== "file" || !this.fileComplete || this.ws?.readyState !== WebSocket.OPEN)
+      throw new Error("Wait for the current recording to finish sending before sending another.");
+    this.validateRecording(recording);
+    this.input = { kind: "file", recording };
+    this.fileArmed = false;
+    this.armRecording();
   }
   private visibility = () => {
-    if (document.hidden) {
-      void this.stop();
-      this.onError(
-        "Voice stopped when the page went into the background. Resume when you return.",
-      );
+    this.diagnostic("page.visibility", { hidden: document.hidden, audio_state: this.context?.state });
+    // Visibility is not a request to end the call. Resume audio when possible;
+    // real network/capture failures still use the existing transport checks.
+    const context = this.context;
+    if (!document.hidden && context && context.state !== "running" && context.state !== "closed") {
+      void context.resume().catch(() => {
+        if (this.context === context && this.ready)
+          this.onError("The browser paused audio. Return to the call to resume audio.");
+      });
     }
   };
   private offline = () => {
@@ -248,16 +256,7 @@ export class VoiceClient {
       if (input.kind === "microphone") {
         context.createMediaStreamSource(this.media!).connect(this.node);
       } else {
-        const recording = input.recording;
-        if (
-          !recording.sampleCount ||
-          recording.sampleCount * 2 !== recording.pcm.length ||
-          recording.sampleCount > 720000 ||
-          recording.sampleRate !== 24000
-        )
-          throw new Error(
-            "Choose a validated recording no longer than 30 seconds.",
-          );
+        this.validateRecording(input.recording);
       }
       this.node.connect(context.destination);
       const session = await api<{
@@ -288,6 +287,7 @@ export class VoiceClient {
       url.protocol = location.protocol === "https:" ? "wss:" : "ws:";
       this.ws = new WebSocket(url);
       this.node.port.onmessage = ({ data: d }) => {
+        if (generation !== this.generation) return;
         if (d.type === "error") {
           this.clear();
           void this.stop();
@@ -302,6 +302,15 @@ export class VoiceClient {
           return;
         if (d.type === "playback.started") {
           this.diagnostic("playback.started", { response_id: d.response });
+        } else if (d.type === "file.frame" && this.input.kind === "file" && d.id === this.fileId) {
+          if (!this.sendAudio(new Uint8Array(d.pcm))) return;
+          if (!this.fileComplete) {
+            this.sentFileSamples = d.sentSamples;
+            this.fileComplete = d.sentSamples === this.input.recording.sampleCount;
+            this.fileSourceEnded = this.fileComplete;
+            this.emitRecording(this.fileComplete ? "waiting_answer" : "sending");
+            if (this.fileComplete) this.diagnostic("file.sent", { samples: this.sentFileSamples, file_id: this.fileId });
+          }
         } else if (d.type === "capture" && this.input.kind === "microphone") {
           this.sendAudio(new Uint8Array(d.pcm));
         } else if (d.type === "ack" && !this.suppressed) {
@@ -534,8 +543,6 @@ export class VoiceClient {
     this.sid = "";
     this.ws?.close();
     this.ws = undefined;
-    if (this.fileTimer !== undefined) clearTimeout(this.fileTimer);
-    this.fileTimer = undefined;
     this.node?.disconnect();
     this.node = undefined;
     this.media?.getTracks().forEach((t) => t.stop());

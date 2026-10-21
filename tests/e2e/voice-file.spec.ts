@@ -6,7 +6,7 @@ import {
 
 function recordingWave(
   sampleCount = 2400,
-  options: { format?: { channels: number } } = {},
+  options: { format?: { channels: number }; frequency?: number } = {},
 ) {
   const bytes = Buffer.alloc(44 + sampleCount * 2);
   bytes.write("RIFF", 0);
@@ -23,7 +23,7 @@ function recordingWave(
   bytes.writeUInt32LE(sampleCount * 2, 40);
   for (let i = 0; i < sampleCount; i++)
     bytes.writeInt16LE(
-      Math.round(12000 * Math.sin((2 * Math.PI * 1000 * i) / 24000)),
+      Math.round(12000 * Math.sin((2 * Math.PI * (options.frequency || 1000) * i) / 24000)),
       44 + i * 2,
     );
   return bytes;
@@ -666,6 +666,74 @@ test("Native knowledge subtitle is not labeled as a general answer while its tur
   await expect(answer).toContainText("Knowledge reply");
   await expect(answer).not.toContainText("Model general answer");
   await expect(answer).not.toContainText("No company sources were checked.");
+  await page.getByRole("button", { name: "End call", exact: true }).click();
+  expect(fixture.errors).toEqual([]);
+});
+
+test("Two WAVs continue one call and preserve both questions and replies", async ({ page }) => {
+  const fixture = await filePortal(page);
+  await selectWave(page, 48000, "first.wav");
+  const connection = await startFile(page, fixture);
+  await expect(page.getByRole("button", { name: "Choose WAV", exact: true })).toBeDisabled();
+  await expect(page.getByRole("progressbar", { name: "Recording send progress" })).toHaveAttribute("value", "48000");
+  connection.emit("portal.transcript.done", { item_id: "first-input", text: "Hello from the first file." });
+  connection.emit("portal.speech_text.done", { input_item_id: "first-input", response_id: "first-reply",
+    phase: "answer", answer_kind: "general", text: "Hello. How can I help?" });
+  connection.emit("portal.audio.done", { input_item_id: "first-input", response_id: "first-reply", phase: "answer" });
+  await expect(page.locator(".assistant-message")).toContainText("Hello. How can I help?");
+  await expect(page.getByRole("button", { name: "Choose WAV", exact: true })).toBeEnabled();
+
+  const second = recordingWave(4800, { frequency: 750 });
+  await page.getByLabel("Recorded WAV file").setInputFiles({ name: "second.wav", mimeType: "audio/wav", buffer: second });
+  const send = page.getByRole("button", { name: "Send recording", exact: true });
+  await expect(send).toBeEnabled();
+  const before = connection.frames.length;
+  await send.click();
+  await expect(send).toBeDisabled();
+  await expect(page.getByRole("progressbar", { name: "Recording send progress" })).toHaveAttribute("value", "4800");
+  const next = connection.frames.slice(before).filter(f => Buffer.from(f.payload.audio, "base64").some(b => b !== 0));
+  expect(next).toHaveLength(3);
+  expect(Buffer.from(next[0].payload.audio, "base64")).toEqual(second.subarray(44, 44 + 3840));
+  expect(connection.frames.every((f, i) => f.seq === i && f.epoch === 1)).toBe(true);
+  expect(fixture.calls).toEqual(["file-call-1"]);
+  expect(fixture.authorizedSessions).toHaveLength(1);
+  expect(fixture.connections).toHaveLength(1);
+  expect(fixture.deletions).toEqual([]);
+
+  connection.emit("portal.transcript.done", { item_id: "second-input", text: "What is TCP?" });
+  connection.emit("portal.speech_text.done", { input_item_id: "second-input", response_id: "second-reply",
+    phase: "answer", answer_kind: "general", text: "TCP provides reliable delivery." });
+  connection.emit("portal.audio.done", { input_item_id: "second-input", response_id: "second-reply", phase: "answer" });
+  await expect(page.locator(".user-message")).toHaveCount(2);
+  await expect(page.locator(".assistant-message")).toHaveCount(2);
+  await expect(page.locator(".user-message").first()).toContainText("Hello from the first file.");
+  await expect(page.locator(".assistant-message").first()).toContainText("Hello. How can I help?");
+  await expect(page.locator(".assistant-message").last()).toContainText("TCP provides reliable delivery.");
+  await page.getByRole("button", { name: "End call", exact: true }).click();
+  await expect(page.locator(".user-message")).toHaveCount(2);
+  await expect(page.locator(".assistant-message")).toHaveCount(2);
+  expect(fixture.errors).toEqual([]);
+});
+
+test("Page visibility changes do not end the session or stop raw WAV frames", async ({ page }) => {
+  const fixture = await filePortal(page);
+  await selectWave(page, 24000);
+  const connection = await startFile(page, fixture);
+  const before = connection.frames.length;
+  await page.evaluate(() => {
+    Object.defineProperty(document, "hidden", { configurable: true, get: () => true });
+    document.dispatchEvent(new Event("visibilitychange"));
+  });
+  await expect.poll(() => connection.frames.length).toBeGreaterThan(before + 3);
+  await expect(page.getByRole("main").getByText("Voice ready", { exact: true })).toBeVisible();
+  expect(fixture.deletions).toEqual([]);
+  await expect(page.getByRole("alert")).toHaveCount(0);
+  await page.evaluate(() => {
+    Object.defineProperty(document, "hidden", { configurable: true, get: () => false });
+    document.dispatchEvent(new Event("visibilitychange"));
+  });
+  await expect(page.getByRole("progressbar", { name: "Recording send progress" })).toHaveAttribute("value", "24000");
+  expect(fixture.connections).toHaveLength(1);
   await page.getByRole("button", { name: "End call", exact: true }).click();
   expect(fixture.errors).toEqual([]);
 });

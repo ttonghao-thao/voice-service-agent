@@ -83,4 +83,4 @@ Black Pig 单 case 已有现场 answered/引用提交成功；Golden Yolk 批次
 
 原生正文字幕以 epoch/input_item_id/response_id 关联，业务 Turn 更替不改变输入归属；历史恢复沿用实时的响应键。固定 ACK 前缀仅作为状态，正文前缀若与 ACK 分歧则一次释放，不丢字符。字幕流不触发正式答案提交，提交仍要求最终正文和音频结束并由 Coordinator 校验。
 
-单连接时长保留 Settings 默认 105 秒及 Relay 固定额外 30 秒活动宽限。该机制标为待优化，本轮不改变 watchdog、客户端文件结束或自动重连行为。
+单连接时长保留 Settings 默认 105 秒及 Relay 固定额外 30 秒活动宽限。该机制标为待优化，本轮不改变 watchdog、到期文件会话结束或麦克风自动重连行为。门户隐藏只记录状态，回前台尝试恢复音频，不直接关闭 session。文件以 Worklet 时钟按原始 PCM 分帧发送，EOF 后可沿用连接手动发送下一份；不清除对话历史，不自动重放。

@@ -80,6 +80,7 @@ export default function App() {
     "microphone",
   );
   const [recording, setRecording] = useState<PreparedRecording | null>(null);
+  const [sentRecording, setSentRecording] = useState<PreparedRecording | null>(null);
   const [recordingProgress, setRecordingProgress] =
     useState<RecordingProgress | null>(null);
   const [recordingLoading, setRecordingLoading] = useState(false);
@@ -581,7 +582,7 @@ export default function App() {
     const selection = ++recordingSelection.current;
     setError("");
     setRecording(null);
-    setRecordingProgress(null);
+    if (voiceState !== "ready") setRecordingProgress(null);
     setRecordingLoading(true);
     try {
       const prepared = await prepareRecording(file);
@@ -613,6 +614,7 @@ export default function App() {
       if (voiceInput === "file" && recording) {
         setMuted(false);
         voice.current?.setMuted(false);
+        setSentRecording(recording);
         await voice.current?.start(id, { kind: "file", recording });
       } else {
         await voice.current?.start(id);
@@ -621,6 +623,16 @@ export default function App() {
     } finally {
       callStarting.current = false;
       setStartingCall(false);
+    }
+  }
+  function sendNextRecording() {
+    if (!recording || recordingLoading || recording === sentRecording || voiceState !== "ready") return;
+    try {
+      voice.current?.sendRecording(recording);
+      setSentRecording(recording);
+      setError("");
+    } catch (e) {
+      setError((e as Error).message);
     }
   }
   async function endCall() {
@@ -1245,7 +1257,8 @@ export default function App() {
                     disabled={
                       startingCall ||
                       voiceState === "connecting" ||
-                      voiceState === "ready" ||
+                      recordingLoading ||
+                      (voiceState === "ready" && !recordingProgress?.sourceEnded) ||
                       voiceState === "reconnecting"
                     }
                     onChange={(event) => {
@@ -1254,18 +1267,26 @@ export default function App() {
                     }}
                   />
                   <Button
+                    aria-label="Choose WAV"
                     icon={<FileTextOutlined />}
                     loading={recordingLoading}
                     disabled={
                       startingCall ||
                       voiceState === "connecting" ||
-                      voiceState === "ready" ||
+                      recordingLoading ||
+                      (voiceState === "ready" && !recordingProgress?.sourceEnded) ||
                       voiceState === "reconnecting"
                     }
                     onClick={() => recordingFile.current?.click()}
                   >
                     Choose WAV
                   </Button>
+                  {voiceState === "ready" && (
+                    <Button type="primary" onClick={sendNextRecording}
+                      disabled={recordingLoading || !recording || recording === sentRecording || !recordingProgress?.sourceEnded}>
+                      Send recording
+                    </Button>
+                  )}
                   <div className="recording-details">
                     <strong>
                       {recording?.name || "Choose a recorded voice file"}
@@ -1287,7 +1308,7 @@ export default function App() {
                         value={recordingProgress.sentSamples}
                       />
                       <small>
-                        {(recordingProgress.sentSamples / 24000).toFixed(2)} /{" "}
+                        {recordingProgress.name} · {(recordingProgress.sentSamples / 24000).toFixed(2)} /{" "}
                         {recordingProgress.durationSeconds.toFixed(2)} s
                         {recordingProgress.stage === "incomplete" &&
                           ` · ${(recordingProgress.unsentSamples / 24000).toFixed(2)} s not sent`}
