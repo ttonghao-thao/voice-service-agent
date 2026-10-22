@@ -6,8 +6,8 @@
   "snapshot_date": "2026-10-22",
   "files": {
     "docs/voicechat-api.md": "f760e203e2521e5ca68ab4344480e5a7f62673d919b0a2ff52c4682d00c6dd23",
-    "opt/tritonserver/backends/nemotron-voicechat/data_types.py": "416a5ec1bd025685cec2552c2accc992b30b7013b0e0bcad0a2d9c5bb6f04c98",
-    "opt/tritonserver/backends/nemotron-voicechat/model.py": "72ec620b648fbbe449d58af35f0b65d51174dacac07006c9d60344813e27807a",
+    "opt/tritonserver/backends/nemotron-voicechat/data_types.py": "cbc4c54f13d68571ae63692ef193754273ceb5c4c035d537ac88bdf783f295a5",
+    "opt/tritonserver/backends/nemotron-voicechat/model.py": "1aa82e853a6f7b47239b8dd770d9cc313ad07f7d2d846ece3aab1f8965385351",
     "opt/tritonserver/backends/nemotron-voicechat/runtime_setup.py": "f89b36f66222b3384791b5eecc98d82ae54fe7dd01f086224d4dfc1514fa28cc",
     "s2s/audio_server.py": "3582d87ae1e89e18766847b78fc5000cb5a022496a56d029a7512f760d1dd07b",
     "s2s/tests/requirements.txt": "f82f57cefb76b9a9fb9bc131288bca7930d0a0f0492ec21a1917e206e76e825f",
@@ -26,7 +26,8 @@
     "s2s/prompt_template.jinja",
     "opt/tritonserver/backends/nemotron-voicechat/checkpoint_utils/load_utils.py",
     "s2s/tests/requirements.txt",
-    "s2s/tests/test_rnnt_transcript.py"
+    "s2s/tests/test_rnnt_transcript.py",
+    "opt/tritonserver/backends/nemotron-voicechat/data_types.py"
   ],
   "applied_patches": [
     "deploy/voicechat/pad-tail-completion.patch",
@@ -38,7 +39,8 @@
     "native-call-forwarding-without-business-replay",
     "native-function-batch-aggregate-results",
     "input-prefix-boundary-diagnostics",
-    "deploy/voicechat/rnnt-transcript-bootstrap.patch"
+    "deploy/voicechat/rnnt-transcript-bootstrap.patch",
+    "deploy/voicechat/completed-reply-wait.patch"
   ],
   "file_sources": {
     "s2s/audio_server.py": {
@@ -57,7 +59,7 @@
       "source": "Repository CPU regression: real decode/resample/submission fingerprints, unmodified samples, ASR parts and IDs, diagnostics disabled, and no transcript content in logs; retain batch aggregate result tests."
     },
     "opt/tritonserver/backends/nemotron-voicechat/model.py": {
-      "source": "Repository RNNT display-only fix: initialize predictor with y=None, add_sos=False (one zero step) to match NeMo GreedyRNNTInfer; preserve EOU/BOU, encoder frames, thresholds, weights and tool/PAD behavior. The upstream VoiceChat wrapper also has the former double-zero pattern; CPU recurrence/counterexample tests do not establish the deployed speech root cause or accuracy.",
+      "source": "Repository RNNT display-only fix: initialize predictor with y=None, add_sos=False (one zero step) to match NeMo GreedyRNNTInfer; preserve EOU/BOU, encoder frames, thresholds, weights and tool/PAD behavior. The upstream VoiceChat wrapper also has the former double-zero pattern; CPU recurrence/counterexample tests do not establish the deployed speech root cause or accuracy. Repository completion follow-up: after the existing PAD-tail forced EOS, suppress unsolicited text/function tokens before TTS, parsing and subsequent model history until new RNNT speech or a result for an outstanding native call. Preserve the display predictor fix, listening, original thresholds, ACK and full-duplex context; no weight or engine speed changes.",
       "reference_commit": "097dfe9e2f55baf653b83035868bdc89849f1b47",
       "reference_symbols": {
         "nemo/collections/asr/modules/rnnt.py": "RNNTDecoder.predict",
@@ -70,6 +72,9 @@
     },
     "s2s/tests/requirements.txt": {
       "source": "Pinned independent CPU test environment; add CPU PyTorch and its dependencies for RNNT predictor tests. Do not install into API or GPU inference environments."
+    },
+    "opt/tritonserver/backends/nemotron-voicechat/data_types.py": {
+      "source": "Repository sequence-local awaiting_new_input field for the existing PAD completion fallback; reset on new speech or a valid outstanding tool result. Full source mounted with model.py."
     }
   }
 }

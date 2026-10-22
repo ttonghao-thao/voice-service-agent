@@ -637,19 +637,42 @@ test("Native knowledge text streams before done, survives a new search turn, and
     records: [{ kind: "voicechat_transcript", epoch: 1, source_id: "reply",
       created_at: "2026-10-21T00:00:00Z", payload: { input_item_id: "product-input", text } }] };
   connection.emit("portal.tool.started", { message: "Checking knowledge" }, 2); // reload the same saved response
-  await expect(answer).toContainText("Answered");
+  await expect(answer).toContainText("Reply complete");
   await expect(answer.locator(":scope > p")).toHaveCount(1);
   await expect(answer.locator(":scope > p")).toHaveText(text); // no stream/history duplicate
   await expect(answer).not.toContainText("Waiting for spoken reply");
+
+  // A successful retrieval with rejected speech keeps reviewable sources,
+  // remains failed and must not be mislabeled as a failed search.
+  const review = { ...final, status: "failed", reason_code: "VOICE_MISSING_CONDITION",
+    display_text: "The spoken response could not be verified. Please try again.", citations: [
+      { citation_id: "C1", title: "Product AX guide", content: "Product AX ships locally only.",
+        context: null, context_parts: [], context_truncated: false, context_omitted: false, hits_omitted: 0,
+        relations: [], version_id: "version-1", business_version: null, updated_at: null,
+        trace_id: "trace-1", retrieval_status: "ok", evidence_status: "unassessed", degraded_reasons: [],
+        scope_limited: false, rank: 1, title_path: ["Product AX"], anchor: {}, source_uri: null, is_mock: true },
+    ] };
+  snapshot = { ...snapshot, items: [snapshot.items[0], { ...snapshot.items[1], status: "failed", answer: review }] };
+  connection.emit("portal.tool.started", { message: "Checking knowledge" }, 2);
+  await expect(answer).toContainText("Answer not verified");
+  await answer.locator("details.full-answer > summary").click();
+  await answer.getByRole("button", { name: "View sources" }).click();
+  const evidence = page.locator(".ant-drawer-body .evidence");
+  await expect(evidence).toContainText("Answer not verified");
+  await expect(evidence).toContainText("VOICE_MISSING_CONDITION");
+  await expect(evidence).toContainText("Product AX ships locally only.");
+  await expect(evidence).not.toContainText("Search failed");
 
   // A principal-filtered revoked answer must remove live text linked only by input ID too.
   snapshot = { ...snapshot, items: [snapshot.items[0], { ...snapshot.items[1], status: "failed",
     answer: { ...final, status: "failed", reason_code: "KB_ACCESS_REVOKED", display_text: "Access was revoked." } }] };
   connection.emit("portal.tool.started", { message: "Checking knowledge" }, 2);
   await expect(answer).not.toContainText(text);
+  await expect(evidence).not.toContainText("Product AX ships locally only.");
   connection.emit("portal.speech_text.delta", { input_item_id: "product-input", response_id: "late",
     phase: "answer", text: "Late private text" }, 2);
   await expect(answer).not.toContainText("Late private text");
+  await page.getByRole("button", { name: "Close", exact: true }).click();
   await page.getByRole("button", { name: "End call", exact: true }).click();
   expect(fixture.errors).toEqual([]);
 });

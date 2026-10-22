@@ -104,7 +104,7 @@ finished=true 只在该 response 收到 audio.done 且 Worklet 对应队列排�
 - VOICE_TOOL_REQUIRED 是严格模式未满足工具许可；一般模式合法无工具回答不触发它。未知工具、参数错误、原生回答超时和证据检查失败按各自路径结束，不自动补查或伪造成功。
 - 空音频 delta 和尚无非空输出的 response 结束边界不构成回答，不构成成功答案；结束 ID 仍不可复用。非空输出仍需当前会话/输入关联和权限检查。
 - 语音错误在上游关闭/存储清理前发送，携带递增 server_seq；发送任务被取消时，仅有界补送仍有效的客户 final ASR。门户保留转写、显示 code/message 并清除等待状态；未收到错误的意外 WS close 也显示重试提示。用户主动结束保持正常关闭，重试必须显式操作，不自动重播录音或提交转写。
-- Answer/Turn/来源面板使用一致业务终态；错误响应只公开稳定 code/message/retryable/trace_id，不转发上游原文、密钥或堆栈。完整枚举和验证约束以代码/生成 schema 为准。
+- Answer/Turn/来源面板使用一致业务终态；播后内容检查失败仍 failed，页面标记 Answer not verified 并给原因码，有权限的已检索来源可供复核而不代表口述已验证；权限失效继续隐藏。Reply complete 对应 answered，但不证明每个字段都已查到；仅真正检索错误标记 Search failed。错误响应只公开稳定 code/message/retryable/trace_id，不转发上游原文、密钥或堆栈。完整枚举和验证约束以代码/生成 schema 为准。
 
 修改后按场景查 `tests/contract/test_protocol.py`、`tests/integration/test_voice.py`/`test_live_agent_interactions.py`、`tests/e2e/portal.spec.ts`/`voice-audio.spec.ts`/`voice-file.spec.ts` 与 `apps/web/tests/recorded-audio.test.mjs`/`worklet.test.mjs`。真实音频标准归 [统一验证手册](validation.md)，不在接口页复制测试数量。
 

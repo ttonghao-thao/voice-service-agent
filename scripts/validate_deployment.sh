@@ -39,7 +39,7 @@ check() {
   done
   [[ "$errors" == 0 ]] || fail files_not_current
   docker exec "$API_CONTAINER" python -c 'import urllib.request; urllib.request.urlopen("http://127.0.0.1:8000/health/ready", timeout=5).close()' >"$STATE/health.log" 2>&1 || fail api_health
-  docker exec "$VOICE_CONTAINER" python -c 'import os; assert os.getenv("VOICECHAT_DIAGNOSTICS") == "1"; assert os.getenv("USE_JINJA_TEMPLATE_PROMPT") == "1"' >"$STATE/voice-env.log" 2>&1 || fail voice_diagnostics_config
+  docker exec "$VOICE_CONTAINER" python -c 'import os; assert os.getenv("VOICECHAT_DIAGNOSTICS") == "1"; assert os.getenv("USE_JINJA_TEMPLATE_PROMPT") == "1"; assert os.getenv("S2S_INFERENCE_CLOSE_ON_PAD_TAIL", "").lower() in ("1", "true"); assert os.getenv("S2S_INFERENCE_FORCE_SPEECH_SILENCE_ON_PAD", "").lower() in ("1", "true"); assert float(os.getenv("S2S_TTS_PAD_TAIL_RATIO", "3")) > 0' >"$STATE/voice-env.log" 2>&1 || fail voice_diagnostics_config
   printf 'preparation=passed fixtures=matched voicechat_files=matched helpers=matched api_health=ready\n'
   docker inspect --format 'runtime container={{.Name}} image={{.Image}} started={{.State.StartedAt}}' "$API_CONTAINER" "$VOICE_CONTAINER" 2>>"$STATE/setup.log" || fail runtime_metadata
 }
@@ -61,12 +61,16 @@ collect() {
 }
 auto_one() {
   local case_id=$1 mode=${2:-auto} prefix_case= dir report code=0 meta start end cid
+  local followup=()
+  # Prove completion did not close/lock the live conversation. The follow-up
+  # uses the unchanged fixture and the validator's normal readiness checks.
+  if [[ "$mode" == auto && "$case_id" == golden_yolk ]]; then followup=(--followup-case-id greeting); fi
   [[ "$mode" != prefix ]] || prefix_case=$case_id
   dir=$(mktemp -d "$STATE/auto-${case_id}-XXXXXX") || return 2
   report="/tmp/native-cuekb/$(basename "$dir")/report.json"
   printf 'operation=%s case=%s\n' "$mode" "$case_id"
   docker exec "$API_CONTAINER" python /app/scripts/run_native_cuekb_validation.py \
-    --case-id "$case_id" --case-timeout 120 --output "$report" \
+    --case-id "$case_id" "${followup[@]}" --case-timeout 120 --output "$report" \
     --audio-dir "${report%/*}/replies" >"$dir/validation.txt" 2>"$dir/validation-error.log" || code=$?
   # The runner already emits an allowlisted summary; retain that instead of a traceback.
   sed -n '/^preflight=/p; /^window_start=/p; /^case=/p; /^answer_check=/p; /^validation=/p' "$dir/validation.txt"
@@ -86,6 +90,7 @@ case "${1:-check}" in
     result=0
     case "${2:-golden_yolk}" in
       all) cases=(greeting general_tech black_pig_crisp_heart golden_yolk) ;;
+      core) cases=(golden_yolk black_pig_crisp_heart) ;;
       greeting|general_tech|black_pig_crisp_heart|golden_yolk) cases=("${2:-golden_yolk}") ;;
       *) fail unknown_case ;;
     esac

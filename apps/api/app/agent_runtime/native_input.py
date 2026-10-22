@@ -11,8 +11,8 @@ from app.contracts import DomainError, uid
 # Function-channel tokens are consumed one model step at a time: repeat only
 # the per-result coverage/action reminder, not the full session policy.
 ANSWER_INSTRUCTIONS = (
-    "Answer EVERY requested detail in order from these excerpts, or explicitly say that detail "
-    "cannot be confirmed here. Keep numbers and conditions. "
+    "Use all excerpts returned for this question, including earlier results. Answer every requested "
+    "detail or group unconfirmed details in one brief statement. Keep facts with their product and conditions. "
 )
 FINAL_INSTRUCTIONS = "Search finished. Do not call another tool. Answer now."
 
@@ -27,6 +27,27 @@ class NativeInputSearch:
     duplicate_queries: int = 0
     executions: int = 0
     result_overhead: int = 0
+    delivered_sources: set[str] = field(default_factory=set)
+
+    @staticmethod
+    def source_key(source):
+        return json.dumps(source, sort_keys=True, ensure_ascii=True)
+
+    def voice_result(self, ready):
+        """Only omit exact excerpts already delivered in this input/connection.
+
+        The native model retains its function-channel history. Audit, answer
+        checks and citations still use the complete cumulative EvidenceReady.
+        Never mark sources delivered while merely constructing a batch: several
+        calls can finish before their single aggregate result is submitted.
+        """
+        result = voice_result(ready)
+        result["sources"] = [source for source in result["sources"]
+                             if self.source_key(source) not in self.delivered_sources]
+        return result
+
+    def remember_delivery(self, result):
+        self.delivered_sources.update(self.source_key(source) for source in result.get("sources", []))
 
     def reserve(self, name, arguments):
         if self.terminal_reason:

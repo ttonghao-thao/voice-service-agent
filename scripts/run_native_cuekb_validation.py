@@ -141,6 +141,11 @@ def classify(report):
         return "PORTAL_CONNECT", "api_portal_connectivity"
     if any(row.get("portal_error") == "VOICE_TOOL_UNKNOWN" for row in cases):
         return "UNKNOWN_TOOL_NAME", "api_tool_name_validation"
+    if any(row.get("portal_error") == "VOICE_UNSOLICITED_RESPONSE"
+           or row.get("additional_answer_responses", 0) for row in cases):
+        return "REPEATED_ANSWER", "voicechat_completion_then_wait_for_new_input"
+    if any(row.get("unclassified_post_answer_audio", 0) for row in cases):
+        return "UNCLASSIFIED_AUDIO_AFTER_ANSWER", "voicechat_extra_audio_or_missing_text"
     if any(row.get("portal_error") == "VOICE_TOOL_LOOP" or row.get("post_terminal_calls", 0) for row in cases):
         return "TOOL_LOOP_AFTER_TERMINAL", "provider_answer_after_search_finished"
     if any(row.get("portal_error") in ("VOICE_SESSION_ROTATION_REQUIRED", "VOICE_SESSION_EXPIRED") for row in cases):
@@ -198,6 +203,8 @@ def case_line(row):
         f"evidence_filter={evidence_filter_summary(row)}",
         f"speech={row.get('speech_transport')}",
         f"answer_complete={row.get('answer_complete', 'unverified')}",
+        f"extra_answers={row.get('additional_answer_responses', 0)}",
+        f"quiet_observation={row.get('post_answer_observation', 'unverified')}",
         f"answer_status={row.get('answer_status') or '-'}",
         f"answer_sources={row.get('answer_citation_count', 0)}",
         f"retrieval_executions={row.get('retrieval_executions', 0)}",
@@ -464,7 +471,7 @@ def read_api_evidence(stream):
 
 
 async def preflight(args, settings):
-    cases = load_cases(args.cases, getattr(args, "case_id", None))
+    cases = load_cases(args.cases, getattr(args, "case_id", None), getattr(args, "followup_case_id", None))
     async with httpx.AsyncClient(base_url=args.base_url, timeout=5, follow_redirects=False) as client:
         ready_response = await client.get("/health/ready")
         ready_response.raise_for_status()
@@ -536,6 +543,7 @@ def main():
     parser.add_argument("--origin", help="Defaults to the API container PUBLIC_ORIGIN")
     parser.add_argument("--cases", default="/app/validation/native-cuekb/cases.json")
     parser.add_argument("--case-id", help="Run one image-bundled case on a fresh connection")
+    parser.add_argument("--followup-case-id", help="Send this existing case next in the same voice session")
     parser.add_argument("--case-timeout", type=float, default=90)
     parser.add_argument("--audio-dir", default="/tmp/native-cuekb/replies")
     parser.add_argument("--output", default="/tmp/native-cuekb/report.json")

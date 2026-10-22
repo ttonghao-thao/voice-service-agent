@@ -30,6 +30,7 @@ import {
   VoiceState,
 } from "./audio/VoiceClient";
 import { prepareRecording, PreparedRecording } from "./audio/recordedAudio";
+import { answerLabel, sourceNotice } from "./answerPresentation";
 
 const stateLabels: Record<VoiceState, string> = {
   closed: "Voice disconnected",
@@ -39,10 +40,10 @@ const stateLabels: Record<VoiceState, string> = {
   error: "Voice unavailable",
 };
 const statuses: Record<string, string> = {
-  answered: "Answered",
+  answered: "Reply complete",
   needs_clarification: "Clarification needed",
   insufficient_evidence: "Insufficient evidence",
-  failed: "Search failed",
+  failed: "Request failed",
   canceled: "Canceled",
   superseded: "Superseded",
   expired: "Expired",
@@ -739,8 +740,12 @@ export default function App() {
       ) : (
         <>
           <Tag color={selected.status === "answered" ? "green" : "orange"}>
-            {statuses[selected.status] || selected.status}
+            {answerLabel(selected) || statuses[selected.status] || selected.status}
           </Tag>
+          {sourceNotice(selected) && <p className="muted">{sourceNotice(selected)}</p>}
+          {selected.status === "failed" && selected.reason_code && (
+            <small className="muted">Reference: {selected.reason_code}</small>
+          )}
           {selected.is_mock && (
             <Tag color="orange">Synthetic integration data</Tag>
           )}
@@ -828,8 +833,7 @@ export default function App() {
           ))}
           {!selected.citations.length && !selected.cards.length && (
             <p className="muted">
-              No evidence is available to show. Please clarify your question or
-              contact a representative.
+              No source references are available for this response.
             </p>
           )}
           <div className="evidence-note">
@@ -1045,7 +1049,7 @@ export default function App() {
                             }
                           >
                             {speechParts.some((part) => !part.done) ? "Speaking" :
-                              statuses[visibleTurnStatus(t)] || visibleTurnStatus(t)}
+                              (t.answer && answerLabel(t.answer)) || statuses[visibleTurnStatus(t)] || visibleTurnStatus(t)}
                           </Tag>
                         </div>
                         {t.channel === "voice" ? (
@@ -1053,8 +1057,8 @@ export default function App() {
                             {speech ? (
                               <>
                                 <p aria-live="polite">{speech}</p>
-                                {presentationFailed && (
-                                  <Alert type="warning" showIcon message="The spoken reply did not pass its text checks. Read the written answer below." />
+                                {(presentationFailed || (t.answer?.status === "failed" && t.answer.verification_timing === "after_audio")) && (
+                                  <Alert type="warning" showIcon message="The spoken reply was not verified. Review the result and any retrieved sources below." />
                                 )}
                                 {voiceState !== "ready" &&
                                   speechParts.some((part) => !part.done) && (

@@ -63,6 +63,6 @@ Adapter 接受 session.updated.tools 的 JSON 数组回显或官方文档中的 
 
 API 在接收首成员时记录该 input 是否已经提交终态；不是等工具 worker 出队后才判断。完整批次按成员顺序处理，同一 input 累计最多两次实际 CueKB 查询。超额且提前收到的成员仅结清为 not_executed，不新建查询；精确重复可复用并结束检索。终态提交后到达的新批次仍报 VOICE_TOOL_LOOP。累计来源和授权/版本校验不因聚合而省略。
 
-回填仍是 `conversation.item.create` 的 `function_call_output`：`call_id` 为首成员，另附同一 `native_batch_id` 与完整、有序的 `native_call_ids`。`output` 是一份累计证据 JSON，多成员时增加 `call_results`，仅包含字符串 index/status（executed/reused/not_executed）及必要的 reason。调用 ID 留在传输元数据，不作为知识正文交给模型。VoiceChat 校验完整成员后只向原函数通道注入一次，继续使用既有训练格式转换，不重复包裹 TOOL_RESPONSE。
+回填仍是 `conversation.item.create` 的 `function_call_output`：`call_id` 为首成员，另附同一 `native_batch_id` 与完整、有序的 `native_call_ids`。`output` 是本批结果 JSON；同一 input 内已成功交付的完全相同来源不重复注入，新增正文/上下文/条件完整补充，模型沿用本问题先前工具历史。status=ok 的空 sources 更新不撤销先前来源；API 校验/引用仍用完整累计证据。多成员时增加 `call_results`，仅包含字符串 index/status（executed/reused/not_executed）及必要的 reason。调用 ID 留在传输元数据，不作为知识正文交给模型。VoiceChat 校验完整成员后只向原函数通道注入一次，继续使用既有训练格式转换，不重复包裹 TOOL_RESPONSE。
 
 兼容边界：未声明批次的旧事件仅按单调用处理，不能靠缓存重放兼容旧版的排队超额调用；此情况明确报 VOICE_TOOL_BATCH_REQUIRED。新版 VoiceChat 可接收旧客户端的单成员结果，但多成员只接受完整聚合结果。部署必须协同更新 API 和 audio_server。`results_submitted` 按 call_id 结清计数；`result_injections`/VoiceChat `function_result` 按批次计数，两者不必相等。步骤和判据见 [统一验证手册](../validation.md)。

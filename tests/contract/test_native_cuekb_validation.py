@@ -137,6 +137,12 @@ def test_single_case_selection_preserves_original_wav_and_rejects_unknown_id():
     assert selected[0] == next(c for c in all_cases if c["case_id"] == "black_pig_crisp_heart")
     with pytest.raises(ValueError, match="Unknown case_id"):
         load_cases(path, "not-a-case")
+    followup = load_cases(path, "golden_yolk", "greeting")
+    assert [case["case_id"] for case in followup] == ["golden_yolk", "greeting"]
+    assert followup == [next(case for case in all_cases if case["case_id"] == name)
+                        for name in ("golden_yolk", "greeting")]
+    with pytest.raises(ValueError, match="requires --case-id"):
+        load_cases(path, followup_case_id="greeting")
 
 
 @pytest.mark.parametrize("error", ["VOICE_SESSION_ROTATION_REQUIRED", "VOICE_SESSION_EXPIRED"])
@@ -214,7 +220,7 @@ def test_single_entrypoint_classifies_missing_native_tool_with_bounded_evidence(
         "case=product expected=search_knowledge_base actual=- selection=failed "
         "arguments=unverified retrieval=unverified cuekb_evidence=- "
         "voice_evidence=- evidence_filter=- "
-        "speech=passed answer_complete=unverified answer_status=- answer_sources=0 "
+        "speech=passed answer_complete=unverified extra_answers=0 quiet_observation=unverified answer_status=- answer_sources=0 "
         "retrieval_executions=0 retrieval_limit=- "
         "duplicate_queries=0 terminal_results_submitted=0 post_terminal_calls=0 queued_calls_settled=0 tool_batches_submitted=0 cumulative_sources=0 "
         "latest_retrieval=- reason=- "

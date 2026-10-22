@@ -139,7 +139,7 @@ def model_harness(source, *, enabled=True, ratio=3.0, force_silence=True):
                     and node.name == "TritonPythonModel")
     names = {"_tts_pad_tail_budget_exhausted", "_apply_turn_taking_from_rnnt_states",
              "vllm_tts_step", "token_to_text_with_bos_eos", "generate_tokens",
-             "parse_function_call_tokens", "_reset_fn_call_state"}
+             "parse_function_call_tokens", "_reset_fn_call_state", "_resume_reply_for_tool_result"}
     methods = [node for node in original.body if isinstance(node, ast.FunctionDef) and node.name in names]
     assert len(methods) == len(names)
     for method in methods:
@@ -216,6 +216,7 @@ def sequence(*, seq_id=42, text=PAD, function=PAD, previous_function=PAD, pads=7
         rnnt_user_speaking=False, rnnt_silent_frames=20, rnnt_nonblank_total=0,
         rnnt_consecutive_speech_frames=user_speech, rnnt_agent_talking_frames=20,
         rnnt_turn_text_tokens=content, tts_agent_idle=False, tts_in_turn_pads=pads,
+        awaiting_new_input=False,
         tts_in_turn_content=content, steps_exhausted=False, fn_call={"state": function_state},
     )
 
@@ -382,6 +383,56 @@ def test_completion_does_not_mutate_another_sequence(patched_backend):
     assert current_token(expired) == EOS and current_token(rendering) == PAD
     assert not expired.rnnt_agent_speaking and rendering.rnnt_agent_speaking
     assert [event["sequence_id"] for event in model.diagnostics] == [42]
+
+
+def test_forced_completion_blocks_silent_reopening_before_tts_history_and_function_parser(patched_backend):
+    model = model_harness(patched_backend)
+    seq = sequence(pads=118, content=39)  # Exact first observed Golden Yolk boundary.
+    model._apply_turn_taking_from_rnnt_states(seq.seq_id, seq)
+    assert current_token(seq) == EOS and seq.awaiting_new_input
+    assert render_frame(model, seq) == (0,) * 31
+    # Continue the actual modified methods after completion, rather than stop
+    # the regression on the first EOS (the former test's blind spot).
+    for text, function in ((BOS, PAD), (CONTENT, PAD), (PAD, SOTC),
+                           (CONTENT, CONTENT), (EOS, EOTC), (BOS, PAD)):
+        seq.generated_text_tokens.tokens.append(text)
+        seq.generated_function_tokens.tokens.append(function)
+        seq.decoder_global_step += 1
+        model._apply_turn_taking_from_rnnt_states(seq.seq_id, seq)
+        assert current_token(seq) == PAD
+        assert seq.generated_function_tokens[0, seq.decoder_global_step] == PAD
+        assert render_frame(model, seq) == (0,) * 31
+        assert model.parse_function_call_tokens(seq.seq_id, TokenVector([PAD])) == ""
+        assert seq.fn_call["state"] == "idle" and seq.awaiting_new_input
+    assert sum(row["event"] == "agent.eos" for row in model.diagnostics) == 1
+    assert not any(row["event"] == "agent.bos" for row in model.diagnostics)
+
+
+@pytest.mark.parametrize("speech_kind", ["one_frame", "short_followup", "confirmed"])
+def test_next_user_speech_resumes_same_sequence_without_changing_bou_threshold(patched_backend, speech_kind):
+    model = model_harness(patched_backend)
+    seq = sequence(text=BOS, speaking=False)
+    seq.awaiting_new_input = True
+    seq.rnnt_rolling_density = .01  # Existing adaptive BOU minimum would be 6.
+    seq.rnnt_consecutive_speech_frames = int(speech_kind == "one_frame")
+    seq.rnnt_nonblank_total = int(speech_kind == "short_followup")
+    seq.rnnt_user_speaking = speech_kind == "confirmed"
+    model._apply_turn_taking_from_rnnt_states(seq.seq_id, seq)
+    assert not seq.awaiting_new_input and current_token(seq) == BOS
+    assert seq.rnnt_agent_speaking
+    assert model.diagnostics[0] == {"sequence_id": 42, "event": "reply.resumed", "reason": "new_user_speech"}
+    assert render_frame(model, seq) == (9,) * 31
+
+
+@pytest.mark.parametrize("state,resumed", [("waiting_for_response", True), ("speaking_ack", True),
+                                          ("idle", False), ("process_response", False)])
+def test_only_pending_tool_results_resume_completed_reply(patched_backend, state, resumed):
+    model = model_harness(patched_backend)
+    seq = sequence(function_state=state)
+    seq.awaiting_new_input = True
+    model._resume_reply_for_tool_result(seq)
+    assert seq.awaiting_new_input is not resumed
+    assert bool(model.diagnostics) is resumed
 
 
 def test_actual_batch_generation_preserves_sotc_until_post_batch_parser(patched_backend):

@@ -67,6 +67,16 @@ async def test_saved_records_exclude_prior_epoch_outside_window(tmp_path, monkey
         db.add(Record(conversation_id=CHOSEN, epoch=2, kind='native_tool_arguments', source_id='query',
                       payload={'input_item_id': 'current', 'arguments': {'query': 'Can Product AX be shipped?'}},
                       created_at=datetime(2026, 10, 21, tzinfo=UTC)))
+        db.add(Record(conversation_id=CHOSEN, epoch=2, kind='native_answer_check', source_id='answer-turn',
+                      payload={'input_item_id': 'current', 'response_id': 'checked-response',
+                               'reason_code': 'VOICE_MISSING_CONDITION',
+                               'condition_failures': [{'value': str(i)} for i in range(4)],
+                               'unlisted_debug_field': 'PRIVATE_DEBUG_DO_NOT_PRINT'},
+                      created_at=datetime(2026, 10, 21, tzinfo=UTC)))
+        db.add(Record(conversation_id=CHOSEN, epoch=2, kind='native_tool_batch', source_id='batch',
+                      payload={'input_item_id': 'current', 'new_sources': 0,
+                               'retained_sources': 5, 'result_injections': 1},
+                      created_at=datetime(2026, 10, 21, tzinfo=UTC)))
         db.add(Turn(conversation_id=CHOSEN, epoch=2, request_revision=1, input_item_id='current',
                     idempotency_key='test-query', request_hash='test', user_text='Can it be shipped?', channel='voice',
                     status='answered', answer={'status': 'answered'},
@@ -82,6 +92,11 @@ async def test_saved_records_exclude_prior_epoch_outside_window(tmp_path, monkey
     assert 'current question' in output and 'OLD_PRIVATE_TEXT' not in output
     assert 'Can Product AX be shipped?' in output
     assert 'EXCLUDED_CONTEXT_MUST_NOT_APPEAR' not in output
+    assert 'PRIVATE_DEBUG_DO_NOT_PRINT' not in output
+    check = json.loads(next(row.split('=', 1)[1] for row in output.splitlines() if row.startswith('answer_check=')))
+    assert check['response_id'] == 'checked-response' and check['omitted'] == 1
+    assert len(check['condition_failures']) == 3
+    assert '"new_sources":0,"retained_sources":5' in output
     admitted = json.loads(next(row.split('=', 1)[1] for row in output.splitlines() if row.startswith('admitted_evidence=')))
     assert admitted['items'] == [{'citation_id': 'C1', 'text': 'Ship locally only.', 'conditions': {'product_model': 'AX'}}]
     assert admitted['omitted'] == 0 and admitted['coverage'] == 'manual_review_required'
@@ -155,6 +170,16 @@ def test_failed_validation_still_collects_matching_window(fake_docker):
     assert '--conversation-id' in trace and '--window-start' in trace
 
 
+def test_core_run_adds_same_connection_followup_and_collects_both_products_once(fake_docker):
+    result = run_host(fake_docker, 'auto', 'core')
+    assert result.returncode == 1  # The mock fails; collecting both must not hide it.
+    assert result.stdout.count('operation=auto case=') == 2
+    trace = Path(fake_docker['DOCKER_TRACE']).read_text()
+    assert trace.count("'--case-id', 'golden_yolk'") == 1
+    assert trace.count("'--case-id', 'black_pig_crisp_heart'") == 1
+    assert trace.count("'--followup-case-id', 'greeting'") == 1
+
+
 def test_prefix_runs_each_small_case_once_and_collects_even_after_failure(fake_docker):
     result = run_host(fake_docker, 'prefix')
     assert result.returncode == 1
@@ -195,15 +220,23 @@ def test_mismatch_stops_before_audio_and_pending_web_blocks_auto(fake_docker):
     assert 'web_capture_not_started' in run_host(fake_docker, 'web-end').stdout
 
 
-def test_timing_uses_last_answer_instead_of_a_reply_before_supplementary_search(capsys):
+def test_timing_reports_first_reply_after_last_result_and_counts_later_reopenings(capsys):
     events = [
         ('00:00:01', f'voice_audio_first_sent conversation_id={CHOSEN} response_id=early input_item_id=i1'),
         ('00:00:02', f'voice_response_completed conversation_id={CHOSEN} response_id=early input_item_id=i1 phase=answer samples=100'),
+        ('00:00:03', f'voice_tool_call_received conversation_id={CHOSEN} call_id=c1 tool=search_knowledge_base input_item_id=i1'),
+        ('00:00:03', f'voice_tool_result_submitted conversation_id={CHOSEN} call_id=c1 bytes=200'),
         ('00:00:04', f'voice_audio_first_sent conversation_id={CHOSEN} response_id=final input_item_id=i1'),
         ('00:00:05', f'voice_text_first_sent conversation_id={CHOSEN} response_id=final input_item_id=i1'),
         ('00:00:08', f'voice_response_completed conversation_id={CHOSEN} response_id=final input_item_id=i1 phase=answer samples=300'),
+        ('00:00:09', f'voice_audio_first_sent conversation_id={CHOSEN} response_id=repeat input_item_id=i1'),
+        ('00:00:12', f'voice_response_completed conversation_id={CHOSEN} response_id=repeat input_item_id=i1 phase=answer samples=300'),
     ]
     collector.log_summary('\n'.join(f'2026-10-21T{at}Z {row}' for at, row in events), CHOSEN)
     output = capsys.readouterr().out
     assert '"answer_audio":"2026-10-21T00:00:04Z"' in output
     assert '"text_before_done_ms":3000' in output
+    assert '"answer_responses":3' in output
+    assert '"additional_answers_after_result":1' in output
+    assert '"last_result_to_audio_ms":1000' in output
+    assert '"last_answer_done":"2026-10-21T00:00:12Z"' in output

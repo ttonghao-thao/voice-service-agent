@@ -23,8 +23,10 @@ from websockets.asyncio.client import connect
 from scripts.probe_voicechat import read_wav
 from scripts.verify_deployment import validate_voice_policy
 
+ANSWER_OBSERVATION_SECONDS = 5.0
 
-def load_cases(path, case_id=None):
+
+def load_cases(path, case_id=None, followup_case_id=None):
     path = Path(path)
     cases = json.loads(path.read_text())
     if not isinstance(cases, list) or not 1 <= len(cases) <= 20:
@@ -43,9 +45,18 @@ def load_cases(path, case_id=None):
         if not isinstance(terms, list) or any(not isinstance(term, str) or not term.strip() for term in terms):
             raise ValueError("query_terms must contain nonempty strings")
     if case_id is not None:
-        cases = [case for case in cases if case["case_id"] == case_id]
-        if not cases:
-            raise ValueError(f"Unknown case_id: {case_id!r}")
+        selected = []
+        for name in (case_id, followup_case_id):
+            if name is None:
+                continue
+            case = next((case for case in cases if case["case_id"] == name), None)
+            if case is None:
+                raise ValueError(f"Unknown case_id: {name!r}")
+            if case not in selected:
+                selected.append(case)
+        cases = selected
+    elif followup_case_id is not None:
+        raise ValueError("A follow-up case requires --case-id")
     for case in cases:
         case["wav"] = str((path.parent / case["wav"]).resolve())
         frames, digest = read_wav(case["wav"])
@@ -151,7 +162,7 @@ def assess(case, history, seen_inputs, output_samples):
 async def run(args):
     if not 1 <= args.case_timeout <= 180:
         raise ValueError("case-timeout must be 1-180 seconds")
-    cases = load_cases(args.cases, getattr(args, "case_id", None))
+    cases = load_cases(args.cases, getattr(args, "case_id", None), getattr(args, "followup_case_id", None))
     parts = urlsplit(args.base_url)
     origin = args.origin or urlunsplit((parts.scheme, parts.netloc, "", "", ""))
     report = {"tested_at": now().isoformat(), "mode": "deployed_portal", "synthetic_tool_results": False,
@@ -193,10 +204,14 @@ async def run(args):
                         seen_inputs, audio = set(), bytearray()
                         samples = 0
                         response_samples, answer_responses = {}, {}
+                        response_phases, post_answer_audio = {}, set()
                         latest_case_input = None
                         row["answer_complete"] = "unverified"
                         primary_sent = asyncio.Event()
                         answer_ended = False
+                        answer_ended_at = None
+                        row["additional_answer_responses"] = 0
+                        row["post_answer_observation"] = "unverified"
 
                         async def send(frames=case["frames"], finished=primary_sent):
                             nonlocal seq
@@ -217,22 +232,60 @@ async def run(args):
                         try:
                             async with asyncio.timeout(args.case_timeout):
                                 while True:
-                                    if answer_ended and primary_sent.is_set():
+                                    # An answer may finish during harmless WAV
+                                    # tail silence. Once EOF arrives, observe
+                                    # that latest input rather than require it
+                                    # to produce a second answer. New input
+                                    # events below invalidate this candidate.
+                                    if (not answer_ended and primary_sent.is_set()
+                                            and row.get("answer_response_id") is not None
+                                            and answer_responses.get(row["answer_response_id"]) == latest_case_input):
+                                        answer_ended = True
+                                        answer_ended_at = time.monotonic()
+                                        row["answer_complete"] = "passed"
+                                    if (answer_ended_at is not None
+                                            and time.monotonic() - answer_ended_at >= ANSWER_OBSERVATION_SECONDS):
+                                        unclassified = [rid for rid in post_answer_audio
+                                                        if response_phases.get(rid) != "status"
+                                                        and answer_responses.get(rid, latest_case_input) == latest_case_input]
+                                        if unclassified:
+                                            row["post_answer_observation"] = "failed"
+                                            row["unclassified_post_answer_audio"] = len(unclassified)
+                                            row["portal_error"] = "VOICE_UNCLASSIFIED_RESPONSE"
+                                            raise ValueError("Unclassified audio followed the completed answer")
+                                        row["post_answer_observation"] = "passed"
                                         break
                                     try:
                                         event = json.loads(await asyncio.wait_for(ws.recv(), 0.1))
                                     except TimeoutError:
                                         continue
                                     body = event["payload"]
+                                    if body.get("response_id") and body.get("phase"):
+                                        response_phases[body["response_id"]] = body["phase"]
+                                    if (answer_ended and event["type"] in (
+                                            "portal.speech_text.delta", "portal.speech_text.done")
+                                            and body.get("phase") == "answer" and body.get("text", "").strip()
+                                            and body.get("input_item_id") == latest_case_input
+                                            and body["response_id"] != row.get("answer_response_id")):
+                                        row["additional_answer_responses"] += 1
+                                        row["post_answer_observation"] = "failed"
+                                        row["portal_error"] = "VOICE_UNSOLICITED_RESPONSE"
+                                        raise ValueError("Another answer started without a new user input")
                                     if (event["type"] == "portal.input.state" and body.get("state") == "speaking"):
                                         # A pause may split one WAV into multiple native inputs.
                                         # An earlier answer must not finish the later question.
                                         answer_ended = False
+                                        answer_ended_at = None
+                                        post_answer_audio.clear()
+                                        row["post_answer_observation"] = "unverified"
                                         row["answer_complete"] = "unverified"
                                         latest_case_input = None
                                     elif event["type"] == "portal.transcript.done":
                                         if body["item_id"] != latest_case_input:
                                             answer_ended = False
+                                            answer_ended_at = None
+                                            post_answer_audio.clear()
+                                            row["post_answer_observation"] = "unverified"
                                             row["answer_complete"] = "unverified"
                                         latest_case_input = body["item_id"]
                                         seen_inputs.add(body["item_id"])
@@ -240,6 +293,8 @@ async def run(args):
                                         raw = base64.b64decode(body["audio"], validate=True)
                                         samples += len(raw) // 2
                                         rid = body["response_id"]
+                                        if raw and answer_ended and rid != row.get("answer_response_id"):
+                                            post_answer_audio.add(rid)
                                         response_samples[rid] = response_samples.get(rid, 0) + len(raw) // 2
                                         if args.audio_dir and len(audio) + len(raw) <= 16 * 1024 * 1024:
                                             audio.extend(raw)
@@ -256,6 +311,7 @@ async def run(args):
                                         # Never stop on a response completed while the WAV
                                         # still contains unprocessed speech (e.g. Golden Yolk).
                                         answer_ended = primary_sent.is_set()
+                                        answer_ended_at = time.monotonic() if answer_ended else None
                                         row["answer_complete"] = "passed" if answer_ended else "unverified"
                                         row["answer_response_id"] = body["response_id"]
                                         row["answer_samples"] = response_samples[body["response_id"]]
@@ -344,6 +400,8 @@ def passed(report):
         expected_voice_evidence = "not_applicable" if expected_tool is None else "passed"
         if (
             row.get("reason_code") is not None
+            or row.get("additional_answer_responses", 0) > 0
+            or row.get("post_answer_observation", "passed") != "passed"
             or (expected_tool and "answer_status" in row and (
                 row["answer_status"] != "answered" or row.get("answer_citation_count", 0) == 0))
             or row.get("post_terminal_calls", 0) > 0
@@ -367,6 +425,7 @@ if __name__ == "__main__":
     parser.add_argument("--origin", help="Configured PUBLIC_ORIGIN if different from base-url")
     parser.add_argument("--cases", required=True, help="JSON list with case_id, wav, expected_tool, optional query_terms")
     parser.add_argument("--case-id", help="Run only this case, on a new conversation/connection")
+    parser.add_argument("--followup-case-id", help="Send this existing WAV next on the same connection, after quiet observation")
     parser.add_argument("--case-timeout", type=float, default=90)
     parser.add_argument("--audio-dir", help="Optional authorized output recordings for listening")
     parser.add_argument("--output", default="artifacts/native-cuekb-validation.json")

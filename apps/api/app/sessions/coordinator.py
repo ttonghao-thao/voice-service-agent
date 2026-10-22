@@ -317,9 +317,11 @@ class SessionCoordinator:
                     )
             return bundle if self.coordination.valid else None
 
-    def provider_answer(self, turn_id, text):
+    def provider_answer(self, turn_id, text, response_id=None):
         future = self.awaiting_answers.get(turn_id)
         if future and not future.done():
+            if response_id and (ctx := self.contexts.get(turn_id)):
+                ctx.task_context["provider_response_id"] = response_id
             future.set_result(text)
 
     async def finish_provider(self, ctx, request, history, ready, future, voice_relay=False):
@@ -344,6 +346,7 @@ class SessionCoordinator:
             if voice_relay:
                 await self.store.record(ctx.conversation_id, ctx.epoch, "native_answer_check", ctx.turn_id, {
                     "input_item_id": ctx.task_context.get("input_source", {}).get("input_item_id"),
+                    "response_id": ctx.task_context.get("provider_response_id"),
                     "reason_code": code,
                     "evidence_basis": "delivered_sources",
                     "condition_failures": EvidenceGate.missing_conditions(
@@ -351,11 +354,18 @@ class SessionCoordinator:
                         if code == "VOICE_MISSING_CONDITION" else [],
                     "_authorized_kb_ids": sorted(ctx.principal.knowledge_base_ids),
                 }, ctx.turn_id, ctx.request_revision)
+            # These are retrieved references, not an endorsement of a failed
+            # spoken answer. Keep them available for review only for content
+            # failures, after the authorization/version checks above succeed.
+            reviewable = voice_relay and code in {
+                "VOICE_ANSWER_INVALID", "RAG_INVALID_CITATION", "VOICE_UNSUPPORTED_NUMBER",
+                "VOICE_UNSUPPORTED_UNIT", "VOICE_MISSING_CONDITION",
+            }
             bundle = AnswerBundle(
                 answer_id=ready.answer_id, status="failed" if code else "answered",
                 display_text="The spoken response could not be verified. Please try again." if code else text,
                 speech_text="" if code else text if len(text) <= 160 else "Please read the written answer in the portal.",
-                citations=[] if code else ready.citations, reason_code=code,
+                citations=ready.citations if not code or reviewable else [], reason_code=code,
                 answer_kind="knowledge", composition="nano_grounded",
                 validation_level="source_checked", verification_timing="after_audio",
                 is_mock=any(c.is_mock for c in ready.citations),

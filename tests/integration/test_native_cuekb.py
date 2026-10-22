@@ -260,6 +260,7 @@ async def test_native_query_reaches_cuekb_without_an_answer_model(tmp_path, monk
     ("Product AX supports 10 connections.", "VOICE_MISSING_CONDITION", "complete"),
     ("Product AX supports 10 connections only indoors.", None, "complete"),
     ("It supports 10 connections.", "VOICE_MISSING_CONDITION", "none"),
+    ("Product AX supports 10 connections.", "FORBIDDEN", "none"),
 ])
 def test_pcm_through_real_adapter_native_call_cuekb_and_voice_reply(tmp_path, spoken, reason, context_mode):
     import asyncio
@@ -322,6 +323,8 @@ def test_pcm_through_real_adapter_native_call_cuekb_and_voice_reply(tmp_path, sp
                     await ws.send(json.dumps({"type": "response.output_audio_transcript.delta",
                         "response_id": "answer", "delta": text}))
                 await release_answer.wait()
+                if reason == "FORBIDDEN":
+                    app.state.registry.specs["search_knowledge"].enabled = False
                 await ws.send(json.dumps({"type": "response.output_audio_transcript.done", "response_id": "answer",
                                           "transcript": spoken}))
                 await ws.send(json.dumps({"type": "response.output_audio.delta", "response_id": "answer", "delta": pcm}))
@@ -382,10 +385,13 @@ def test_pcm_through_real_adapter_native_call_cuekb_and_voice_reply(tmp_path, sp
                 assert turn["answer"]["reason_code"] == reason
                 assert turn["answer"]["verification_timing"] == "after_audio"
                 assert turn["answer"]["status"] == ("failed" if reason else "answered")
-                assert bool(turn["answer"]["citations"]) == (reason is None)
+                # Failed speech remains failed, but authorized retrieved facts
+                # remain reviewable rather than masquerading as an empty search.
+                assert bool(turn["answer"]["citations"]) == (reason != "FORBIDDEN")
                 history = client.get(f"/api/v1/conversations/{cid}/messages").json()
                 audit = next(r["payload"] for r in history["records"] if r["kind"] == "native_answer_check")
                 assert audit["reason_code"] == reason
+                assert audit["response_id"] == "answer"
                 assert audit["evidence_basis"] == "delivered_sources"
                 if reason == "VOICE_MISSING_CONDITION":
                     assert audit["condition_failures"][0]["rule"] == (
@@ -395,7 +401,8 @@ def test_pcm_through_real_adapter_native_call_cuekb_and_voice_reply(tmp_path, sp
                 from scripts.inspect_native_answer import inspect_answer
                 inspected = client.portal.call(inspect_answer, s, cid, "i2")
                 assert inspected["answer_text"] == spoken
-                assert inspected["delivered_check"] == reason
+                assert inspected["stored_reason"] == reason
+                assert inspected["delivered_check"] == (None if reason == "FORBIDDEN" else reason)
                 if context_mode == "truncated" and reason is None:
                     assert inspected["original_check"] == "VOICE_MISSING_CONDITION"
                     assert "context" not in json.loads(results[0]["output"])["sources"][0]
@@ -447,7 +454,8 @@ async def test_catalog_upgrade_is_explicit_atomic_and_idempotent(tmp_path):
         assert (await runtime.catalog.snapshot()).revision == 2
 
 
-async def test_recording_validator_uses_portal_business_results_not_synthetic_returns(tmp_path):
+@pytest.mark.parametrize("input_shape", ["short", "tail", "split"])
+async def test_recording_validator_uses_portal_business_results_not_synthetic_returns(tmp_path, input_shape):
     from scripts.simulate_full_flow import http_server
     from scripts.validate_native_cuekb import run
     pcm = b"\x01\x00" * 1920
@@ -466,9 +474,23 @@ async def test_recording_validator_uses_portal_business_results_not_synthetic_re
         session = json.loads(await ws.recv())["session"]
         await ws.send(json.dumps({"type": "session.updated", "session": session}))
         called = False
+        introduced = False
         async for raw in ws:
             event = json.loads(raw)
             if event["type"] == "input_audio_buffer.append" and not called:
+                marker = base64.b64decode(event["audio"])[0]
+                if input_shape == "split" and marker != 2:
+                    if not introduced:
+                        introduced = True
+                        await ws.send(json.dumps({"type": "input_audio_buffer.speech_started", "item_id": "intro"}))
+                        await ws.send(json.dumps({"type": "conversation.item.input_audio_transcription.completed",
+                                                  "item_id": "intro", "transcript": "What about Product AX?"}))
+                        await ws.send(json.dumps({"type": "response.output_audio_transcript.done", "response_id": "intro-answer",
+                                                  "transcript": "What would you like to know?"}))
+                        await ws.send(json.dumps({"type": "response.output_audio.delta", "response_id": "intro-answer",
+                                                  "delta": base64.b64encode(pcm).decode()}))
+                        await ws.send(json.dumps({"type": "response.output_audio.done", "response_id": "intro-answer"}))
+                    continue
                 called = True
                 await ws.send(json.dumps({"type": "input_audio_buffer.speech_started", "item_id": "input"}))
                 await ws.send(json.dumps({"type": "conversation.item.input_audio_transcription.completed",
@@ -486,7 +508,10 @@ async def test_recording_validator_uses_portal_business_results_not_synthetic_re
 
     with wave.open(str(tmp_path / "input.wav"), "wb") as wav:
         wav.setparams((1, 2, 24000, 0, "NONE", "not compressed"))
-        wav.writeframes(pcm)
+        data = pcm + bytes(3840 * 30) if input_shape == "tail" else pcm
+        if input_shape == "split":
+            data += bytes(3840 * 8) + b"\x02\x00" * 1920 + bytes(3840 * 20)
+        wav.writeframes(data)
     cases = tmp_path / "cases.json"
     cases.write_text(json.dumps([{"case_id": "fixture", "wav": "input.wav",
         "expected_tool": "search_knowledge_base", "query_terms": ["AX"]},
@@ -502,6 +527,12 @@ async def test_recording_validator_uses_portal_business_results_not_synthetic_re
     assert report["status"] == "observed", report
     assert report["synthetic_tool_results"] is False
     row = report["cases"][0]
+    assert row["primary_fully_sent"] and row["post_answer_observation"] == "passed"
+    if input_shape in ("tail", "split"):
+        assert row["answer_ended_before_full_input"] is True
+    if input_shape == "split":
+        assert row["input_item_ids"] == ["input", "intro"]
+        assert row["answer_response_id"] == "answer"
     assert len(report["cases"]) == 1
     assert row["answer_status"] == "answered" and row["answer_citation_count"] == 1
     assert row["answer_check"]["reason_code"] is None
@@ -514,8 +545,10 @@ async def test_recording_validator_uses_portal_business_results_not_synthetic_re
     assert "Authorization" not in stored and "server-only" not in stored
 
 
-@pytest.mark.parametrize("answer_available", [True, False])
-async def test_continuous_native_conversation_survives_delayed_answers_and_repeated_acks(tmp_path, answer_available):
+@pytest.mark.parametrize("answer_available,expire_after_answer", [(True, False), (True, True), (False, False)])
+async def test_continuous_native_conversation_survives_delayed_answers_and_repeated_acks(
+    tmp_path, answer_available, expire_after_answer,
+):
     """Real API/WS transport, controlled provider. No claim about GPU semantics."""
     import asyncio
 
@@ -552,7 +585,7 @@ async def test_continuous_native_conversation_survives_delayed_answers_and_repea
             await asyncio.sleep(.3)
             await speak(f"ack-{n}-1", "Let me check the documentation.")
             await speak(f"ack-{n}-2", "Let me check the documentation.")
-            if n == 4:
+            if n == 4 and expire_after_answer:
                 # Exercise the idle-rotation boundary after every ACK has ended.
                 # Shorten only this test's live setting; the hard cap stays bounded.
                 s.voice_session_max_seconds = 1
@@ -623,7 +656,7 @@ async def test_continuous_native_conversation_survives_delayed_answers_and_repea
         app = create_app(s)
         async with http_server(app) as base:
             report = await run(Namespace(base_url=base, origin=s.public_origin, cases=case_file,
-                case_timeout=5 if answer_available else 1, audio_dir=tmp_path / "audio", output=tmp_path / "report.json"))
+                case_timeout=8, audio_dir=tmp_path / "audio", output=tmp_path / "report.json"))
             # Closing the connection also settles a pending answer observer.
             for _ in range(100):
                 if not app.state.voice.sessions and not app.state.coordinator.awaiting_answers:
@@ -638,7 +671,15 @@ async def test_continuous_native_conversation_survives_delayed_answers_and_repea
         assert report["cases"][-1]["speech_transport"] == "passed"
         assert report["cases"][-1]["answer_complete"] == "unverified"
         return
-    assert passed(report), report
+    if expire_after_answer:
+        # A delivered answer is not a completed quiet-observation interval.
+        # Keep the existing short lifetime test; do not change production limits
+        # or accept a silently interrupted observation as a pass.
+        assert not passed(report)
+        assert report["cases"][-1]["portal_error"] == "VOICE_SESSION_ROTATION_REQUIRED"
+        assert report["cases"][-1]["post_answer_observation"] == "unverified"
+    else:
+        assert passed(report), report
     assert len(registrations) == 1
     assert len(queries) == len(results) == 3
     assert queries[1].splitlines()[0] == "Product AX maximum simultaneous connections"
@@ -649,7 +690,7 @@ async def test_continuous_native_conversation_survives_delayed_answers_and_repea
     assert all(row.get("reason_code") is None for row in report["cases"])
 
 
-@pytest.mark.parametrize("scenario", ["supplement", "empty", "duplicate", "post_terminal", "revoked", "one_search", "batch", "batch_revoked"])
+@pytest.mark.parametrize("scenario", ["supplement", "empty", "duplicate", "post_terminal", "revoked", "one_search", "batch", "batch_revoked", "repeated_answer", "audio_only"])
 async def test_native_input_search_budget_and_cumulative_answer(tmp_path, scenario):
     """Real API/HTTP/WS, deterministic provider; verifies control, not GPU speech."""
     from scripts.simulate_full_flow import http_server
@@ -735,6 +776,14 @@ async def test_native_input_search_budget_and_cumulative_answer(tmp_path, scenar
                             if cid == "second-1" and scenario == "supplement"
                             else "Product AX supports 10 connections. I cannot confirm the price from these excerpts.")
                     await speak(f"answer-{cid}", text)
+                    if scenario == "repeated_answer":
+                        import asyncio
+                        await asyncio.sleep(.05)
+                        await speak("unsolicited-second-answer", "I am sorry. I am sorry.")
+                    elif scenario == "audio_only":
+                        await ws.send(json.dumps({"type": "response.output_audio.delta", "response_id": "extra-audio",
+                                                  "delta": base64.b64encode(b"\x01\x00" * 1920).decode()}))
+                        await ws.send(json.dumps({"type": "response.output_audio.done", "response_id": "extra-audio"}))
 
     def conversation_id():
         return next(iter(app.state.voice.sessions.values())).conversation_id
@@ -756,8 +805,21 @@ async def test_native_input_search_budget_and_cumulative_answer(tmp_path, scenar
         app = create_app(s)
         async with http_server(app) as base:
             report = await run(Namespace(base_url=base, origin=s.public_origin, cases=case_file,
-                case_timeout=4, audio_dir=None, output=tmp_path / "report.json"))
+                case_timeout=8, audio_dir=None, output=tmp_path / "report.json"))
     assert len(registrations) == 1
+    if scenario == "audio_only":
+        from scripts.run_native_cuekb_validation import classify
+        assert not passed(report)
+        assert report["cases"][0]["unclassified_post_answer_audio"] == 1
+        assert classify(report)[0] == "UNCLASSIFIED_AUDIO_AFTER_ANSWER"
+        return
+    if scenario == "repeated_answer":
+        from scripts.run_native_cuekb_validation import classify
+        assert not passed(report)
+        assert report["cases"][0]["additional_answer_responses"] == 1
+        assert report["cases"][0]["post_answer_observation"] == "failed"
+        assert classify(report)[0] == "REPEATED_ANSWER"
+        return
     if scenario == "post_terminal":
         assert not passed(report)
         assert report["cases"][0]["portal_error"] == "VOICE_TOOL_LOOP"
@@ -793,10 +855,14 @@ async def test_native_input_search_budget_and_cumulative_answer(tmp_path, scenar
     final = json.loads(results[0 if scenario == "one_search" else 1]["output"])
     assert final["search_state"] == "finished"
     assert "Do not call another tool" in final["instructions"]
-    assert "10 connections" in final["sources"][0]["text"]
+    assert "10 connections" in json.loads(results[0]["output"])["sources"][0]["text"]
+    # The next input gets its own delivery state, despite repeating the query.
+    assert "10 connections" in json.loads(results[-1]["output"])["sources"][0]["text"]
     if scenario == "supplement":
-        assert len(final["sources"]) == 2
-        assert "18 layers" in final["sources"][1]["text"]
+        assert len(final["sources"]) == 1
+        assert "18 layers" in final["sources"][0]["text"]
+    elif scenario != "one_search":
+        assert final["sources"] == []  # Same facts were already injected once.
     if scenario == "empty":
         assert final["partial"] == "true"
         assert first["latest_retrieval_status"] == "not_found"

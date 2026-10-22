@@ -60,17 +60,25 @@ def log_summary(text, conversation_id):
         subset = [row for row in rows if row.get("input_item_id") == input_id]
         completed = [row for row in subset if row["event"] == "voice_response_completed"
                      and row.get("phase") == "answer"]
-        # A prior non-ACK response can end before a supplementary search.
-        # Measure the latest completed response, not the first response of this input.
-        response_ids = {completed[-1].get("response_id")} if completed else set()
-        audio = [row for row in subset if row["event"] == "voice_audio_first_sent"
-                 and row.get("response_id") in response_ids]
-        texts = [row for row in subset if row["event"] == "voice_text_first_sent"
-                 and row.get("response_id") in response_ids]
         calls = [row for row in subset if row["event"] == "voice_tool_call_received"]
         call_ids = {row.get("call_id") for row in calls}
         results = [row for row in rows if row["event"] == "voice_tool_result_submitted"
                    and row.get("call_id") in call_ids]
+        # Exclude replies before a supplementary search, then measure the FIRST
+        # formal reply after the final result. Never report the fifth reply's
+        # first packet as the initial silent wait.
+        audio_by_response = {row.get("response_id"): row["at"] for row in subset
+                             if row["event"] == "voice_audio_first_sent"}
+        final_replies = []
+        for row in completed:
+            elapsed = milliseconds(results[-1]["at"], audio_by_response.get(row.get("response_id"))) if results else 0
+            if elapsed is not None and elapsed >= 0:
+                final_replies.append(row)
+        response_ids = {final_replies[0].get("response_id")} if final_replies else set()
+        audio = [row for row in subset if row["event"] == "voice_audio_first_sent"
+                 and row.get("response_id") in response_ids]
+        texts = [row for row in subset if row["event"] == "voice_text_first_sent"
+                 and row.get("response_id") in response_ids]
         transcribed = [row for row in subset if row["event"] == "voice_input_transcribed"]
         # Report timestamps too: intervals may include a second search/ACK, not just inference.
         stamps = {"transcribed": transcribed[0]["at"] if transcribed else None,
@@ -78,8 +86,12 @@ def log_summary(text, conversation_id):
                   "last_result": results[-1]["at"] if results else None,
                   "answer_audio": audio[0]["at"] if audio else None,
                   "answer_text": texts[0]["at"] if texts else None,
-                  "answer_done": completed[-1]["at"] if completed else None}
+                  "answer_done": final_replies[0]["at"] if final_replies else None}
         emit("input_timing", {"input_item_id": input_id, **stamps,
+                              "answer_responses": len(completed),
+                              "additional_answers_after_result": max(0, len(final_replies) - 1),
+                              "last_answer_done": completed[-1]["at"] if completed else None,
+                              "question_to_first_answer_ms": milliseconds(stamps["transcribed"], stamps["answer_audio"]),
                               "question_to_call_ms": milliseconds(stamps["transcribed"], stamps["first_call"]),
                               "last_result_to_audio_ms": milliseconds(stamps["last_result"], stamps["answer_audio"])
                               if stamps["last_result"] and stamps["answer_audio"]
@@ -109,6 +121,11 @@ async def saved_answers(conversation_id, window_start, window_end):
                 Record.created_at >= window_start, Record.created_at <= window_end,
                 Record.kind == "native_tool_arguments",
             ).order_by(Record.created_at).limit(9)))
+            checks = list(await db.scalars(select(Record).where(
+                Record.conversation_id == conversation_id,
+                Record.created_at >= window_start, Record.created_at <= window_end,
+                Record.kind.in_(("native_answer_check", "native_tool_batch")),
+            ).order_by(Record.created_at).limit(13)))
         emit("saved", {"conversation_id": conversation_id, "records_shown": min(len(records), 16),
                        "turns_shown": min(len(turns), 8), "records_truncated": len(records) > 16,
                        "turns_truncated": len(turns) > 8,
@@ -133,6 +150,20 @@ async def saved_answers(conversation_id, window_start, window_end):
             emit("query", {"input_item_id": record.payload.get("input_item_id"),
                            "call_id": record.source_id,
                            **clipped(record.payload.get("arguments", {}).get("query"), 500)})
+        for record in checks[:12]:
+            payload = record.payload
+            if record.kind == "native_answer_check":
+                failures = payload.get("condition_failures", [])
+                emit("answer_check", {"input_item_id": payload.get("input_item_id"),
+                                      "response_id": payload.get("response_id"),
+                                      "reason": payload.get("reason_code"),
+                                      "condition_failures": failures[:3],
+                                      "omitted": max(0, len(failures) - 3)})
+            else:
+                emit("evidence_delivery", {key: payload.get(key) for key in (
+                    "input_item_id", "new_sources", "retained_sources", "result_injections")})
+        if len(checks) > 12:
+            emit("answer_checks_truncated", {"shown": 12})
         # Keep the admitted view (including conditions), not excluded surrounding context.
         # Samples are bounded diagnostics and do not certify semantic faithfulness.
         latest = next((t for t in turns if t.answer and t.evidence), None)

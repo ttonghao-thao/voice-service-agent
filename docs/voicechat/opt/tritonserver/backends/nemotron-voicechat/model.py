@@ -1379,6 +1379,13 @@ class TritonPythonModel:
             frame_indices.append(max(0, min(frame_idx, max_audio_idx)))
         self._rnnt_eou_decode_frame(asr_emb, seq_ids_batched, frame_indices)
 
+    def _resume_reply_for_tool_result(self, seq_state) -> None:
+        # Only a response to an outstanding call can resume a completed reply.
+        if seq_state.fn_call["state"] in ("waiting_for_response", "speaking_ack"):
+            if seq_state.awaiting_new_input:
+                self._voice_diagnostic(seq_state, "reply.resumed", reason="pending_tool_result")
+            seq_state.awaiting_new_input = False
+
     def _apply_turn_taking_from_rnnt_states(self, seq_id: int, seq_state) -> None:
         t = seq_state.decoder_global_step
         bos_id = self.model.tokenizer.bos_id
@@ -1388,6 +1395,25 @@ class TritonPythonModel:
         lookback_start = max(0, t - FORCE_TURN_TAKING_THRESHOLD)
         window = seq_state.generated_text_tokens[0, lookback_start:t]
         current_tok = seq_state.generated_text_tokens[0, t].item()
+
+        if seq_state.awaiting_new_input:
+            # Release on the first nonblank speech frame, not the adaptive BOU
+            # threshold: short follow-ups such as "yes" must remain possible.
+            if (seq_state.rnnt_user_speaking or seq_state.rnnt_nonblank_total > 0
+                    or seq_state.rnnt_consecutive_speech_frames > 0):
+                seq_state.awaiting_new_input = False
+                self._voice_diagnostic(seq_state, "reply.resumed", reason="new_user_speech")
+            else:
+                # Do this before TTS, function parsing and the next LLM step.
+                # Hiding a subtitle/audio frame alone leaves the generated
+                # content in the model history and does not stop re-opening.
+                function_tok = seq_state.generated_function_tokens[0, t].item()
+                if current_tok != self.pad_id or function_tok != self.pad_id:
+                    self._voice_diagnostic(seq_state, "reply.output_suppressed",
+                                           text_token=current_tok, function_token=function_tok)
+                seq_state.generated_text_tokens[0, t] = self.pad_id
+                seq_state.generated_function_tokens[0, t] = self.pad_id
+                return
 
         density = seq_state.rnnt_rolling_density
         if seq_state.rnnt_first_turn:
@@ -1464,6 +1490,7 @@ class TritonPythonModel:
             seq_state.rnnt_nonblank_total = 0
             seq_state.rnnt_agent_talking_frames = 0
             seq_state.rnnt_turn_text_tokens = 0
+            seq_state.awaiting_new_input = True
             return
 
         # ── noise reset ───────────────────────────────────── NeMo L3006-3008
@@ -2166,6 +2193,10 @@ class TritonPythonModel:
             fn_response = function_response_batched[batch_idx]
 
             if fn_response:
+
+                # A result can resume an outstanding call, never an idle
+                # completed reply. Unsolicited results must not unlock it.
+                self._resume_reply_for_tool_result(self._seq_mgr[seq_id])
 
                 fn_response = format_tool_response_for_nemo(fn_response)
                 self._seq_mgr[seq_id].fn_call["response"] = fn_response

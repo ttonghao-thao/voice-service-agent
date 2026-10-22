@@ -13,7 +13,6 @@ import time
 
 import anyio
 from app.agent_runtime.direct import EvidenceReady
-from app.agent_runtime.native_cuekb import voice_result
 from app.agent_runtime.native_input import ANSWER_INSTRUCTIONS, FINAL_INSTRUCTIONS, NativeInputSearch
 from app.contracts import (
     AnswerBundle,
@@ -139,7 +138,8 @@ async def relay(gateway, ws, session, provider):
                                cid, item_id, call_id)
                 raise DomainError("VOICE_TOOL_LOOP", "A new tool batch arrived after the final result.", 502, True)
             # Reserve bounded space for per-call dispositions before admitting
-            # evidence. The model sees one cumulative result, not N injections.
+            # evidence. The model sees one result per batch; exact excerpts
+            # already delivered in this input remain in its native history.
             outcomes = [{"index": str(i), "status": "not_executed", "reason": "search_finished"}
                         for i in range(batch.size)]
             search.result_overhead = len(json.dumps({"call_results": outcomes}).encode()) if batch.size > 1 else 0
@@ -178,7 +178,7 @@ async def relay(gateway, ws, session, provider):
             if turn is None or bundle is None:
                 raise DomainError("VOICE_TOOL_RESULT_UNAVAILABLE", "The batch has no result to deliver.", 502, True)
             if isinstance(bundle, EvidenceReady):
-                result = voice_result(bundle)
+                result = search.voice_result(bundle)
                 tool_inputs[item_id]["evidence"] = True
             else:
                 result = {"status": bundle.status, "speech_text": bundle.speech_text,
@@ -213,6 +213,7 @@ async def relay(gateway, ws, session, provider):
                             await provider.submit_tool_result(call_ids[0], text, batch_id=batch.id, call_ids=call_ids)
                         else:
                             await provider.submit_tool_result(call_ids[0], text)
+                search.remember_delivery(result)
                 if result.get("search_state") == "finished":
                     terminal_sent.add(item_id)
                 for call_id in call_ids:
@@ -227,7 +228,8 @@ async def relay(gateway, ws, session, provider):
             await store.record(cid, epoch, "native_search_state", call_ids[0], counters, turn.id, turn.request_revision)
             await store.record(cid, epoch, "native_tool_batch", batch.id or call_ids[0], {
                 "input_item_id": item_id, "call_ids": call_ids, "outcomes": outcomes,
-                "result_injections": 1}, turn.id, turn.request_revision)
+                "result_injections": 1, "new_sources": len(result.get("sources", [])),
+                "retained_sources": len(search.delivered_sources)}, turn.id, turn.request_revision)
             logger.info("voice_search_state conversation_id=%s input_item_id=%s call_id=%s "
                         "retrieval_executions=%s retrieval_limit=%s duplicate_queries=%s "
                         "terminal_result_submitted=%s cumulative_sources=%s",
@@ -339,7 +341,7 @@ async def relay(gateway, ws, session, provider):
                 response["done"] = True
                 if response["text"] and not response["ack"]:
                     if operation and operation["sent"] and operation["evidence"]:
-                        coordinator.provider_answer(operation["turn"], response["text"])
+                        coordinator.provider_answer(operation["turn"], response["text"], response_id=rid)
                     elif not operation and response["input"]:
                         await store.utterance(session.principal, cid, epoch, response["input"], answer=AnswerBundle(
                             status="answered", display_text=response["text"], speech_text="", answer_kind="general",

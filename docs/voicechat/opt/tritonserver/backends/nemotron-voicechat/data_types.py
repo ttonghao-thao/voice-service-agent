@@ -82,6 +82,10 @@ class TritonSeqState:
     rnnt_first_turn: bool = True  # True until first agent BOS; enables relaxed BOU threshold
     rnnt_agent_talking_frames: int = 0  # frames since agent BOS (NeMo: _agent_talking_frames)
     rnnt_turn_text_tokens: int = 0  # non-special tokens in current agent turn (NeMo: _turn_text_tokens)
+    # A PAD-tail completion ends this reply, not merely one transport segment.
+    # Keep listening, but do not accept unsolicited text/function output until
+    # new RNNT speech or a result for an outstanding native call arrives.
+    awaiting_new_input: bool = False
 
     # Set when decoder_global_step reaches the pre-allocated token buffer limit.
     # Once set, infer() returns an error response instead of processing the sequence.

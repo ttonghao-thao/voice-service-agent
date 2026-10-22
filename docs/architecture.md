@@ -1,10 +1,10 @@
 # 当前系统架构
 
-2026-10-21 核对一期原生 relay、批次协议、Provider、Coordinator 与 Runtime。本页维护已实现架构；需求和交付边界见 [交付说明](delivery.md)，工作状态见 [任务板](TASK_BOARD.md)。
+2026-10-22 核对一期原生 relay、批次协议、Provider、Coordinator 与 Runtime。本页维护已实现架构；需求和交付边界见 [交付说明](delivery.md)，工作状态见 [任务板](TASK_BOARD.md)。
 
 当前一期部署为 VoiceChat 原生单工具验证：只向模型注册 search_knowledge_base(query)，通过内部 NativeCueKBExecutor→Registry→CueKBAdapter 检索，直接回填精简证据，由 VoiceChat 生成语音。AGENT_PROVIDER=disabled，不运行额外答案模型；外置 SDK/文本模型路径仅保留兼容实现，不在下图的一期数据流中。原生工具选择、连续追问与实际口述验收见 [验证步骤](validation.md)。
 
-原生 relay 按连接/input_item_id 保存有界检索状态，默认最多两次实际查询、相同参数不重复执行；该路径关闭 HTTP 自动重试。重复查询或预算耗尽的结果标为 finished，终态提交后到达的新批次报 VOICE_TOOL_LOOP 并关闭异常连接；提交前已收到的批次成员在预算内执行，超额仅结清。Coordinator 将同一输入的累计有效证据用于回填、答案校验和引用提交；空的补充检索不丢失既有事实。缓存复用仍复核权限和后端版本，不跨输入共享。硬性查询上限不等于模型已成功回答，实际语音闭环仍须验收。
+原生 relay 按连接/input_item_id 保存有界检索状态，默认最多两次实际查询、相同参数不重复执行；该路径关闭 HTTP 自动重试。重复查询或预算耗尽的结果标为 finished，终态提交后到达的新批次报 VOICE_TOOL_LOOP 并关闭异常连接；提交前已收到的批次成员在预算内执行，超额仅结清。Coordinator 将同一输入的累计有效证据用于答案校验和引用提交；模型从本问题原生工具历史与新增完整来源共同获得累计事实，已成功交付的完全相同正文/上下文/条件不重复注入；空的补充检索不丢失既有事实。缓存复用仍复核权限和后端版本，不跨输入共享。硬性查询上限不等于模型已成功回答，实际语音闭环仍须验收。
 
 ## 1. 产品与部署边界
 
@@ -56,7 +56,7 @@ VoiceChat 内部并非 ASR 文本驱动 LLM：16 kHz 音频经共享 encoder 分
 
 1. Start call 创建绑定 conversation/epoch/Origin 的一次性票据，建立一条 VoiceChat 连接并确认工具目录。
 2. 持续转发输入音频与模型输出；普通问答、ACK、知识回复不消耗一次性发声许可。保留同一连接供多轮与指代追问。
-3. 模型原生调用才触发业务。按原 call_id 幂等，校验工具/参数与权限，使用模型 query 查询 CueKB。VoiceChat 显式声明一次解码的调用批次，API 收齐后按预算处理，保留所有 call_id、每批回填一份累计结果；详见 [批次契约](interfaces/voice-tools.md#4-原生函数批次传输)。
+3. 模型原生调用才触发业务。按原 call_id 幂等，校验工具/参数与权限，使用模型 query 查询 CueKB。VoiceChat 显式声明一次解码的调用批次，API 收齐后按预算处理，保留所有 call_id、每批回填一份结果，已发送来源精确去重、新增来源完整补充；详见 [批次契约](interfaces/voice-tools.md#4-原生函数批次传输)。
 4. Coordinator 唯一提交业务记录。检索有期限，模型续答不共用检索期限；连接结束或明确取消会结清等待观察的任务。
 5. 回答文本/音频完成用于审计，来源检查不伪装为播前事实保证，也不阻断后续普通问答。Web 同时收音与播放；原生 speech_started 清除已排队播放，查询不中止。
 
@@ -79,8 +79,8 @@ VoiceChat 内部并非 ASR 文本驱动 LLM：16 kHz 音频经共享 encoder 分
 
 ## 5. 演进与验收入口
 
-Black Pig 单 case 已有现场 answered/引用提交成功；Golden Yolk 批次修复已有自动/Web 第二段闭环现场证据，当前改进范围是逐项回答和结果注入时延、流式正文展示。按 [统一验证手册](validation.md) 先完成当前闭环，再验证连续多轮、知识追问、内容和听音。Hello/TCP 增加边界诊断并修正 RNNT 显示转写的重复零输入初始化，使其符合 NeMo 标准贪心解码契约；分轮/打断的 RNNT 状态及 Nano 路径不变。VoiceChat 只保存首 4 秒音频的 PCM16 哈希和累计转写哈希，不记录原始音频或 ASR 正文；API 与保存的转写按同一输入核对，门户仅给出有界预览。CPU 回归不代表真实识别已修复。
+Black Pig 单 case 已有现场 answered/引用提交成功；Golden Yolk 批次修复已有自动/Web 第二段闭环现场证据，当前改进范围是逐项回答和结果注入时延、流式正文展示。按 [统一验证手册](validation.md) 先完成当前闭环，再验证连续多轮、知识追问、内容和听音。Hello/TCP 增加边界诊断并修正 RNNT 显示转写的重复零输入初始化，使其符合 NeMo 标准贪心解码契约；正常分轮/打断的 RNNT 门槛及权重不变。本轮补齐已有 PAD 强制结束后的等待新输入边界，静音时在播报/解析/下一步文本历史前抑制额外正文和 function token，新语音或待处理调用的有效回填可恢复；不清空连接历史。VoiceChat 只保存首 4 秒音频的 PCM16 哈希和累计转写哈希，不记录原始音频或 ASR 正文；API 与保存的转写按同一输入核对，门户仅给出有界预览。CPU 回归不代表真实识别已修复。
 
-原生正文字幕以 epoch/input_item_id/response_id 关联，业务 Turn 更替不改变输入归属；历史恢复沿用实时的响应键。固定 ACK 前缀仅作为状态，正文前缀若与 ACK 分歧则一次释放，不丢字符。字幕流不触发正式答案提交，提交仍要求最终正文和音频结束并由 Coordinator 校验。
+原生正文字幕以 epoch/input_item_id/response_id 关联，业务 Turn 更替不改变输入归属；历史恢复沿用实时的响应键。固定 ACK 前缀仅作为状态，正文前缀若与 ACK 分歧则一次释放，不丢字符。字幕流不触发正式答案提交，提交仍要求最终正文和音频结束并由 Coordinator 校验。内容检查失败保留 failed 和原因，权限有效的检索引用可供复核；前端明确标记 Answer not verified，不等同 Search failed。Reply complete 仅表示回复提交，不能证明所有字段或口述事实已被证实。
 
 单连接时长保留 Settings 默认 105 秒及 Relay 固定额外 30 秒活动宽限。该机制标为待优化，本轮不改变 watchdog、到期文件会话结束或麦克风自动重连行为。门户隐藏只记录状态，回前台尝试恢复音频，不直接关闭 session。文件以 Worklet 时钟按原始 PCM 分帧发送，EOF 后可沿用连接手动发送下一份；不清除对话历史，不自动重放。
