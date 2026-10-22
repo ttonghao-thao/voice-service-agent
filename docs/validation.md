@@ -6,7 +6,7 @@
 
 ## 1. 本次范围与执行顺序
 
-**当前操作：只执行第 4.3 节。** Golden Yolk 已完成本次采集，接下来只读已保存日志，定位五个响应的开口来源和时间。不执行更新镜像、重建、自动测试或新一轮 Web 上传。Hello/TCP 已有用户多次正常的现场反馈，停止重复定位；以下部署与测试步骤保留供以后被明确要求时使用。
+**当前无需执行验证命令。** Golden Yolk 的原始采集与补充边界元数据已经足够定位当前缺口，第 4.3 节记录结论及修复后验收目标。停止重播 WAV、重复采集和调参；运行代码尚未修复，不执行更新镜像或重建。Hello/TCP 按多次正常的现场反馈收敛，以下通用部署/测试步骤保留供以后明确要求时使用。
 
 本期其他验收范围包括回答覆盖度与结果注入时延、Web 流式文字展示、同一通话连续发送 WAV、页面转后台不主动结束。Golden Yolk 自动/Web 第二段已有检索与注入完成的现场证据，但当前五段重复回答及内容错误未放行。以后明确恢复这些验收时，才在同一 WAV 上自动/Web 各执行一次，对比实际回答、结果 token/注入时间及文字是否在回答结束前出现；完整四文件对照使用第 5 节，不同时执行两套方案。
 
@@ -259,44 +259,33 @@ bash scripts/validate_deployment.sh web-end
 
 同一会话的所有最终输入条目一起核对，避免把拆成两轮的句首误报为丢失。API、落库和浏览器预览一致时，不通过门户补写 Hello 或问句前缀。两文件自动/Web 均通过则停止本次缺词调试；这不代表整体业务验收或长期准确率已完成。仍缺词或证据不齐就记录该次结果并停止同一方案复测，不重复改参数、不扩大到 20 轮。CPU 受控 LSTM 的首 token 反例不能作为现场识别成功的证明。
 
-## 4.3 当前 Golden Yolk 重复回答：只读已采集日志
+## 4.3 Golden Yolk 重复回答：定位完成，等待修复
 
-2026-10-22 的 CID `7546bdcd-ec6d-41ea-85dc-8b130b18ea88` 已完成一次 Web 采集，不再重播 WAV、不重建容器。第二段同一输入有 5 个独立最终转写响应；两次查询、两次注入完成，超额成员已结清，终态后没有新工具调用。下一步只确认各响应何时开口/结束，以及后端 BOS 来自模型、强制 EOU 还是边界覆写，不增加新的业务请求。
+本次 CID `7546bdcd-ec6d-41ea-85dc-8b130b18ea88`、sequence `3321350189` 已完成 Web 采集及一次已有日志重摘要，证据不再补采，不再执行旧的重放/边界提取命令。
 
-在刚才执行采集的同一宿主机项目根目录、同一用户下，完整执行以下命令。路径与 ID 固定为本次已回传结果，不要求操作者寻找或判断。输出仅含该会话的工具/回答时间、该 sequence 的至多 30 条开口/强制结束元数据及缺失/截断标志，不打印全文日志。
+**已知事实：**
 
-```bash
-bash <<'SH'
-set -euo pipefail
-CAPTURE_DIR=/tmp/voice-validation-0-2137539592/web-golden_yolk-pYotFd
-for FILE in api.log voicechat.log; do
-  if ! test -r "$CAPTURE_DIR/$FILE"; then
-    printf 'existing_capture=unavailable reason=MISSING_CAPTURE_FILE file=%s\n' "$FILE"
-    exit 2
-  fi
-done
-API_CONTAINER=$(docker compose --env-file .env -f deploy/compose.production.yaml ps -q api)
-test -n "$API_CONTAINER" || { printf 'existing_capture=unavailable reason=MISSING_API_CONTAINER\n'; exit 2; }
-cat "$CAPTURE_DIR/api.log" "$CAPTURE_DIR/voicechat.log" |
-  docker exec -i -e PYTHONPATH=/app "$API_CONTAINER" \
-    python /app/scripts/summarize_voice_timeline.py \
-      --conversation-id 7546bdcd-ec6d-41ea-85dc-8b130b18ea88 |
-  sed -n '/^timeline=/p; /^stage=.*"event":"voice_tool_call_received"/p; /^stage=.*"event":"voice_audio_first_sent"/p; /^stage=.*"event":"voice_response_completed"/p; /^stage=.*"event":"backend.inject_done"/p'
-awk '
-  index($0,"voice_model_diagnostic ") && index($0,"3321350189") &&
-  /agent[.]bos|agent[.]eos|text[.]overwrite|input[.]bou/ {
-    n++; if (n <= 30) print
-  }
-  END {
-    printf "model_boundaries=%s count=%d shown=%d omitted=%d\n", (n ? "observed" : "unavailable"), n, (n < 30 ? n : 30), (n > 30 ? n - 30 : 0)
-  }
-' "$CAPTURE_DIR/voicechat.log"
-SH
-```
+- 同一第二段输入有 5 个不同 response_id 的正式回答。5 次结束全部为 `agent.eos source=render_budget`，不是这五次由模型自然给出 EOS；第一个正式回答后的 4 次开口均为 `agent.bos source=model_native`。
+- 四次重新开口均无新 `input.bou`，`user_speaking_before=false`、`nonblank_total=0`，`silent_frames` 从 223 增至 773；第二次注入之后无新增工具结果。不是本轮用户继续提问或工具重复注入在触发这些响应。
+- 代码在 PAD 尾部超过既有 3 倍文本 token 比例时，向 `generated_text_tokens` 写入 EOS；下一步 `_llm_step` 把该 token 纳入文本输入。结束分支清除 speaking 标志，却未建立完成后等待新输入的边界，新的原生 BOS 随后被接纳。此前补丁补齐了结束事件，未覆盖结束后继续静音解码的整段行为。
+- Relay 继续传递五段正文，门户合并显示，Coordinator 的 Future 只接收一份回答。这些层放大交付与审计的不一致；只隐藏后四段不能证明生成问题已解决。
+- `dropped_events=104` 是有界诊断内存中旧条目的淘汰计数；逐条日志仍打印，本次原始日志可见早期和后续边界。它不是音频丢弃计数。
 
-回传全部终端输出即可；若 `unavailable` 或 `truncated=true`，保留该结果并停止，不扩大日志窗口、不再重跑音频。开发者据此区分模型原生重新开口、强制 EOU 或重复 BOS/PAD 尾部处理造成的分段。`agent.eos` 当前只记录部分强制完成路径，缺少此事件不能证明没有原生 EOS；需与逐响应结束事件一起解释。
+| 时间项 | 实测 | 含义 |
+| --- | --- | --- |
+| 两次 CueKB 请求 | 189 ms 合计 | 检索网络耗时 |
+| 两次结果注入 | 约 22.46 秒合计 | 序列化结果进入模型的主要耗时 |
+| 第二段转写完成到首次正式音频 | 约 29.28 秒 | 15:04:20.322 → 15:04:49.601；不是后来的 71.012 秒 |
+| 最后一次注入完成到首次正式音频 | 约 345 ms | 15:04:49.256 → 15:04:49.601 |
+| 首段正式回答结束后到最后一段结束 | 约 56.64 秒 | 四段额外响应占用的时间 |
 
-本次摘要的 `last_result_to_audio_ms=71012` 选取的是最后一个完成响应的首包，不是第一次正式回答首包；前面其他响应可能已在播报。`answers_completed=2` 统计的是有完成回答的不同输入数，不是响应数。两项均不得用于否认本次的五段回答。内容核对已有准入证据，不再索取全量 CueKB 响应。
+本次旧摘要的 `last_result_to_audio_ms=71012` 选取最后一个完成响应的首包，不能当作首次回答首包延迟；`answers_completed=2` 统计有完成回答的不同输入数，不能解释为只有两个响应。下一版诊断需要把首次正式响应和后续响应分开列出，并检出无新输入/待处理结果却重复开口的情形。
+
+**最小修复目标，尚未编码：**保留现有 PAD 完成保护，补齐强制完成后的等待新输入状态；持续静音时不得再次打开正文或工具调用。新用户输入及确属待处理调用的有效工具结果可以解除等待；ACK 结束不能把业务回答锁死，完整会话及历史继续保留。不新增分类器、答案模型或响应授权/补偿体系，不提高查询预算、不调整会话时限。显示转写已生效的 RNNT 修正保留。
+
+同时在现有英文提示中明确：一个复合问题的查询应覆盖所问属性；缺失项合并说明一次，保持产品归属，不重新询问已经明确的产品。它不能代替语义内容验收，也不能被当作循环控制机制。当前证据未证明模型为何缺少自然 EOS，不单凭本次结果宣布基础模型无故障；先修补这个已确认的控制缺口。
+
+修复后的本地回归必须执行本次真实边界轨迹：强制 EOS 后持续静音、连续原生 BOS/正文/工具 token，以及随后短追问、正常输入、工具 ACK/有效回填。需证明无新问题时不再产生额外正式响应，新问题可以在同一连接被识别和回答。现场只做 Golden Yolk 一次及同连接下一问，步骤在修复交付时确定；当前不要求执行。不用截断字幕、增加查询次数或提前关闭整个会话获得通过。
 
 ## 5. 完整四文件对照（开发者要求时执行）
 
@@ -391,7 +380,7 @@ SH
 - Golden Yolk 的排队调用曾在终态回填前约 195 ms 到达，被旧实现按出队状态误判；该历史误判经批次修正后，上述两次部署测试已完成第二段闭环；内容与时延另行核定。
 - 已观测 CueKB 单次约 0.1 秒，不能把估算的约 30 秒等待全部归因于检索。上述关联时间线已将主要等待定位到逐 token 结果注入，而非 CueKB 请求。
 - 用户在 2026-10-22 报告 Hello/TCP 录音识别已正常，多次尝试无异常。按这份现场反馈收敛该缺词问题，不再重复修改或测试同一修复；不扩大为麦克风、全部语音或整体多轮准确率验收。
-- 2026-10-22 Golden Yolk CID `7546bdcd-ec6d-41ea-85dc-8b130b18ea88` 文件/配置匹配，2 次实际检索合计 189 ms，2 次注入合计约 22.46 秒，无取消或终态后调用；第二段却有 5 个不同 response_id 的最终回答。Relay 没有按该输入完成状态阻止后续响应，Coordinator 的 Future 只接收一份回答；门户合并这些响应，业务 answered 不能证明所有播报均已核对。引擎为何反复开口尚待本次已有日志的边界元数据，不宣称缺少 EOS 或引擎无故障。
+- 2026-10-22 Golden Yolk CID `7546bdcd-ec6d-41ea-85dc-8b130b18ea88` 文件/配置匹配，2 次实际检索合计 189 ms，2 次注入合计约 22.46 秒，无取消或终态后调用；第二段却有 5 个不同 response_id 的最终回答。Relay 没有按该输入完成状态阻止后续响应，Coordinator 的 Future 只接收一份回答；门户合并这些响应，业务 answered 不能证明所有播报均已核对。补充元数据已确认五次均由 PAD 完成保护强制 EOS，随后四次原生 BOS 在无新输入/工具回填时重新开口。强制 EOS 会进入下一步模型文本输入，现有代码未在强制完成后等待新输入；该控制缺口待修复，不继续补采日志。
 - 同次准入证据 C4 对比两条产品线的 fresh-baked / sealed and giftable，不能证明 Golden Yolk 同时是 fresh-baked、sealed。五段回答反复使用该混合属性并重新询问已明确的产品；这是回答内容与收敛问题，未达到业务内容验收。检索节选未提供所问细节，不等于整个知识库或事实本身不存在。
 - 同次模型先查询产品名，再查询 `shelflife of Monkey Golden-Yolk Mooncake`；storage 调用作为超额批次成员未执行，没有显式包含 shipping 的 query。5 条准入证据中有多条标题，数量不能证明覆盖运输/保质期/开封储存。应在现有预算内核对复合问题的查询覆盖，不能靠增加查询上限掩盖问题。
 
