@@ -50,6 +50,17 @@ VoiceChat 已加载本仓库完整快照是本次验证前提；检查会逐个�
 
 ## 2.1 更新现有 VoiceChat 文件挂载并检查就绪
 
+重建 VoiceChat 容器时，运行文件必须直接从本仓库 `docs/voicechat/` 的绝对路径只读 bind mount 到下表路径；挂载来源变化必须重新创建容器。源码来源固定为 NVIDIA-NeMo/Speech 的 nemotron-labs-voicechat 分支，实际修改基线及完整文件哈希由快照 manifest 记录，不自动升级到上游最新 HEAD。测试文件只收录，不挂载到推理路径。
+
+| `docs/voicechat/` 下的相对路径 | 容器实际加载路径 |
+| --- | --- |
+| `s2s/audio_server.py` | `/s2s/audio_server.py` |
+| `s2s/prompt_template.jinja` | `/s2s/prompt_template.jinja` |
+| `opt/tritonserver/backends/nemotron-voicechat/model.py` | `/opt/tritonserver/backends/nemotron-voicechat/model.py` |
+| `opt/tritonserver/backends/nemotron-voicechat/runtime_setup.py` | `/opt/tritonserver/backends/nemotron-voicechat/runtime_setup.py` |
+| `opt/tritonserver/backends/nemotron-voicechat/data_types.py` | `/opt/tritonserver/backends/nemotron-voicechat/data_types.py` |
+| `opt/tritonserver/backends/nemotron-voicechat/checkpoint_utils/load_utils.py` | `/opt/tritonserver/backends/nemotron-voicechat/checkpoint_utils/load_utils.py` |
+
 先结束所有通话。当前部署按单文件 bind mount 加载 `/s2s/audio_server.py`；以下命令自动找到它的宿主机原文件，备份后更新原文件内容并重启现有容器进程，不改变镜像、GPU、环境、端口或挂载。不创建容器目录，不复制验证文件进容器，也不使用 docker cp。这里重启足以加载同一文件的内容变化；镜像、环境或挂载变化仍需重新创建容器。
 
 若现场不是这种挂载方式，命令明确输出失败并停止，由开发者提供对应镜像发布操作，操作者不需要自行判断或改路径。

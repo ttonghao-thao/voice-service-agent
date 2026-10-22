@@ -32,7 +32,9 @@
 
 ## VoiceChat 外部项目同步与启动
 
+- 外部源码以 [NVIDIA-NeMo/Speech 的 nemotron-labs-voicechat 分支](https://github.com/NVIDIA-NeMo/Speech/tree/nemotron-labs-voicechat) 为来源；实际修改基线记录在 manifest，不自动跟随分支 HEAD 升级。
 - 修改独立 VoiceChat/NVIDIA Speech 项目的源码或测试时，必须在同一提交中把修改后的完整文件按 Speech 根目录相对路径同步到 `docs/voicechat/`；不能只提交补丁文件或部署说明。同步更新 `docs/voicechat/snapshot-manifest.json` 的日期、文件 SHA-256、修改来源和已应用补丁；未修改的外部文件不得为凑快照而重写。
+- 重建 VoiceChat 容器时，受维护的运行文件直接从本仓库 `docs/voicechat/` 的绝对路径只读 bind mount 到容器实际加载路径，不依赖另一个宿主目录中的手工副本。新增运行文件必须同时补齐挂载与部署身份检查；测试文件只收录，不作为推理文件挂载。
 - `docs/voicechat/docker-run.md` 是本项目维护的 VoiceChat 验证容器启动命令。涉及 VoiceChat 运行文件、环境变量、GPU、卷挂载、端口、镜像或 entrypoint 的修改，必须在同一提交中更新该命令，并核对宿主文件与容器实际加载路径。新增环境变量或挂载必须通过重新创建容器生效，不能用重启旧容器代替。
 - 推送前核对外部修改文件与 `docs/voicechat/` 完整文件一致，运行受影响的编译/契约测试并检查 manifest hash。GPU、真实音频、原生工具或 CueKB 未实际验证时必须如实标注，不能用 CPU 夹具或容器成功启动替代现场验收。
 

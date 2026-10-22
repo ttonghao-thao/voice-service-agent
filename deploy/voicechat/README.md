@@ -8,7 +8,7 @@
 
 先保存现场源码，再将 `docs/voicechat/` 中受维护的完整文件同步到 Speech 的相同相对路径。不要覆盖整个 Speech 工程，也不要只应用早期 response-lifecycle.patch 代替最新完整文件。历史 patch/manifest 仅保留给固定基线回归和追溯，不作为当前运行文件 hash。
 
-宿主机实际文件同步、卷挂载和完整 docker run统一见 [启动手册](../../docs/voicechat/docker-run.md)。若文件通过 bind mount 加载，必须更新挂载源；更新镜像不会覆盖旧挂载。
+容器创建命令直接从本仓库 `docs/voicechat/` 的绝对路径只读挂载六个运行文件，不维护另一个宿主目录中的副本。完整挂载命令见 [启动手册](../../docs/voicechat/docker-run.md)。挂载来源变更必须重新创建容器；更新镜像不会覆盖现有 bind mount。
 
 ## 更新运行镜像并启动
 
