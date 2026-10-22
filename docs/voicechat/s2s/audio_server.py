@@ -438,6 +438,9 @@ class AudioSession:
         self._diagnostic_bytes = self._diagnostic_dropped = 0
         self._output_queued_seq = self._output_sent_seq = 0
         self._audio_ranges = {}
+        self._input_prefixes = {}
+        self._asr_source_hash = hashlib.sha256()
+        self._asr_source_chars = 0
         self._capture_dir = None
         self._capture_files = {}
         self._capture_hashes = {}
@@ -640,6 +643,7 @@ class AudioSession:
                  "triton_completed_samples_16k": self.triton_samples_completed_16k,
                  "triton_buffer_samples_16k": len(self.triton_input_buffer),
                  "inference_queue": self.inference_queue.qsize(),
+                 "dropped_input_chunks": self.chunks_dropped,
                  "input_item_id": self._input_item_id, **fields}
         size = len(json.dumps(entry, ensure_ascii=True).encode())
         self._diagnostic_events.append((size, entry))
@@ -650,6 +654,24 @@ class AudioSession:
             self._diagnostic_dropped += 1
         logger.info("voice_ws_diagnostic %s", json.dumps(
             {**entry, "dropped_events": self._diagnostic_dropped}, ensure_ascii=True))
+
+    def _input_prefix(self, stream: str, values: np.ndarray, sample_rate: int) -> None:
+        """Fingerprint only the first four seconds; never retain or log audio."""
+        if not VOICECHAT_DIAGNOSTICS:
+            return
+        state = self._input_prefixes.setdefault(stream, {"samples": 0, "hash": hashlib.sha256()})
+        limit = sample_rate * 4
+        if state["samples"] >= limit:
+            return
+        samples = np.asarray(values).reshape(-1)[:limit - state["samples"]]
+        # Match the existing 16 kHz submission quantization. No inference data
+        # is modified; both sides of the resampling boundary use PCM16 hashes.
+        payload = (samples * 32768.0).astype("<i2").tobytes()
+        state["hash"].update(payload)
+        state["samples"] += samples.size
+        if state["samples"] == limit:
+            self._voice_diagnostic("input.prefix", stream=stream, sample_rate=sample_rate,
+                                   samples=limit, sha256=state["hash"].hexdigest(), format="pcm16_le")
 
     def _trace_output_event(self, event, phase, output_seq):
         if not VOICECHAT_DIAGNOSTICS:
@@ -854,6 +876,7 @@ class AudioSession:
                 return
 
             self.audio_samples_received += pcm_float32_24k.shape[-1]
+            self._input_prefix("decoded", pcm_float32_24k, self.input_sample_rate)
             self._capture_array("ws-decoded-24k", pcm_float32_24k, self.input_sample_rate)
 
             if LOOPBACK_MODE:
@@ -861,6 +884,7 @@ class AudioSession:
                 return
 
             audio_float32_16k = self.input_resampler.resample_chunk(pcm_float32_24k)
+            self._input_prefix("resampled", audio_float32_16k, INPUT_SAMPLE_RATE)
             self._capture_array("soxr-output-16k", audio_float32_16k, INPUT_SAMPLE_RATE)
             self.triton_input_buffer = np.concatenate([self.triton_input_buffer, audio_float32_16k])
             if self.chunks_received == 1 or self.chunks_received % 12 == 0:
@@ -1279,6 +1303,9 @@ class AudioSession:
         has_start = "<s>" in asr_text_response
         has_done = "</s>" in asr_text_response
         clean_asr_text = asr_text_response.replace("<s>", "").replace("</s>", "")
+        if VOICECHAT_DIAGNOSTICS:
+            self._asr_source_hash.update(clean_asr_text.encode("utf-8"))
+            self._asr_source_chars += len(clean_asr_text)
         self._voice_diagnostic("asr.dispatch", raw_chars=len(asr_text_response), clean_chars=len(clean_asr_text),
                                has_start=has_start, has_done=has_done, speech_active=self._speech_active,
                                accumulated_before_chars=sum(map(len, self.accumulated_user_transcript)))
@@ -1299,6 +1326,10 @@ class AudioSession:
 
         if has_done and self._speech_active:
             full_transcript = "".join(self.accumulated_user_transcript)
+            self._voice_diagnostic("asr.completed", chars=len(full_transcript),
+                                   sha256=hashlib.sha256(full_transcript.encode("utf-8")).hexdigest(),
+                                   source_chars_total=self._asr_source_chars,
+                                   source_sha256_total=self._asr_source_hash.hexdigest())
             logger.debug(f"Client {self.client_id}: emitting transcription completed chars={len(full_transcript)}")
             await self._emit_input_audio_transcription_completed(full_transcript)
             logger.debug(f"Client {self.client_id}: emitting speech_stopped for ASR turn")
@@ -1417,6 +1448,7 @@ class AudioSession:
                 raise Exception("Triton client not initialized for session")
 
             self._capture_array("triton-submitted-16k", audio_float32, INPUT_SAMPLE_RATE)
+            self._input_prefix("submitted", audio_float32, INPUT_SAMPLE_RATE)
 
             # Prepare Triton inputs
             inputs = [

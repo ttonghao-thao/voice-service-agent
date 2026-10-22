@@ -6,6 +6,7 @@ native calls execute tools. Conversation/credential checks remain at both writes
 
 import asyncio
 import base64
+import hashlib
 import json
 import logging
 import time
@@ -263,7 +264,8 @@ async def relay(gateway, ws, session, provider):
                     latest_input = item_id
                 future = input_future(item_id)
                 if event.kind == "transcript.done":
-                    logger.info("voice_input_transcribed conversation_id=%s input_item_id=%s", cid, item_id)
+                    logger.info("voice_input_transcribed conversation_id=%s input_item_id=%s text_chars=%s text_sha256=%s",
+                                cid, item_id, len(body["text"]), hashlib.sha256(body["text"].encode()).hexdigest())
                     await store.utterance(session.principal, cid, epoch, item_id, text=body["text"])
                     if not future.done():
                         future.set_result(body["text"])

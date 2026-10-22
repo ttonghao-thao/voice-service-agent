@@ -76,6 +76,62 @@ def test_ws_diagnostic_history_is_bounded_and_truncation_is_explicit(monkeypatch
     assert session._diagnostic_bytes == sum(len(json.dumps(e, ensure_ascii=True).encode()) for _, e in session._diagnostic_events)
 
 
+@pytest.mark.asyncio
+async def test_prefix_fingerprints_follow_real_decode_resample_and_submission_without_changing_pcm(monkeypatch):
+    monkeypatch.setattr(server, "VOICECHAT_DIAGNOSTICS", True)
+    session = server.AudioSession("prefix", Socket())
+    session.sequence_started.set()
+
+    class Response:
+        def as_numpy(self, name):
+            return np.zeros(0, np.float32) if name == "output_audio" else np.array([b""])
+
+    class Triton:
+        async def infer(self, **kwargs):
+            return Response()
+
+    session.triton_client = Triton()
+    original = np.arange(1920 * 60, dtype=np.int16)
+    for offset in range(0, len(original), 1920):
+        await session.queue_audio_chunk(base64.b64encode(original[offset:offset + 1920].astype("<i2").tobytes()).decode())
+        while not session.inference_queue.empty():
+            samples, event_id = session.inference_queue.get_nowait()
+            before = samples.copy()
+            await session.process_audio_chunk_with_triton(samples, event_id)
+            assert np.array_equal(samples, before)
+            session.inference_queue.task_done()
+    entries = [e for _, e in session._diagnostic_events if e["event"] == "input.prefix"]
+    assert len(entries) == 3
+    prefixes = {e["stream"]: e for e in entries}
+    assert prefixes["decoded"]["sha256"] == hashlib.sha256(original[:96000].astype("<i2").tobytes()).hexdigest()
+    assert prefixes["resampled"]["sha256"] == prefixes["submitted"]["sha256"]
+    assert prefixes["submitted"]["samples"] == 64000 and session.chunks_dropped == 0
+    assert all(state["samples"] <= (96000 if name == "decoded" else 64000)
+               for name, state in session._input_prefixes.items())
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("enabled", [False, True])
+async def test_asr_fingerprints_preserve_all_parts_and_input_ids_without_logging_text(monkeypatch, caplog, enabled):
+    monkeypatch.setattr(server, "VOICECHAT_DIAGNOSTICS", enabled)
+    caplog.set_level("INFO", logger=server.__name__)
+    session = server.AudioSession("prefix", Socket())
+    await session._dispatch_asr_text("<s>Hello, ")
+    await session._dispatch_asr_text("how are you today?</s>")
+    await session._dispatch_asr_text("<s>What is the difference between TCP and UDP?</s>")
+    events = [e for e in pending(session) if e["type"] == "conversation.item.input_audio_transcription.completed"]
+    assert [e["transcript"] for e in events] == ["Hello, how are you today?", "What is the difference between TCP and UDP?"]
+    entries = [e for _, e in session._diagnostic_events if e["event"] == "asr.completed"]
+    if enabled:
+        assert [e["input_item_id"] for e in entries] == [e["item_id"] for e in events]
+        assert entries[-1]["source_sha256_total"] == hashlib.sha256("".join(e["transcript"] for e in events).encode()).hexdigest()
+    else:
+        assert entries == []
+        session._input_prefix("decoded", np.ones(96000, np.float32), 24000)
+        assert session._input_prefixes == {}
+    assert "Hello" not in caplog.text and "difference" not in caplog.text
+
+
 def test_isolated_capture_is_single_sequence_bounded_and_content_exact(monkeypatch, tmp_path):
     monkeypatch.setattr(server, "VOICECHAT_CAPTURE", (tmp_path, 42, 1))
     session = server.AudioSession("capture", Socket())

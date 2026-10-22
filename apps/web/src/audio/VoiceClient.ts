@@ -366,6 +366,10 @@ export class VoiceClient {
             response_id: p.response_id,
             phase: p.phase,
             code: p.code,
+            ...(event.type === "portal.transcript.done" ? {
+              transcript_chars: String(p.text || "").length,
+              transcript_preview: String(p.text || "").slice(0, 160),
+            } : {}),
           });
         }
         this.requestRevision = Math.max(

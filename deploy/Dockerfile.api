@@ -15,6 +15,7 @@ COPY scripts/run_native_cuekb_validation.py scripts/run_native_cuekb_validation.
 COPY scripts/inspect_native_answer.py scripts/inspect_native_answer.py
 COPY scripts/summarize_voice_timeline.py scripts/summarize_voice_timeline.py
 COPY scripts/collect_validation_summary.py scripts/collect_validation_summary.py
+COPY scripts/inspect_input_prefix.py scripts/inspect_input_prefix.py
 COPY artifacts/native-cuekb/cases.json validation/native-cuekb/cases.json
 COPY artifacts/native-cuekb/*.wav validation/native-cuekb/
 ENV PYTHONPATH=/app/apps/api:/app PYTHONUNBUFFERED=1

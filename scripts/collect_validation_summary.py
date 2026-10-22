@@ -12,6 +12,8 @@ from app.storage.models import Record, Turn
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import async_sessionmaker, create_async_engine
 
+from scripts.inspect_input_prefix import CASES
+from scripts.inspect_input_prefix import inspect as inspect_prefix
 from scripts.run_native_cuekb_validation import backend_injection_line, summarize_api_log
 from scripts.summarize_voice_timeline import summarize
 
@@ -151,15 +153,34 @@ async def saved_answers(conversation_id, window_start, window_end):
         await engine.dispose()
 
 
+async def saved_prefix(text, conversation_id, window_start, window_end, case_id):
+    engine = create_async_engine(Settings().database_url)
+    try:
+        async with async_sessionmaker(engine)() as db:
+            records = list(await db.scalars(select(Record).where(
+                Record.conversation_id == conversation_id,
+                Record.created_at >= window_start, Record.created_at <= window_end,
+                Record.kind == "user_transcript",
+            ).order_by(Record.created_at).limit(9)))
+        transcripts = [{"item_id": row.payload["item_id"], "text": row.payload["text"]} for row in records[:8]]
+        return inspect_prefix(text, conversation_id, case_id, transcripts, "/app/validation/native-cuekb",
+                              records_truncated=len(records) > 8)
+    finally:
+        await engine.dispose()
+
+
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--conversation-id")
     parser.add_argument("--window-start", type=datetime.fromisoformat)
     parser.add_argument("--window-end", type=datetime.fromisoformat)
     parser.add_argument("--skip-db", action="store_true", help="Log-only offline analysis")
+    parser.add_argument("--input-prefix-case", choices=CASES, help="Inspect only this fixed WAV's input boundaries")
     args = parser.parse_args()
     if not args.skip_db and (not args.window_start or not args.window_end):
         parser.error("--window-start and --window-end are required for saved answers")
+    if args.input_prefix_case and args.skip_db:
+        parser.error("Input prefix inspection requires saved transcripts")
     text = sys.stdin.read(MAX_BYTES + 1)
     if len(text.encode()) > MAX_BYTES:
         print("collection=failed reason=LOG_WINDOW_TOO_LARGE")
@@ -168,17 +189,25 @@ def main():
     if not ids or len(ids) > 4:
         print(f"collection=unavailable reason=SESSION_COUNT conversations={len(ids)}")
         return 1
-    status = 0
+    status, diagnostic_status = 0, 0
     for conversation_id in ids:
         try:
-            log_summary(text, conversation_id)
-            if not args.skip_db:
+            if args.input_prefix_case:
+                report = asyncio.run(saved_prefix(text, conversation_id, args.window_start, args.window_end,
+                                                  args.input_prefix_case))
+                for kind in ("audio", "transcript", "diagnostic"):
+                    emit("prefix_" + kind, report[kind])
+                if report["diagnostic"]["status"] != "passed":
+                    diagnostic_status = 1
+            else:
+                log_summary(text, conversation_id)
+            if not args.skip_db and not args.input_prefix_case:
                 asyncio.run(saved_answers(conversation_id, args.window_start, args.window_end))
         except Exception as exc:
             print(f"collection=unavailable conversation_id={conversation_id} error_type={type(exc).__name__}")
             status = 1
     print(f"collection={'complete' if status == 0 else 'incomplete'} conversations={len(ids)} business_acceptance=unassessed")
-    return status
+    return max(status, diagnostic_status)
 
 
 if __name__ == "__main__":

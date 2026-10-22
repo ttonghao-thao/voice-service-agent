@@ -85,6 +85,12 @@ async def test_saved_records_exclude_prior_epoch_outside_window(tmp_path, monkey
     admitted = json.loads(next(row.split('=', 1)[1] for row in output.splitlines() if row.startswith('admitted_evidence=')))
     assert admitted['items'] == [{'citation_id': 'C1', 'text': 'Ship locally only.', 'conditions': {'product_model': 'AX'}}]
     assert admitted['omitted'] == 0 and admitted['coverage'] == 'manual_review_required'
+    monkeypatch.setattr(collector, 'inspect_prefix', lambda text, cid, case, transcripts, fixtures, **kwargs: {
+        'transcripts': transcripts, 'case': case, **kwargs})
+    prefix = await collector.saved_prefix('logs', CHOSEN, datetime(2026, 10, 21, tzinfo=UTC),
+                                          datetime(2026, 10, 22, tzinfo=UTC), 'greeting')
+    assert prefix['transcripts'] == [{'item_id': '21', 'text': 'current question'}]
+    assert prefix['records_truncated'] is False
 
 
 @pytest.fixture
@@ -147,6 +153,26 @@ def test_failed_validation_still_collects_matching_window(fake_docker):
     assert 'Traceback' not in result.stdout
     trace = Path(fake_docker['DOCKER_TRACE']).read_text()
     assert '--conversation-id' in trace and '--window-start' in trace
+
+
+def test_prefix_runs_each_small_case_once_and_collects_even_after_failure(fake_docker):
+    result = run_host(fake_docker, 'prefix')
+    assert result.returncode == 1
+    assert 'operation=prefix case=greeting' in result.stdout
+    assert 'operation=prefix case=general_tech' in result.stdout
+    trace = Path(fake_docker['DOCKER_TRACE']).read_text()
+    assert trace.count("'--case-id', 'greeting'") == 1
+    assert trace.count("'--case-id', 'general_tech'") == 1
+    assert trace.count("'--input-prefix-case'") == 2
+    assert "'--case-id', 'golden_yolk'" not in trace
+    assert 'docker cp' not in trace and 'Traceback' not in result.stdout
+
+
+def test_web_prefix_marker_keeps_case_and_mode_in_one_window(fake_docker):
+    assert run_host(fake_docker, 'web-start', 'greeting', 'prefix').returncode == 0
+    assert run_host(fake_docker, 'web-end').returncode == 0
+    trace = Path(fake_docker['DOCKER_TRACE']).read_text()
+    assert "'--input-prefix-case', 'greeting'" in trace
 
 
 def test_missing_current_report_never_reads_old_report_or_collects(fake_docker):

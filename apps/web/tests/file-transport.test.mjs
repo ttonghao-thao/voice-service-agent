@@ -18,7 +18,7 @@ function harness(rate = 48000) {
     processor,
     port,
     context;
-  const apiCalls = [];
+  const apiCalls = [], diagnostics = [], portalEvents = [];
   const listeners = new Map();
   const document = { hidden: false, addEventListener: (name, fn) => listeners.set(name, fn),
     removeEventListener: (name) => listeners.delete(name) };
@@ -53,8 +53,8 @@ function harness(rate = 48000) {
     close() {
       this.readyState = 3;
     }
-    emit(type) {
-      this.onmessage({ data: JSON.stringify({ type, epoch: 1, payload: {} }) });
+    emit(type, payload = {}) {
+      this.onmessage({ data: JSON.stringify({ type, epoch: 1, payload }) });
     }
   }
   vm.runInNewContext(source, {
@@ -89,11 +89,11 @@ function harness(rate = 48000) {
     performance: { now: () => clock },
     crypto: { randomUUID: () => "event" },
     btoa,
-    console: { info() {} },
+    console: { info(_label, raw) { diagnostics.push(JSON.parse(raw)); } },
     setTimeout: () => { throw new Error("File audio must not depend on window timers"); },
   });
   const client = new exports.VoiceClient(
-    () => {},
+    (event) => portalEvents.push(event),
     () => {},
     (e) => errors.push(e),
     () => {},
@@ -105,6 +105,8 @@ function harness(rate = 48000) {
     errors,
     progress,
     apiCalls,
+    diagnostics,
+    portalEvents,
     context: () => context,
     visibility(hidden) { document.hidden = hidden; listeners.get("visibilitychange")?.(); },
     frame(data) { port.onmessage({ data }); },
@@ -117,6 +119,22 @@ function harness(rate = 48000) {
     },
   };
 }
+
+test("Input transcript preview is bounded and never repairs or changes provider text", async () => {
+  const h = harness();
+  const recording = recordingModule.parseRecording(recordingWave(1920), "hello.wav");
+  await h.client.start("cid", { kind: "file", recording });
+  h.socket().emit("portal.session.ready");
+  for (const text of ["o, how are you today?", "x".repeat(1000)]) {
+    h.socket().emit("portal.transcript.done", { item_id: "input", text });
+    const diagnostic = h.diagnostics.at(-1);
+    assert.equal(diagnostic.event, "portal.transcript.done");
+    assert.equal(diagnostic.transcript_chars, text.length);
+    assert.equal(diagnostic.transcript_preview, text.slice(0, 160));
+    assert.equal(h.portalEvents.at(-1).payload.text, text);
+  }
+  await h.client.stop();
+});
 
 for (const rate of [44100, 48000]) test(`File preserves raw PCM, tail and EOF silence at ${rate} Hz without replay`, async () => {
   const h = harness(rate);

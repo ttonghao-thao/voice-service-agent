@@ -1,6 +1,6 @@
 # VoiceChat 本地修改源码快照
 
-本目录保存为本项目维护的完整 VoiceChat/Speech 文件，保持 Speech 根目录相对路径。2026-10-21 audio_server 增加显式调用批次和完整聚合结果校验；每批只向既有后端注入一次，不做查询重放，不修改模型/Prompt。参考上游为 NVIDIA-NeMo/Speech 的 nemotron-labs-voicechat 分支，基线 commit 为 `097dfe9e2f55baf653b83035868bdc89849f1b47`；实际发布身份以 manifest/镜像/挂载 hash 为准。
+本目录保存为本项目维护的完整 VoiceChat/Speech 文件，保持 Speech 根目录相对路径。2026-10-22 audio_server 补充首 4 秒输入指纹、丢弃计数和 ASR 交接哈希，沿用已有诊断开关，不保留原始音频或记录 ASR 正文；显式批次及每批一次聚合注入保留，不做查询重放，不修改模型/Prompt/RNNT。参考上游为 NVIDIA-NeMo/Speech 的 nemotron-labs-voicechat 分支，基线 commit 为 `097dfe9e2f55baf653b83035868bdc89849f1b47`；实际发布身份以 manifest/镜像/挂载 hash 为准。
 
 当前 `model.py` 已包含补丁，可直接用于更新独立 VoiceChat/Speech 的同路径文件，**不要再对它应用 `pad-tail-completion.patch`**。部署顺序和运行参数仍以 [`deploy/voicechat/README.md`](../../deploy/voicechat/README.md) 为准；精确 SHA-256 见 [`snapshot-manifest.json`](snapshot-manifest.json)。更新后仍需在 Triton backend 启动前设置 `S2S_INFERENCE_CLOSE_ON_PAD_TAIL=true` 才开启新逻辑。
 
@@ -14,7 +14,7 @@
 
 | Speech 相对路径 | 内容 |
 | --- | --- |
-| `s2s/audio_server.py` | WebSocket 响应生命周期、隔离采集、最终 Prompt 工具名/hash 诊断，以及原生调用批次声明/聚合结果校验；无业务查询重放 |
+| `s2s/audio_server.py` | WebSocket 响应生命周期、隔离采集、Prompt 工具名/hash、首 4 秒输入及 ASR 哈希诊断，以及原生调用批次声明/聚合结果校验；无业务查询重放 |
 | `s2s/prompt_template.jinja` | 用户提供的现场完整模板，加入会话策略优先、search_knowledge_base 单工具调用约束及消费品/商业事实检索示例；基线来源及 hash 见 manifest |
 | `docs/voicechat-api.md` | 外部 VoiceChat API 说明更新 |
 | `s2s/tests/test_response_lifecycle.py` | 外部 Speech 响应生命周期测试 |

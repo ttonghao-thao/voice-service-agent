@@ -21,6 +21,8 @@ cp docs/voicechat/s2s/prompt_template.jinja /home/thao/voice/prompt_template.jin
 
 ## 创建容器
 
+2026-10-22 的 audio_server.py 新增首 4 秒输入指纹和 ASR 交接哈希，沿用下列已有 `VOICECHAT_DIAGNOSTICS=1`，没有新增环境变量或挂载。模型、模板、RNNT 和原有 GPU/端口参数不改。新建容器使用最新完整文件；已有文件 bind mount 只更新原文件内容时，可重启现有进程加载诊断。更换镜像、挂载或环境仍必须重新创建容器。具体更新、健康检查及精简回传全部在统一验证手册，不在此复制验证步骤。
+
 先按照 [派生镜像构建说明](../../deploy/voicechat/README.md#更新运行镜像并启动) 从已验证的离线基础镜像构建发布镜像。构建命令必须包含 `--build-context agent_repo=/path/to/voice-service-agent`；发布镜像名写入以下变量：
 
 ```sh

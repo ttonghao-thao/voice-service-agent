@@ -146,6 +146,7 @@ def test_cloud_deployment_uses_prebuilt_images():
     assert "bash scripts/validate_deployment.sh auto golden_yolk" in selection_runbook
     assert "bash scripts/validate_deployment.sh web-end" in selection_runbook
     assert "COPY scripts/collect_validation_summary.py scripts/collect_validation_summary.py" in dockerfile
+    assert "COPY scripts/inspect_input_prefix.py scripts/inspect_input_prefix.py" in dockerfile
     assert "configure_native_cuekb.py --apply" in script
     nginx = (ROOT / "deploy/nginx.conf").read_text()
     assert "listen 8087 ssl;" in nginx
