@@ -8,7 +8,7 @@
 
 本次包含尚未部署的回答覆盖度与结果注入时延、Web 流式文字展示，并补充同一通话连续发送 WAV、页面转后台不主动结束。Golden Yolk 自动/Web 第二段已有闭环现场证据；本轮在同一 WAV 上各执行一次，对比实际回答、结果 token/注入时间，以及文字是否在回答结束前出现。需要完整四文件对照时，执行第 5 节；不要同时执行两套方案。
 
-2026-10-22 新增 Hello/TCP 句首缺失的定向定位。本次只验证该问题时，完成第 2、2.1 节后执行第 4.2 节；不同时执行产品用例或四文件全测。不修改 WAV、前置静音、RNNT 门槛或模型参数；该版是定位交付，尚未证明缺词修复。
+2026-10-22 补充 Hello/TCP 句首缺失的 RNNT 转写初始化修复。本次只验证该问题时，完成第 2、2.1 节后执行第 4.2 节；不同时执行产品用例或四文件全测。`model.py` 的显示转写 predictor 改用一次零输入初始化，与 NeMo 标准贪心解码一致；不改 WAV、前置静音、权重、识别门槛或控制打断的 RNNT 状态。CPU 回归已证明初始化状态差异，现场缺词是否解决仍待验证。
 
 后台持续播报按用户决定暂缓，作为非阻塞待优化项；保留页面隐藏不主动结束及回前台尝试恢复的现有实现。本轮 Web 验证保持前台，不要求切后台或锁屏，不将后台连续播放作为放行条件。
 
@@ -20,7 +20,7 @@
 
 所有命令在**宿主机项目根目录**执行，保持同一主机、目录和用户。先结束已有测试通话；本次采集期间不要有其他测试用户通话。
 
-本轮累计修改 API/Web，并新增转写哈希与门户有界预览，必须重新制作 API 和 Web 镜像；下面命令同时完成两者。随后执行第 2.1 节更新 VoiceChat audio_server.py 的元数据诊断。假定 `.env` 和既有部署已经可用；不改变数据库结构、工具预算和 VoiceChat 推理逻辑。
+本轮累计修改 API/Web，并新增转写哈希与门户有界预览，必须重新制作 API 和 Web 镜像；下面命令同时完成两者。随后执行第 2.1 节加载 VoiceChat `model.py` 的 RNNT 转写修复和 `audio_server.py` 的元数据诊断。假定 `.env` 和既有部署已经可用；不改变数据库结构或工具预算。若上一版 API/Web 已部署，下面仍可执行以确保版本配套；RNNT 改动本身不增加 API/Web 功能或依赖。
 
 ```bash
 bash <<'SH'
@@ -46,7 +46,7 @@ SH
 
 正常先输出 `deployment=passed`，再执行第 2.1 节。**失败后停止本次验证，只回传失败行，不自行替换文件或选择日志。** 如需构建失败详情，开发者后续只索取该阶段的必要报错，不能默认索取完整构建日志。
 
-VoiceChat 已加载本仓库完整快照是本次验证前提；检查会逐个比对六个运行文件，包括 audio_server、模板、model、loader、runtime_setup 和 data_types，并检查 Jinja/诊断开关。本轮仅 audio_server 的元数据诊断更新；其他文件不匹配时停止并回传，不猜测 GPU、模型挂载参数。会话提示由 API 在新通话注册，因此更新后必须新建通话。
+VoiceChat 已加载本仓库完整快照是本次验证前提；检查会逐个比对六个运行文件，包括 audio_server、模板、model、loader、runtime_setup 和 data_types，并检查 Jinja/诊断开关。本轮必须同时加载新的 model 和 audio_server；其他文件不匹配时停止并回传，不猜测 GPU、模型挂载参数。会话提示由 API 在新通话注册，因此更新后必须新建通话。
 
 ## 2.1 更新现有 VoiceChat 文件挂载并检查就绪
 
@@ -61,7 +61,7 @@ VoiceChat 已加载本仓库完整快照是本次验证前提；检查会逐个�
 | `opt/tritonserver/backends/nemotron-voicechat/data_types.py` | `/opt/tritonserver/backends/nemotron-voicechat/data_types.py` |
 | `opt/tritonserver/backends/nemotron-voicechat/checkpoint_utils/load_utils.py` | `/opt/tritonserver/backends/nemotron-voicechat/checkpoint_utils/load_utils.py` |
 
-先结束所有通话。当前部署按单文件 bind mount 加载 `/s2s/audio_server.py`；以下命令自动找到它的宿主机原文件，备份后更新原文件内容并重启现有容器进程，不改变镜像、GPU、环境、端口或挂载。不创建容器目录，不复制验证文件进容器，也不使用 docker cp。这里重启足以加载同一文件的内容变化；镜像、环境或挂载变化仍需重新创建容器。
+先结束所有通话。以下命令适配已按单文件 bind mount 加载 `model.py` 和 `audio_server.py` 的现有容器：自动找到两个宿主机源文件，备份后原位更新不同内容，再重启整个 VoiceChat 容器，使 Triton 和 WebSocket 进程都重新加载。源文件已是本仓库路径时跳过写入。不改变镜像、GPU、环境、端口或挂载，不创建容器目录、不复制验证文件进容器、不使用 docker cp。未来重建仍须直接从本仓库挂载上述六个文件；镜像、环境或挂载变化不能用重启代替。
 
 若现场不是这种挂载方式，命令明确输出失败并停止，由开发者提供对应镜像发布操作，操作者不需要自行判断或改路径。
 
@@ -74,25 +74,33 @@ LOG=$(mktemp /tmp/voicechat-runtime-update-XXXXXX.log)
 stop() { printf 'voicechat_update=failed stage=%s details=local_only\n' "$1"; exit 2; }
 API_CONTAINER=$(docker compose --env-file .env -f deploy/compose.production.yaml ps -q api 2>>"$LOG") || stop discover_api
 test -n "$API_CONTAINER" || stop missing_api
-HOST_FILE=$(docker inspect "$VOICE_CONTAINER" 2>>"$LOG" | docker exec -i "$API_CONTAINER" python -c '
+MOUNTS=$(docker inspect "$VOICE_CONTAINER" 2>>"$LOG" | docker exec -i "$API_CONTAINER" python -c '
 import json, sys
-mounts = [m for m in json.load(sys.stdin)[0]["Mounts"]
-          if m["Type"] == "bind" and m["Destination"] == "/s2s/audio_server.py"]
-if len(mounts) != 1:
-    raise SystemExit(2)
-print(mounts[0]["Source"])
-' 2>>"$LOG") || stop audio_server_bind_not_found
-test -f "$HOST_FILE" || stop missing_host_source
-BACKUP=not_needed
-if ! cmp -s docs/voicechat/s2s/audio_server.py "$HOST_FILE"; then
-  BACKUP=$(mktemp /tmp/voicechat-audio-server-before-XXXXXX.py) || stop backup_path
-  cat "$HOST_FILE" >"$BACKUP" || stop backup
-  if ! cat docs/voicechat/s2s/audio_server.py >"$HOST_FILE"; then
-    cat "$BACKUP" >"$HOST_FILE" 2>>"$LOG" || true
-    stop update_source
+mounts = json.load(sys.stdin)[0]["Mounts"]
+for relative in ("s2s/audio_server.py", "opt/tritonserver/backends/nemotron-voicechat/model.py"):
+    found = [m for m in mounts if m["Type"] == "bind" and m["Destination"] == "/" + relative]
+    if len(found) != 1 or any(c in found[0]["Source"] for c in "\t\r\n"):
+        raise SystemExit(2)
+    print(relative + "\t" + found[0]["Source"])
+' 2>>"$LOG") || stop runtime_file_bind_not_found
+BACKUP=$(mktemp -d /tmp/voicechat-runtime-before-XXXXXX) || stop backup_path
+while IFS=$'\t' read -r RELATIVE HOST_FILE; do
+  test -f "$HOST_FILE" && test -f "docs/voicechat/$RELATIVE" || stop missing_host_source
+  cat "$HOST_FILE" >"$BACKUP/${RELATIVE##*/}" 2>>"$LOG" || stop backup
+done <<< "$MOUNTS"
+UPDATED=0
+while IFS=$'\t' read -r RELATIVE HOST_FILE; do
+  if ! cmp -s "docs/voicechat/$RELATIVE" "$HOST_FILE"; then
+    if ! cat "docs/voicechat/$RELATIVE" >"$HOST_FILE" 2>>"$LOG"; then
+      while IFS=$'\t' read -r RESTORE_RELATIVE RESTORE_FILE; do
+        cat "$BACKUP/${RESTORE_RELATIVE##*/}" >"$RESTORE_FILE" 2>>"$LOG" || true
+      done <<< "$MOUNTS"
+      stop update_source
+    fi
+    UPDATED=$((UPDATED + 1))
   fi
-fi
-docker restart "$VOICE_CONTAINER" >"$LOG" 2>&1 || stop restart
+done <<< "$MOUNTS"
+docker restart "$VOICE_CONTAINER" >>"$LOG" 2>&1 || stop restart
 READY=0
 RUNTIME_DEADLINE=$((SECONDS + 180))
 while (( SECONDS < RUNTIME_DEADLINE )); do
@@ -101,11 +109,11 @@ import json, os, urllib.request
 port = os.getenv("SERVER_PORT", "9000")
 with urllib.request.urlopen("http://127.0.0.1:" + port + "/v1/realtime/health", timeout=5) as response:
     assert json.load(response)["status"] == "ok"
-' >"$LOG" 2>&1; then READY=1; break; fi
+' >>"$LOG" 2>&1; then READY=1; break; fi
   sleep 3
 done
 test "$READY" = 1 || stop health_timeout
-printf 'voicechat_update=ready source=%s backup=%s inference_logic=unchanged\n' "$HOST_FILE" "$BACKUP"
+printf 'voicechat_update=ready runtime_files=2 updated_sources=%s rnnt_transcript=single_zero_bootstrap backup=local_only\n' "$UPDATED"
 bash scripts/validate_deployment.sh check
 SH
 ```
@@ -186,9 +194,11 @@ bash scripts/validate_deployment.sh auto golden_yolk
 
 文件由 AudioWorklet 渲染时钟发送相同 80 ms 原始 PCM，不通过麦克风/重采样。后台持续播报暂缓，不在本操作验证；系统冻结音频、真实断流、网络错误及原来的连接上限仍生效。出现提示只回传对应精简行，本轮不修改保护阈值、不自动补发旧录音。
 
-## 4.2 定向定位：Hello / TCP 句首转写缺失
+## 4.2 定向验证：RNNT 修复后的 Hello / TCP 句首
 
-假设只有两个边界方向：进入 VoiceChat/提交推理前音频已经不同，或者原始 ASR 及后续文字交接发生缺失。本轮不先修改识别逻辑。固定使用 `hello.wav` 和 `tcp_udp.wav`，自动/Web 各一次，每份文件都从新通话开始；不加静音、不改语速、不运行产品用例。保持门户前台。
+**故障假设：**显示转写使用 `predict(y=None, add_sos=True)`，其中 `y=None` 已提供一次零输入，再加 SOS 会让 LSTM 多走一步；当前取最后一步并缓存，初始状态因而偏离 NeMo 标准贪心解码。这可能导致音频完整但句首漏识别。已改为 `add_sos=False`，不改变控制分轮/打断的解码状态。上游同一基线的 VoiceChat wrapper 也有原写法，不能据此认定是本项目首次引入，或已经唯一证明现场根因。
+
+**方法与预期：**固定使用 `hello.wav` 和 `tcp_udp.wav`，自动/Web 各一次，每份文件都从新通话开始；不加静音、不改语速、不运行产品用例。保持门户前台。预期最终转写包含完整的 “Hello, how are you today?” 和 “What is the difference between TCP and UDP?”，下述音频和文字交接一致。标准贪心参考固定为 Speech `097dfe9e2f55baf653b83035868bdc89849f1b47` 的 `RNNTDecoder.predict` 与 `GreedyRNNTInfer._pred_step`；没有修改或升级权重。
 
 **自动侧：**在宿主机项目根目录执行以下一条命令。脚本依次为两份 WAV 新建连接，执行失败仍保留该次摘要并采集下一份，不重试同一份录音。
 
@@ -240,12 +250,12 @@ bash scripts/validate_deployment.sh web-end
 | `VOICECHAT_INPUT_QUEUE_MISMATCH` | 重采样后的首段与实际提交首段不同；检查缓冲/排队丢弃 |
 | `TRANSCRIPT_HANDOFF_MISMATCH` | 原始 ASR 累计文字或 VoiceChat 完成事件与 API 不一致 |
 | `TRANSCRIPT_STORAGE_MISMATCH` | API 收到的转写与落库不一致 |
-| `UPSTREAM_ASR_PREFIX_MISMATCH` | 已检查的音频和文字交接一致，但 ASR 句首已缺；继续定位重采样/编码帧/RNNT，不据此断言模型没听见 |
+| `UPSTREAM_ASR_PREFIX_MISMATCH` | 已检查的音频和文字交接一致，但 ASR 句首仍缺；本次初始化修复未解决该次现象，停止重复测试并重新评估重采样/编码帧/识别路径，不据此断言模型没听见 |
 | `TRANSCRIPT_CONTENT_MISMATCH` | 句首满足预期，句子其他部分仍不一致 |
 | `INCOMPLETE_EVIDENCE` / `SESSION_UNVERIFIED` | 缺少可判定证据，停止本轮并报告缺口 |
 | `PASS` | 本次固定句子的转写比对通过；不代表整体问答、所有语音或真实听音已验收 |
 
-同一会话的所有最终输入条目一起核对，避免把拆成两轮的句首误报为丢失。API、落库和浏览器预览一致时，不通过门户补写 Hello 或问句前缀。一次自动通过不能排除 Web/模型的非确定性；本轮只取得一组对应边界证据，不扩大到 20 轮复测。
+同一会话的所有最终输入条目一起核对，避免把拆成两轮的句首误报为丢失。API、落库和浏览器预览一致时，不通过门户补写 Hello 或问句前缀。两文件自动/Web 均通过则停止本次缺词调试；这不代表整体业务验收或长期准确率已完成。仍缺词或证据不齐就记录该次结果并停止同一方案复测，不重复改参数、不扩大到 20 轮。CPU 受控 LSTM 的首 token 反例不能作为现场识别成功的证明。
 
 ## 5. 完整四文件对照（开发者要求时执行）
 
@@ -339,7 +349,7 @@ SH
 - Web 最新对照确认 Black Pig 出现 Checking knowledge；先前“始终不调用”的概括已不成立。回答准确性和重复响应仍需分析。
 - Golden Yolk 的排队调用曾在终态回填前约 195 ms 到达，被旧实现按出队状态误判；该历史误判经批次修正后，上述两次部署测试已完成第二段闭环；内容与时延另行核定。
 - 已观测 CueKB 单次约 0.1 秒，不能把估算的约 30 秒等待全部归因于检索。上述关联时间线已将主要等待定位到逐 token 结果注入，而非 CueKB 请求。
-- Hello/TCP 开头缺词按 2026-10-22 新需求进入定向定位；已增加指纹与转写交接检查，尚无新现场结果，不宣称已修复。
+- Hello/TCP 已增加指纹与转写交接检查，并按源码核对结果修正 RNNT 显示转写的重复零输入初始化。**已知事实：**它与标准贪心解码的初始状态不同，CPU LSTM 回归可展示首 token 丢失反例；**合理推断：**可能是现场缺词的因素。尚无新 GPU/现场结果，不能宣称实际缺词已修复，也不将其等同于 Nano 音频理解故障。
 
 历史逐轮记录、旧设计和重复验证手册已删除，Git 保留追溯。外部 VoiceChat 源码、manifest 和接口快照保留，属于运行文件与协议资产，不是另一份操作手册。
 
@@ -376,4 +386,4 @@ python3.12 -m venv /tmp/voicechat-cpu-tests
 
 本轮补充的自动检查：以真实 Worklet 代码配合可控时钟核对两个 WAV 的原始字节、末帧补零、EOF 静音、跨文件 seq 连续、重复 ready 不重播、Stop playback 不重置文件位置、隐藏事件不结束会话；Chromium 使用受控 HTTP/WS 验证双文件同 CID/SID、历史保留与后台事件。它们不代表实际手机操作系统后台能力或真实供应商对每份文件的分轮都已通过。
 
-2026-10-22 句首定位代码本地检查：后端/部署/采集相关 170 项通过，外部 VoiceChat CPU 31 项通过，Web 音频 36 项通过，Web 构建通过；后续 35 项定向复查与前述组重叠，不累加。覆盖真实 PCM 解码、soxr 重采样与提交边界哈希、样本不被诊断修改、ASR 跨条目累计、无内容日志、缺证据不误报、Web 预览有界、宿主机入口每文件只执行一次、时间窗口排除旧记录及镜像打包。manifest、编译、链接及手册 Shell 语法检查通过。未执行真实 GPU/现场缺词复现，不能将这些本地结果写成 Hello/TCP 已修复。
+2026-10-22 RNNT 修正本地结果：外部 VoiceChat CPU **35 项通过**，含 4 项新增转写回归：真实 LSTM 的一次零输入状态、前导 blank 不额外推进、与标准贪心递推的两组 token 比较、旧写法可漏首 token 的受控反例。本项目 PAD/握手/句首摘要/部署采集相关 **85 项通过**；补丁可独立撤销/应用，旧 PAD-only hash 保留，最终完整文件逐字节一致。Ruff、源码编译、11 个快照文件 hash、6 个只读挂载路径、Markdown 链接及 20 个手册 Shell 块语法检查通过。手册更新命令使用模拟 Docker 检查旧文件原位更新、仓库文件不重复写入、缺少 model 挂载时停止三种情况；不代表实际容器启动。此次未改 Web 代码，不重复运行其构建。**未执行真实 GPU/录音识别，不能将这些本地结果写成 Hello/TCP 已现场修复。**

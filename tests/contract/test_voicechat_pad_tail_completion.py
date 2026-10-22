@@ -27,19 +27,32 @@ BACKEND = "opt/tritonserver/backends/nemotron-voicechat/model.py"
 PAD, BOS, EOS, CONTENT, SOTC, EOTC = 0, 1, 2, 3, 10, 12
 
 
+def runtime_patches(archive_manifest):
+    return [ROOT / name for name in archive_manifest["applied_patches"]
+            if name.startswith("deploy/voicechat/")]
+
+
 @pytest.fixture(scope="module")
 def patched_backend(tmp_path_factory):
     manifest = json.loads((ROOT / "deploy/voicechat/pad-tail-completion-manifest.json").read_text())
     archive_manifest = json.loads((ROOT / "docs/voicechat/snapshot-manifest.json").read_text())
     hashes = manifest["files"][BACKEND]
     source = ROOT / "docs/voicechat" / BACKEND
-    assert hashlib.sha256(source.read_bytes()).hexdigest() == hashes["after_sha256"]
-    assert hashes["after_sha256"] == archive_manifest["files"][BACKEND]
+    current_hash = archive_manifest["files"][BACKEND]
+    assert hashlib.sha256(source.read_bytes()).hexdigest() == current_hash
     temporary = tmp_path_factory.mktemp("voicechat-pad-tail")
     target = temporary / BACKEND
     target.parent.mkdir(parents=True)
     shutil.copyfile(source, target)
     patch = ROOT / "deploy/voicechat/pad-tail-completion.patch"
+    # Later changes remain separate overlays. Preserve the immutable PAD-only
+    # before/after hashes while testing the complete current runtime source.
+    overlays = [overlay for overlay in runtime_patches(archive_manifest) if overlay != patch]
+    for overlay in reversed(overlays):
+        for arguments in (("--reverse", "--check"), ("--reverse",)):
+            subprocess.run(["git", "apply", *arguments, str(overlay)], cwd=temporary, check=True,
+                           capture_output=True, text=True)
+    assert hashlib.sha256(target.read_bytes()).hexdigest() == hashes["after_sha256"]
     for arguments in (("--reverse", "--check"), ("--reverse",)):
         subprocess.run(["git", "apply", *arguments, str(patch)], cwd=temporary, check=True,
                        capture_output=True, text=True)
@@ -48,6 +61,11 @@ def patched_backend(tmp_path_factory):
         subprocess.run(["git", "apply", *arguments, str(patch)], cwd=temporary, check=True,
                        capture_output=True, text=True)
     assert hashlib.sha256(target.read_bytes()).hexdigest() == hashes["after_sha256"]
+    for overlay in overlays:
+        for arguments in (("--check",), ()):
+            subprocess.run(["git", "apply", *arguments, str(overlay)], cwd=temporary, check=True,
+                           capture_output=True, text=True)
+    assert hashlib.sha256(target.read_bytes()).hexdigest() == current_hash
     compile(target.read_text(), str(target), "exec")
     assert target.read_bytes() == source.read_bytes()
     return target
@@ -584,14 +602,15 @@ async def test_patched_eos_produces_ordered_done_after_final_audio_tail(patched_
     assert not session._response_active and session._response_id is None
 
 
-def test_completion_patch_can_be_reversed_to_exact_archived_backend(patched_backend, tmp_path):
+def test_runtime_patches_can_be_reversed_to_exact_archived_backend(patched_backend, tmp_path):
     target = tmp_path / BACKEND
     target.parent.mkdir(parents=True)
     shutil.copyfile(patched_backend, target)
-    patch = ROOT / "deploy/voicechat/pad-tail-completion.patch"
-    subprocess.run(["git", "apply", "--reverse", "--check", str(patch)], cwd=tmp_path, check=True,
-                   capture_output=True, text=True)
-    subprocess.run(["git", "apply", "--reverse", str(patch)], cwd=tmp_path, check=True,
-                   capture_output=True, text=True)
+    archive_manifest = json.loads((ROOT / "docs/voicechat/snapshot-manifest.json").read_text())
+    for patch in reversed(runtime_patches(archive_manifest)):
+        subprocess.run(["git", "apply", "--reverse", "--check", str(patch)], cwd=tmp_path, check=True,
+                       capture_output=True, text=True)
+        subprocess.run(["git", "apply", "--reverse", str(patch)], cwd=tmp_path, check=True,
+                       capture_output=True, text=True)
     manifest = json.loads((ROOT / "deploy/voicechat/pad-tail-completion-manifest.json").read_text())
     assert hashlib.sha256(target.read_bytes()).hexdigest() == manifest["files"][BACKEND]["before_sha256"]

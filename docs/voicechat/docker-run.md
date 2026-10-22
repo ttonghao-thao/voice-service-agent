@@ -16,7 +16,7 @@ VOICECHAT_SNAPSHOT_ROOT=$(cd docs/voicechat && pwd)
 
 ## 创建容器
 
-2026-10-22 的 audio_server.py 新增首 4 秒输入指纹和 ASR 交接哈希，沿用下列已有 `VOICECHAT_DIAGNOSTICS=1`。本次统一挂载来源，不修改模型、模板、RNNT 或 GPU/端口参数。挂载来源变更必须重新创建容器，不能只重启旧容器。具体健康检查及精简回传全部在统一验证手册，不在此复制验证步骤。
+2026-10-22 的 `model.py` 修正 RNNT 显示转写的重复零输入初始化，随下列 model.py 只读挂载加载；分轮/打断状态与权重保持。`audio_server.py` 的首 4 秒输入指纹和 ASR 交接哈希沿用下列已有 `VOICECHAT_DIAGNOSTICS=1`。不新增环境变量或运行挂载，不改变模板、GPU/端口参数。须重启整个 VoiceChat 容器才能让 Triton 重载 backend；挂载来源变更必须重新创建容器，不能只重启旧容器。具体健康检查及精简回传全部在统一验证手册，不在此复制验证步骤。
 
 先按照 [派生镜像构建说明](../../deploy/voicechat/README.md#更新运行镜像并启动) 从已验证的离线基础镜像构建发布镜像。构建命令必须包含 `--build-context agent_repo=/path/to/voice-service-agent`；发布镜像名写入以下变量：
 

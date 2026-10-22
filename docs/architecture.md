@@ -79,7 +79,7 @@ VoiceChat 内部并非 ASR 文本驱动 LLM：16 kHz 音频经共享 encoder 分
 
 ## 5. 演进与验收入口
 
-Black Pig 单 case 已有现场 answered/引用提交成功；Golden Yolk 批次修复已有自动/Web 第二段闭环现场证据，当前改进范围是逐项回答和结果注入时延、流式正文展示。按 [统一验证手册](validation.md) 先完成当前闭环，再验证连续多轮、知识追问、内容和听音。Hello/TCP 句首缺失增加定向边界诊断：VoiceChat 只保存首 4 秒音频的 PCM16 哈希和累计转写哈希，不记录原始音频或 ASR 正文；API 与保存的转写按同一输入核对，门户仅给出有界预览。没有改动 RNNT 或 Nano；CPU 通过不代表真实识别已修复。
+Black Pig 单 case 已有现场 answered/引用提交成功；Golden Yolk 批次修复已有自动/Web 第二段闭环现场证据，当前改进范围是逐项回答和结果注入时延、流式正文展示。按 [统一验证手册](validation.md) 先完成当前闭环，再验证连续多轮、知识追问、内容和听音。Hello/TCP 增加边界诊断并修正 RNNT 显示转写的重复零输入初始化，使其符合 NeMo 标准贪心解码契约；分轮/打断的 RNNT 状态及 Nano 路径不变。VoiceChat 只保存首 4 秒音频的 PCM16 哈希和累计转写哈希，不记录原始音频或 ASR 正文；API 与保存的转写按同一输入核对，门户仅给出有界预览。CPU 回归不代表真实识别已修复。
 
 原生正文字幕以 epoch/input_item_id/response_id 关联，业务 Turn 更替不改变输入归属；历史恢复沿用实时的响应键。固定 ACK 前缀仅作为状态，正文前缀若与 ACK 分歧则一次释放，不丢字符。字幕流不触发正式答案提交，提交仍要求最终正文和音频结束并由 Coordinator 校验。
 

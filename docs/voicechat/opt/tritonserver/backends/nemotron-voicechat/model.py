@@ -1004,7 +1004,10 @@ class TritonPythonModel:
             pred_out = state["pred_out"]
             pred_hidden = state["pred_hidden"]
             if pred_out is None:
-                pred_out, pred_hidden = decoder.predict(y=None, state=None, add_sos=True, batch_size=1)
+                # NeMo GreedyRNNTInfer._pred_step(SOS) uses add_sos=False:
+                # y=None already supplies one zero input. Adding SOS again
+                # advances an LSTM twice and caches the wrong initial state.
+                pred_out, pred_hidden = decoder.predict(y=None, state=None, add_sos=False, batch_size=1)
             if pred_out.dim() == 3 and pred_out.shape[1] > 1:
                 pred_out = pred_out[:, -1:, :]
 
