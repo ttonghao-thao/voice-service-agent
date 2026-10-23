@@ -731,6 +731,23 @@ a:focus-visible {
   padding: 8px 0;
   border-top: 1px solid #e5ebdc;
 }
+.citation-applicability,
+.citation-conditions {
+  margin-top: 9px;
+  font-size: 11px;
+  line-height: 1.7;
+  color: #667658;
+  overflow-wrap: anywhere;
+}
+.citation-applicability small,
+.citation-conditions small {
+  display: block;
+  color: #869575;
+}
+.citation-conditions ul {
+  margin: 4px 0;
+  padding-left: 18px;
+}
 .citation-relations {
   display: grid;
   gap: 5px;

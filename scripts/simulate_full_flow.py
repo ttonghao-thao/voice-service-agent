@@ -117,7 +117,7 @@ class IndependentAPIs:
         self.correlated_output = False
         self.cuekb = FastAPI()
         self.model = FastAPI()
-        self.cuekb.add_api_route("/v1/search", self.search, methods=["POST"])
+        self.cuekb.add_api_route("/v2/search", self.search, methods=["POST"])
         self.cuekb.add_api_route("/v1/ready", lambda: {"ready": True}, methods=["GET"])
         self.model.add_api_route("/v1/chat/completions", self.completion, methods=["POST"])
 
@@ -156,19 +156,55 @@ class IndependentAPIs:
                     "chunk_id": f"00000000-0000-4000-8000-{102 + index:012d}",
                     "version_id": "00000000-0000-4000-8000-000000000103",
                     "rank": index + 1,
+                    "score": 1 / (61 + index),
+                    "score_type": "rrf",
                     "source_text": fact,
                     "title_path": ["Simulated AX manual"],
                     "anchor": {"page": 1},
-                    "metadata": {"product_model": product if self.dynamic_conditions else "AX",
-                                 **({"software_version": version} if self.dynamic_conditions and version else {}),
-                                 "business_version": "simulated-v1"},
+                    # This is curated simulation scope, not an inference from
+                    # uploaded document metadata or a real CueKB quality claim.
+                    "metadata": {"business_version": "simulated-v1"},
+                    "applicability": {
+                        "status": "resolved",
+                        "subjects": [{
+                            "display_name": f"Product {product if self.dynamic_conditions else 'AX'}",
+                            "product_model": product if self.dynamic_conditions else "AX",
+                            "software_version": version if self.dynamic_conditions else None,
+                            "source_kind": "curated",
+                        }],
+                        "conditions": [],
+                    },
+                    "processing_profile": "evidence-v2:simulation-fixture",
+                    "block_kind": "text",
+                    "context_parts": [{
+                        "chunk_id": f"00000000-0000-4000-8000-{102 + index:012d}",
+                        "source_text": fact, "title_path": ["Simulated AX manual"],
+                        "anchor": {"page": 1}, "required": True, "role": None,
+                        "source_spans": [],
+                    }],
+                    "context_state": "truncated" if self.truncated else "complete",
+                    "context_omissions": ["budget_omitted"] if self.truncated else [],
                     "context_truncated": self.truncated,
                 }
                 for index in range(self.hit_count)
             ]
         )
         result = {
+            "schema_version": "2",
             "trace_id": str(uuid4()),
+            "request_id": body.get("request_id"),
+            "ranking_method": "keyword_rrf",
+            "ranking_version": "sha256:" + "0" * 64,
+            "retrieval_path": "synthetic",
+            "executed_stages": ["synthetic_fixture"],
+            "skipped_stages": [],
+            "diagnostics": {
+                "counts": {"keyword": len(hits), "union": len(hits),
+                           "authoritative": len(hits), "returned": len(hits)},
+                "reranker": {"configured": False, "executed": False,
+                             "skipped_reason": "reranker_service_unconfigured"},
+                "keyword_limit": 50, "vector_limit": 0, "relation_limit": 0,
+            },
             "retrieval_status": status,
             "evidence_status": self.evidence_status,
             "content_revisions": {KB: 1},
@@ -178,7 +214,7 @@ class IndependentAPIs:
         }
         if self.redirect_response:
             # A plausible body must never make a redirect a successful search.
-            return JSONResponse(result, status_code=302, headers={"Location": "/v1/search-target"})
+            return JSONResponse(result, status_code=302, headers={"Location": "/v2/search-target"})
         return result
 
     async def completion(self, request: Request):

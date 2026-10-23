@@ -755,6 +755,49 @@ export default function App() {
                 <span>{c.citation_id}</span>
                 <strong>{c.title}</strong>
               </div>
+              {c.cuekb_schema_version === "2" && c.applicability?.status === "resolved" && (
+                <div className="citation-applicability">
+                  <strong>Applies to: </strong>
+                  {c.applicability.subjects.map((subject) =>
+                    [subject.display_name,
+                      subject.product_model && subject.product_model !== subject.display_name
+                        ? `model ${subject.product_model}` : null,
+                      subject.software_version ? `version ${subject.software_version}` : null]
+                      .filter(Boolean).join(" · "),
+                  ).join("; ")}
+                  {c.applicability.subjects.some((subject) => subject.source_kind !== "parser") && (
+                    <small>Product scope includes reviewed metadata.</small>
+                  )}
+                </div>
+              )}
+              {c.cuekb_schema_version === "2" && c.applicability?.status === "unknown" && (
+                <div className="citation-warning">
+                  The applicable product has not been confirmed for this excerpt.
+                </div>
+              )}
+              {c.cuekb_schema_version === "2" && c.applicability?.status === "ambiguous" && (
+                <div className="citation-warning">
+                  More than one product scope is possible for this excerpt.
+                </div>
+              )}
+              {c.cuekb_schema_version === "2" && c.applicability && c.applicability.conditions.length > 0 && (
+                <div className="citation-conditions">
+                  <strong>Conditions</strong>
+                  <ul>
+                    {c.applicability.conditions.map((condition, index) => (
+                      <li key={index}>
+                        {condition.text}
+                        {condition.source_kind === "curated" && <small>Reviewed metadata</small>}
+                      </li>
+                    ))}
+                  </ul>
+                </div>
+              )}
+              {c.context_state === "unresolved" && (
+                <div className="citation-warning">
+                  Required context is missing. This excerpt cannot establish the complete applicable conditions.
+                </div>
+              )}
               <p>{c.content}</p>
               {c.context_parts?.length > 0 && (
                 <details className="citation-context">
@@ -767,6 +810,11 @@ export default function App() {
                         {part.title_path.join(" / ") || "Source excerpt"}
                       </strong>
                       {part.anchor.page ? ` · page ${part.anchor.page}` : ""}
+                      {part.required && <span> · Required context</span>}
+                      {part.role && (
+                        <span> · {({ attribution: "Product scope", table_header: "Table header",
+                          condition: "Condition", exception: "Exception", continuation: "Continuation" })[part.role]}</span>
+                      )}
                       <p>{part.source_text}</p>
                     </div>
                   ))}
@@ -789,7 +837,7 @@ export default function App() {
                   </small>
                 </div>
               )}
-              {(c.context_truncated || c.context_omitted) && (
+              {(c.context_truncated || c.context_omitted || c.context_state === "truncated") && (
                 <div className="citation-warning">
                   {c.context_omitted
                     ? "Some context was omitted by this service."

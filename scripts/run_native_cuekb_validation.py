@@ -9,6 +9,7 @@ under /tmp; stdout is a bounded set of fields used for fault localization.
 import argparse
 import asyncio
 import json
+import math
 import re
 import sys
 from datetime import UTC, datetime
@@ -52,6 +53,10 @@ API_ACK_RESTORED_RE = re.compile(
 API_CUEKB_RE = re.compile(
     r"cuekb_response_validated conversation_id=(\S+) turn_id=(\S+) trace_id=(\S+) "
     r"retrieval_status=(\S+) hit_count=(\d+) duration_ms=(\d+)"
+)
+API_CUEKB_V2_RE = re.compile(r"cuekb_v2_diagnostic conversation_id=(\S+) data=(\{.*\})\s*$")
+API_CUEKB_HTTP_ERROR_RE = re.compile(
+    r"cuekb_http_error conversation_id=\S+ turn_id=\S+ status=(\d{3}) trace_id=([0-9a-f-]{36}|-)(?=\s|$)"
 )
 API_RESPONSE_COMPLETED_RE = re.compile(
     r"voice_response_completed conversation_id=(\S+) response_id=(\S+) input_item_id=(\S+) phase=(\S+) samples=(\d+)"
@@ -106,6 +111,8 @@ API_LOG_MARKERS = (
     "voice_unbound_tool_settled",
     "voice_tool_ack_continuation_restored",
     "cuekb_response_validated",
+    "cuekb_v2_diagnostic",
+    "cuekb_http_error",
     "voice_response_completed",
 )
 
@@ -132,6 +139,8 @@ def evidence_filter_summary(row):
         f"non_ascii:{value.get('rejected_non_ascii_count', 0)}",
         f"limit:{value.get('rejected_limit_count', 0)}",
         f"budget:{value.get('rejected_budget_count', 0)}",
+        f"unresolved:{value.get('rejected_unresolved_count', 0)}",
+        f"optional_omitted:{value.get('omitted_optional_context_count', 0)}",
     ))
 
 
@@ -150,6 +159,16 @@ def classify(report):
         return "TOOL_LOOP_AFTER_TERMINAL", "provider_answer_after_search_finished"
     if any(row.get("portal_error") in ("VOICE_SESSION_ROTATION_REQUIRED", "VOICE_SESSION_EXPIRED") for row in cases):
         return "VOICE_SESSION_LIMIT", "api_voice_session_lifetime"
+    reasons = {row.get("reason_code") for row in cases}
+    if reasons & {"CUEKB_CONFIGURATION_ERROR", "CUEKB_INDEX_UPGRADE_REQUIRED",
+                  "CUEKB_CONFIGURATION_CHANGED", "CUEKB_INDEX_MAINTENANCE"}:
+        return "CUEKB_CONFIGURATION", "cuekb_v2_models_index_and_published_profiles"
+    if reasons & {"CUEKB_CONTRACT_ERROR", "TOOL_BAD_RESPONSE"}:
+        return "CUEKB_CONTRACT", "cuekb_v2_strict_response"
+    if reasons & {"CUEKB_UNAVAILABLE", "CUEKB_TIMEOUT", "TOOL_UNAVAILABLE"}:
+        return "CUEKB_DEPENDENCY", "cuekb_http_dependency_or_deadline"
+    if "CUEKB_RETRIEVAL_UNAVAILABLE" in reasons:
+        return "CUEKB_RETRIEVAL_LIMITED", "cuekb_v2_degraded_empty_or_selection"
     if any(row.get("reason_code") in (
         "VOICE_MISSING_CONDITION", "VOICE_UNSUPPORTED_NUMBER", "VOICE_UNSUPPORTED_UNIT",
         "VOICE_ANSWER_INVALID", "RAG_INVALID_CITATION", "VOICE_SPEECH_MISMATCH",
@@ -222,6 +241,69 @@ def case_line(row):
         f"input_ids={csv(row.get('input_item_ids', []))}",
         f"trace_ids={csv(row.get('source_trace_ids', []))}",
     ))
+
+
+def summarize_cuekb_v2_log(text, limit=4):
+    """Allowlist bounded operational facts, never echo arbitrary diagnostic JSON."""
+    allowed_methods = {"keyword_rrf", "rrf", "rrf_related", "rrf_then_rerank"}
+    omissions = (
+        "scope_excluded", "dependency_unresolved", "candidate_limit", "rerank_window_limit",
+        "payload_budget_exhausted", "stale_candidate", "heading_only", "context_budget_omitted",
+        "payload_budget", "optional_context",
+    )
+
+    def count(value):
+        return value if isinstance(value, int) and not isinstance(value, bool) and value >= 0 else None
+
+    def counts(value, keys):
+        return {key: count(value[key]) for key in keys if isinstance(value, dict) and key in value}
+
+    rows, malformed = [], 0
+    for line in text.splitlines():
+        match = API_CUEKB_V2_RE.search(line)
+        if not match:
+            continue
+        try:
+            raw = json.loads(match[2])
+        except (ValueError, TypeError):
+            malformed += 1
+            continue
+        if not isinstance(raw, dict):
+            malformed += 1
+            continue
+        method = raw.get("ranking_method")
+        row = {"schema_version": "2" if raw.get("schema_version") in ("2", 2) else "unknown",
+               "ranking_method": method if isinstance(method, str) and method in allowed_methods else "unknown"}
+        for key in ("trace_id",):
+            value = raw.get(key)
+            if isinstance(value, str) and re.fullmatch(r"[0-9a-f-]{36}", value):
+                row[key] = value
+        for key in ("service_hits", "adapter_retained", "adapter_omitted", "required_parts", "unresolved_groups",
+                    "service_hits_bytes", "adapter_bytes"):
+            if key in raw:
+                row[key] = count(raw[key])
+        row["scope_counts"] = counts(raw.get("scope_counts"), ("resolved", "unknown", "ambiguous"))
+        raw_omissions = raw.get("omission_counts")
+        row["omission_counts"] = counts(raw_omissions, omissions)
+        if isinstance(raw_omissions, dict) and isinstance(raw_omissions.get("adapter"), dict):
+            row["omission_counts"]["adapter"] = counts(raw_omissions["adapter"], ("payload_budget", "optional_context"))
+        elapsed = raw.get("service_total_ms")
+        if isinstance(elapsed, (int, float)) and not isinstance(elapsed, bool) and math.isfinite(elapsed) and elapsed >= 0:
+            row["service_total_ms"] = elapsed
+        reranker = raw.get("reranker")
+        row["reranker"] = {key: reranker[key] for key in ("configured", "executed")
+                           if isinstance(reranker, dict) and isinstance(reranker.get(key), bool)}
+        rows.append(row)
+    output = ["cuekb_v2=" + json.dumps(row, ensure_ascii=True, separators=(",", ":")) for row in rows[:limit]]
+    if len(rows) > limit or malformed:
+        output.append("cuekb_v2_summary=" + json.dumps({"shown": min(len(rows), limit),
+                      "omitted": max(0, len(rows) - limit), "malformed": malformed}, separators=(",", ":")))
+    errors = API_CUEKB_HTTP_ERROR_RE.findall(text)
+    output.extend("cuekb_http_error=" + json.dumps({"status": int(status), "trace_id": trace}, separators=(",", ":"))
+                  for status, trace in errors[:limit])
+    if len(errors) > limit:
+        output.append(f"cuekb_http_errors_omitted={len(errors) - limit}")
+    return output
 
 
 def voicechat_diagnostics(text, sequence_id):
@@ -500,7 +582,8 @@ async def execute(args):
         f"mode={capabilities.get('qa_execution_mode')} "
         f"policy={capabilities.get('answer_policy')} "
         f"tools={csv(capabilities.get('native_tools', []))} cases={len(cases)} "
-        f"retrieval_limit={settings.voice_max_retrievals_per_input}"
+        f"retrieval_limit={settings.voice_max_retrievals_per_input} "
+        f"cuekb_api=v2 service_evidence_bytes={getattr(settings, 'cuekb_max_evidence_bytes', 24000)}"
     )
     report = await run(args)
     finished = datetime.now(UTC).isoformat()
@@ -577,6 +660,9 @@ def main():
         lines, ok = (summarize_voicechat_log(evidence, args.expected_tool)
                      if args.summarize_voicechat_log else summarize_api_log(evidence))
         print("\n".join(lines))
+        if args.summarize_api_log:
+            for line in summarize_cuekb_v2_log(evidence):
+                print(line)
         raise SystemExit(0 if ok else 1)
     if args.origin is None:
         args.origin = Settings().public_origin

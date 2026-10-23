@@ -6,7 +6,7 @@
 
 VoiceChat 自主调用 `search_knowledge_base(query)` 或直接回答。一般问候和通用知识可以直接回答，页面标记 Model general answer，不创建知识 Turn 或引用。工具描述要求企业产品事实查询 CueKB，但提示不能保证模型零漏调用；未调用要如实记录，不根据转写偷偷补查。
 
-公开名称与可信 implementation 均为 `search_knowledge_base`。Registry 后台能力 `search_knowledge` 是内部权限/适配器键，实际请求 CueKB `/v1/search`。身份、KB、凭据和 endpoint 来自服务端，模型只能提供 query。该两层含义不能与工具拼写混淆。
+公开名称与可信 implementation 均为 `search_knowledge_base`。Registry 后台能力 `search_knowledge` 是内部权限/适配器键，实际请求 CueKB `/v2/search`。身份、KB、凭据和 endpoint 来自服务端，模型只能提供 query。该两层含义不能与工具拼写混淆。
 
 ## 2. 注册、输入与扩展
 

@@ -282,7 +282,9 @@ async def test_strict_mode_rejects_general_before_output(tmp_path):
 async def test_bad_native_answer_fails_and_clears_only_its_response(simulation, spoken, code):
     call = await PortalCall(simulation).create()
     await call.open_voice()
-    plan = VoicePlan(spoken=spoken)
+    # V2 document tags no longer impose product conditions. Exercise a real
+    # required condition supplied by the customer, not uploaded metadata.
+    plan = VoicePlan(question="Find integration sample documentation for model AX.", spoken=spoken)
     await call.speak(plan)
     turn = await call.answer()
     assert turn["answer"]["status"] == "failed" and turn["answer"]["reason_code"] == code

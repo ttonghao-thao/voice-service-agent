@@ -26,6 +26,28 @@ def dev_user():
     )
 
 
+def cuekb_v2_response(data):
+    """Build explicit synthetic V2 fixtures, never a production V1 fallback."""
+    data = {**data, "schema_version": "2", "ranking_method": "keyword_rrf",
+            "ranking_version": "sha256:" + "a" * 64}
+    hits = []
+    for item in data.get("hits", []):
+        hit = {"score": 1 / (60 + item["rank"]), "score_type": "rrf",
+               "processing_profile": "evidence-v2:fixture",
+               "context_state": "truncated" if item.get("context_truncated") else "complete",
+               "applicability": {"status": "unknown"}, **item}
+        hits.append(hit)
+    data["hits"] = hits
+    data["diagnostics"] = {
+        "counts": {"keyword": len(hits), "union": len(hits),
+                   "authoritative": len(hits), "returned": len(hits)},
+        "reranker": {"configured": False, "executed": False,
+                     "skipped_reason": "reranker_service_unconfigured"},
+        "keyword_limit": 50, "vector_limit": 0, "relation_limit": 0,
+    }
+    return data
+
+
 async def test_bounded_invalid_and_retry_response():
     calls = []
 
@@ -210,11 +232,11 @@ async def test_cuekb_acl_injection_and_evidence_mapping(app, conversation):
         assert body["mode"] == "auto" and body["top_k"] == 5
         assert body["filters"]["product_model"] == "MODEL_X"
         assert body["filters"]["software_version"] == "V2"
-        assert request.url.path == "/v1/search"
+        assert request.url.path == "/v2/search"
         assert "X-Tenant-ID" not in request.headers and "X-User-ID" not in request.headers
         return httpx.Response(
             200,
-            json={
+            json=cuekb_v2_response({
                 "trace_id": "00000000-0000-4000-8000-000000000201",
                 "retrieval_status": "degraded",
                 "evidence_status": "unassessed",
@@ -259,7 +281,7 @@ async def test_cuekb_acl_injection_and_evidence_mapping(app, conversation):
                         "retrieval_sources": ["keyword"],
                     }
                 ],
-            },
+            }),
         )
 
     async with httpx.AsyncClient(transport=httpx.MockTransport(handler)) as client:
@@ -279,7 +301,7 @@ async def test_cuekb_acl_injection_and_evidence_mapping(app, conversation):
     assert result["trace_id"].endswith("0201") and result["status"] == "degraded"
 
 
-async def test_cuekb_m3_context_budget_is_explicit(app):
+async def test_cuekb_v2_group_budget_is_explicit(app):
     from pydantic import SecretStr
 
     settings = app.state.settings
@@ -321,13 +343,13 @@ async def test_cuekb_m3_context_budget_is_explicit(app):
     def handler(request):
         return httpx.Response(
             200,
-            json={
+            json=cuekb_v2_response({
                 "trace_id": "00000000-0000-4000-8000-000000000201",
                 "retrieval_status": "ok",
                 "content_revisions": {KB_SUPPORT: 7},
                 "timings_ms": {"total": 1},
                 "hits": hits,
-            },
+            }),
         )
 
     ctx = RunContext(dev_user(), "conversation", "turn", 0)
@@ -346,9 +368,11 @@ async def test_cuekb_m3_context_budget_is_explicit(app):
     [
         (401, "CUEKB_AUTH_FAILED"),
         (403, "CUEKB_FORBIDDEN"),
+        (409, "CUEKB_CONFIGURATION_ERROR"),
         (422, "CUEKB_CONTRACT_ERROR"),
         (429, "CUEKB_RATE_LIMITED"),
         (503, "TOOL_UNAVAILABLE"),
+        (504, "CUEKB_TIMEOUT"),
     ],
 )
 async def test_cuekb_http_failures_are_not_reported_as_empty_results(app, status, code):

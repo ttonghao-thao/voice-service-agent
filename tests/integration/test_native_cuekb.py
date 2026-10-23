@@ -1,4 +1,4 @@
-"""Phase-1 integration. HTTP/WS services below are fixtures, not real models."""
+"""CueKB V2 native integration; HTTP/WS providers here are fixtures, not GPU models."""
 
 import base64
 import json
@@ -34,11 +34,29 @@ def configuration(tmp_path, **overrides):
 
 
 def evidence(**overrides):
-    return {"trace_id": "00000000-0000-4000-8000-000000000111", "retrieval_status": "ok",
+    # Deliberately emit the V2 wire contract. These are synthetic excerpts, not
+    # results from a real CueKB/embedding service or proof of model accuracy.
+    return {"schema_version": "2", "ranking_method": "rrf",
+        "ranking_version": "sha256:" + "a" * 64,
+        "diagnostics": {
+            "counts": {"keyword": 1, "vector": 1, "union": 1, "authoritative": 1, "returned": 1},
+            "reranker": {"configured": False, "executed": False,
+                         "skipped_reason": "reranker_service_unconfigured"},
+            "keyword_limit": 50, "vector_limit": 50, "relation_limit": 0,
+        },
+        "trace_id": "00000000-0000-4000-8000-000000000111", "retrieval_status": "ok",
         "evidence_status": "sufficient", "content_revisions": {KB: 1}, "timings_ms": {"total": 1},
         "hits": [{"document_id": "00000000-0000-4000-8000-000000000101",
                   "chunk_id": "00000000-0000-4000-8000-000000000102",
                   "version_id": "00000000-0000-4000-8000-000000000103", "rank": 1,
+                  "score": 2 / 61, "score_type": "rrf",
+                  "processing_profile": "evidence-v2:" + "b" * 64,
+                  "context_state": "disabled",
+                  "title_path": ["Product AX"], "anchor": {},
+                  "retrieval_sources": ["keyword", "vector"],
+                  "applicability": {"status": "resolved", "subjects": [{
+                      "display_name": "Product AX", "product_model": "AX", "source_kind": "curated",
+                  }], "conditions": []},
                   "source_text": "Product AX supports 10 connections.", "metadata": {"product_model": "AX"}}],
         **overrides}
 
@@ -58,6 +76,7 @@ def test_query_only_schema_rejects_authority_and_preserves_identifiers():
 @pytest.mark.parametrize("scenario,code", [
     ("ok", None), ("unassessed", None), ("five_hits", None), ("five_hits_bounded", None),
     ("not_found", "CUEKB_NO_EVIDENCE"),
+    ("degraded_empty", "CUEKB_RETRIEVAL_UNAVAILABLE"),
     ("insufficient", "CUEKB_EVIDENCE_UNSAFE"), ("conflicting", "CUEKB_EVIDENCE_UNSAFE"),
     ("needs_clarification", "CUEKB_NEEDS_CLARIFICATION"), ("auth", "CUEKB_AUTH_FAILED"),
     ("timeout", "TOOL_UNAVAILABLE"), ("non_ascii", "CUEKB_VOICE_EVIDENCE_UNAVAILABLE"),
@@ -65,17 +84,24 @@ def test_query_only_schema_rejects_authority_and_preserves_identifiers():
     ("truncated_context_with_source_part", None),
     ("budget", "CUEKB_VOICE_EVIDENCE_UNAVAILABLE"), ("partial", None),
     ("typographic_ascii", None),
+    ("source_whitespace", None),
     ("duplicate_context", None), ("bounded_source_part", None),
-    ("omitted_without_source_part", None),
-    ("omitted_unassessed", "CUEKB_VOICE_EVIDENCE_UNAVAILABLE"),
-    ("oversized", "CUEKB_NO_EVIDENCE"),
+    ("required_condition", None),
+    ("required_optional_truncated", None),
+    ("required_over_budget", "CUEKB_VOICE_EVIDENCE_UNAVAILABLE"),
+    ("required_unresolved", "CUEKB_VOICE_EVIDENCE_UNAVAILABLE"),
+    ("mismatched_primary", "CUEKB_VOICE_EVIDENCE_UNAVAILABLE"),
+    ("unknown", None), ("ambiguous", None),
+    ("internal_entity", None), ("different_product", None), ("different_conditions", None),
+    ("large_first", None),
+    ("oversized", "CUEKB_VOICE_EVIDENCE_UNAVAILABLE"),
 ])
 async def test_native_query_reaches_cuekb_without_an_answer_model(tmp_path, monkeypatch, scenario, code):
     s = configuration(tmp_path)
-    if scenario == "budget":
+    if scenario in ("budget", "large_first", "required_over_budget"):
         s.qa_direct_evidence_max_bytes = 1024
     if scenario == "five_hits_bounded":
-        s.qa_direct_evidence_max_bytes = 2200
+        s.qa_direct_evidence_max_bytes = 1024
     app = create_app(s)
     calls = []
 
@@ -86,6 +112,13 @@ async def test_native_query_reaches_cuekb_without_an_answer_model(tmp_path, monk
         if scenario == "timeout":
             raise httpx.ReadTimeout("fixture timeout")
         data = evidence()
+        if scenario == "budget":
+            data["hits"][0]["source_text"] = "Product AX supports 10 connections. " * 40
+        if scenario == "large_first":
+            first = data["hits"][0]
+            data["hits"] = [{**first, "source_text": "Product AX supports 10 connections. " * 40},
+                            {**first, "rank": 2, "score": 2 / 62,
+                             "chunk_id": "00000000-0000-4000-8000-000000000202"}]
         if scenario in ("five_hits", "five_hits_bounded"):
             # Later ranked hits can carry the requested facts; the first
             # three headings/introductory excerpts are not necessarily enough.
@@ -95,12 +128,14 @@ async def test_native_query_reaches_cuekb_without_an_answer_model(tmp_path, monk
             original = data["hits"][0]
             data["hits"] = [{**original,
                 "chunk_id": f"00000000-0000-4000-8000-{index + 200:012d}",
-                "source_text": text, "rank": index + 1,
+                "source_text": text, "rank": index + 1, "score": 2 / (61 + index),
             } for index, text in enumerate(texts)]
         if scenario in ("unassessed", "insufficient", "conflicting"):
             data["evidence_status"] = scenario
         if scenario in ("not_found", "needs_clarification"):
             data.update(retrieval_status=scenario, hits=[])
+        if scenario == "degraded_empty":
+            data.update(retrieval_status="degraded", degraded_reasons=["keyword_unavailable"], hits=[])
         if scenario == "non_ascii":
             data["hits"][0]["source_text"] = "产品 AX: 10 connections."
         if scenario == "typographic_ascii":
@@ -108,6 +143,19 @@ async def test_native_query_reaches_cuekb_without_an_answer_model(tmp_path, monk
                 source_text="Product AX supports \u226510 connections \u2014 it\u2019s documented.",
                 title_path=["Guide \u00b7 \u201cProduct AX\u201d"],
             )
+        if scenario == "source_whitespace":
+            hit = data["hits"][0]
+            hit["source_text"] = "\n  Product AX supports 10 connections.\n"
+            hit["context_parts"] = [{
+                "chunk_id": hit["chunk_id"], "source_text": hit["source_text"],
+                "anchor": {}, "title_path": ["Product AX"], "required": True,
+            }]
+        if scenario == "mismatched_primary":
+            hit = data["hits"][0]
+            hit["context_parts"] = [{
+                "chunk_id": hit["chunk_id"], "source_text": "Product AX supports 99 connections.",
+                "anchor": {}, "title_path": ["Product AX"], "required": True,
+            }]
         if scenario == "duplicate_context":
             source = data["hits"][0]["source_text"]
             data["hits"][0].update(context=source, context_parts=[{
@@ -115,8 +163,9 @@ async def test_native_query_reaches_cuekb_without_an_answer_model(tmp_path, monk
                 "source_text": source,
                 "anchor": {},
                 "title_path": [],
+                "required": True,
             }])
-        if scenario in ("bounded_source_part", "omitted_without_source_part", "omitted_unassessed"):
+        if scenario == "bounded_source_part":
             source = data["hits"][0]["source_text"]
             neighbor = "Additional complete neighboring context. " * 200
             source_part = {
@@ -124,24 +173,70 @@ async def test_native_query_reaches_cuekb_without_an_answer_model(tmp_path, monk
                 "source_text": source,
                 "anchor": {},
                 "title_path": [],
+                "required": True,
             }
             neighbor_part = {
                 "chunk_id": "00000000-0000-4000-8000-000000000199",
                 "source_text": neighbor,
                 "anchor": {},
                 "title_path": [],
+                "required": False,
             }
             data["hits"][0].update(
                 context=source + "\n\n" + neighbor,
-                context_parts=([source_part, neighbor_part]
-                               if scenario == "bounded_source_part" else [neighbor_part]),
+                context_state="complete", context_parts=[source_part, neighbor_part],
             )
-            if scenario == "omitted_unassessed":
-                data["evidence_status"] = "unassessed"
+        if scenario in ("required_condition", "required_optional_truncated", "required_unresolved", "required_over_budget"):
+            hit = data["hits"][0]
+            condition = "Product AX may be used only indoors." * (40 if scenario == "required_over_budget" else 1)
+            hit.update(context=hit["source_text"] + "\n\n" + condition,
+                       context_state="unresolved" if scenario == "required_unresolved" else "complete",
+                       context_parts=[{
+                           "chunk_id": hit["chunk_id"], "source_text": hit["source_text"],
+                           "anchor": {}, "title_path": ["Product AX"], "required": True,
+                       }, {
+                           "chunk_id": "00000000-0000-4000-8000-000000000199", "source_text": condition,
+                           "anchor": {}, "title_path": ["Product AX"], "required": True, "role": "condition",
+                       }])
+            if scenario == "required_unresolved":
+                hit["context_parts"].pop()
+                hit["context_omissions"] = ["dependency_unresolved"]
+            if scenario == "required_optional_truncated":
+                hit.update(context_state="truncated", context_truncated=True,
+                           context_omissions=["budget_omitted"], context=hit["context"] + "\n\nPartial neighbor")
+        if scenario in ("unknown", "ambiguous"):
+            data["hits"][0]["applicability"] = {
+                "status": scenario, "subjects": [], "conditions": [],
+            }
+        if scenario == "internal_entity":
+            data["hits"][0]["applicability"]["subjects"][0]["entity_id"] = (
+                "00000000-0000-4000-8000-000000009999"
+            )
+            # Legacy document tags remain audit metadata, not fact applicability.
+            data["hits"][0]["metadata"]["product_model"] = "DOC-TAG-UNRELATED"
+        if scenario in ("different_product", "different_conditions"):
+            first = data["hits"][0]
+            second = json.loads(json.dumps(first))
+            second.update(rank=2, score=2 / 62, chunk_id="00000000-0000-4000-8000-000000000202")
+            if scenario == "different_product":
+                second["applicability"]["subjects"] = [{
+                    "display_name": "Product BY", "product_model": "BY", "source_kind": "curated",
+                }]
+                second["title_path"] = ["Product BY"]
+            else:
+                first["applicability"]["conditions"] = [{"text": "After opening.", "source_kind": "curated"}]
+                second["applicability"]["conditions"] = [{"text": "After baking.", "source_kind": "curated"}]
+            data["hits"] = [first, second]
         if scenario == "oversized":
             data["hits"][0]["source_text"] = "No. " * 2000
         if scenario in ("truncated_context", "truncated_context_with_source_part"):
             data["hits"][0]["context_truncated"] = True
+            data["hits"][0]["context_state"] = (
+                "unresolved" if scenario == "truncated_context" else "truncated"
+            )
+            data["hits"][0]["context_omissions"] = [
+                "dependency_unresolved" if scenario == "truncated_context" else "budget_omitted"
+            ]
         if scenario == "truncated_context_with_source_part":
             source = data["hits"][0]["source_text"]
             data["hits"][0].update(
@@ -151,10 +246,16 @@ async def test_native_query_reaches_cuekb_without_an_answer_model(tmp_path, monk
                     "source_text": source,
                     "anchor": {},
                     "title_path": [],
+                    "required": True,
                 }],
             )
         if scenario == "partial":
             data["scope_limited"] = True
+        # Keep the synthetic service diagnostics consistent with the final
+        # fixture response; a real empty search is not an omitted evidence group.
+        count = len(data["hits"])
+        data["diagnostics"]["counts"].update(keyword=count, vector=count,
+                                               union=count, authoritative=count, returned=count)
         return httpx.Response(200, json=data)
 
     async def forbidden(*args, **kwargs):
@@ -206,8 +307,10 @@ async def test_native_query_reaches_cuekb_without_an_answer_model(tmp_path, monk
         assert body["query"] == query  # Do not replace the model's resolved query with ASR.
         assert body["kb_ids"] == [KB]
         assert body["top_k"] == s.cuekb_top_k == 5
+        assert body["include_diagnostics"] is False
+        assert body["max_evidence_bytes"] == s.cuekb_max_evidence_bytes
         assert calls[0].headers["authorization"] == "Bearer server-only"
-        assert str(calls[0].url) == "https://cuekb.fixture/v1/search"
+        assert str(calls[0].url) == "https://cuekb.fixture/v2/search"
         if code:
             assert result.reason_code == code
             assert result.status != "answered"
@@ -216,6 +319,7 @@ async def test_native_query_reaches_cuekb_without_an_answer_model(tmp_path, monk
             expected_text = (
                 "Product AX supports >=10 connections - it's documented."
                 if scenario == "typographic_ascii"
+                else "\n  Product AX supports 10 connections.\n" if scenario == "source_whitespace"
                 else "Product AX supports 10 connections."
             )
             assert result.envelope["items"][0]["text"] == expected_text
@@ -223,10 +327,11 @@ async def test_native_query_reaches_cuekb_without_an_answer_model(tmp_path, monk
             assert result.envelope["trace_id"].endswith("111")
             if scenario == "truncated_context_with_source_part":
                 assert result.envelope["items"][0]["context"] is None
-            assert len(json.dumps(result.envelope).encode()) <= s.qa_direct_evidence_max_bytes
+            assert len(json.dumps(voice_result(result)).encode()) <= s.qa_direct_evidence_max_bytes
             assert json.dumps(result.envelope, ensure_ascii=False).isascii()
-            partial = scenario in ("partial", "five_hits_bounded")
-            assert result.envelope["partial"] is partial
+            partial = result.envelope["partial"]
+            if scenario in ("partial", "five_hits_bounded", "large_first"):
+                assert partial is True
             wire = voice_result(result)
             assert wire["partial"] == ("true" if partial else "false")
             if scenario == "five_hits_bounded":
@@ -235,6 +340,27 @@ async def test_native_query_reaches_cuekb_without_an_answer_model(tmp_path, monk
                 assert len(wire["sources"]) == 5
                 assert wire["sources"][-2]["text"] == "Product AX weighs 100 grams."
                 assert wire["sources"][-1]["text"] == "Product AX costs 20 dollars."
+            if scenario in ("required_condition", "required_optional_truncated"):
+                assert "only indoors" in wire["sources"][0]["context"]
+                assert "Partial neighbor" not in json.dumps(wire)
+            if scenario in ("unknown", "ambiguous"):
+                assert wire["sources"][0]["applicability"]["status"] == scenario
+                assert wire["sources"][0]["applicability"]["subjects"] == []
+                assert result.envelope["items"][0]["conditions"] == {}
+            if scenario == "internal_entity":
+                encoded = json.dumps(wire)
+                assert "00000000-0000-4000-8000-000000009999" not in encoded
+                assert "DOC-TAG-UNRELATED" not in encoded
+                assert wire["sources"][0]["applicability"]["subjects"][0]["display_name"] == "Product AX"
+            if scenario == "different_product":
+                assert [source["applicability"]["subjects"][0]["display_name"]
+                        for source in wire["sources"]] == ["Product AX", "Product BY"]
+            if scenario == "different_conditions":
+                assert [source["applicability"]["conditions"][0]["text"]
+                        for source in wire["sources"]] == ["After opening.", "After baking."]
+            if scenario == "large_first":
+                assert len(wire["sources"]) == 1
+                assert wire["sources"][0]["text"] == "Product AX supports 10 connections."
         assert ctx.effective_executor == "native_cuekb" and ctx.escalation_reason is None
         assert ctx.retrieval_calls == 1
         if scenario in ("truncated_context", "truncated_context_with_source_part"):
@@ -244,11 +370,86 @@ async def test_native_query_reaches_cuekb_without_an_answer_model(tmp_path, monk
                     Record.kind == "native_cuekb_voice_evidence",
                 ))).scalar_one().payload
             if scenario == "truncated_context":
-                assert audit["rejected_truncated_context_count"] == 1
+                assert audit["rejected_unresolved_count"] == 1
                 assert audit["accepted_truncated_source_count"] == 0
             else:
                 assert audit["rejected_truncated_context_count"] == 0
                 assert audit["accepted_truncated_source_count"] == 1
+
+
+@pytest.mark.parametrize("batch_overhead", [0, 160])
+async def test_native_admission_reserves_final_result_and_batch_overhead(tmp_path, batch_overhead):
+    """A large first group must not displace a small, deliverable final group."""
+    from app.agent_runtime.cuekb_evidence import ANSWER_INSTRUCTIONS, FINAL_INSTRUCTIONS
+    from app.agent_runtime.native_input import NativeInputSearch
+    from app.storage.models import Conversation
+
+    settings = configuration(tmp_path, qa_direct_evidence_max_bytes=1024,
+                             voice_max_retrievals_per_input=1)
+    app = create_app(settings)
+    # Without batching, the final instructions alone invalidate a 750-byte
+    # first passage. With batching, a 400-byte first passage fits the final
+    # result but must be rejected once the 160-byte wrapper is reserved.
+    large_text = ("Detailed Product AX reference. " * 30)[:400 if batch_overhead else 750]
+    small_text = "Product AX has 2 ports"
+    response = evidence()
+    large = response["hits"][0]
+    large["source_text"] = large_text
+    small = {**large, "rank": 2, "score": 2 / 62, "source_text": small_text,
+             "chunk_id": "00000000-0000-4000-8000-000000000202"}
+    response["hits"] = [large, small]
+    response["diagnostics"]["counts"].update(keyword=2, vector=2, union=2, authoritative=2, returned=2)
+
+    # Before final instructions/wrapper overhead were reserved, this first
+    # complete source displaced the short fallback. The final merger then had
+    # no deliverable group left, despite the complete small passage fitting.
+    scope = {"status": "resolved", "subjects": [{
+        "display_name": "Product AX", "product_model": "AX", "source_kind": "curated",
+    }], "conditions": []}
+    bare_large = {"status": "ok", "sources": [{
+        "text": large_text, "title": "Product AX", "applicability": scope,
+    }], "partial": "false"}
+    assert len(json.dumps(bare_large).encode()) <= 1024
+    final_large = {**bare_large, "search_state": "finished",
+                   "instructions": ANSWER_INSTRUCTIONS + FINAL_INSTRUCTIONS}
+    final_large_bytes = len(json.dumps(final_large).encode())
+    assert final_large_bytes + batch_overhead > 1024
+    if batch_overhead:
+        assert final_large_bytes <= 1024  # This case isolates the wrapper reservation.
+    else:
+        assert len(json.dumps({**bare_large, "sources": [*bare_large["sources"], {
+            "text": small_text, "title": "Product AX", "applicability": scope,
+        }]}).encode()) > 1024
+
+    principal = Principal(user_id="dev-operator", scopes=frozenset({"knowledge:read"}), knowledge_base_ids=(KB,))
+    async with app.router.lifespan_context(app), httpx.AsyncClient(
+        transport=httpx.MockTransport(lambda request: httpx.Response(200, json=response)),
+    ) as http:
+        runtime = app.state.coordinator.runtime
+        app.state.registry.adapters["cuekb_http"] = CueKBAdapter(settings, http)
+        async with app.state.store.transaction() as db:
+            db.add(Conversation(id="cid", title="Budget regression", owner_id=principal.user_id,
+                                qa_execution_mode="dual_tools", answer_policy="general_qa"))
+        turn, _, _ = await app.state.store.begin_turn(principal, "cid", "budget", "Product AX", "voice", 0)
+        ctx = RunContext(principal, "cid", turn.id, 0, request_revision=turn.request_revision,
+                         answer_policy="general_qa", deadline=time.monotonic() + 5,
+                         native_result_overhead=batch_overhead)
+        catalog = await runtime.catalog.snapshot()
+        arguments = {"query": "Product AX ports"}
+        decision = runtime.dispatcher.resolve("search_knowledge_base", json.dumps(arguments),
+                                              tuple(catalog.tools), catalog=catalog.tools)
+        search = NativeInputSearch(limit=1, result_overhead=batch_overhead)
+        assert search.reserve("search_knowledge_base", arguments)
+        admitted = await runtime.run_selected(decision, "Product AX", ctx, [])
+        assert isinstance(admitted, EvidenceReady)
+        assert [item["text"] for item in admitted.envelope["items"]] == [small_text]
+        assert admitted.envelope["partial"] is True
+        merged = search.combine(admitted, ctx, settings.qa_direct_evidence_max_bytes)
+        payload = search.voice_result(merged)
+        assert [source["text"] for source in payload["sources"]] == [small_text]
+        assert payload["search_state"] == "finished"
+        assert payload["instructions"].endswith(FINAL_INSTRUCTIONS)
+        assert len(json.dumps(payload, ensure_ascii=True).encode()) + batch_overhead <= 1024
 
 
 @pytest.mark.parametrize("spoken,reason,context_mode", [
@@ -276,11 +477,16 @@ def test_pcm_through_real_adapter_native_call_cuekb_and_voice_reply(tmp_path, sp
         data = evidence()
         if context_mode != "none":
             hit = data["hits"][0]
-            hit.update(context="Only 99 connections in an unrelated neighboring passage."
-                       if context_mode == "truncated" else "Product AX supports 10 connections only indoors.",
-                       context_truncated=context_mode == "truncated",
-                       context_parts=[{"chunk_id": hit["chunk_id"], "source_text": hit["source_text"],
-                                       "title_path": [], "anchor": {}}])
+            context = ("Only 99 connections in an unrelated neighboring passage."
+                       if context_mode == "truncated" else "Product AX supports 10 connections only indoors.")
+            parts = [{"chunk_id": hit["chunk_id"], "source_text": hit["source_text"],
+                      "title_path": ["Product AX"], "anchor": {}, "required": True}]
+            if context_mode == "complete":
+                parts.append({"chunk_id": "00000000-0000-4000-8000-000000000199", "source_text": context,
+                              "title_path": ["Product AX"], "anchor": {}, "required": True, "role": "condition"})
+            hit.update(context=context, context_truncated=context_mode == "truncated",
+                       context_state="truncated" if context_mode == "truncated" else "complete",
+                       context_parts=parts)
         return httpx.Response(200, json=data)
 
     async def voicechat(ws):
@@ -395,7 +601,7 @@ def test_pcm_through_real_adapter_native_call_cuekb_and_voice_reply(tmp_path, sp
                 assert audit["evidence_basis"] == "delivered_sources"
                 if reason == "VOICE_MISSING_CONDITION":
                     assert audit["condition_failures"][0]["rule"] == (
-                        "source_signal" if context_mode == "complete" else "source_metadata")
+                        "source_signal" if context_mode == "complete" else "required_condition")
                 else:
                     assert audit["condition_failures"] == []
                 from scripts.inspect_native_answer import inspect_answer
@@ -463,7 +669,7 @@ async def test_recording_validator_uses_portal_business_results_not_synthetic_re
     searches = []
     cuekb = FastAPI()
 
-    @cuekb.post("/v1/search")
+    @cuekb.post("/v2/search")
     async def search(request: Request):
         assert request.headers["authorization"] == "Bearer server-only"
         searches.append(await request.json())
@@ -558,7 +764,7 @@ async def test_continuous_native_conversation_survives_delayed_answers_and_repea
     queries, results, registrations, silence_during_wait = [], [], [], []
     cuekb = FastAPI()
 
-    @cuekb.post("/v1/search")
+    @cuekb.post("/v2/search")
     async def search(request: Request):
         body = await request.json()
         queries.append(body["query"])
@@ -699,12 +905,13 @@ async def test_native_input_search_budget_and_cumulative_answer(tmp_path, scenar
     queries, results, registrations, histories = [], [], [], []
     cuekb = FastAPI()
 
-    @cuekb.post("/v1/search")
+    @cuekb.post("/v2/search")
     async def search(request: Request):
         queries.append((await request.json())["query"])
         value = evidence(trace_id=f"00000000-0000-4000-8000-{len(queries):012d}")
         if len(queries) == 2 and scenario == "empty":
             value.update(retrieval_status="not_found", evidence_status="insufficient", hits=[])
+            value["diagnostics"]["counts"].update(keyword=0, vector=0, union=0, authoritative=0, returned=0)
         elif len(queries) == 2 and scenario in ("supplement", "post_terminal"):
             value["hits"][0].update(chunk_id="00000000-0000-4000-8000-000000000202",
                                     source_text="Product AX has 18 layers.")

@@ -26,6 +26,7 @@ class RunContext:
     retrieval_limit: int | None = None
     retrieval_calls: int = 0
     native_voice_search: bool = False
+    native_result_overhead: int = 0
     selected_tool: str | None = None
     effective_executor: str | None = None
     escalation_reason: str | None = None

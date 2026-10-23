@@ -3,18 +3,10 @@
 import json
 from dataclasses import dataclass, field
 
+from app.agent_runtime.cuekb_evidence import ANSWER_INSTRUCTIONS, FINAL_INSTRUCTIONS
 from app.agent_runtime.direct import EvidenceReady
 from app.agent_runtime.native_cuekb import voice_result
 from app.contracts import DomainError, uid
-
-# Stable evidence/ASCII/negation policy is registered once in voice-qa-prompt.txt.
-# Function-channel tokens are consumed one model step at a time: repeat only
-# the per-result coverage/action reminder, not the full session policy.
-ANSWER_INSTRUCTIONS = (
-    "Use all excerpts returned for this question, including earlier results. Answer every requested "
-    "detail or group unconfirmed details in one brief statement. Keep facts with their product and conditions. "
-)
-FINAL_INSTRUCTIONS = "Search finished. Do not call another tool. Answer now."
 
 
 @dataclass
@@ -42,8 +34,14 @@ class NativeInputSearch:
         calls can finish before their single aggregate result is submitted.
         """
         result = voice_result(ready)
-        result["sources"] = [source for source in result["sources"]
-                             if self.source_key(source) not in self.delivered_sources]
+        seen = set(self.delivered_sources)
+        sources = []
+        for source in result["sources"]:
+            key = self.source_key(source)
+            if key not in seen:
+                sources.append(source)
+                seen.add(key)
+        result["sources"] = sources
         return result
 
     def remember_delivery(self, result):

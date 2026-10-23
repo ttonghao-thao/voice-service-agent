@@ -32,15 +32,35 @@ def arguments(request="Find the integration sample"):
 
 
 def cuekb_response(evidence="sufficient", status="ok"):
+    """Explicit synthetic V2 evidence; tests exercise routing, not CueKB quality."""
+    hits = [{
+        "document_id": "00000000-0000-4000-8000-000000000101",
+        "chunk_id": "00000000-0000-4000-8000-000000000102",
+        "version_id": "00000000-0000-4000-8000-000000000103",
+        "rank": 1, "score": 2 / 61, "score_type": "rrf",
+        "source_text": "Product AX supports 10 connections.",
+        "title_path": ["Product AX"], "metadata": {"product_model": "AX"},
+        "retrieval_sources": ["keyword", "vector"], "processing_profile": "evidence-v2:fixture",
+        "context_state": "disabled", "context_parts": [],
+        "applicability": {"status": "resolved", "subjects": [{
+            "display_name": "Product AX", "product_model": "AX", "source_kind": "curated",
+        }], "conditions": []},
+    }] if status != "not_found" else []
     return {
+        "schema_version": "2",
         "trace_id": "00000000-0000-4000-8000-000000000111",
         "retrieval_status": status, "evidence_status": evidence,
         "content_revisions": {KB: 1}, "timings_ms": {"total": 1},
-        "hits": [{"document_id": "00000000-0000-4000-8000-000000000101",
-                  "chunk_id": "00000000-0000-4000-8000-000000000102",
-                  "version_id": "00000000-0000-4000-8000-000000000103",
-                  "rank": 1, "source_text": "Product AX supports 10 connections.",
-                  "metadata": {"product_model": "AX"}}] if status != "not_found" else [],
+        "retrieval_path": "hybrid", "ranking_method": "rrf",
+        "ranking_version": "sha256:" + "0" * 64,
+        "diagnostics": {
+            "keyword_limit": 50, "vector_limit": 50, "relation_limit": 0,
+            "counts": {"keyword": len(hits), "vector": len(hits), "union": len(hits),
+                       "authoritative": len(hits), "returned": len(hits)},
+            "reranker": {"configured": False, "executed": False,
+                         "skipped_reason": "reranker_service_unconfigured"},
+        },
+        "hits": hits,
     }
 
 

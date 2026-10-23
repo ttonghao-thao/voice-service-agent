@@ -15,6 +15,7 @@ from scripts.run_native_cuekb_validation import (
     read_api_evidence,
     read_voicechat_evidence,
     summarize_api_log,
+    summarize_cuekb_v2_log,
     summarize_voicechat_log,
 )
 from scripts.validate_native_cuekb import assess, load_cases, passed, summary_lines
@@ -573,6 +574,73 @@ def test_api_log_summary_reports_only_lifecycle_counts_and_trace():
     assert lines[1] == "api_cuekb responses=1 statuses=ok hits=1 traces=z1 durations_ms=25"
     assert lines[-1] == "api_diagnostic=passed fault=NONE"
     assert "private" not in evidence
+
+
+def test_v2_diagnostic_summary_is_bounded_and_never_echoes_evidence_or_unknown_fields():
+    diagnostic = {
+        "schema_version": "2", "ranking_method": "rrf", "trace_id": "00000000-0000-4000-8000-000000000001",
+        "service_hits": 5, "adapter_retained": 3, "adapter_omitted": 2,
+        "scope_counts": {"resolved": 2, "unknown": 1, "ambiguous": 0, "private": "secret"},
+        "required_parts": 4, "unresolved_groups": 1, "service_hits_bytes": 9000,
+        "adapter_bytes": 7000, "service_total_ms": 102.5,
+        "omission_counts": {"payload_budget_exhausted": 1, "adapter": {"payload_budget": 2},
+                            "source_text": "secret evidence"},
+        "reranker": {"configured": False, "executed": False, "token": "secret"},
+        "source_text": "secret evidence", "stage_scores": {"query": "secret query"},
+    }
+    text = "\n".join("cuekb_v2_diagnostic conversation_id=c1 data=" + json.dumps(diagnostic)
+                     for _ in range(6))
+    evidence = read_api_evidence(StringIO(text))
+    lines = summarize_cuekb_v2_log(evidence)
+    assert len(lines) == 5
+    row = json.loads(lines[0].split("=", 1)[1])
+    assert row["schema_version"] == "2" and row["ranking_method"] == "rrf"
+    assert row["scope_counts"] == {"resolved": 2, "unknown": 1, "ambiguous": 0}
+    assert row["reranker"] == {"configured": False, "executed": False}
+    assert row["omission_counts"] == {"payload_budget_exhausted": 1, "adapter": {"payload_budget": 2}}
+    assert json.loads(lines[-1].split("=", 1)[1]) == {"shown": 4, "omitted": 2, "malformed": 0}
+    assert "secret" not in "\n".join(lines)
+
+
+def test_v2_diagnostic_bad_rows_do_not_echo_original_content():
+    lines = summarize_cuekb_v2_log('cuekb_v2_diagnostic conversation_id=c1 data={"secret":broken}')
+    assert lines == ['cuekb_v2_summary={"shown":0,"omitted":0,"malformed":1}']
+    assert summarize_cuekb_v2_log("no v2 diagnostic") == []
+
+
+def test_v2_http_error_summary_keeps_status_trace_without_upstream_detail():
+    trace = "00000000-0000-4000-8000-000000000001"
+    log = f"cuekb_http_error conversation_id=c1 turn_id=t1 status=409 trace_id={trace}\nprivate upstream detail"
+    selected = read_api_evidence(StringIO(log))
+    assert "private" not in selected
+    assert summarize_cuekb_v2_log(selected) == [f'cuekb_http_error={{"status":409,"trace_id":"{trace}"}}']
+
+
+def test_v2_operational_summary_does_not_treat_counts_or_malformed_method_as_evidence():
+    raw = {"schema_version": "secret", "ranking_method": ["secret"],
+           "adapter_retained": True, "scope_counts": {"resolved": -1}, "service_total_ms": float("nan")}
+    line = "cuekb_v2_diagnostic conversation_id=c1 data=" + json.dumps(raw)
+    row = json.loads(summarize_cuekb_v2_log(line)[0].split("=", 1)[1])
+    assert row["ranking_method"] == row["schema_version"] == "unknown"
+    assert row["adapter_retained"] is None and row["scope_counts"] == {"resolved": None}
+    assert "service_total_ms" not in row
+    assert "secret" not in json.dumps(row)
+
+
+@pytest.mark.parametrize(("reason", "fault"), [
+    ("CUEKB_CONFIGURATION_ERROR", "CUEKB_CONFIGURATION"),
+    ("CUEKB_INDEX_UPGRADE_REQUIRED", "CUEKB_CONFIGURATION"),
+    ("CUEKB_CONFIGURATION_CHANGED", "CUEKB_CONFIGURATION"),
+    ("CUEKB_INDEX_MAINTENANCE", "CUEKB_CONFIGURATION"),
+    ("CUEKB_CONTRACT_ERROR", "CUEKB_CONTRACT"),
+    ("TOOL_BAD_RESPONSE", "CUEKB_CONTRACT"),
+    ("TOOL_UNAVAILABLE", "CUEKB_DEPENDENCY"),
+    ("CUEKB_TIMEOUT", "CUEKB_DEPENDENCY"),
+    ("CUEKB_RETRIEVAL_UNAVAILABLE", "CUEKB_RETRIEVAL_LIMITED"),
+])
+def test_v2_configuration_and_contract_failures_are_not_reported_as_no_evidence(reason, fault):
+    assert classify({"cases": [{"reason_code": reason, "expected_tool": "search_knowledge_base",
+                               "input_item_ids": ["i1"]}]})[0] == fault
 
 
 def test_api_log_summary_allows_one_call_for_each_product_input():

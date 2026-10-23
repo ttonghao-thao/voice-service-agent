@@ -179,7 +179,7 @@ class ToolRegistry:
                         status=status,
                         duration_ms=duration_ms,
                         evidence={
-                            "citations": [x.model_dump() for x in ctx.evidence.values()],
+                            "citations": [x.model_dump(mode="json") for x in ctx.evidence.values()],
                             "cards": ctx.cards,
                         },
                     )

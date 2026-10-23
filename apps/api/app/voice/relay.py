@@ -229,6 +229,7 @@ async def relay(gateway, ws, session, provider):
             await store.record(cid, epoch, "native_tool_batch", batch.id or call_ids[0], {
                 "input_item_id": item_id, "call_ids": call_ids, "outcomes": outcomes,
                 "result_injections": 1, "new_sources": len(result.get("sources", [])),
+                "payload_bytes": len(text.encode()),
                 "retained_sources": len(search.delivered_sources)}, turn.id, turn.request_revision)
             logger.info("voice_search_state conversation_id=%s input_item_id=%s call_id=%s "
                         "retrieval_executions=%s retrieval_limit=%s duplicate_queries=%s "

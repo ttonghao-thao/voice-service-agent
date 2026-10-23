@@ -41,6 +41,9 @@ class Settings(BaseSettings):
     cuekb_api_key: SecretStr = SecretStr("")
     cuekb_search_mode: Literal["auto", "exact", "hybrid", "related"] = "auto"
     cuekb_top_k: int = 5
+    # V2 API hits include provenance and context parts. This is distinct from
+    # the much smaller model-facing evidence budget below the native tool.
+    cuekb_max_evidence_bytes: int = Field(default=24000, ge=4096, le=128000)
     enabled_tools: str = "search_knowledge"
     weather_mode: Literal["mock", "real"] = "mock"
     weather_provider: Literal["http_contract"] = "http_contract"

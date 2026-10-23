@@ -28,7 +28,7 @@ check() {
   for file in run_native_cuekb_validation.py validate_native_cuekb.py probe_voicechat.py verify_deployment.py inspect_native_answer.py summarize_voice_timeline.py collect_validation_summary.py inspect_input_prefix.py; do
     verify_file "$API_CONTAINER" "scripts/$file" "/app/scripts/$file" || errors=1
   done
-  for file in apps/api/app/voice/relay.py apps/api/app/voice/provider.py apps/api/app/sessions/coordinator.py apps/api/app/agent_runtime/native_input.py apps/api/app/agent_runtime/native_cuekb.py config/voice-qa-prompt.txt; do
+  for file in apps/api/app/voice/relay.py apps/api/app/voice/provider.py apps/api/app/sessions/coordinator.py apps/api/app/agent_runtime/native_input.py apps/api/app/agent_runtime/native_cuekb.py apps/api/app/agent_runtime/cuekb_evidence.py apps/api/app/tools/adapters.py apps/api/app/tools/schemas.py apps/api/app/tools/registry.py apps/api/app/config.py apps/api/app/contracts.py apps/api/app/evidence_types.py config/voice-qa-prompt.txt; do
     verify_file "$API_CONTAINER" "$file" "/app/$file" || errors=1
   done
   for file in cases.json hello.wav tcp_udp.wav black_pig_crisp_heart.wav golden_yolk.wav; do

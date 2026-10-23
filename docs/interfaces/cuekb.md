@@ -1,61 +1,73 @@
-# CueKB M3 接口契约
+# CueKB V2 接口契约
 
-2026-10-07 按应用基线 `f498fa4` 核对。职责：请求、证据映射、上游错误；不维护模型路由或部署参数。实现见 [CueKBAdapter](../../apps/api/app/tools/adapters.py) 和 [工具 schema](../../apps/api/app/tools/schemas.py)，回归见 [工具契约测试](../../tests/contract/test_tools.py)。真实目标服务仍须核对 OpenAPI。
+更新：2026-10-23。接入基线为 CueKB `dac382e282f12ae1c1b89366d5c058725d9f13c6`。职责是严格 HTTP 契约、授权证据映射与错误边界；操作及回传只维护在统一验证手册。实现以本项目 `CueKBAdapter`、工具 schema 和 CueKB V2 公开契约为准，不能仅凭路径中的版本号判断兼容。
 
-## 1. 请求与边界
+## 1. 请求与部署边界
 
-核对本地 CueKB revision：`1b9379de53c55dd41193a1529e46d48c0f219c14`（M3）；来源为其 `src/cuekb/schemas.py`、API routes/dependencies 与检索实现。部署前核对目标服务 OpenAPI，不把该 revision 当作所有部署版本。
-
-```http
-POST {server-configured-cuekb-base-url}/v1/search
-Authorization: Bearer <server-side-scoped-key>
-Content-Type: application/json
-```
+本项目显式使用 `POST {server-configured-cuekb-base-url}/v2/search`，Bearer Key 与 KB UUID 仅由服务端授权映射提供。原生工具仍只有 `search_knowledge_base(query)`，不让模型选择 KB、凭据、实体 UUID 或扩大权限。
 
 ```json
 {
-  "query": "What are the documented ingredients of the product?",
+  "query": "What are the documented storage conditions for the product after opening?",
   "kb_ids": ["00000000-0000-4000-8000-000000000001"],
   "mode": "auto",
   "top_k": 5,
   "filters": {},
-  "include_context": true
+  "include_context": true,
+  "include_diagnostics": false,
+  "max_evidence_bytes": 24000
 }
 ```
 
-示例 UUID 仅说明类型。实际 KB UUID 来自服务端授权映射；旧 `kb_support` 不能直接传入。当前 CueKB query 上限 2000 字符，top_k 支持 1–20；所有路径遵守 CUEKB_TOP_K（默认 5）。原生语音不再用旧 direct 执行器的 3 个槽位压低检索数量；在请求数量及现有字节预算内保留完整来源，真实省略才标记 partial。减少检索数量不能证明证据已充分，也不能用于隐藏裁剪标记。一期原生工具只开放 query；product_model/software_version 是兼容路径中的结构化过滤条件，需有明确输入或确认来源，Adapter 不从自然语言猜测。CueKB 支持的 `document_ids` 暂不开放给模型。`relations` 是 CueKB M3 的可选请求字段；本项目可接收其返回的关系证据，但暂不让模型生成实体 UUID、关系类型或时间条件。
+UUID 仅说明类型。`top_k` 是最多返回数量，不要求凑满，也不代表问题已完整覆盖。`CUEKB_MAX_EVIDENCE_BYTES` 控制上游 hits JSON 的字节预算，默认 24000；它不是模型 token 上限。保留 `CUEKB_TOP_K` 默认 5 和查询长度 2000。`product_model/software_version` 过滤只能来自明确、可信的用户条件，不从自然语言猜测。模型 query 负责保留多轮指代和所问属性；CueKB 不读取语音历史，不支持隐含的 `original_question` 字段。
 
-不向上游发送自造 request_id/locale/deadline 并假定生效。HTTP 超时与应用 deadline 自行执行，取消本地等待不证明 CueKB 后台已停止。
+CueKB 必须先具备 V2 数据条件：其 0004 迁移、可用 Embedding 配置、V2 搜索投影及已发布文档。切块或归属变化需要对原件按 `evidence-v2` 重处理、审核映射、发布；generation 只重编码现有块，不能替代重处理。Reranker 可选，未配置不因这一项判为降级。此项目不管理 CueKB 的导入、权限、发布或索引写入。
 
-一期 native relay 按 input_item_id 限制最多两次查询（VOICE_MAX_RETRIEVALS_PER_INPUT，可设为 1），相同解析参数只查询一次；该路径 HTTP 自动重试关闭，超时、网络异常及 5xx 不额外发送请求。其他路径保留原有一次传输重试。同输入的累计有效来源用于语音结果及答案校验，补充检索为空不覆盖已知事实；权限失败或冲突证据不能靠缓存转为成功。有限查询未发现字段不代表整个知识库不存在该字段。
+V2 与旧 M3/D23 响应不混用。未知版本、未知字段或损坏响应明确失败，不静默切回 `/v1/search`，不删除未知字段后冒充兼容。旧历史 Citation 默认字段仍可读取，不等于旧在线接口回退。
 
-## 2. 结果映射
+## 2. 证据与评分映射
 
-| CueKB | 内部证据与回答处理 |
+| CueKB V2 | 本项目处理 |
 | --- | --- |
-| trace_id | 关联本项目 task/run，不能要求回显不存在的 request_id |
-| retrieval_status | 保留 ok/degraded/not_found，与最终 answer status 分开 |
-| evidence_status | 保留 unassessed 等原值，不能转换成“证据充分” |
-| degraded_reasons、scope_limited | 审计并参与回答决策，必要时告知限制 |
-| content_revisions | 保留知识内容版本线索，不宣称跨系统事务一致性 |
-| hits.document_id / chunk_id / version_id | 引用真实身份与版本；本项目另生成 citation_id |
-| source_text、context | 保留证据原文与上下文，内容相同不重复占预算 |
-| context_parts、context_truncated | 保存逐块原文及锚点、CueKB 的上下文截断标记；门户可展开逐块来源 |
-| relations | 保存关系类型、条件和 supports/refutes 立场；该立场不是事实真假结论 |
-| title_path、anchor、metadata | 来源定位及适用条件；缺失标题用“来源片段”，不伪造 |
-| rank、retrieval_sources | 检索排序/来源，不当作事实置信度 |
-| timings_ms、retrieval_path、executed_stages、skipped_stages | 内部诊断，不要求普通客户理解 |
+| schema_version | 必须是字符串 `2`；保存在引用和有界诊断中 |
+| trace_id、content_revisions | 关联本次检索与授权内容修订，提交/交付继续复核权限与版本 |
+| retrieval_status、evidence_status | 保留原值；`unassessed` 不因有命中或高分升级为充分 |
+| ranking_method、ranking_version、rank、score、score_type | 保存实际排序方法、配置版本及分数；按 rank 消费，不将分数作为事实正确率，不要求模型口述 |
+| document_id、version_id、content_sha256、chunk_id | 保留真实来源身份；内容 hash 不等于模型答案已验证 |
+| applicability | 保存 resolved/unknown/ambiguous、可读主体及条件、出处；文档 metadata 标签不能代替局部事实归属 |
+| source_text、title_path、anchor、source_spans | 保留原文及可信章节/位置；不根据 query 添加产品事实，不伪造缺失标题或位置 |
+| context_parts.required/role | 保留必要归属、表头、条件、例外或续块的完整组；可选邻居独立取舍 |
+| context_state/context_omissions | 必要依赖缺失的 unresolved 不能靠“主块完整”变成可用证据；可选上下文省略不等于必要组缺失 |
+| relations | 保留可追溯关系；supports/refutes 是证据立场，不是真伪裁决 |
+| diagnostics、timings_ms | 用于候选/返回/省略、载荷与阶段诊断；不把所有内部元数据逐 token 注入 VoiceChat |
 
-Citation 的 updated_at 已改为可选，未填当前时间冒充文档更新时间；不再生成 score。`version_id` 与 metadata 中受控的 `business_version` 分开，旧历史 JSON 在读取时仍按原数据兼容，新增任务字段由 Alembic 0004 迁移。
+接口保持严格嵌套校验，证据原文不因全局 strip 或预算被截短。公开合成响应仅验证协议，不当作产品知识。评分版本 hash 标识排序配置，不能替代冻结索引、文档版本与外部模型权重来保证逐次浮点值完全相同。
 
-CueKB M3 已提供有界章节、相邻块及表头上下文，但预算耗尽时仍可能截断或返回空 context；本项目另以 6000 字符证据预算和小于 32 KiB 的工具结果预算裁剪，使用 `context_omitted` 和 `hits_omitted` 明示应用侧裁剪，不将其冒充 CueKB 状态。`context` 与 `source_text` 完全相同时去重不算裁剪。周边 context 超预算时，原生语音路径可使用仍完整保留的 `source_text`，但必须满足以下一项：CueKB 明确返回 `evidence_status=sufficient`，或 `context_parts` 中存在 chunk ID 和正文均精确匹配的完整命中块。`context_truncated=true` 时只接受后一种精确证明，且截断的 `context` 字符串不得进入语音证据包；没有精确证明的截断命中继续拒绝。`evidence_status=unassessed` 且没有完整命中块证明的应用裁剪也继续拒绝。回答模块仍需检查证据充分性。原件查看需经本项目重新鉴权并固定检索版本；这是待实现入口，不向浏览器暴露服务 Key 或私有下载 URL。
+## 3. 完整证据组与语音负载
 
-## 3. 身份和错误
+原生语音选择单位是“主事实＋已确认产品/版本归属＋必要条件上下文”。按 CueKB 最终顺序考虑完整组，省略完全重复的已发送来源；放不下时省略整组并记录预算原因，不能剪掉否定或必要条件后强行保留事实。保留有界的 top_k、API 字节与原生语音证据预算；本轮不引入 MMR、候选重新 Embedding、额外答案模型或属性分类器。
 
-有效范围取客户授权、部署允许、CueKB Key 可读范围的交集。CueKB 当前鉴权主体是 API Key；自定义 X-Tenant-ID/X-User-ID 不代表它已执行客户级 ACL。不同隔离范围由服务端映射受限 Key/KB，不由工具参数指定。
+V2 中 `context_state=unresolved` 或已识别必要依赖缺失时拒绝该组。不能沿用 M3 的“context_parts 精确回显主块即可删除全部截断 context”规则。可选上下文被截断时，只使用已证明完整的主块与 required parts，不使用截断 context 字符串。unknown/ambiguous 明确随来源交给模型，不能补成问题中的产品；这不保证模型自动正确使用，仍需内容验收。
 
-not_found 表示本次未命中，不能推导事实不存在；degraded 有 hits 时保留原因并判断可用性；401/403 为授权或配置问题，422 为契约问题，429 为负载限制，5xx/超时为服务故障。禁止统一降为“查无资料”。返回答案、读历史证据和原件时都需覆盖撤权策略。
+VoiceChat 实际结果只包含精简正文、有效标题、必要上下文和可读 applicability；内部实体 ID、完整 spans、评分、trace 及诊断留在 API/引用审计。不能把内部 ID 填进旧 `metadata.product_model` 并要求逐字口述。最终答案检查只以实际交付的事实和条件为依据，不能引用被应用省略的上下文来证明回答。
 
-HTTP 3xx 不跟随，也不使用其正文中的证据，返回 `TOOL_BAD_RESPONSE`；损坏的压缩编码同样归为坏响应。上游连接中途关闭、超时或 5xx 最多重试一次，始终受工具和整轮预算限制；部分响应不能保留或与重试结果拼接。重试仍失败返回 `TOOL_UNAVAILABLE`，不回退模拟数据。
+语音结果的 `partial` 表示主事实组、检索范围或服务结果受限，不表示“完全没有任何省略”或“全部问题已回答”。主动省略可选邻居由独立计数记录；必要条件不能作为可选内容省略。首次选择也预留终态指令与批次结清开销，避免正文先装满预算、提交时才发现无法容纳完整结果。
 
-CueKB 上游 HTTP 响应上限为 256 KiB，内部工具输出上限为 32 KiB，外置模型证据正文加上下文预算为 6000 字符；Q07 D2 的 evidence-v1 包另限默认 6000 bytes / 3 项（包括问题、身份与条件字段）。一期 native CueKB 不使用旧 D2 的 3 项限制，项数由 CUEKB_TOP_K 控制，仍遵守完整证据包字节预算。这些是不同边界，超过内部预算时显式舍弃上下文或命中。知识工具预算仍为 5 秒，业务整轮预算默认 30 秒，均不能证明真实端到端时延已达标。
+同输入最多两次实际查询，原生 HTTP 自动重试保持关闭；相同参数只检索一次，终态后新调用明确失败。累计证据、精确来源去重及权限复核不跨输入共享，补充查询正常未命中不抹除先前有效事实。授权失败、冲突及依赖故障不能靠缓存伪装成功。
+
+## 4. 身份、状态与故障
+
+有效范围取客户授权、部署允许和 CueKB Key 的交集，API Key 不发送给浏览器或 VoiceChat。没有检索到某字段不表示全库不存在该字段。
+
+| 返回 | 处理边界 |
+| --- | --- |
+| 200 ok + hits | 使用完整、适用的有据片段；不宣称已充分覆盖问题 |
+| 200 not_found + [] | 本次正常检索未命中，不扩展为事实不存在 |
+| 200 degraded + hits | 保留限制原因并核对仍可用的完整组 |
+| 200 degraded + [] | 区分检索依赖、选择/预算受限，不一律称为“没有文档” |
+| 401/403 | 认证/授权故障，不扩大范围重试 |
+| 409 | V2 模型/索引/配置未就绪，明确配置错误，不自动调用旧接口 |
+| 422 | 请求/接口契约错误 |
+| 429、5xx、超时/断流 | 限流或服务故障，不转换为正常空结果；原生路径不重试 |
+
+HTTP 3xx 不跟随，不接收跳转正文。上游响应总上限 256 KiB，内部工具结果保持小于 32 KiB，模型侧原生完整证据包默认 6000 bytes；这些预算层级不能互相替代。HTTP 结束或本地取消不能证明远端模型计算已停止。真实 Recall、误归属、P95、语音覆盖与听音必须独立验收，CPU fixture 不是生产达标证据。

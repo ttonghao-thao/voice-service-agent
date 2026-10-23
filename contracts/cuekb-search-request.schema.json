@@ -1,5 +1,62 @@
 {
   "$defs": {
+    "CueKBRelationQuery": {
+      "additionalProperties": false,
+      "properties": {
+        "entity_ids": {
+          "items": {
+            "format": "uuid",
+            "type": "string"
+          },
+          "maxItems": 20,
+          "title": "Entity Ids",
+          "type": "array"
+        },
+        "types": {
+          "items": {
+            "enum": [
+              "belongs_to",
+              "adjacent_to",
+              "alias_of",
+              "revises",
+              "replaces",
+              "references",
+              "depends_on",
+              "applies_to"
+            ],
+            "type": "string"
+          },
+          "maxItems": 8,
+          "title": "Types",
+          "type": "array"
+        },
+        "direction": {
+          "default": "outgoing",
+          "enum": [
+            "outgoing",
+            "incoming",
+            "both"
+          ],
+          "title": "Direction",
+          "type": "string"
+        },
+        "at": {
+          "anyOf": [
+            {
+              "format": "date-time",
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "At"
+        }
+      },
+      "title": "CueKBRelationQuery",
+      "type": "object"
+    },
     "CueKBSearchFilters": {
       "additionalProperties": false,
       "properties": {
@@ -8,6 +65,7 @@
             "format": "uuid",
             "type": "string"
           },
+          "maxItems": 100,
           "title": "Document Ids",
           "type": "array"
         },
@@ -34,6 +92,18 @@
           ],
           "default": null,
           "title": "Software Version"
+        },
+        "category": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Category"
         }
       },
       "title": "CueKBSearchFilters",
@@ -53,9 +123,24 @@
         "format": "uuid",
         "type": "string"
       },
+      "maxItems": 50,
       "minItems": 1,
       "title": "Kb Ids",
       "type": "array"
+    },
+    "request_id": {
+      "anyOf": [
+        {
+          "maxLength": 128,
+          "minLength": 1,
+          "type": "string"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null,
+      "title": "Request Id"
     },
     "mode": {
       "default": "auto",
@@ -81,6 +166,21 @@
     "include_context": {
       "default": true,
       "title": "Include Context",
+      "type": "boolean"
+    },
+    "relations": {
+      "$ref": "#/$defs/CueKBRelationQuery"
+    },
+    "max_evidence_bytes": {
+      "default": 48000,
+      "maximum": 128000,
+      "minimum": 4096,
+      "title": "Max Evidence Bytes",
+      "type": "integer"
+    },
+    "include_diagnostics": {
+      "default": false,
+      "title": "Include Diagnostics",
       "type": "boolean"
     }
   },

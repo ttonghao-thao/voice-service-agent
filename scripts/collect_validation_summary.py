@@ -14,7 +14,11 @@ from sqlalchemy.ext.asyncio import async_sessionmaker, create_async_engine
 
 from scripts.inspect_input_prefix import CASES
 from scripts.inspect_input_prefix import inspect as inspect_prefix
-from scripts.run_native_cuekb_validation import backend_injection_line, summarize_api_log
+from scripts.run_native_cuekb_validation import (
+    backend_injection_line,
+    summarize_api_log,
+    summarize_cuekb_v2_log,
+)
 from scripts.summarize_voice_timeline import summarize
 
 CID = re.compile(r"\bconversation_id=([a-f0-9-]{36})(?=\s|$)")
@@ -51,6 +55,8 @@ def log_summary(text, conversation_id):
         print(line[:1600] + (f" omitted_chars={len(line) - 1600}" if len(line) > 1600 else ""))
     # A missing call is normal for greeting/general QA, not a diagnostic failure.
     print(lines[3] if header["api_tool_calls"] else "api_diagnostic=observed fault=NO_TOOL_CALL_OBSERVED")
+    for line in summarize_cuekb_v2_log(scoped):
+        print(line)
     for sequence in header["sequence_ids"][:4]:
         print(backend_injection_line(text, sequence))
     # Correlate answer audio by response ID and phase, never use ACK as answer audio.
@@ -124,7 +130,7 @@ async def saved_answers(conversation_id, window_start, window_end):
             checks = list(await db.scalars(select(Record).where(
                 Record.conversation_id == conversation_id,
                 Record.created_at >= window_start, Record.created_at <= window_end,
-                Record.kind.in_(("native_answer_check", "native_tool_batch")),
+                Record.kind.in_(("native_answer_check", "native_tool_batch", "native_cuekb_voice_evidence")),
             ).order_by(Record.created_at).limit(13)))
         emit("saved", {"conversation_id": conversation_id, "records_shown": min(len(records), 16),
                        "turns_shown": min(len(turns), 8), "records_truncated": len(records) > 16,
@@ -159,9 +165,16 @@ async def saved_answers(conversation_id, window_start, window_end):
                                       "reason": payload.get("reason_code"),
                                       "condition_failures": failures[:3],
                                       "omitted": max(0, len(failures) - 3)})
-            else:
+            elif record.kind == "native_tool_batch":
                 emit("evidence_delivery", {key: payload.get(key) for key in (
-                    "input_item_id", "new_sources", "retained_sources", "result_injections")})
+                    "input_item_id", "new_sources", "retained_sources", "result_injections", "payload_bytes")
+                    if payload.get(key) is not None})
+            else:
+                emit("voice_evidence", {key: payload.get(key) for key in (
+                    "input_item_id", "cuekb_schema_version", "candidate_count", "selected_count", "selected_payload_bytes",
+                    "required_context_chunks", "scope_counts", "rejected_unresolved_count", "rejected_heading_count",
+                    "omitted_optional_context_count", "rejected_budget_count",
+                    "rejected_non_ascii_count", "rejected_limit_count") if payload.get(key) is not None})
         if len(checks) > 12:
             emit("answer_checks_truncated", {"shown": 12})
         # Keep the admitted view (including conditions), not excluded surrounding context.
@@ -170,7 +183,8 @@ async def saved_answers(conversation_id, window_start, window_end):
         items = (latest.evidence if latest else {}).get("envelope", {}).get("items", [])
         samples, remaining = [], 6000
         for item in items[:8]:
-            value = {key: item[key] for key in ("citation_id", "text", "title", "context", "conditions")
+            value = {key: item[key] for key in ("citation_id", "text", "title", "context", "conditions",
+                     "applicability", "context_state", "required_context_chunks")
                      if item.get(key)}
             encoded = json.dumps(value, ensure_ascii=True)
             if len(encoded) > remaining:

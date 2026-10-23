@@ -1,3 +1,37 @@
+export interface SourceAnchor {
+  page?: number | null;
+  heading_path?: string[];
+  start_offset?: number | null;
+  end_offset?: number | null;
+  bbox?: Record<string, number | string> | null;
+}
+export interface SourceSpan {
+  label: string;
+  text: string;
+  anchor: SourceAnchor;
+  parser_item_id?: string | null;
+  span_id?: string | null;
+  row_index?: number | null;
+  column_index?: number | null;
+}
+export interface CitationApplicability {
+  status: "resolved" | "unknown" | "ambiguous";
+  subjects: {
+    entity_id?: string | null;
+    display_name: string;
+    product_model?: string | null;
+    software_version?: string | null;
+    source_kind: "curated" | "reviewed_alias" | "parser";
+    provenance_id?: string | null;
+    source_spans?: SourceSpan[];
+  }[];
+  conditions: {
+    text: string;
+    source_kind: "curated" | "parser";
+    provenance_id?: string | null;
+    source_spans?: SourceSpan[];
+  }[];
+}
 export interface Citation {
   citation_id: string;
   title: string;
@@ -6,8 +40,11 @@ export interface Citation {
   context_parts: {
     chunk_id: string;
     source_text: string;
-    anchor: { page?: number | null; heading_path?: string[] };
+    anchor: SourceAnchor;
     title_path: string[];
+    source_spans?: SourceSpan[];
+    required?: boolean;
+    role?: "attribution" | "table_header" | "condition" | "exception" | "continuation" | null;
   }[];
   context_truncated: boolean;
   context_omitted: boolean;
@@ -16,7 +53,7 @@ export interface Citation {
     relation_id: string;
     relation_type: string;
     stance: "supports" | "refutes";
-    conditions: Record<string, string>;
+    conditions: Record<string, unknown>;
   }[];
   version_id: string;
   business_version: string | null;
@@ -31,6 +68,22 @@ export interface Citation {
   anchor: Record<string, unknown>;
   source_uri: string | null;
   is_mock: boolean;
+  // Optional for previously saved references that predate CueKB V2.
+  cuekb_schema_version?: "1" | "2";
+  document_name?: string | null;
+  content_sha256?: string | null;
+  applicability?: CitationApplicability;
+  source_spans?: SourceSpan[];
+  processing_profile?: string | null;
+  source_unit_id?: string | null;
+  block_kind?: "text" | "list" | "table" | "heading";
+  context_state?: "disabled" | "complete" | "truncated" | "unresolved" | null;
+  context_omissions?: string[];
+  score?: number | null;
+  score_type?: "rrf" | "rerank" | null;
+  stage_scores?: Record<string, number>;
+  ranking_method?: string | null;
+  ranking_version?: string | null;
 }
 export interface Answer {
   answer_id: string;

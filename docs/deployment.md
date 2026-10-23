@@ -24,7 +24,7 @@ QA_PROVIDER_ANSWER_TIMEOUT_MS=30000
 
 不需要 AGENT_MODEL、OPENAI_API_KEY 或 AGENT_BASE_URL。disabled 表示关闭独立文本答案模型，不能用 mock 代替。`/health/ready` 允许 text_configured=false；页面关闭文字提交，但仍提供麦克风和 WAV 语音通话。
 
-`dual_tools` 为兼容模式名称；一期实际只注册 `search_knowledge_base(query)`，目录和可信 implementation 使用同一个名称。后台仍通过 Registry 的内部 `search_knowledge` 调用 CueKB `/v1/search`，不要把原生名称填进 ENABLED_TOOLS。KB UUID、凭据、访问范围和可信过滤条件只在服务端设置。VoiceChat 原生调用决定是否执行业务，最终转写用于关联和审计，不自动触发查询。
+`dual_tools` 为兼容模式名称；一期实际只注册 `search_knowledge_base(query)`，目录和可信 implementation 使用同一个名称。后台仍通过 Registry 的内部 `search_knowledge` 调用 CueKB `/v2/search`，不要把原生名称填进 ENABLED_TOOLS。KB UUID、凭据、访问范围和可信过滤条件只在服务端设置。VoiceChat 原生调用决定是否执行业务，最终转写用于关联和审计，不自动触发查询。
 
 | 配置 | 一期值 / 用途 |
 | --- | --- |
@@ -104,7 +104,7 @@ chmod 600 .env
 
 Web 的容器内健康探针用 wget -Y off 直接访问 127.0.0.1，避免继承代理导致误报不健康。探针对本机 IP 不核对证书；正式 HTTPS 客户端仍须验证证书链与域名，不能沿用该探针作为 TLS 验收证据。
 
-`AGENT_MODEL` 是 BusinessRuntime 后台文本 Agent 调用的模型标识，用于理解任务、选择 `search_knowledge` 并组织有依据的答案；它不是 VoiceChat 的实时语音模型。`AGENT_PROVIDER=openai` 时使用官方端点，无需 `AGENT_BASE_URL`；只有接 OpenAI-compatible 服务时才改为 `compatible` 并填写该 HTTP/HTTPS 基地址，两者不需要同时独立部署。`CUEKB_BASE_URL` 是独立 CueKB HTTP/HTTPS 基地址，应用附加 `/v1/search`；HTTP 仅用于已隔离、受控的内部网络。`VOICECHAT_WS_URL` 是 API 到独立语音服务的 WS/WSS endpoint，不由门户域名推断；WS 仅用于同主机或受控隔离内网，且对应端口不得公网暴露。浏览器公网入口仍强制 HTTPS/WSS。本期固定只开放 `search_knowledge`，无需天气配置。数据库/Redis 凭据使用 URL 安全字符，容器内连接串由 Compose 构造。
+`AGENT_MODEL` 是 BusinessRuntime 后台文本 Agent 调用的模型标识，用于理解任务、选择 `search_knowledge` 并组织有依据的答案；它不是 VoiceChat 的实时语音模型。`AGENT_PROVIDER=openai` 时使用官方端点，无需 `AGENT_BASE_URL`；只有接 OpenAI-compatible 服务时才改为 `compatible` 并填写该 HTTP/HTTPS 基地址，两者不需要同时独立部署。`CUEKB_BASE_URL` 是独立 CueKB HTTP/HTTPS 基地址，应用附加 `/v2/search`；HTTP 仅用于已隔离、受控的内部网络。`VOICECHAT_WS_URL` 是 API 到独立语音服务的 WS/WSS endpoint，不由门户域名推断；WS 仅用于同主机或受控隔离内网，且对应端口不得公网暴露。浏览器公网入口仍强制 HTTPS/WSS。本期固定只开放 `search_knowledge`，无需天气配置。数据库/Redis 凭据使用 URL 安全字符，容器内连接串由 Compose 构造。
 
 本期部署直接开放已配置的英文全双工链路，不再用人工填写的“已验证”布尔值阻止启动。部署后只按 [统一验证手册](validation.md) 执行和采集；运行配置只负责连接服务，真实失败不回退 mock。Web Nginx 直接终止 HTTPS，并处理 SSE buffering、WS upgrade、请求大小和安全头；不得记录凭据或语音票据。
 

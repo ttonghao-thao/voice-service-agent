@@ -74,6 +74,7 @@ def test_cloud_environment_template_cannot_enable_development_fallbacks():
         "AGENT_DEADLINE_MS",
         "CUEKB_BASE_URL",
         "CUEKB_API_KEY",
+        "CUEKB_MAX_EVIDENCE_BYTES",
         "VOICECHAT_WS_URL",
         "VOICECHAT_API_KEY",
         "QA_EXECUTION_MODE",
@@ -92,6 +93,7 @@ def test_cloud_environment_template_cannot_enable_development_fallbacks():
     assert values["QA_EXTERNAL_FALLBACK_ENABLED"] == "false"
     assert values["QA_MAX_RETRIEVAL_CALLS"] == "1"
     assert values["VOICE_MAX_RETRIEVALS_PER_INPUT"] == "2"
+    assert values["CUEKB_MAX_EVIDENCE_BYTES"] == "24000"
     assert not {"AGENT_MODEL", "OPENAI_API_KEY", "AGENT_BASE_URL"} & values.keys()
     assert values["QA_EXECUTION_MODE"] == "dual_tools"
     assert values["QA_ANSWER_POLICY"] == "general_qa"
@@ -143,7 +145,7 @@ def test_cloud_deployment_uses_prebuilt_images():
     voicechat_runbook = (ROOT / "docs/voicechat/docker-run.md").read_text()
     assert '"$VOICECHAT_RELEASE_IMAGE"' in voicechat_runbook
     selection_runbook = (ROOT / "docs/validation.md").read_text()
-    assert "bash scripts/validate_deployment.sh auto golden_yolk" in selection_runbook
+    assert "bash scripts/validate_deployment.sh auto core" in selection_runbook
     assert "bash scripts/validate_deployment.sh web-end" in selection_runbook
     assert "COPY scripts/collect_validation_summary.py scripts/collect_validation_summary.py" in dockerfile
     assert "COPY scripts/inspect_input_prefix.py scripts/inspect_input_prefix.py" in dockerfile

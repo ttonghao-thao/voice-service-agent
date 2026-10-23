@@ -69,7 +69,7 @@ def versions():
         digest.update(path.read_bytes())
     fixture = hashlib.sha256((ROOT / "scripts/simulate_full_flow.py").read_bytes()).hexdigest()
     return {"application": digest.hexdigest(), "voice": "scripted-voice-fixture-v1:" + fixture,
-            "cuekb": "cuekb-m3-fixture-v1:" + fixture, "text_model": "compatible-fixture-v1:" + fixture,
+            "cuekb": "cuekb-v2-fixture-v1:" + fixture, "text_model": "compatible-fixture-v1:" + fixture,
             "context_schema": "task-context-v1"}
 
 
@@ -106,7 +106,7 @@ async def run_case(case, database_path):
                 ctx = await task_snapshot(harness, turn)
                 query = harness.services.queries[-1]
                 row["context_correct"] = (turn["answer"]["status"] == "answered"
-                    and query["filters"] == {"document_ids": [], "product_model": "AX100", "software_version": "2.1"}
+                    and query["filters"] == {"document_ids": [], "category": None, "product_model": "AX100", "software_version": "2.1"}
                     and ctx["original_request"] == plan.question and "AX100" in ctx["resolved_request"]
                     and "2.1" in ctx["resolved_request"]
                     and ctx["conditions"]["product_model"]["source"]["input_item_id"] == general.input_id
@@ -154,7 +154,7 @@ async def run_case(case, database_path):
                 await complete_general(harness, call, VoicePlan(question="Thank you", tool=None, spoken="You are welcome."))
                 history = await call.history()
                 row["context_correct"] = (turn["answer"]["status"] == "answered"
-                    and harness.services.queries[-1]["filters"] == {"document_ids": [], "product_model": "AX200", "software_version": None}
+                    and harness.services.queries[-1]["filters"] == {"document_ids": [], "category": None, "product_model": "AX200", "software_version": None}
                     and ctx["conditions"]["product_model"]["source"]["input_item_id"] == correction.input_id
                     and "AX100" not in ctx["resolved_request"] and "2.1" not in ctx["resolved_request"])
                 row["correction_correct"] = (history["items"][0]["status"] == "superseded"

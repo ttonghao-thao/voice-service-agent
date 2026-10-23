@@ -198,7 +198,7 @@ async def test_natural_revision_settles_old_call_and_drops_late_output(tmp_path)
         history = await call.history()
         assert history["items"][0]["status"] == "superseded"
         assert history["items"][0]["answer"] is None
-        assert h.services.queries[-1]["filters"] == {"document_ids": [], "product_model": "AX200", "software_version": "2.0"}
+        assert h.services.queries[-1]["filters"] == {"document_ids": [], "category": None, "product_model": "AX200", "software_version": "2.0"}
         assert not any(e["payload"].get("response_id") == "late-old" for e in call.events)
         settlements = [r for r in await rows(h, call.cid) if r.kind == "tool_settlement"]
         assert len(settlements) == 1 and settlements[0].status == "sent"

@@ -644,13 +644,27 @@ test("Native knowledge text streams before done, survives a new search turn, and
 
   // A successful retrieval with rejected speech keeps reviewable sources,
   // remains failed and must not be mislabeled as a failed search.
-  const review = { ...final, status: "failed", reason_code: "VOICE_MISSING_CONDITION",
-    display_text: "The spoken response could not be verified. Please try again.", citations: [
-      { citation_id: "C1", title: "Product AX guide", content: "Product AX ships locally only.",
+  const legacySource = { citation_id: "C1", title: "Product AX guide", content: "Product AX ships locally only.",
         context: null, context_parts: [], context_truncated: false, context_omitted: false, hits_omitted: 0,
         relations: [], version_id: "version-1", business_version: null, updated_at: null,
         trace_id: "trace-1", retrieval_status: "ok", evidence_status: "unassessed", degraded_reasons: [],
-        scope_limited: false, rank: 1, title_path: ["Product AX"], anchor: {}, source_uri: null, is_mock: true },
+        scope_limited: false, rank: 1, title_path: ["Product AX"], anchor: {}, source_uri: null, is_mock: true };
+  const review = { ...final, status: "failed", reason_code: "VOICE_MISSING_CONDITION",
+    display_text: "The spoken response could not be verified. Please try again.", citations: [
+      legacySource,
+      { ...legacySource, citation_id: "C2", cuekb_schema_version: "2", title: "Golden Yolk storage",
+        content: "Shelf life: 45 days in sealed packaging.", context_state: "complete", score: .99,
+        applicability: { status: "resolved", subjects: [{ display_name: "Golden Yolk",
+          entity_id: "internal-entity-hidden", source_kind: "curated" }], conditions: [{
+            text: "After opening, refrigerate and consume within 3 days.", source_kind: "curated",
+          }] }, context_parts: [{ chunk_id: "condition-1", source_text: "After opening, refrigerate and consume within 3 days.",
+            title_path: ["Golden Yolk", "Storage"], anchor: { page: 2 }, required: true, role: "condition" }] },
+      { ...legacySource, citation_id: "C3", cuekb_schema_version: "2", title: "Unconfirmed excerpt",
+        content: "This excerpt does not establish a product scope.", context_state: "unresolved",
+        applicability: { status: "unknown", subjects: [], conditions: [] } },
+      { ...legacySource, citation_id: "C4", cuekb_schema_version: "2", title: "Ambiguous excerpt",
+        content: "This excerpt mentions multiple possible products.", context_state: "complete",
+        applicability: { status: "ambiguous", subjects: [], conditions: [] } },
     ] };
   snapshot = { ...snapshot, items: [snapshot.items[0], { ...snapshot.items[1], status: "failed", answer: review }] };
   connection.emit("portal.tool.started", { message: "Checking knowledge" }, 2);
@@ -662,6 +676,16 @@ test("Native knowledge text streams before done, survives a new search turn, and
   await expect(evidence).toContainText("VOICE_MISSING_CONDITION");
   await expect(evidence).toContainText("Product AX ships locally only.");
   await expect(evidence).not.toContainText("Search failed");
+  await expect(evidence).toContainText("Applies to: Golden Yolk");
+  await expect(evidence).toContainText("Product scope includes reviewed metadata.");
+  await expect(evidence).toContainText("After opening, refrigerate and consume within 3 days.");
+  await expect(evidence).toContainText("The applicable product has not been confirmed");
+  await expect(evidence).toContainText("More than one product scope is possible");
+  await expect(evidence).toContainText("Required context is missing");
+  await expect(evidence).not.toContainText("internal-entity-hidden");
+  await expect(evidence).not.toContainText("0.99");
+  await evidence.locator(".citation-context > summary").click();
+  await expect(evidence).toContainText("Required context · Condition");
 
   // A principal-filtered revoked answer must remove live text linked only by input ID too.
   snapshot = { ...snapshot, items: [snapshot.items[0], { ...snapshot.items[1], status: "failed",
@@ -669,6 +693,7 @@ test("Native knowledge text streams before done, survives a new search turn, and
   connection.emit("portal.tool.started", { message: "Checking knowledge" }, 2);
   await expect(answer).not.toContainText(text);
   await expect(evidence).not.toContainText("Product AX ships locally only.");
+  await expect(evidence).not.toContainText("Golden Yolk");
   connection.emit("portal.speech_text.delta", { input_item_id: "product-input", response_id: "late",
     phase: "answer", text: "Late private text" }, 2);
   await expect(answer).not.toContainText("Late private text");

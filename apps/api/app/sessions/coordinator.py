@@ -161,6 +161,7 @@ class SessionCoordinator:
                 retrieval_limit=self.settings.qa_max_retrieval_calls if decision else None,
                 retrieval_calls=previous_ctx.retrieval_calls if previous_ctx else 0,
                 native_voice_search=native_search is not None,
+                native_result_overhead=native_search.result_overhead if native_search else 0,
                 answer_policy=conversation.answer_policy,
                 task_context=dict(turn.task_context or {}),
             )

@@ -1,5 +1,272 @@
 {
   "$defs": {
+    "CueKBApplicability": {
+      "additionalProperties": false,
+      "properties": {
+        "status": {
+          "default": "unknown",
+          "enum": [
+            "resolved",
+            "unknown",
+            "ambiguous"
+          ],
+          "title": "Status",
+          "type": "string"
+        },
+        "subjects": {
+          "items": {
+            "$ref": "#/$defs/CueKBApplicableSubject"
+          },
+          "maxItems": 8,
+          "title": "Subjects",
+          "type": "array"
+        },
+        "conditions": {
+          "items": {
+            "$ref": "#/$defs/CueKBApplicableCondition"
+          },
+          "maxItems": 20,
+          "title": "Conditions",
+          "type": "array"
+        }
+      },
+      "title": "CueKBApplicability",
+      "type": "object"
+    },
+    "CueKBApplicableCondition": {
+      "additionalProperties": false,
+      "properties": {
+        "text": {
+          "maxLength": 2000,
+          "minLength": 1,
+          "title": "Text",
+          "type": "string"
+        },
+        "source_spans": {
+          "items": {
+            "$ref": "#/$defs/CueKBSourceSpan"
+          },
+          "maxItems": 20,
+          "title": "Source Spans",
+          "type": "array"
+        },
+        "source_kind": {
+          "default": "curated",
+          "enum": [
+            "curated",
+            "parser"
+          ],
+          "title": "Source Kind",
+          "type": "string"
+        },
+        "provenance_id": {
+          "anyOf": [
+            {
+              "maxLength": 500,
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Provenance Id"
+        }
+      },
+      "required": [
+        "text"
+      ],
+      "title": "CueKBApplicableCondition",
+      "type": "object"
+    },
+    "CueKBApplicableSubject": {
+      "additionalProperties": false,
+      "properties": {
+        "entity_id": {
+          "anyOf": [
+            {
+              "format": "uuid",
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Entity Id"
+        },
+        "display_name": {
+          "maxLength": 200,
+          "minLength": 1,
+          "title": "Display Name",
+          "type": "string"
+        },
+        "product_model": {
+          "anyOf": [
+            {
+              "maxLength": 200,
+              "minLength": 1,
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Product Model"
+        },
+        "software_version": {
+          "anyOf": [
+            {
+              "maxLength": 200,
+              "minLength": 1,
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Software Version"
+        },
+        "source_kind": {
+          "default": "curated",
+          "enum": [
+            "curated",
+            "reviewed_alias",
+            "parser"
+          ],
+          "title": "Source Kind",
+          "type": "string"
+        },
+        "provenance_id": {
+          "anyOf": [
+            {
+              "maxLength": 500,
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Provenance Id"
+        },
+        "source_spans": {
+          "items": {
+            "$ref": "#/$defs/CueKBSourceSpan"
+          },
+          "maxItems": 20,
+          "title": "Source Spans",
+          "type": "array"
+        }
+      },
+      "required": [
+        "display_name"
+      ],
+      "title": "CueKBApplicableSubject",
+      "type": "object"
+    },
+    "CueKBBackendCalls": {
+      "additionalProperties": false,
+      "properties": {
+        "keyword": {
+          "default": 0,
+          "minimum": 0,
+          "title": "Keyword",
+          "type": "integer"
+        },
+        "embedding": {
+          "default": 0,
+          "minimum": 0,
+          "title": "Embedding",
+          "type": "integer"
+        },
+        "vector": {
+          "default": 0,
+          "minimum": 0,
+          "title": "Vector",
+          "type": "integer"
+        },
+        "relation": {
+          "default": 0,
+          "minimum": 0,
+          "title": "Relation",
+          "type": "integer"
+        },
+        "rerank": {
+          "default": 0,
+          "minimum": 0,
+          "title": "Rerank",
+          "type": "integer"
+        }
+      },
+      "title": "CueKBBackendCalls",
+      "type": "object"
+    },
+    "CueKBCandidateCounts": {
+      "additionalProperties": false,
+      "properties": {
+        "keyword": {
+          "default": 0,
+          "maximum": 100,
+          "minimum": 0,
+          "title": "Keyword",
+          "type": "integer"
+        },
+        "vector": {
+          "default": 0,
+          "maximum": 100,
+          "minimum": 0,
+          "title": "Vector",
+          "type": "integer"
+        },
+        "relation": {
+          "default": 0,
+          "maximum": 50,
+          "minimum": 0,
+          "title": "Relation",
+          "type": "integer"
+        },
+        "union": {
+          "default": 0,
+          "maximum": 250,
+          "minimum": 0,
+          "title": "Union",
+          "type": "integer"
+        },
+        "authoritative": {
+          "default": 0,
+          "maximum": 250,
+          "minimum": 0,
+          "title": "Authoritative",
+          "type": "integer"
+        },
+        "duplicate_removed": {
+          "default": 0,
+          "maximum": 250,
+          "minimum": 0,
+          "title": "Duplicate Removed",
+          "type": "integer"
+        },
+        "reranked": {
+          "default": 0,
+          "maximum": 100,
+          "minimum": 0,
+          "title": "Reranked",
+          "type": "integer"
+        },
+        "returned": {
+          "default": 0,
+          "maximum": 20,
+          "minimum": 0,
+          "title": "Returned",
+          "type": "integer"
+        }
+      },
+      "title": "CueKBCandidateCounts",
+      "type": "object"
+    },
     "CueKBContextPart": {
       "additionalProperties": false,
       "properties": {
@@ -21,6 +288,38 @@
           },
           "title": "Title Path",
           "type": "array"
+        },
+        "source_spans": {
+          "items": {
+            "$ref": "#/$defs/CueKBSourceSpan"
+          },
+          "maxItems": 64,
+          "title": "Source Spans",
+          "type": "array"
+        },
+        "role": {
+          "anyOf": [
+            {
+              "enum": [
+                "attribution",
+                "table_header",
+                "condition",
+                "exception",
+                "continuation"
+              ],
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Role"
+        },
+        "required": {
+          "default": false,
+          "title": "Required",
+          "type": "boolean"
         }
       },
       "required": [
@@ -30,6 +329,110 @@
         "title_path"
       ],
       "title": "CueKBContextPart",
+      "type": "object"
+    },
+    "CueKBOmissionCounts": {
+      "additionalProperties": false,
+      "properties": {
+        "scope_excluded": {
+          "default": 0,
+          "minimum": 0,
+          "title": "Scope Excluded",
+          "type": "integer"
+        },
+        "dependency_unresolved": {
+          "default": 0,
+          "minimum": 0,
+          "title": "Dependency Unresolved",
+          "type": "integer"
+        },
+        "candidate_limit": {
+          "default": 0,
+          "minimum": 0,
+          "title": "Candidate Limit",
+          "type": "integer"
+        },
+        "rerank_window_limit": {
+          "default": 0,
+          "minimum": 0,
+          "title": "Rerank Window Limit",
+          "type": "integer"
+        },
+        "payload_budget_exhausted": {
+          "default": 0,
+          "minimum": 0,
+          "title": "Payload Budget Exhausted",
+          "type": "integer"
+        },
+        "stale_candidate": {
+          "default": 0,
+          "minimum": 0,
+          "title": "Stale Candidate",
+          "type": "integer"
+        },
+        "heading_only": {
+          "default": 0,
+          "minimum": 0,
+          "title": "Heading Only",
+          "type": "integer"
+        },
+        "context_budget_omitted": {
+          "default": 0,
+          "minimum": 0,
+          "title": "Context Budget Omitted",
+          "type": "integer"
+        }
+      },
+      "title": "CueKBOmissionCounts",
+      "type": "object"
+    },
+    "CueKBPayloadSizes": {
+      "additionalProperties": false,
+      "properties": {
+        "source_text_chars": {
+          "default": 0,
+          "minimum": 0,
+          "title": "Source Text Chars",
+          "type": "integer"
+        },
+        "source_text_bytes": {
+          "default": 0,
+          "minimum": 0,
+          "title": "Source Text Bytes",
+          "type": "integer"
+        },
+        "context_chars": {
+          "default": 0,
+          "minimum": 0,
+          "title": "Context Chars",
+          "type": "integer"
+        },
+        "context_bytes": {
+          "default": 0,
+          "minimum": 0,
+          "title": "Context Bytes",
+          "type": "integer"
+        },
+        "context_parts_chars": {
+          "default": 0,
+          "minimum": 0,
+          "title": "Context Parts Chars",
+          "type": "integer"
+        },
+        "context_parts_bytes": {
+          "default": 0,
+          "minimum": 0,
+          "title": "Context Parts Bytes",
+          "type": "integer"
+        },
+        "hits_bytes": {
+          "default": 2,
+          "minimum": 2,
+          "title": "Hits Bytes",
+          "type": "integer"
+        }
+      },
+      "title": "CueKBPayloadSizes",
       "type": "object"
     },
     "CueKBRelation": {
@@ -65,15 +468,7 @@
           "type": "string"
         },
         "conditions": {
-          "additionalProperties": {
-            "type": "string"
-          },
-          "propertyNames": {
-            "enum": [
-              "product_model",
-              "software_version"
-            ]
-          },
+          "additionalProperties": true,
           "title": "Conditions",
           "type": "object"
         },
@@ -96,11 +491,128 @@
         "subject_id",
         "object_id",
         "relation_type",
-        "conditions",
         "stance",
         "chunk_id"
       ],
       "title": "CueKBRelation",
+      "type": "object"
+    },
+    "CueKBRerankerDiagnostics": {
+      "additionalProperties": false,
+      "properties": {
+        "configured": {
+          "title": "Configured",
+          "type": "boolean"
+        },
+        "executed": {
+          "title": "Executed",
+          "type": "boolean"
+        },
+        "skipped_reason": {
+          "anyOf": [
+            {
+              "enum": [
+                "exact_path",
+                "reranker_service_unconfigured",
+                "rerank_disabled",
+                "model_client_unconfigured",
+                "not_enough_candidates",
+                "insufficient_remaining_budget"
+              ],
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Skipped Reason"
+        }
+      },
+      "required": [
+        "configured",
+        "executed"
+      ],
+      "title": "CueKBRerankerDiagnostics",
+      "type": "object"
+    },
+    "CueKBSearchDiagnostics": {
+      "additionalProperties": false,
+      "properties": {
+        "counts": {
+          "$ref": "#/$defs/CueKBCandidateCounts"
+        },
+        "omissions": {
+          "$ref": "#/$defs/CueKBOmissionCounts"
+        },
+        "sizes": {
+          "$ref": "#/$defs/CueKBPayloadSizes"
+        },
+        "backend_calls": {
+          "$ref": "#/$defs/CueKBBackendCalls"
+        },
+        "attempt_count": {
+          "default": 1,
+          "maximum": 2,
+          "minimum": 1,
+          "title": "Attempt Count",
+          "type": "integer"
+        },
+        "reranker": {
+          "$ref": "#/$defs/CueKBRerankerDiagnostics"
+        },
+        "active_generation": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Active Generation"
+        },
+        "processing_profiles": {
+          "items": {
+            "type": "string"
+          },
+          "maxItems": 250,
+          "title": "Processing Profiles",
+          "type": "array"
+        },
+        "algorithm_revision": {
+          "const": "evidence-ranking-v2.1",
+          "default": "evidence-ranking-v2.1",
+          "title": "Algorithm Revision",
+          "type": "string"
+        },
+        "keyword_limit": {
+          "maximum": 100,
+          "minimum": 1,
+          "title": "Keyword Limit",
+          "type": "integer"
+        },
+        "vector_limit": {
+          "maximum": 100,
+          "minimum": 0,
+          "title": "Vector Limit",
+          "type": "integer"
+        },
+        "relation_limit": {
+          "maximum": 50,
+          "minimum": 0,
+          "title": "Relation Limit",
+          "type": "integer"
+        }
+      },
+      "required": [
+        "reranker",
+        "keyword_limit",
+        "vector_limit",
+        "relation_limit"
+      ],
+      "title": "CueKBSearchDiagnostics",
       "type": "object"
     },
     "CueKBSearchHit": {
@@ -122,6 +634,7 @@
           "type": "string"
         },
         "rank": {
+          "maximum": 20,
           "minimum": 1,
           "title": "Rank",
           "type": "integer"
@@ -165,11 +678,119 @@
           "title": "Retrieval Sources",
           "type": "array"
         },
+        "document_name": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Document Name"
+        },
+        "content_sha256": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Content Sha256"
+        },
+        "score": {
+          "title": "Score",
+          "type": "number"
+        },
+        "score_type": {
+          "enum": [
+            "rrf",
+            "rerank"
+          ],
+          "title": "Score Type",
+          "type": "string"
+        },
+        "stage_scores": {
+          "additionalProperties": {
+            "type": "number"
+          },
+          "title": "Stage Scores",
+          "type": "object"
+        },
+        "applicability": {
+          "$ref": "#/$defs/CueKBApplicability"
+        },
+        "source_spans": {
+          "items": {
+            "$ref": "#/$defs/CueKBSourceSpan"
+          },
+          "maxItems": 64,
+          "title": "Source Spans",
+          "type": "array"
+        },
+        "processing_profile": {
+          "minLength": 1,
+          "title": "Processing Profile",
+          "type": "string"
+        },
+        "source_unit_id": {
+          "anyOf": [
+            {
+              "maxLength": 200,
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Source Unit Id"
+        },
+        "block_kind": {
+          "default": "text",
+          "enum": [
+            "text",
+            "list",
+            "table",
+            "heading"
+          ],
+          "title": "Block Kind",
+          "type": "string"
+        },
         "context_parts": {
           "items": {
             "$ref": "#/$defs/CueKBContextPart"
           },
+          "maxItems": 21,
           "title": "Context Parts",
+          "type": "array"
+        },
+        "context_state": {
+          "enum": [
+            "disabled",
+            "complete",
+            "truncated",
+            "unresolved"
+          ],
+          "title": "Context State",
+          "type": "string"
+        },
+        "context_omissions": {
+          "items": {
+            "enum": [
+              "budget_omitted",
+              "candidate_limit_reached",
+              "dependency_unresolved",
+              "unsafe_scope_excluded"
+            ],
+            "type": "string"
+          },
+          "maxItems": 4,
+          "title": "Context Omissions",
           "type": "array"
         },
         "context_truncated": {
@@ -181,6 +802,7 @@
           "items": {
             "$ref": "#/$defs/CueKBRelation"
           },
+          "maxItems": 50,
           "title": "Relations",
           "type": "array"
         }
@@ -190,9 +812,91 @@
         "document_id",
         "version_id",
         "rank",
-        "source_text"
+        "source_text",
+        "score",
+        "score_type",
+        "processing_profile",
+        "context_state"
       ],
       "title": "CueKBSearchHit",
+      "type": "object"
+    },
+    "CueKBSourceSpan": {
+      "additionalProperties": false,
+      "properties": {
+        "label": {
+          "default": "text",
+          "maxLength": 100,
+          "minLength": 1,
+          "title": "Label",
+          "type": "string"
+        },
+        "text": {
+          "maxLength": 32768,
+          "minLength": 1,
+          "title": "Text",
+          "type": "string"
+        },
+        "anchor": {
+          "$ref": "#/$defs/SourceAnchor"
+        },
+        "parser_item_id": {
+          "anyOf": [
+            {
+              "maxLength": 500,
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Parser Item Id"
+        },
+        "span_id": {
+          "anyOf": [
+            {
+              "maxLength": 100,
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Span Id"
+        },
+        "row_index": {
+          "anyOf": [
+            {
+              "minimum": 0,
+              "type": "integer"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Row Index"
+        },
+        "column_index": {
+          "anyOf": [
+            {
+              "minimum": 0,
+              "type": "integer"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Column Index"
+        }
+      },
+      "required": [
+        "text"
+      ],
+      "title": "CueKBSourceSpan",
       "type": "object"
     },
     "SourceAnchor": {
@@ -273,10 +977,27 @@
   },
   "additionalProperties": false,
   "properties": {
+    "schema_version": {
+      "const": "2",
+      "title": "Schema Version",
+      "type": "string"
+    },
     "trace_id": {
       "format": "uuid",
       "title": "Trace Id",
       "type": "string"
+    },
+    "request_id": {
+      "anyOf": [
+        {
+          "type": "string"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null,
+      "title": "Request Id"
     },
     "retrieval_status": {
       "enum": [
@@ -350,6 +1071,24 @@
       "title": "Skipped Stages",
       "type": "array"
     },
+    "ranking_method": {
+      "enum": [
+        "keyword_rrf",
+        "rrf",
+        "rrf_related",
+        "rrf_then_rerank"
+      ],
+      "title": "Ranking Method",
+      "type": "string"
+    },
+    "ranking_version": {
+      "pattern": "^sha256:[a-f0-9]{64}$",
+      "title": "Ranking Version",
+      "type": "string"
+    },
+    "diagnostics": {
+      "$ref": "#/$defs/CueKBSearchDiagnostics"
+    },
     "hits": {
       "items": {
         "$ref": "#/$defs/CueKBSearchHit"
@@ -360,10 +1099,14 @@
     }
   },
   "required": [
+    "schema_version",
     "trace_id",
     "retrieval_status",
     "content_revisions",
     "timings_ms",
+    "ranking_method",
+    "ranking_version",
+    "diagnostics",
     "hits"
   ],
   "title": "CueKBSearchResponse",

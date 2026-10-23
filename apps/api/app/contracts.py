@@ -3,7 +3,15 @@ from datetime import UTC, datetime
 from typing import Annotated, Any, Literal
 from uuid import UUID, uuid4
 
-from pydantic import BaseModel, ConfigDict, Field, TypeAdapter, field_validator
+from pydantic import BaseModel, ConfigDict, Field, FiniteFloat, TypeAdapter, field_validator
+
+from app.evidence_types import (
+    ContextOmission,
+    ContextState,
+    CueKBApplicability,
+    CueKBSourceSpan,
+    RankingMethod,
+)
 
 
 def uid() -> str:
@@ -123,6 +131,9 @@ class StopPlaybackInput(TaskControlInput):
 
 
 class Citation(StrictModel):
+    # Preserve historical JSON while keeping V2 evidence text byte-for-byte.
+    model_config = ConfigDict(extra="forbid", str_strip_whitespace=False)
+
     citation_id: str
     document_id: str
     chunk_id: str
@@ -130,6 +141,21 @@ class Citation(StrictModel):
     source_uri: str | None = None
     version_id: str
     business_version: str | None = None
+    cuekb_schema_version: Literal["1", "2"] = "1"
+    document_name: str | None = None
+    content_sha256: str | None = None
+    score: FiniteFloat | None = None
+    score_type: Literal["rrf", "rerank"] | None = None
+    stage_scores: dict[str, FiniteFloat] = Field(default_factory=dict)
+    applicability: CueKBApplicability = Field(default_factory=CueKBApplicability)
+    source_spans: list[CueKBSourceSpan] = Field(default_factory=list, max_length=64)
+    processing_profile: str | None = None
+    source_unit_id: str | None = None
+    block_kind: Literal["text", "list", "table", "heading"] = "text"
+    context_state: ContextState | None = None
+    context_omissions: list[ContextOmission] = Field(default_factory=list, max_length=4)
+    ranking_method: RankingMethod | None = None
+    ranking_version: str | None = None
     updated_at: str | None = None
     content: str
     context: str | None = None

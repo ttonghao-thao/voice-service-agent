@@ -89,7 +89,7 @@ Runtime 复用授权工具和证据校验，输出 display_text、短 speech_tex
 
 后台默认只有 `search_knowledge`。Runtime 对 Responses API 和 compatible Chat Completions 在本轮没有真实授权检索时要求首次调用，并关闭并行工具调用；直查升级若已有本轮有效证据，则允许直接综合或在剩余预算内补一次检索。输出后仍校验实际授权检索后置条件。SDK 的 required/auto 是外置知识执行设置，与前台 VoiceChat WS 无关。模型未调用工具时返回 `AGENT_REQUIRED_TOOL_NOT_CALLED`；adapter 的授权、契约、限流、超时或上游错误优先于模型声称的 `insufficient_evidence`，只有真实检索结果才能形成未命中/证据不足状态。
 
-Runtime、ToolRegistry、CueKB adapter 与 VoiceGateway 记录脱敏阶段日志，包含 conversation/turn/tool、调用状态、耗时、trace 及 endpoint 的 scheme/host/port/path；不记录问题正文、API key、URL userinfo、供应商原始错误或工具结果正文。管理员的 `search_knowledge` 连通性探测使用 CueKB `/v1/ready`，业务检索仍使用 `/v1/search`。
+Runtime、ToolRegistry、CueKB adapter 与 VoiceGateway 记录脱敏阶段日志，包含 conversation/turn/tool、调用状态、耗时、trace 及 endpoint 的 scheme/host/port/path；不记录问题正文、API key、URL userinfo、供应商原始错误或工具结果正文。管理员的 `search_knowledge` 连通性探测使用 CueKB `/v1/ready`，业务检索仍使用 `/v2/search`。
 
 ### 4.1 查询延迟与优化边界
 
@@ -102,7 +102,7 @@ Runtime、ToolRegistry、CueKB adapter 与 VoiceGateway 记录脱敏阶段日志
 | 层次 | 注册与授权 | 当前名称 |
 | --- | --- | --- |
 | VoiceChat 可见业务工具 | NativeTool 可信 schema/执行器 + tool_catalog.py 全局后台元数据；版本化会话快照 | dual_tools 数量由后台配置，对所有客户可见；执行单独授权；legacy 单 bridge |
-| 后台工具能力 | tools/registry.py 的 ToolSpec/adapter；部署白名单、管理员启停、身份范围和版本校验 | 默认 search_knowledge，通过 CueKB /v1/search 执行 |
+| 后台工具能力 | tools/registry.py 的 ToolSpec/adapter；部署白名单、管理员启停、身份范围和版本校验 | 默认 search_knowledge，通过 CueKB /v2/search 执行 |
 
 新增原生工具的注册/schema/executor/scope/依赖规则只在 [知识执行 §2](qa-routing-design.md#2-注册输入与扩展) 维护；本节维护后台 ToolSpec/Registry 的服务接入与启停授权。
 
