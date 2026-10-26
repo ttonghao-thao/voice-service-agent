@@ -2,7 +2,7 @@
 
 仅支持英文的全双工知识客服，支持连接内多轮对话。Python 3.12/FastAPI/Agents SDK；React/TypeScript/AudioWorklet；PostgreSQL/Redis。开发协作和文档可以使用中文；产品的语音输入、回答及门户交互仅支持英文。
 
-后续开发主线为 `main`，基线来自 `codex/q1003`；该分支保留用于追溯。
+后续开发主线和代码交付目标为 `origin/main`，基线来自 `codex/q1003`；历史分支保留用于追溯。完成并验证后直接推送 main，不以新建任务分支代替交付。涉及 VoiceChat 的完整文件仍按下文同步到 `docs/voicechat/`，与本项目修改一同交付到 main。
 
 产品语言以 `en-US` 契约和英文提示词为准；不得从中文开发文档、历史记录或 Unicode 测试夹具推导出中文产品要求。修改用户可见文案或模型工具描述时使用英文。
 
