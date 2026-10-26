@@ -32,6 +32,11 @@ class TritonSeqState:
     codec_cache: CausalConv1dCache
     input_embeddings: torch.Tensor = None
     decoder_global_step: int = 0
+    # Tool tokens advance decoder history, never the incoming audio clock.
+    audio_frames_processed: int = 0
+    pending_function_responses: deque = field(default_factory=deque)
+    pending_inference_output: Any = None
+    inference_error: Optional[str] = None
     generated_text: List[str] = field(default_factory=list)
     generated_asr_text: List[str] = field(default_factory=list)
     generated_function_text: List[str] = field(default_factory=list)

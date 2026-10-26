@@ -1,364 +1,343 @@
-# 统一验证操作手册
+# 当前问题验证：工具等待、首问触发与回答完整性
 
-这是本项目唯一的验证文档，适用于英文（en-US）全双工知识客服：Web → API → NVIDIA VoiceChat → CueKB → 有来源的语音回答。所有操作、回传内容、判据和当前未解决项均在本页，不需要打开其他文档。
+更新：2026-10-25。当前唯一执行入口；历史验证方法已归档。**第 8 节为修复前真实 A/B；本次已编码，第 9 节记录范围与本地检查。CueKB 新版按用户确认已支持内容侧优化、待联调。** 更新后按第 2–7 节执行相同 A/B，不把旧结果当作新版本通过。所有命令在**部署主机的本项目根目录**执行，操作者只操作、观察和回传，不需要挑日志、找会话 ID 或判断根因。
 
-**操作者只执行命令和回传精简输出，不负责判断原因、选择日志、找会话 ID 或调整参数。** 命令失败也保留输出，交给开发者定位；不要反复重跑、提高检索次数、延长会话或删除 WAV 的停顿来获得通过。
+## 1. 本轮要回答什么
 
-## 1. 本次范围与执行顺序
+用户已报告最新 CueKB V2 上线并验证，但仍有以下问题。本轮是定位采集，不是上线或修复后的放行测试。
 
-本轮接入 CueKB V2，真实部署尚未验收。先由 CueKB 管理员完成其 V2 数据准备，再按第 2 节更新本项目 API/Web、第 2.1 节检查现有 VoiceChat；随后仅执行第 3 节的 `auto core` 一次，以及第 4 节两个产品文件的 Web 上传各一次。不要同时执行四文件全量对照、RNNT 定向测试或后台测试。
+| 当前问题 | 已有证据 | 本轮验证目标 |
+| --- | --- | --- |
+| Checking knowledge 长、常见两次调用 | 用户报告检索不到 1 秒，但调用间隔超过 10 秒；代码确认 VoiceChat 逐 token 注入结果，并可能先等待 ACK 结束 | 分开检索、应用交付、ACK/调度、结果注入，以及下一次工具生成或回答的时间；确认第二次是否属于同一输入、查询了什么 |
+| Golden Yolk 独立不触发，Black Pig 后触发 | 用户观察；工具描述已覆盖两种产品，Golden WAV 有追问式开头和中间停顿 | 对照全新连接的 Golden 与同连接 Black Pig 后的 Golden，核对实际输入、分轮、模型调用和 query，而不只看界面状态 |
+| 回答漏项、数值及条件表达不稳 | Black Pig 一段称未找到重量，另一段报 65 克，尚不知是否同次提问；Golden 漏答运输 | 明确每段答案属于哪次输入，核对价格/重量/层数/最佳食用时间，以及运输/保质期/开封储存；保留真实来源 |
 
-本轮目标：让实际模型证据保留产品归属、包装/开封等必要条件，按完整证据组预算选择，减少无关注入；保留两次查询预算、终态和累计证据。V2 评分是相关性，不是事实正确率。必要依赖不完整时明确拒绝，未知归属明确标记，不能借用另一产品的数值或宣称整个知识库没有资料。自动完成后的 5 秒静音观察和同连接下一问继续保留；本轮不修改 VoiceChat、RNNT、会话寿命，不新增 MMR/reranker/答案模型。
+**复测固定为两次通话、三次文件发送：**A 为 Golden 独立首问；B 为新通话先 Black Pig、再在同一连接发送 Golden。不同时运行自动 core、四文件、Hello/TCP、RNNT 定向或后台测试；不改 WAV、停顿、语速、查询预算、模型参数或会话限制。工具描述、schema 与模板已在本次提交配套更新，不在现场临时改写。这样得到的是首次可比较样本，不足以单独证明稳定性或 P95 达标。
 
-2026-10-22 补充的 RNNT 显示转写修正已部署，用户报告 Hello/TCP 多次正常。`model.py` 的显示转写 predictor 改用一次零输入初始化，与 NeMo 标准贪心解码一致；不改 WAV、前置静音、权重、识别门槛或控制打断的 RNNT 状态。第 4.2 节仍保留定向检查方法，当前不再执行；该反馈不代表麦克风或全部语音准确率验收。
+## 2. 更新本次代码并检查部署
 
-后台持续播报按用户决定暂缓，作为非阻塞待优化项；保留页面隐藏不主动结束及回前台尝试恢复的现有实现。本轮 Web 验证保持前台，不要求切后台或锁屏，不将后台连续播放作为放行条件。
+本节在部署主机执行，不是开发环境已经部署的记录。先将本次完整提交检出到主机项目目录，保持已有 `.env`、已验证的双 GPU（0,1）配置、9000 端口及模型挂载；停止旧测试通话，本次窗口内不要有其他测试用户。CueKB 由其运行方发布新版，本仓库不替它迁移、修改内容或重建索引。
 
-输入唯一来源是本仓库 `artifacts/native-cuekb/` 的 `cases.json` 和四个 WAV。API 镜像内对应 `/app/validation/native-cuekb/`。所有 Python 在容器内执行；宿主机只需 Bash、Docker Compose、Git 和常用 shell 工具。**不使用 docker cp，不在容器创建输入目录，不使用历史 ZIP。** 输出目录由脚本自动创建，API 的只读根文件系统不受影响。
+### 2.1 配套更新 API、目录与 VoiceChat
 
-宿主机执行入口是 `bash scripts/validate_deployment.sh`；它自动调用 `docker exec`，寻找 API 容器、检查固定文件、提取本次时间窗口和会话、采集匹配的 VoiceChat sequence、查询已保存答案。采集不会新增模型请求或 CueKB 请求；`auto` 和 `prefix` 会发送测试语音。默认 VoiceChat 容器名为 `nemotron-labs-voicechat`。
-
-## 2. 更新本次验证工具并准备环境
-
-所有命令在**宿主机项目根目录**执行，保持同一主机、目录和用户。先结束已有测试通话；本次采集期间不要有其他测试用户通话。
-
-CueKB 运行方须先确认以下三项，本项目命令不会代为写入或迁移其知识库：
-
-- 已部署支持 `/v2/search` 的版本，并完成 CueKB 自身的 0004 数据库迁移、可用 Embedding 配置和 V2 索引/generation；未配置 reranker 是正常配置。
-- 两种月饼原文已按 `evidence-v2` 重处理，按具体章节审核产品归属并发布；单纯重建向量索引不会补齐旧切块/归属。同一文档不能默认全部属于一个产品。
-- 受限服务端 Key/KB 可读范围和 `.env` 中 `CUEKB_BASE_URL` 保持正确；base URL 不含 `/v1/search` 或 `/v2/search`。本项目固定调用 V2，不自动回退 V1。
-
-本轮重建 API/Web 镜像并新建通话，**不需要重建或重启已匹配版本的 VoiceChat**。本项目数据库无需新增迁移；CueKB 的迁移由其管理员单独执行。API 使用严格 V2 DTO，模型包仍为约 6000 bytes 的独立预算；上游 hits 预算默认 24000 bytes，并非直接发送完整 V2 JSON 给 Nano。沿用已有效的每输入两次查询及原生 HTTP 无重试。
+本次 API、采集器、query schema、全局目录默认值和 VoiceChat model/data/template 均有修改。只重启 API 不足以生效。下面命令用于现有本项目单知识工具部署：构建并重新创建 API，应用已检入的目录配置；记录原 VoiceChat 的已验证镜像 ID 和模型目录，再用原 GPU/端口参数及本仓库六个只读挂载重新创建 VoiceChat。Web 源码未改，无需重建 Web；门户后续强制刷新即可。运行库和权重不变，不下载或猜测基础镜像。
 
 ```bash
 bash <<'SH'
 set -uo pipefail
 umask 077
-LOG=$(mktemp /tmp/voice-validation-build-XXXXXX.log)
+RELEASE_LOG=$(mktemp /tmp/voice-consumption-release-XXXXXX.log)
 if (
   set -e
-  git pull --ff-only origin main
+  VOICECHAT_SNAPSHOT_ROOT=$(cd docs/voicechat && pwd)
+  VOICECHAT_RELEASE_IMAGE=$(docker inspect --format '{{.Image}}' nemotron-labs-voicechat)
+  VOICECHAT_MODEL_ROOT=$(docker inspect --format '{{range .Mounts}}{{if eq .Destination "/data/models"}}{{.Source}}{{end}}{{end}}' nemotron-labs-voicechat)
+  test -n "$VOICECHAT_MODEL_ROOT" && test -d "$VOICECHAT_MODEL_ROOT"
+  docker image inspect "$VOICECHAT_RELEASE_IMAGE" >/dev/null
   API_IMAGE=$(docker compose --env-file .env -f deploy/compose.production.yaml config --images | sed -n '/^voice-service-agent-api:/ {p;q;}')
-  WEB_IMAGE=$(docker compose --env-file .env -f deploy/compose.production.yaml config --images | sed -n '/^voice-service-agent-web:/ {p;q;}')
-  test -n "$API_IMAGE" && test -n "$WEB_IMAGE"
+  test -n "$API_IMAGE"
   docker build -f deploy/Dockerfile.api -t "$API_IMAGE" .
-  docker build -f deploy/Dockerfile.web -t "$WEB_IMAGE" .
-  docker compose --env-file .env -f deploy/compose.production.yaml up -d --no-deps --force-recreate --wait --wait-timeout 180 api web
-) >"$LOG" 2>&1; then
-  printf 'deployment=passed commit=%s build_log=local_only\n' "$(git rev-parse --short HEAD)"
+  docker compose --env-file .env -f deploy/compose.production.yaml up -d --no-deps --force-recreate --wait --wait-timeout 180 api
+  docker compose --env-file .env -f deploy/compose.production.yaml exec -T api python /app/scripts/configure_native_cuekb.py --apply
+  docker stop nemotron-labs-voicechat
+  docker rm nemotron-labs-voicechat
+# Paired model/data/template runtime; recreate the container to load all three.
+docker run -d --name=nemotron-labs-voicechat \
+  --runtime=nvidia \
+  --gpus '"device=0,1"' \
+  --shm-size=16GB \
+  -e USE_JINJA_TEMPLATE_PROMPT=1 \
+  -e S2S_INFERENCE_CLOSE_ON_PAD_TAIL=true \
+  -e S2S_INFERENCE_FORCE_SPEECH_SILENCE_ON_PAD=true \
+  -e S2S_TTS_PAD_TAIL_RATIO=3 \
+  -e RNNT_MAX_AGENT_RESPONSE_SEC=0 \
+  -e VOICECHAT_DIAGNOSTICS=1 \
+  -e NIM_HTTP_API_PORT=9000 \
+  -e TTS_CUDA_VISIBLE_DEVICES=1 \
+  -e LLM_GPU_MEM_UTIL=0.65 \
+  -p 9000:9000 \
+  -v "${VOICECHAT_MODEL_ROOT:?Set VOICECHAT_MODEL_ROOT}:/data/models" \
+  --mount "type=bind,source=${VOICECHAT_SNAPSHOT_ROOT:?Set VOICECHAT_SNAPSHOT_ROOT}/opt/tritonserver/backends/nemotron-voicechat/checkpoint_utils/load_utils.py,target=/opt/tritonserver/backends/nemotron-voicechat/checkpoint_utils/load_utils.py,readonly" \
+  --mount "type=bind,source=$VOICECHAT_SNAPSHOT_ROOT/s2s/audio_server.py,target=/s2s/audio_server.py,readonly" \
+  --mount "type=bind,source=$VOICECHAT_SNAPSHOT_ROOT/s2s/prompt_template.jinja,target=/s2s/prompt_template.jinja,readonly" \
+  --mount "type=bind,source=$VOICECHAT_SNAPSHOT_ROOT/opt/tritonserver/backends/nemotron-voicechat/data_types.py,target=/opt/tritonserver/backends/nemotron-voicechat/data_types.py,readonly" \
+  --mount "type=bind,source=$VOICECHAT_SNAPSHOT_ROOT/opt/tritonserver/backends/nemotron-voicechat/model.py,target=/opt/tritonserver/backends/nemotron-voicechat/model.py,readonly" \
+  --mount "type=bind,source=$VOICECHAT_SNAPSHOT_ROOT/opt/tritonserver/backends/nemotron-voicechat/runtime_setup.py,target=/opt/tritonserver/backends/nemotron-voicechat/runtime_setup.py,readonly" \
+  --entrypoint /s2s/run_s2s_server.sh \
+  "$VOICECHAT_RELEASE_IMAGE"
+) >"$RELEASE_LOG" 2>&1; then
+  printf 'release=created commit=%s build_log=local_only\n' "$(git rev-parse --short HEAD)"
 else
-  printf 'deployment=failed local_build_log=%s\n' "$LOG"
+  printf 'release=failed local_build_log=%s\n' "$RELEASE_LOG"
+  exit 1
 fi
 SH
 ```
 
-正常先输出 `deployment=passed`，再执行第 2.1 节。**失败后停止本次验证，只回传失败行，不自行替换文件或选择日志。** 如需构建失败详情，开发者后续只索取该阶段的必要报错，不能默认索取完整构建日志。
+成功输出 release=created 只说明完成创建。若失败，停止并回传失败行，原始构建日志留在本机；不要继续测试、猜测镜像、修改绑定文件或反复重启。已有离线镜像必须在删除旧容器之前记录，本命令不会安装新的 GPU 依赖。
 
-VoiceChat 已加载本仓库完整快照是本次验证前提。会话提示由 API 在新通话注册，因此更新后必须新建通话。本轮没有新增 VoiceChat 运行文件或环境变量，不执行源码替换、容器重启或权重调整。
+### 2.2 等待就绪并核对版本
 
-## 2.1 检查现有 VoiceChat 和镜像内文件
+VoiceChat 重载模型可能需要几分钟。创建完成后等待 **5 分钟**，然后在同一终端/目录执行：
 
 ```bash
+git rev-parse --short HEAD
 bash scripts/validate_deployment.sh check
 ```
 
-正常输出 `preparation=passed` 和两条 `runtime` 身份行。入口自动核对 API 的 V2 Adapter/严格 schema/证据类型/原生选择与验证脚本，以及四份原 WAV 的哈希；六个 VoiceChat 挂载文件、Jinja/诊断及既有完成保护配置也必须匹配。检查不发送 WAV，不新增 CueKB 查询。
+正常得到 preparation=passed 和 API/VoiceChat 的 runtime 身份行。入口会核对应用、采集器、query schema、目录 YAML、原始 WAV、VoiceChat 六个运行文件及既有诊断配置，并检查 VoiceChat 为真实 Triton/model ready（拒绝 loopback）。出现 version=failed / collection=failed 就停止并回传；不自行复制文件、降低检查或再次重建。文件匹配不证明 GPU 提速、模型首问选工具正确或 CueKB 内容已通过。
 
-回传精简终端输出即可。出现 `version=failed` 或 `collection=failed` 时停止，由开发者针对该项给出处理；不要自行复制文件、关闭校验或反复重启。此检查只证明容器文件与配置匹配，**不证明上游 V2 已就绪或产品文档已正确重处理**；实际 V2 响应、数据归属与索引错误由第 3 节首次真实查询的摘要提供。
+浏览器强制刷新门户，打开 F12 → Console，开启 **Preserve log**，过滤 voice_file，清空旧 Console 内容。保持门户前台、声音可播放，不锁屏或切后台。固定使用仓库 artifacts/native-cuekb/golden_yolk.wav 与 artifacts/native-cuekb/black_pig_crisp_heart.wav，选择 **Audio file → Choose WAV**。Python 和采集在容器内执行，宿主机无需 Python，不手工导出 HAR 或运行 docker logs。
 
-VoiceChat 后续重建时，六个维护文件仍须从本仓库 `docs/voicechat/` 的绝对路径只读挂载到以下容器位置。本轮已经匹配时保持现有容器，不使用 `docker cp`：
+## 3. 通话 A：Golden Yolk 独立首问
 
-| 仓库 `docs/voicechat/` 下的相对路径 | 容器实际加载路径 |
-| --- | --- |
-| `s2s/audio_server.py` | `/s2s/audio_server.py` |
-| `s2s/prompt_template.jinja` | `/s2s/prompt_template.jinja` |
-| `opt/tritonserver/backends/nemotron-voicechat/model.py` | `/opt/tritonserver/backends/nemotron-voicechat/model.py` |
-| `opt/tritonserver/backends/nemotron-voicechat/runtime_setup.py` | `/opt/tritonserver/backends/nemotron-voicechat/runtime_setup.py` |
-| `opt/tritonserver/backends/nemotron-voicechat/data_types.py` | `/opt/tritonserver/backends/nemotron-voicechat/data_types.py` |
-| `opt/tritonserver/backends/nemotron-voicechat/checkpoint_utils/load_utils.py` | `/opt/tritonserver/backends/nemotron-voicechat/checkpoint_utils/load_utils.py` |
+**假设：**独立首问未触发可能发生在语音识别、分轮或原生工具选择阶段，不能先判为 CueKB 慢。预期取得完整两段问题及该次实际模型/工具事件；是否出现 Checking knowledge 只作观察。
 
-## 3. 操作一：一次命令完成两份产品录音和同连接下一问
-
-```bash
-bash scripts/validate_deployment.sh auto core
-```
-
-执行期间等待命令自行结束，通常需两至四分钟。**把本命令终端输出全部回传即可，它已经是精简结果。** 不要另外运行 docker logs、cat report.json 或贴完整日志。
-
-入口先在一条全新连接发送原始 Golden Yolk WAV，保留中间停顿；完整发送后等待最新输入的非 ACK 回答完成，再观察 5 秒，然后在同一连接发送原始 hello.wav 并完成同样观察。随后为 Black Pig 建立另一条新连接测试一次。一份失败仍采集其结果并继续另一份，不自动重试。120 秒是验证器等待上限，不改变服务端会话时限。每次使用独立报告路径，失败不会误读上一次报告。即使验证失败，仍尝试采集这次的摘要。
-
-终端输出包括：版本准备、`preflight`、`case`、`validation`、退出码、`session`、API 预算与检索、`cuekb_v2`、`voice_evidence`、`backend_injection`、每输入 `input_timing`、有界 `backend_stages`、保存的输入/回答/业务状态、模型 query、`answer_check`、`evidence_delivery` 和实际准入证据 `admitted_evidence`。证据总长度最多 6000 字符、8 个块，超出明确标记 omitted；不要另外打印全量检索响应。`cuekb_v2` 最多四条，只含排序方法、归属/省略计数及载荷；`voice_evidence.selected_payload_bytes` 是单次选择阶段准备的语音结果 UTF-8 大小；`evidence_delivery.payload_bytes` 是最终批次实际提交大小，二者都不是 Nano token 数。`local_artifacts` 指向本次宿主机私有目录；原始日志只保存在这里，不直接打印。
-
-## 4. 操作二：Web 上传两份产品 WAV，各一次
-
-1. 浏览器强制刷新门户，结束旧通话。打开 F12 → Console，开启 Preserve log，过滤 `voice_file`。保持门户前台，不切后台、不锁屏。无需在 Network 中寻找 messages 或手填 ID。
-2. 在宿主机执行：
+1. 确认已 End call，宿主机开始一个新的采集窗口：
 
    ```bash
    bash scripts/validate_deployment.sh web-start golden_yolk
    ```
 
-3. 门户选择 **Audio file → Choose WAV**，选择仓库 `artifacts/native-cuekb/golden_yolk.wav`，点击 **Start file call**。不要点 Stop playback/Cancel search，不要在 WAV 中间停顿时结束通话。
-4. 完整发送 WAV 后，等待最新一条回答的 **Speaking** 结束，显示 **Reply complete** 或 **Answer not verified**；声音停止后再静待 **5 秒**，然后点 **End call**。Golden Yolk 以第二段 “Can it be shipped…” 对应的最后一行回答为准，不在第一段或文件中间停顿时结束。没有出现上述状态时最多等待 **120 秒**再 End call；页面提前报错则保留提示后 End call，不重新开始。只需按界面状态和时间操作，不判断内容正误。既有 105 秒上限及活动宽限仍可能触发，到期如实回传，不调大限制。
-5. 在宿主机执行：
+2. 门户 Choose WAV 选择 `artifacts/native-cuekb/golden_yolk.wav`，点击一次 **Start file call**。本次通话不要先发 Hello、Black Pig、文字或其他问题。
+3. 完整发送原文件，保留中间停顿。预期原问题为：
+
+   > What about the Monkey Golden Yolk mooncake? Can it be shipped, how long is its shelf life, and how should it be stored after opening?
+
+4. 不在第一小句、文件中间停顿或 ACK 后结束。WAV 完整发送后，等回答停止 **Speaking**，显示 **Reply complete** 或 **Answer not verified**，再观察 **5 秒**。观察期间若再次进入 Checking knowledge / Speaking，继续等待其结束后重新观察；不要点 Stop playback / Cancel search。
+5. 从 Start file call 起最多等 **120 秒**；连接提前结束、报错或录音未发完就保留现象，不重试。既有 **105 秒连接上限及固定 30 秒活动宽限**继续生效，120 秒只是本次人工等待上限，不延长服务端寿命。
+6. 按第 5 节完成 End call 和采集；本次观察标记为 `case=A_golden_first`。保存本次全部用户转写、回答与来源面板；没有回答就写“无”，不只保留最后一句。
+
+## 4. 通话 B：Black Pig 后同连接发送 Golden Yolk
+
+**假设：**前一轮对话会改变模型历史和轮次状态；对照 A/B 可定位上下文相关性，但不能单凭 B 成功证明 CueKB 冷启动。预期两次 file.start 属于同一个 conversation/session/epoch，且各次 query 能对应正确产品。
+
+1. A 已结束并完成采集后，再开启新的窗口。窗口标签使用第一个文件名，实际采集包含两份输入：
 
    ```bash
-   bash scripts/validate_deployment.sh web-end
+   bash scripts/validate_deployment.sh web-start black_pig_crisp_heart
    ```
 
-6. 回传以下三项：本次 `web-start`/`web-end` 的终端输出；Console 过滤后的 `voice_file` 行；下列简短观察记录。无需导出 HAR、完整 messages、访问令牌或全部服务日志。
+2. 门户 Choose WAV 选择 `artifacts/native-cuekb/black_pig_crisp_heart.wav`，点击一次 **Start file call**。新通话会清空上一通话的模型历史。原问题为：
 
-   ```text
-   test_file=golden_yolk.wav
-   heard_audio=有声音 / 没声音
-   page_error=页面提示原文（没有则写无）
-   text_during_speech=播放时已逐步出现 / 播放结束才出现 / 没有文字
-   ```
+   > What does the product documentation say about the price, weight, pastry layers, and best consumption time for the Monkey Black Pig Crisp Heart fresh pork mooncake?
 
-随后再测试 Black Pig 一次：先执行下面的开始命令，再按以上步骤 3–6 上传 `artifacts/native-cuekb/black_pig_crisp_heart.wav`，观察记录中的 test_file 同时改为该文件名。两个产品使用独立通话和采集窗口，不在同一条通话连发两个长产品问题。
+3. Black Pig 文件发送完、Choose WAV 恢复可用后，可以先选好 `golden_yolk.wav`；**选择文件本身不会发送，不点击 Send recording**。等待 Black Pig 回答停止 Speaking 并出现终态，再观察 5 秒；如有新活动继续等，不按内容正误决定何时结束。
+4. 通话仍连接时点击 **Send recording** 一次，发送已选的 Golden Yolk。**不点 End call / Start file call，不刷新页面**；发送后按 A 相同规则等待 Golden 最新回答结束和 5 秒观察。B 的两次 Start/Send 操作顺序只做一次，不添加其他问题。
+5. B 从第一次 Start file call 起总计最多 **120 秒**，发送第二份文件不重置人工计时或连接寿命。Black Pig 未结束、连接已到期或第二次发送按钮不可用时，不强行发送、不中途新建连接代替；到上限就结束并记录 Golden 未发送/未发完/未答完。本轮如实标为对照证据不足，不因失败反复重跑或调大限制。
+6. 按第 5 节结束并采集，标记 `case=B_black_then_golden`。End call 后、下一次 Start file call 前，保留 B 中两份输入及**所有**回答，分别查看 Black Pig、Golden 的来源面板；不要仅复制最后一条 Golden 答案。尤其保留“没找到重量”和“65 克”是否在同一通话出现的信息。
 
-```bash
-bash scripts/validate_deployment.sh web-start black_pig_crisp_heart
-```
+## 5. 每次通话的统一结束与采集
 
-Black Pig 来源面板若显示 **Answer not verified**，截图保留原因码和来源数量即可；不要把它改记成查询失败。Golden Yolk 的 **Reply complete** 仅代表已交付回答，不代表运输、保质期、开封储存都已查到。若方便，同时保存两份最终来源面板截图；回答/来源是否相符由开发者根据摘要判断。
+**A、B 各执行一次：**先在门户点击 **End call**，随后在宿主机执行下面整段。不要在 A/B 之间留下未关闭的采集窗口。
 
-同一时间窗口最多自动汇总四个会话，逐个标注 CID；无法匹配时明确输出 unavailable，不挑一个会话冒充本次结果。保存的转写和业务状态由采集器只读获取。音频内容与来源由开发者分析；本页不要求操作者裁决答案是否准确。
-
-`voice_file` 用于补充浏览器的发送、首文字（speech_text.first）、首音频包和播放开始时刻。服务端首包时间不能替代浏览器开始播放，更不能替代实际扬声器听音。如果终端阶段没有延迟而浏览器仍等待，开发者才依据这些行进一步定位。
-
-## 4.1 补充：同一通话发送两个文件
-
-本操作单独运行一次，不与上面的 Golden Yolk 窗口混用。仍使用仓库固定文件，整个测试只点一次 Start file call，不要求操作者判断回答准确性。约一分钟内结束，避免故意撞上原有 105 秒限制。
-
-1. 先 End call 结束旧通话，宿主机执行以下命令。采集以第二个文件 general_tech 命名，窗口会包含两份输入。
-
-   ```bash
-   bash scripts/validate_deployment.sh web-start general_tech
-   ```
-
-2. 门户 Audio file → Choose WAV，选择 `artifacts/native-cuekb/hello.wav`，点击 Start file call。等待 **10 秒**。
-3. 同一页面点击 Choose WAV，选择 `artifacts/native-cuekb/tcp_udp.wav`，点击新按钮 **Send recording**。不要再点 Start file call 或 End call。
-4. 保持门户前台，等待 **35 秒**，点击 End call。不切后台、不锁屏。
-5. 宿主机执行：
-
-   ```bash
-   bash scripts/validate_deployment.sh web-end
-   ```
-
-6. 回传终端精简输出、Console 过滤的 `voice_file` 行，以及下面的观察记录。按钮不能点击或页面报错时，保留现状和提示，不重新测试。
-
-   ```text
-   files=hello.wav,tcp_udp.wav
-   history=两轮都在 / 第一轮消失 / 其他页面现象
-   page_error=页面提示原文（没有则写无）
-   heard_audio=有声音 / 没声音
-   ```
-
-开发者检查两次 file.start/file.sent 的 conversation_id、voice_session_id、epoch 一致，file_id 不同，后端有两份输入记录，原历史未被清空。query 是否出现依具体问题；hello/TCP 都可正常无工具回答。选择下一文件只在当前 WAV 全部发送后开放；下一份只在明确点击 Send recording 后发送，选择文件本身不发送、不重建会话，不自动重播。
-
-文件由 AudioWorklet 渲染时钟发送相同 80 ms 原始 PCM，不通过麦克风/重采样。后台持续播报暂缓，不在本操作验证；系统冻结音频、真实断流、网络错误及原来的连接上限仍生效。出现提示只回传对应精简行，本轮不修改保护阈值、不自动补发旧录音。
-
-## 4.2 定向验证：RNNT 修复后的 Hello / TCP 句首
-
-**故障假设：**显示转写使用 `predict(y=None, add_sos=True)`，其中 `y=None` 已提供一次零输入，再加 SOS 会让 LSTM 多走一步；当前取最后一步并缓存，初始状态因而偏离 NeMo 标准贪心解码。这可能导致音频完整但句首漏识别。已改为 `add_sos=False`，不改变控制分轮/打断的解码状态。上游同一基线的 VoiceChat wrapper 也有原写法，不能据此认定是本项目首次引入，或已经唯一证明现场根因。
-
-**方法与预期：**固定使用 `hello.wav` 和 `tcp_udp.wav`，自动/Web 各一次，每份文件都从新通话开始；不加静音、不改语速、不运行产品用例。保持门户前台。预期最终转写包含完整的 “Hello, how are you today?” 和 “What is the difference between TCP and UDP?”，下述音频和文字交接一致。标准贪心参考固定为 Speech `097dfe9e2f55baf653b83035868bdc89849f1b47` 的 `RNNTDecoder.predict` 与 `GreedyRNNTInfer._pred_step`；没有修改或升级权重。
-
-**自动侧：**在宿主机项目根目录执行以下一条命令。脚本依次为两份 WAV 新建连接，执行失败仍保留该次摘要并采集下一份，不重试同一份录音。
-
-```bash
-bash scripts/validate_deployment.sh prefix
-```
-
-回传终端输出即可；它已经限定为准备状态、单用例传输结果及每 case 三条定位摘要：
-
-- `prefix_audio`：会话/sequence、源文件到 VoiceChat 解码后的首 4 秒是否一致、重采样后到提交给 Triton 的首 4 秒是否一致，以及输入队列丢弃数。
-- `prefix_transcript`：预期句子、实际短转写（每条最多 160 字符、最多 8 条）、句首与全句的词序检查、原始 ASR 到最终文字/API/落库的哈希比较。标点和大小写不用于判定本次缺词。
-- `prefix_diagnostic`：定位结果与检查边界。证据缺失、混入多个 sequence、截断或输入条目不齐时明确 unverified，不能当作识别成功或模型故障。
-
-`transport_exit_code=0` 只表示原有传输验证通过；本命令最终以 `prefix_run` 和 `prefix_diagnostic` 为准。首次 4 秒比较包括 WAV 尾部的正常补零/静音。不会将 24 kHz 与 16 kHz 的哈希直接比较，也不据此声称重采样算法、模型实际编码帧或 Nano 理解已正确。
-
-**Web 侧：**打开 F12 → Console，开启 Preserve log，过滤 `portal.transcript.done`；先 End call。下面两次都按“开始采集 → 上传指定文件并 Start file call → 等待 20 秒 → End call → 结束采集”执行，不沿用上一个通话。
-
-第一次开始采集：
-
-```bash
-bash scripts/validate_deployment.sh web-start greeting prefix
-```
-
-上传 `artifacts/native-cuekb/hello.wav` 并 Start file call，等待 **20 秒**，End call 后执行：
-
-```bash
-bash scripts/validate_deployment.sh web-end
-```
-
-第二次开始采集：
-
-```bash
-bash scripts/validate_deployment.sh web-start general_tech prefix
-```
-
-上传 `artifacts/native-cuekb/tcp_udp.wav` 并 Start file call，等待 **20 秒**，End call 后执行：
-
-```bash
-bash scripts/validate_deployment.sh web-end
-```
-
-回传两次开始/结束命令的精简终端输出、Console 当前过滤出的行，以及每次页面上的用户转写原文。Console 行含 `transcript_chars` 和 `transcript_preview`，代表到达浏览器的最终转写；没有对应行就写“无”。不要求导出 Network/messages、HAR、原始音频或全量日志，也不要求操作者选择故障原因。中途报错照常结束采集，不重新上传或重跑。
-
-开发者按以下边界解释结果，操作者无需判断：
-
-| fault | 证据含义 |
-| --- | --- |
-| `INPUT_AUDIO_MISMATCH` | 原文件与 VoiceChat 解码后的首段不同；先核对文件身份、发送或解码，不归罪于 ASR |
-| `VOICECHAT_INPUT_QUEUE_MISMATCH` | 重采样后的首段与实际提交首段不同；检查缓冲/排队丢弃 |
-| `TRANSCRIPT_HANDOFF_MISMATCH` | 原始 ASR 累计文字或 VoiceChat 完成事件与 API 不一致 |
-| `TRANSCRIPT_STORAGE_MISMATCH` | API 收到的转写与落库不一致 |
-| `UPSTREAM_ASR_PREFIX_MISMATCH` | 已检查的音频和文字交接一致，但 ASR 句首仍缺；本次初始化修复未解决该次现象，停止重复测试并重新评估重采样/编码帧/识别路径，不据此断言模型没听见 |
-| `TRANSCRIPT_CONTENT_MISMATCH` | 句首满足预期，句子其他部分仍不一致 |
-| `INCOMPLETE_EVIDENCE` / `SESSION_UNVERIFIED` | 缺少可判定证据，停止本轮并报告缺口 |
-| `PASS` | 本次固定句子的转写比对通过；不代表整体问答、所有语音或真实听音已验收 |
-
-同一会话的所有最终输入条目一起核对，避免把拆成两轮的句首误报为丢失。API、落库和浏览器预览一致时，不通过门户补写 Hello 或问句前缀。两文件自动/Web 均通过则停止本次缺词调试；这不代表整体业务验收或长期准确率已完成。仍缺词或证据不齐就记录该次结果并停止同一方案复测，不重复改参数、不扩大到 20 轮。CPU 受控 LSTM 的首 token 反例不能作为现场识别成功的证明。
-
-## 4.3 本轮 V2 接入、预期输出与判定
-
-**已知基线：**2026-10-22 现场 `auto core` 中，两份产品录音均两次检索、终态后调用零、单次正式回答和 5 秒观察通过，Golden Yolk 后同连接 Hello 正常。Golden Yolk 转写到首个正式音频约 22.86 秒、两次注入合计约 16.73 秒；Black Pig 分别约 36.24 秒、29.96 秒。两份 CueKB 检索均合计约 0.2 秒，主要等待是 function 结果注入，不是知识库 HTTP 检索。
-
-**内容未放行：**Golden Yolk 漏答运输，未保留 15 天最佳食用限定，并无依据地区分同一产品的两个名称。Black Pig 有 `3:7` 被说成小数、65 g 漏答、“最佳两小时”变为保质期，以及三天条件疑似跨产品使用；其 `VOICE_MISSING_CONDITION` 来自否定条件的有限词法检查。自动 passed 不证明这些事实准确，不能只放宽检查或减少来源数量使结果变绿。
-
-**本轮已实现的接入边界：**严格选择 `/v2/search`，保留 applicability 和必要依赖；unknown/ambiguous 不补成查询产品，unresolved 组不直接肯定作答。完整组按排名和预算取舍；可选周边省略不损坏必要组。精简模型包保留可读归属、正文和必要条件，评分/位置/内部 ID 留在审计。V2 状态、配置错误和选择受限不能一律降为“没有资料”。旧历史仍可读，在线不回退 M3/V1。
-
-以下为开发者核对字段，操作者只回传命令精简输出：
-
-| 输出 | 预期与含义 |
-| --- | --- |
-| preflight | `cuekb_api=v2` 表示本项目配置；Golden Yolk `cases=2` 包含同连接 Hello。不是上游 V2 就绪证明 |
-| cuekb_v2 | `schema_version=2`、实际 `ranking_method`、service_hits/adapter_retained/adapter_omitted、scope_counts、required_parts/unresolved_groups、omission_counts、上游 hits 与 Adapter 大小；无 reranker 可正常执行 |
-| voice_evidence / evidence_delivery | 前者给候选/选中组、归属/必要上下文计数、选择阶段 `selected_payload_bytes`、拒绝与可选省略；后者 `payload_bytes` 是含指令/批次结构的实际提交大小。二者不当作 Nano token 数 |
-| case | 产品实际检索 <=2；`extra_answers=0 quiet_observation=passed`；内容失败保留 failed/reason，不把提交终态当作回答成功 |
-| 同连接下一问 | 同一 conversation_id 中 greeting 有非空音频及完成；Hello 不应触发工具 |
-| admitted_evidence | 每条可读 applicability、完整必要 context、context_state、required_context_chunks 与正文；最多 8 组/6000 字符，超出明确 omitted |
-| input_timing / backend_injection | 转写→首个正式音频、最后结果→首音频、实际 token、每次注入开始/结束。以本轮真实结果比较，不由 API 字节数宣称时延达标 |
-| answer_check / turn | input/response、具体 reason、最多三条条件失败和引用数；只索取确有必要的对应片段，不打印完整日志 |
-| 门户 | 归属未知/歧义、条件与必要上下文状态可见；正文在播报结束前逐步出现；Answer not verified 不等于检索失败 |
-
-`CUEKB_CONFIGURATION` 优先定位 CueKB 的模型/索引/已发布处理版本；`CUEKB_CONTRACT` 定位严格 V2 响应不兼容；`CUEKB_DEPENDENCY` 表示 HTTP/服务依赖失败；`CUEKB_RETRIEVAL_LIMITED` 表示上游 degraded 空结果或选择受限，不能冒充正常查无资料。`CUEKB_VOICE_EVIDENCE` 再结合 unresolved、unknown/ambiguous 和 budget 区分原因。开发者处理，操作者不修改参数、不选字段。单个 `context_state=complete` 也只证明已识别必要依赖完整，不代表全部所问属性已找到。
-
-每份原 WAV 自动/Web 各一次。若同一方案两次无新增证据则停止复测，三种假设仍无进展则报告阻塞。CPU 契约通过不能替代真实知识语料、GPU 续答、听音和时延验收。本轮不调整 105 秒上限、固定 30 秒活动宽限或后台播放。
-
-## 5. 完整四文件对照（开发者要求时执行）
-
-自动侧只需一条命令；四份主文件分别建立新连接，一份失败仍采集其输出并继续其他文件；Golden Yolk 额外带同连接 Hello 追问：
-
-```bash
-bash scripts/validate_deployment.sh auto all
-```
-
-Web 侧按以下顺序，每个文件重复第 4 节的全部动作，只替换开始命令及上传文件；结束命令固定不变。
-
-| 顺序 | 开始命令 | 上传的仓库文件 |
-| --- | --- | --- |
-| 1 | `bash scripts/validate_deployment.sh web-start greeting` | `artifacts/native-cuekb/hello.wav` |
-| 2 | `bash scripts/validate_deployment.sh web-start general_tech` | `artifacts/native-cuekb/tcp_udp.wav` |
-| 3 | `bash scripts/validate_deployment.sh web-start black_pig_crisp_heart` | `artifacts/native-cuekb/black_pig_crisp_heart.wav` |
-| 4 | `bash scripts/validate_deployment.sh web-start golden_yolk` | `artifacts/native-cuekb/golden_yolk.wav` |
-
-每份文件只执行一次，回传格式同第 4 节。固定四文件隔离连接是为了比较相同起点，不等于同连接多轮已验收。Golden Yolk 的两段始终保留在同一次上传、同一连接中。
-
-## 6. VoiceChat 独立核对
-
-**文件与配置检查**已包含在 `check`、`auto` 和 `web-start` 中；无需人工运行 hash、编译或导入 Triton 模块。检查成功只证明磁盘文件匹配和诊断配置，不能证明模型行为。模板在进程启动时加载，因此仅覆盖挂载文件而不重建进程，不能算已部署。
-
-**原生工具传输检查**已经由同次日志采集输出：`session.session_match`、`backend_prompts`、`model_function_count` 和 `backend_injection`。只统计通过 input/call/response ID 关联的 sequence；无法关联时模型次数为 null，不能解释为 0。后端 Prompt 中应包含 `search_knowledge_base`；文件身份和 Prompt 传递均不能证明回答内容准确。
-
-**批次预期：**同一解码批次的多个调用由 API 分别结清，VoiceChat 接收一次聚合结果。若第一次单调用、第二次两个调用，可能出现 API received=3、实际检索=2、result_injections=2；不是“三次调用必须三次注入”。累计证据必须保留，已排队超额成员不应误报为终态之后的新调用。模型实际调用数可能变化，不能强求某个固定次数。
-
-**官方客户端能力检查**只在开发者明确要求确认 `--function-text-output` 时执行一次，不重跑 WAV：
+该命令先调用现有 web-end，再自动使用本窗口的文件和会话输出阶段时间线与分轮元数据。只读已有记录，不发送录音、不发起模型或 CueKB 请求；原始日志仍留在本机。采集失败也保留本次输出，不读取上一次结果。
 
 ```bash
 bash <<'SH'
 set -uo pipefail
 umask 077
-LOG=$(mktemp /tmp/voice-client-help-XXXXXX.log)
-if docker exec "${VOICE_CONTAINER:-nemotron-labs-voicechat}" python /opt/voice-validation/nemotron-voicechat-client.py --help >"$LOG" 2>&1; then
-  if grep -q -- '--function-text-output' "$LOG"; then
-    echo official_client_function_log=supported
-  else
-    echo official_client_function_log=not_advertised
-  fi
-else
-  echo official_client_function_log=unavailable
+END_SUMMARY=$(mktemp /tmp/voice-current-end-XXXXXX.txt)
+bash scripts/validate_deployment.sh web-end >"$END_SUMMARY" 2>&1
+END_STATUS=$?
+cat "$END_SUMMARY"
+ARTIFACT_DIR=$(sed -n 's/^local_artifacts=\(.*\) raw_logs=not_printed$/\1/p' "$END_SUMMARY")
+CASE_IDS=$(sed -n 's/^session={"conversation_id":"\([a-f0-9-]\{36\}\)".*/\1/p' "$END_SUMMARY" | sort -u)
+if [[ -z "$ARTIFACT_DIR" || -z "$CASE_IDS" || ! -f "$ARTIFACT_DIR/api.log" || ! -f "$ARTIFACT_DIR/voicechat.log" ]]; then
+  printf 'timeline=unavailable reason=NO_CURRENT_WINDOW_OR_SESSION\n'
+  exit 1
 fi
+API_CONTAINER=$(docker compose --env-file .env -f deploy/compose.production.yaml ps -q api 2>"${END_SUMMARY}.setup")
+if [[ -z "$API_CONTAINER" || "$API_CONTAINER" == *$'\n'* ]]; then
+  printf 'timeline=unavailable reason=API_CONTAINER\n'
+  exit 1
+fi
+TIMELINE_STATUS=0
+while IFS= read -r CASE_ID; do
+  cat "$ARTIFACT_DIR/api.log" "$ARTIFACT_DIR/voicechat.log" | docker exec -i "$API_CONTAINER" python -c '
+import json, re, sys
+from scripts.summarize_voice_timeline import summarize
+limit = 8 * 1024 * 1024
+text = sys.stdin.read(limit + 1)
+if len(text.encode()) > limit:
+    print("timeline=unavailable reason=LOG_WINDOW_TOO_LARGE")
+    raise SystemExit(1)
+try:
+    header, rows = summarize(text.splitlines(), sys.argv[1])
+except ValueError:
+    print("timeline=unavailable reason=TOO_MANY_EVENTS")
+    raise SystemExit(1)
+print("timeline=" + json.dumps(header, separators=(",", ":")))
+for row in rows:
+    print("stage=" + json.dumps(row, separators=(",", ":")))
+sequences = set(header["sequence_ids"])
+wanted = {"input.bou", "agent.bos", "function.start", "function.valid", "function.invalid",
+          "function.extract.stop", "function.cancel", "function.inject", "sequence.end"}
+allowed = ("event", "sequence_id", "at_ms", "step", "source", "state", "phase", "reason",
+           "silent_frames", "effective_bou_min", "dropped_events", "tokens", "completed",
+           "preparation_ms", "append_wait_ms")
+boundaries = []
+for line in text.splitlines():
+    if "voice_model_diagnostic " not in line:
+        continue
+    try:
+        event = json.loads(line.split("voice_model_diagnostic ", 1)[1])
+    except ValueError:
+        continue
+    if str(event.get("sequence_id")) not in sequences or event.get("event") not in wanted:
+        continue
+    stamp = re.match(r"^(\d{4}-\d\d-\d\dT\S+Z)\s", line)
+    boundaries.append({"at": stamp[1] if stamp else "unknown",
+                       **{key: event[key] for key in allowed if key in event}})
+boundaries.sort(key=lambda row: row["at"])
+for row in boundaries[:40]:
+    print("model_boundary=" + json.dumps(row, separators=(",", ":")))
+print("model_boundaries=" + json.dumps({"conversation_id": sys.argv[1], "total": len(boundaries),
+    "omitted": max(0, len(boundaries) - 40), "basis": "docker_log_not_speaker"}, separators=(",", ":")))
+' "$CASE_ID" || TIMELINE_STATUS=1
+done <<< "$CASE_IDS"
+if [[ "$END_STATUS" != 0 || "$TIMELINE_STATUS" != 0 ]]; then exit 1; fi
 SH
 ```
 
-回传这一行即可。该参数是官方客户端保存自身连接的工具事件的能力，不是 Web/API 连接的旁路抓包开关；不据此启动另一条连接替代本次证据。
+## 6. 每个窗口回传什么
 
-## 7. 开发者判据（操作者无需执行判断）
+回传本次准备检查、web-start 和第 5 节的**全部终端输出**，它们已按窗口/会话限制范围；另附 Console 当前过滤出的 `voice_file` 行、门户的完整用户转写/回答与来源面板。原始日志、录音、令牌、HAR 和 report.json 不用贴。Console 没有对应行或来源面板不可用就写“无”，不要从旧通话补齐。
 
-### 核心问题与最少证据
+A、B 各填一次下面的观察记录；时间只记大约秒数，不需要人工计算阶段耗时或检查事实正确性：
 
-| 问题 | 使用已有摘要的判定边界 |
-| --- | --- |
-| Black Pig 是否由模型发出工具 | session_match=passed 时结合 model_function_count；0 表示本窗口未观察到模型函数，不等于注册失败 |
-| 模型发出但应用没执行 | 对比模型函数、API received、实际检索和批次结清；先排除去重、预算及错误，不机械要求次数相等 |
-| 工具结果是否回来 | api_cuekb 状态、命中、trace、耗时；results_submitted/result_injections 与 backend_injection 分层核对 |
-| Golden Yolk 第二段是否调用 | 按 record 的输入正文和 input_item_id 关联工具、预算、回答；不拿第一段答案放行 |
-| 时间卡在哪里 | input_timing 给出转写→首次调用、转写→首次正式音频、末次结果→首个非 ACK 首包与重复回答数；backend_stages 给出 ACK 缓冲/注入/idle；结合浏览器 voice_file 的播放阶段 |
-| 回答是否来自知识库 | turn、trace、query、实际准入的 admitted_evidence，与回答逐项对照；omitted 大于零时不能声称已完整核验 |
-| 流式文字 | input_timing.answer_text 为正式回答首文字发送时间；text_before_done_ms 应大于零；浏览器 speech_text.first 应早于对应 speech_text.done；最后用操作者的文字出现观察确认显示 |
-
-时间基于 Docker 日志观察时刻，不是 GPU 内部精确计时。多次检索间隔可能包含 ACK 和模型决策；没有对应 response 的完成记录时，不把未分类音频当成最终答案。摘要明确标注 truncated/omitted 的部分不作完整证据。首文字时间不是全文完成时间，也不是 DOM 已渲染的证明。需要某条引用或回答的完整内容时，开发者应给出**只提取该 input/response/citation** 的只读命令，不能转而要求全量日志。
-
-### 放行标准
-
-- 普通问候和 TCP/UDP 可以无工具、无来源；产品问题应按注册工具进入 CueKB。
-- 每 input 实际检索不超过默认 2 次，无 HTTP 自动重试；精确重复和预算耗尽进入终态；终态后的新调用明确失败，不无限回放。
-- 每完整批次一次聚合注入；新增完整来源补充到模型本问题历史，已发送相同来源不重复注入；累计校验/引用与权限/版本检查保留；后续真实新输入拥有新预算和独立去重集合。
-- 最新输入的非 ACK 文本、非空音频与结束事件齐全，结束后 5 秒无无输入重复正文，同连接下一问正常，且产品答案提交为 answered、有引用。终态已提交、音频已发送、工具诊断 passed 均不是答案成功的替代条件。
-- 内容应回答有据事实、保留数字/单位/限定条件；无法确认的部分明确说明“本次检索材料无法确认”。不能声称事实不存在或整个公司知识库没有该信息。诚实部分回答可以通过，但内容由开发者核对，必要时请求对应音频。
-- Web 与自动验证采用同版 WAV、相同 API Relay/工具目录/VoiceChat/CueKB；原始 24 kHz 单声道 PCM16、80 ms 帧，末帧补零，ready 后发送，EOF 后继续静音；Web 文件时钟使用 Worklet，不依赖后台窗口定时器。浏览器真实播放与回执仍与自动脚本不同，不能宣称逐毫秒等同或模型选择必然一致。
-
-### 后续验收，不混入当前故障轮次
-
-同连接多轮/指代、麦克风打断、等待工具交互、断线轮换恢复、权限撤销和容量仍需独立验收，不因单个知识答案通过而放行全产品。需要多轮/打断时，沿用 `web-start`/`web-end` 采集流程，开发者在执行前提供固定英文问题、说话顺序和等待秒数；不得要求操作者临场决定如何触发问题。自动四文件新连接测试不替代这些专项。
-
-同一假设两次无新增证据即停止；三种假设仍无进展，报告环境、设计或技术路径阻塞。不得盲目重复、扩大预算、调整 WAV 或将诊断通过写成业务通过。
-
-## 8. 当前事实与未解决事项
-
-- CueKB V2 代码评估已确认真实 RRF、可选 reranker、审核归属、required 上下文及有界诊断机制。本项目本轮完成接入，尚无 V2 的真实部署/文档重处理/听音验收；不能引用合成契约样例证明产品准确性。
-- 旧版最近一次 `auto core` 已有单次正式回答、5 秒无额外回答和同连接 Hello 的正面证据；该样本不代表任意输入都不会重复。其时间与内容问题见第 4.3 节，不重复历史排障流水。
-- 产品归属需有明确结构或审核映射；未知归属不能从模型 query 猜测。任意文档的跨段例外和复合属性完整召回没有无条件保证。
-- 当前数字/条件检查是有限检查，英文数词、比例和事实归属不能由一个 answered 标记认证。`3:7` 口述及价格/重量/运输覆盖继续人工逐项核对；本轮不以新增答案模型掩盖失败。
-- Hello/TCP 录音缺词按用户多次正常反馈收敛，不扩大为麦克风或全部语音识别准确率验收。
-- 105 秒连接上限、固定 30 秒活动宽限及后台持续播报按用户决定保留/暂缓；本轮不修改 VoiceChat，不做后台或锁屏验收。
-
-历史逐轮记录、旧设计和重复验证手册由 Git 追溯。外部 VoiceChat 源码、manifest 和接口快照是运行文件与协议资产，不是另一份操作手册。
-
-## 9. 开发回归（开发者在开发环境执行）
-
-生产操作者不执行本节。这里只列本仓库回归入口；CPU 夹具不代表真实 GPU/知识库/听音通过。开发环境需 Python 3.12、Node/npm；依赖版本沿用仓库固定文件，按实际修改选择测试。
-
-本轮本地记录（2026-10-23）：Python 全量执行为 672 passed、9 failed。同步 V2 过滤字段断言，并把条件缺失用例改为明确由用户提供条件后，对失败项及数字/单位相关用例单独复核，11 passed；其中两项短时限测试隔离通过，未放宽运行超时。Ruff、生成契约一致性、Web 38 项单元测试、构建和 1 项来源展示/权限撤销浏览器回归通过。这些是本地应用与合成接口证据，真实 CueKB/GPU 及产品内容仍待上述部署验证。
-
-```bash
-python3.12 -m venv .venv
-.venv/bin/python -m pip install --disable-pip-version-check -r requirements-dev.txt
-npm ci --prefix apps/web
-.venv/bin/python -m pytest -q
-.venv/bin/ruff check apps/api tests scripts
-npm test --prefix apps/web
-npm run build --prefix apps/web
-PYTHONPATH=apps/api .venv/bin/python scripts/export_contracts.py
+```text
+case=A_golden_first / B_black_then_golden
+checking_knowledge=A 的 Golden，或 B 的 Black Pig / Golden 各写出现或未出现
+heard_audio=有声音 / 没声音
+text_during_speech=逐步出现 / 结束才出现 / 无文字
+second_file=B 写已发送 / 未发送 / 未发完，A 写不适用
+end_reason=正常完成 / 120秒等待上限 / 页面或连接提前结束
+page_error=页面提示原文，没有则写无
+portal_answers=按显示顺序保留全部答案；每段标注 A、B-Black 或 B-Golden
 ```
 
-浏览器文件入口夹具：先在一个终端执行 `npm run dev --prefix apps/web -- --port 5173`，在另一个终端执行 `cd apps/web && npm run test:e2e -- voice-file.spec.ts`。若使用系统 Chromium，给后一条命令设置 `PLAYWRIGHT_CHROMIUM_EXECUTABLE=/usr/bin/chromium`。供应商和 PCM 由夹具生成，不是真实模型准确率。
+服务端摘要包含 `session`、`input_timing`、`backend_injection`、`backend_stages`、`query`、`record`、`turn`、`voice_evidence`、`evidence_delivery`、`answer_check`、`admitted_evidence`；新增只读输出为 `timeline` / `stage` / `model_boundary`。采集器会同时标注截断和 omitted。`admitted_evidence` 只展示窗口中最新有证据答案的有界样本，B 中通常是 Golden，**不能拿它证明先前 Black Pig 的来源**，因此 B 的两种产品来源面板都要保留。
 
-本轮重点回归严格 V2 公开样例、旧响应拒绝、必要依赖不完整、未知/歧义归属、完整组预算、累计证据与权限撤销，以及有界诊断不泄漏原文。前端构建及来源显示回归需同步检查。实际执行数量以本次交付结果为准，不把历史测试数写成本轮执行。
+## 7. 开发者如何判断（操作者不执行选择）
 
-模型结果 `partial` 不认证内容覆盖，也不表示没有省略可选邻居；该类省略见 `voice_evidence.omitted_optional_context_count`。实际提交大小以 `evidence_delivery.payload_bytes` 为准，包含终态指令和批次结清。选择阶段先预留这些开销，再按完整组取舍，不能依赖提交时报错后截断正文。
+### 7.1 时间花在哪里
 
-本轮不改外部 VoiceChat 文件，不为 V2 接入要求重装其 CPU 测试依赖或重跑正常 RNNT。以上检查均不代表真实 CueKB 内容、GPU 首包、麦克风或扬声器验收；现场只按第 3、4 节执行一次并回传精简结果。
+按 `conversation_id → sequence_id → input_item_id → call_id/response_id` 对齐 A/B。两个问题、两个 input、两个调用和两次注入不是同一个计数；Gold WAV 被分轮后还须核对 query 是否带回完整产品名与全部属性。
+
+| 阶段 | 证据与判断 |
+| --- | --- |
+| 是否生成工具调用 | `session_match`、`backend_prompts`、`model_function_count` 和 `model.function`，再对照 `voice_tool_call_received`。0 与无法关联的 null 分开；Checking knowledge 未显示不等于调用数为 0 |
+| 实际检索 | `voice_tool_call_received`、`cuekb_response_validated.duration_ms` 与实际 trace。工具耗时只覆盖其计时范围，不等于 VoiceChat 已消费结果 |
+| 应用交付 | `cuekb_response_validated` → `voice_tool_result_submitted`；若这一段长，核查应用 DB/锁、权限复核与发送，而非一概归为模型慢 |
+| VoiceChat 排队 | `voice_tool_result_submitted` → `voicechat.function.batch_result` / `voicechat.function.result` → `backend.result_received` |
+| 剩余 ACK 与调度 | `backend.result_received` → `backend.inject_started`；结合 `backend.buffered_ack`，不能将这整段都称为 ACK 播放 |
+| 结果逐 token 注入 | `backend.inject_started` → `backend.inject_done`，结合 `backend_injection` 的 token 范围。代码确认逐 token 模型步骤，实测后才可说本轮是否仍主要耗在这里 |
+| 第二次调用间隔 | 同 input 的第一次 `voice_tool_result_submitted` → 第二次 `voice_tool_call_received`，进一步拆 ACK、注入、后续工具生成；结合所有正式音频/完成事件检查中间是否已有一段回答 |
+| 真实播放等待 | 服务端 `voice_audio_first_sent` 与浏览器 `voice_file.audio.first` / `playback.started` 分开；Docker 时间不是扬声器听音时间，跨主机时钟不直接相减 |
+
+`input_timing.answer_audio` 选择最后结果之后的首个完成回答，不保证包含之前曾出现的正式回答；不能单凭该指标排除“先答后查”。完整 `stage` 中的各次 response 才用于核对这条路径。`backend_injection` 的 token 值是 min/max 范围，不能假设每次注入长度相同。若有 truncated、omitted、缺边界或无法关联，只报告已测区间，不推算缺失阶段。
+
+### 7.2 首问触发与内容
+
+| 检查项 | 判据 |
+| --- | --- |
+| Golden 首问 | A 中完整两段实际输入可见、工具目录正确、模型发出真实知识调用；若未触发，使用 `model_boundary` 的 input.bou / agent.bos source 与 query 定位，不宣称 CueKB 没数据 |
+| 同连接对照 | B 中两个 file.start 的 conversation/session/epoch 一致，顺序为 Black → Golden；Golden 未发送、未发完或到期时结论是对照不足。A 失败/B 成功只支持上下文或轮次相关，不直接证明冷启动或唯一根因 |
+| 两次检索 | 默认每输入最多两次实际查询，无自动 HTTP 重试；第一/第二次 query 与缺失属性对应，不要求为了通过而凑满或强制只查一次 |
+| Black Pig 内容 | 价格、重量、层数、最佳食用时间逐项作答，缺证据的项明确合并说明；不以肉源或好评介绍代替所问属性。65 g、比例、冷藏/密封期限必须有实际来源与适用条件 |
+| 比例与期限 | 若实际原文为 3:7，不得说成 3.7%；肌内脂肪百分比与肥瘦比例分别核对。“最佳食用”不能改成硬保质期，储存条件不能跨产品借用 |
+| Golden 内容 | 运输、密封保质期、开封后储存分别回答或明确无法确认；若来源写 15 天最佳食用，保留“最佳”限定，不只罗列 45/15/3 三个数字 |
+| 回答数量 | 按实际输入及 response 区分 ACK、停顿分轮与同输入重复正式回答；没有新输入时的额外回答须记录，不能把不同输入的答案直接算为重复 |
+| 验证边界 | Reply complete / answered / collection=complete 均不等于事实、听音或时延验收。当前没有据此设定新的秒数达标线，本轮先定位每段耗时 |
+
+收到这两次窗口后先分析，不自动追加复测。相同方案连续两次无新增证据就停止；若三种假设仍无进展，重新评估设计、环境和技术路径，不放宽查询、来源或时限标准。
+
+## 8. 已收到的现场结果与下一步（2026-10-25）
+
+### 8.1 本次证据范围
+
+用户提供 A 的独立 Golden 门户结果、B 的 Black → Golden 门户结果，以及一次包含两个会话的 web-end 摘要与完整 stage 输出。窗口标签是 golden_yolk，实际覆盖 UTC 13:23:35–13:32:24（北京时间 **21:23:35–21:32:24**），不是只有 Golden 的记录。按 CID/sequence 可区分 A/B，无需仅因共用窗口重测；窗口长度也不能当作单条连接时长。
+
+- A：CID `812e2a6b-3888-48cc-b19e-f88f171d68e7`，sequence `2131184838`。
+- B：CID `105fab11-b2fa-4934-9f0f-9e0a550d3a1b`，sequence `1311217920`。
+- 两个后端 prompt 均为 8615 字符，SHA-256 均为 `33e653e03db6f172e87cba6a00a86b130cfbe7709988d184c52505d5afeb41d6`，工具名均含 search_knowledge_base。这证明观测到的提示词输入一致，不证明模型遵守了指令。
+- 本次附件没有准备检查/runtime 身份行、voice_file 浏览器发送/播放记录；两会话的 model_boundaries.total 均为 0。可判断阶段耗时与真实调用，不能判定每个 BOS 来自 model_native 还是 forced_eou，也不能证明浏览器完整发送或实际扬声器播放时间。不能把边界元数据缺失解释为没有发生分轮。
+
+### 8.2 时延已定位到结果消费
+
+下表按 stage 的调用顺序关联。毫秒检索值来自 cuekb_response_validated；秒数按同窗口 Docker 时间戳相减。结果消费不是全部 GPU 算时，也包括逐步传输与调度。
+
+| 调用 | 所属输入及实际 query | CueKB | API 收到调用→提交结果 | 后端收到结果→注入开始 | 结果注入 |
+| --- | --- | --- | --- | --- | --- |
+| 1 | Black 同一输入初查：Monkey Black Pig Crisp Heart Fresh Pork Moon Cake | 89 ms | 0.180 s | 1.670 s | **21.905 s** |
+| 2 | Black 同一输入补查：price, weight, storage requirements, and shelf life of Monkey Fresh Pork Mooncake | 78 ms | 0.177 s | 1.683 s | **12.590 s** |
+| 3 | Golden 第一段：Monkey Golden Yolk Moon Cake | 78 ms | 0.177 s | 1.689 s | **14.521 s** |
+| 4 | Golden 第二段：shelfl life of Monkey Golden Yolk Moon Cake | 79 ms | 0.177 s | 1.695 s | **15.415 s** |
+
+四次结果提交到后端接收仅约 0.033–0.051 秒；四次均收到、注入完成、回 idle，无取消或 decoder limit，结果规模为 362–634 tokens 的 min/max 范围。不能把这个范围当作每次精确 token 数。
+
+Black 两次检索合计 **0.167 秒**，两次注入合计 **34.495 秒**。转写完成→首个正式回答音频 **40.798 秒**，注入占约 **84.6%**。第一次工具结果提交→第二次工具调用 **25.717 秒**，可拆为：传递到后端 0.033 秒、ACK/调度 1.670 秒、注入 21.905 秒、注入后到下一次 API 调用 2.109 秒。本次 Black 在第二次结果之后才出现唯一正式回答，中间两段均为 status ACK，**不支持本次“先正式回答再补查”**。
+
+B 中 Golden 两次合计检索 0.157 秒、注入 29.936 秒，但它们属于两个 input_item_id，各只执行一次，不能称为同输入的第二次补查。原先“每次必定两次检索”的解释须按输入区分。
+
+B 四次检索累计 **0.324 秒**，四次注入累计 **64.431 秒**。这个样本应先优化结果消费与无关查询/负载，不能把本次主要瓶颈归给 CueKB 检索或 API 交付。
+
+### 8.3 Golden：独立首问确实未调用；上下文测试仍有输入缺失
+
+A 中实际出现两个输入：第一段为产品名问题，第二段包含运输、保质期、开封储存。它们分别收到普通回答；model_function_count=0、api_tool_calls=0、CueKB responses=0、queries=0。不是查不到，也不是仅未显示 ACK。第二段以 I do not have access… 开头并给出一般月饼储存建议，违反当前产品问题必须检索、不得以一般知识替代的会话指令。由于 A 第二段实际文字完整，不能只用 ASR 缺字解释全部漏触发；需定位 VoiceChat 原生工具选择和上下文/分轮。
+
+B 第一段 Golden 已成功检索并完成注入，随后该 Turn 因 request_revised 变为 superseded。第二段输入记录仅为 **? How long is its shelf life**，query 也只搜 shelf life；运输和开封储存未保留为本次请求属性。首段从北京时间 21:31:04.676 开始注入，到 21:31:19.197 完成；第二段 voice_input_started 已在 21:31:03.711 出现，说明该段输入与注入区间交叠。model.py 的 infer 在抽取/注入期间于保存音频之前 continue，确定存在跳过输入的代码路径；结合此交叠和残缺转写，属于需优先修复的全双工缺陷。没有 voice_file 和模型边界记录时，尚不能认定具体缺词全部由此造成，或反推哪个音频帧被跳过。
+
+本次 api_diagnostic=TOOL_ANSWER_NOT_COMPLETED 是有工具的三个输入中仅两个完成正式回答，首段 Golden 被修订取代；不是 CueKB 超时或工具结果未回来。Superseded 本身是应用的修订结清结果，不能用重试检索消除。
+
+### 8.4 查询、来源与回答检查
+
+- **Black query 发生属性漂移：**转写含价格、重量、层数、最佳食用时间；首查只有产品名，补查改成价格、重量、储存要求和保质期，并把精确 Black Pig 名称缩成 Monkey Fresh Pork Mooncake。实际 query 未保留全部所问属性，且补查属性组合与模板/目录示例接近；示例偏置是待验证原因，属性漂移本身已可确认。不能把每次补查都视为正确补齐缺失项。
+- **来源归属未建立：**四个 V2 响应及四次语音选择均为 resolved=0、unknown=5；没有发生 API 预算或非 ASCII 省略，不能把来源缺失归因于本次预算。最终 Golden 的五块样本含产品名、标题、评论及无归属的保质期条目，未附加 required 邻块；required_context_chunks=0 本身不等于错误，也不能证明产品归属已完整。V2 接口/RRF 返回正常不等于产品归属数据准备完成；章节归属与发布需要 CueKB 侧处理，不能在应用中按 query 猜成目标产品。Black 的逐块来源未在附件展示，不能据此证明其三天/四十五天已串用。
+- **Golden 的期限回答在本次与 C4 文本相符：**45 天密封、15 天最佳食用、开封冷藏三天，且这次保留了 best consumed。该项较之前用户文本更完整，但 C4 applicability 仍 unknown；运输仍未回答，而请求/query 中运输已缺失，不能单独归罪于回答合成漏答。
+- **Black 的未验证原因已明确：**VOICE_MISSING_CONDITION 命中 C5 中 ordinary white pigs mostly have **only** 1% to 1.8% 的对比说明，答复没有复述 only。此为词法 source_signal 检查，不是对 3:7、储存产品归属或用户全部属性的实际认证；该条存在无关对比触发误报的问题，应改善条件关联，不能直接改为一律通过。
+- Black 本次只有一段正式回答，仍未答价格或明确说价格未确认；three point seven percent fat-to-lean ratio 仍需用本次原文核对，英文数字未被有限词法检查充分覆盖。Answer not verified 与事实问题并非同一层；Golden 的 Reply complete 也没有证明运输/适用产品已验证。
+
+### 8.5 下一步顺序与复测边界
+
+不再重复未修改版本的 A/B。当前证据足以进入针对性修改，按以下依赖顺序处理：
+
+1. VoiceChat 先保证抽取/注入期间真实音频不被跳过，审查快路径 decoder/audio 步数与用户新输入的处理；不能仅把跳过的音频拼到已用零音频推进的缓存后面就宣称正确。保留原生选工具与已有提交边界，不新增语义分类器、强制工具选择或额外答案模型。
+2. 对结果注入做保持同一 sequence/cache/function 通道的性能方案验证；批量消费需要实际 vLLM 能力与 GPU 证据。同步减少与所问属性无关的来源和错误补查，但不截掉事实归属、必要条件或按一次查询强行掩盖漏答。
+3. 修正原生 query 对完整请求及精确产品名的保留，检查模板示例偏置和独立首问的工具策略遵循。A 的零调用问题不能靠 CueKB 重试、提高查询预算或已有 Black 历史掩盖。
+4. CueKB 处理当前 unknown 产品归属与必要章节关系；应用侧改善来源条件与回答实际使用事实的关联检查，分别核对价格/比例/储存条件，不只追求页面变绿。
+
+涉及 VoiceChat 的修改仍须完整文件同步、manifest/启动身份核对及受影响回归；第 9 节说明本次已落地的修改与待测边界，更新后按第 2–7 节复测同样 A/B；浏览器发送记录和模型边界的采集缺口也应在下一轮前补齐。不改变原 WAV、105 秒上限、固定 30 秒宽限或查询预算。每种方案两次无新增证据即停止，三种假设无进展则重新评估设计与环境。
+
+### 8.6 文档检查与历史方法
+
+此前文档检查已验证本地链接、围栏、4 个 Bash 命令块及内嵌 Python 语法，并用合成日志验证时间线排序、会话隔离与异常分支。这些检查不替代本节真实样本，也不证明模型细分边界在实际日志中可用。当前新增耗时根据用户提供的 stage 数据计算，未自行重跑生产请求；用户附件不作为仓库产物提交。
+
+开发者补充入口仅在明确需要排除 Web 文件发送差异时使用：`bash scripts/validate_deployment.sh auto core`。它独立发送 Golden、Black，并在 Golden 后自动追加 Hello，不包含 Black → Golden 产品对照；本轮操作者不要额外运行。其他旧轮次的方法、部署操作和历史测试记录统一保存在[历史验证方法归档](archive/2026-10-25/validation-before-current-issues.md)，不作为本轮前置操作。
+
+
+## 9. 本次编码范围与待联调项
+
+用户已将内容侧问题交给 CueKB，本次按其新版已支持、待真实联调处理，不在本仓库重做其内容或归属算法。第 8 节 unknown/数值/条件等仍是修复前样本，不能标成新 CueKB 结果。
+
+本次 VoiceChat 改为：真实音频消费游标独立于 decoder 工具步数；抽取/注入期间保留输入和待处理结果；每次请求最多消费四个积压窗口，保留原两帧语义边界及输出顺序。工具线程异常明确失败，部分未知写入不重放。模型函数结果预先计算 embedding 并一次复制到 CPU，单协程顺序 append/anext；跳过未使用的正文 logits 采样、每 token 的重复传递和跨线程等待。**仍然每 token 一次引擎步骤，未使用未经确认的多 token append；不宣称已消除全部串行模型耗时。**
+
+本项目同步加强独立首问产品事实必须检索、精确产品名及首查完整属性；query schema/目录/模板示例配套，格式示例不替换实际问题属性。服务端不按转写分类或偷偷重写模型 query；提示约束的真实遵循仍需 Golden 独立 A 验证。
+
+下一轮额外查看 backend.audio_buffered / backend.audio_resumed 的 received_samples、processed_frames，以及 backend.inject_profile 的 tokens、completed、preparation_ms、append_wait_ms。后者是模型 append/anext 与协程执行区间，不当作纯 GPU 算时。即便模型细分边界日志仍缺失，这些计数阶段也会作为常规后端日志采集。backend_stages 的有界行数提高到 32，完整 stage 仍标注截断。
+
+本次本地检查：API 全量 682 passed；新增健康检查及时间线/完成边界收尾专项 71 passed；VoiceChat 独立 CPU 44 passed，含 float32/bfloat16 通道递推、逐样本保留与两帧 EOS/BOS 报文边界；契约生成、Ruff、12 个快照 hash/完整文件编译、补丁逆向和启动命令语法通过。本环境没有 GPU、真实 CueKB 新版或实际听音；未部署，不把 CPU 测试或提示文本当作真实原生工具质量/时延验收。更新后只执行同样 A/B 一轮，保留原始停顿和 105 秒/固定 30 秒宽限。
+
+
+开发回归仅由开发者执行，API 与 VoiceChat CPU 环境分开，CPU 依赖不装入 GPU 容器：
+
+```bash
+.venv/bin/python -m pytest -q
+.venv/bin/ruff check apps/api tests scripts docs/voicechat/s2s/tests/test_tool_consumption.py
+PYTHONPATH=apps/api .venv/bin/python scripts/export_contracts.py
+VOICECHAT_CPU_ENV=../voicechat-cpu-env
+python3.12 -m venv "$VOICECHAT_CPU_ENV"
+"$VOICECHAT_CPU_ENV/bin/python" -m pip install --disable-pip-version-check -r docs/voicechat/s2s/tests/requirements.txt
+"$VOICECHAT_CPU_ENV/bin/python" -m pytest -q docs/voicechat/s2s/tests
+```

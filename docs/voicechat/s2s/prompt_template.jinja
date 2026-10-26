@@ -35,11 +35,13 @@
     {{- 'When the session instructions require a tool, call one matching registered tool. Use this format with arguments matching its schema:\n' -}}
     {%- set _first = (tools[0].function if tools[0].function is defined else tools[0]) -%}
     {%- if _first.name == 'search_knowledge_base' -%}
-        {{- '<TOOLCALL>[{"name": "search_knowledge_base", "arguments": {"query": "What does the company documentation say about the price, weight, storage requirements, and shelf life of Product AX?"}}]' -}}
+        {{- 'Format-only example. User: "Can Product AX be shipped, and how should it be stored after opening?"\n' -}}
+        {{- '<TOOLCALL>[{"name": "search_knowledge_base", "arguments": {"query": "Can Product AX be shipped, and how should it be stored after opening?"}}]' -}}
     {%- else -%}
         {{- '<TOOLCALL>[{"name": "registered_tool_name", "arguments": {"argument_name": "argument_value"}}]' -}}
     {%- endif -%}
     {{- '</TOOLCALL>\n\n' -}}
+    {{- 'Use the real user request, exact product and every requested detail. Never reuse example names or attributes. A named-product first question requires a matching knowledge tool even without previous tool history.\n' -}}
 
     {{- 'The user will execute tool-calls and return responses from tool(s) in this format:\n' -}}
     {{- '<TOOL_RESPONSE>[{"status": "example_status", "speech_text": "example_authorized_reply"}]</TOOL_RESPONSE>\n\n' -}}

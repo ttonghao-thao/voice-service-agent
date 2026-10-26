@@ -529,7 +529,7 @@ class TritonPythonModel:
             logger.log_verbose(f"gen created *******")
 
         if seq_state.vllm_llm_start:
-            logger.log_verbose(f"custom_inputs: {custom_inputs}")
+            logger.log_verbose("Appending custom embeddings")
             await self.model.llm.append_request(
                 request_id=str(seq_id), custom_inputs=custom_inputs,
             )
@@ -537,7 +537,7 @@ class TritonPythonModel:
         logger.log_verbose("get next token *******")
         output = await anext(seq_state.vllm_llm_generator)
         seq_state.vllm_llm_start = True
-        logger.log_verbose(f"output: {output}")
+        logger.log_verbose("Received LLM output")
         tokens = output.outputs[0].token_ids
 
         return {
@@ -1637,6 +1637,7 @@ class TritonPythonModel:
                     else:
                         seq_state.audio_chunk_idx = self.options.max_chunks_for_inference - 1
                     seq_state.decoder_global_step += 1
+                    seq_state.audio_frames_processed += 1
 
     @_log_time("Audio decode time", cuda_sync=True)
     def decode_audio_tokens(self, codes, seq_ids_batched: List[int], flush: bool = False):
@@ -1766,166 +1767,164 @@ class TritonPythonModel:
         seq_state = self._seq_mgr[seq_id]
         fn_call = seq_state.fn_call
 
-        with torch.no_grad(), torch.inference_mode():
-            dummy_audio = torch.zeros(
-                1,
-                self.options.max_chunks_for_inference,
-                self._encoded_audio_dim,
-                device=self.model.device,
-                dtype=DTYPE,
-            )
-
-            max_tool_tokens = MAX_TOOL_TOKENS
-            for _ in range(max_tool_tokens):
-                if fn_call.get("extract_cancelled", False):
-                    self._voice_diagnostic(seq_state, "function.extract.stop", reason="cancelled")
-                    logger.log_info(f"[seq {seq_id}] Fast extraction cancelled")
-                    break
-                if not self._seq_mgr.is_started(seq_id):
-                    self._voice_diagnostic(seq_state, "function.extract.stop", reason="sequence_removed")
-                    logger.log_info(f"[seq {seq_id}] Sequence removed during extraction, stopping")
-                    break
-                buffer_capacity = seq_state.generated_text_tokens.shape[1]
-                if seq_state.decoder_global_step >= buffer_capacity:
-                    logger.log_error(
-                        f"[seq {seq_id}] Max decoder steps ({buffer_capacity}) reached during fast extraction, stopping"
-                    )
-                    seq_state.steps_exhausted = True
-                    self._reset_fn_call_state(fn_call, seq_state)
-                    break
-
-                self._llm_step(dummy_audio, [seq_id])
-
-                step_idx = seq_state.decoder_global_step
-                fn_token = seq_state.generated_function_tokens[0, step_idx].item()
-
-                seq_state.audio_chunk_idx = min(
-                    seq_state.audio_chunk_idx + 1, self.options.max_chunks_for_inference - 1
+        try:
+            with torch.no_grad(), torch.inference_mode():
+                dummy_audio = torch.zeros(
+                    1,
+                    self.options.max_chunks_for_inference,
+                    self._encoded_audio_dim,
+                    device=self.model.device,
+                    dtype=DTYPE,
                 )
-                seq_state.decoder_global_step += 1
 
-                if fn_token == self.eotc_id:
-                    sanitized = self.sanitize_function_text(seq_id, fn_call["request"])
-                    if sanitized:
-                        fn_call["request"] = sanitized
-                        fn_call["pending_function_text"] = sanitized
-                        self._voice_diagnostic(seq_state, "function.valid", chars=len(sanitized), source="fast_extract")
-                        # Mirror the ack/waiting_for_response transition from parse_function_call_tokens
-                        ack_message = self._select_tool_ack_message(seq_state, sanitized)
-                        if ack_message:
-                            fn_call["ack_tokens"] = self._build_ack_tokens(ack_message)
-                            fn_call["state"] = "speaking_ack"
-                            fn_call["frames_in_state"] = 0
-                            logger.log_info(
-                                f"[seq {seq_id}] fast extract -> speaking_ack, ack_chars={len(ack_message)} "
-                                f"(step: {seq_state.decoder_global_step})"
-                            )
-                        else:
-                            fn_call["state"] = "waiting_for_response"
-                            fn_call["frames_in_state"] = 0
-                            logger.log_info(
-                                f"[seq {seq_id}] fast extract -> waiting_for_response "
-                                f"(step: {seq_state.decoder_global_step})"
-                            )
-                    else:
-                        self._voice_diagnostic(seq_state, "function.invalid", chars=len(fn_call["request"]), source="fast_extract")
-                        logger.log_error(f"[seq {seq_id}] Fast extract: failed to sanitize chars={len(fn_call['request'])}")
+                max_tool_tokens = MAX_TOOL_TOKENS
+                for _ in range(max_tool_tokens):
+                    if fn_call.get("extract_cancelled", False):
+                        self._voice_diagnostic(seq_state, "function.extract.stop", reason="cancelled")
+                        logger.log_info(f"[seq {seq_id}] Fast extraction cancelled")
+                        break
+                    if not self._seq_mgr.is_started(seq_id):
+                        self._voice_diagnostic(seq_state, "function.extract.stop", reason="sequence_removed")
+                        logger.log_info(f"[seq {seq_id}] Sequence removed during extraction, stopping")
+                        break
+                    buffer_capacity = seq_state.generated_text_tokens.shape[1]
+                    if seq_state.decoder_global_step >= buffer_capacity:
+                        logger.log_error(
+                            f"[seq {seq_id}] Max decoder steps ({buffer_capacity}) reached during fast extraction, stopping"
+                        )
+                        seq_state.steps_exhausted = True
                         self._reset_fn_call_state(fn_call, seq_state)
-                    break
-                elif fn_token != self.pad_id:
-                    fn_call["request"] += self.model.tokenizer.ids_to_text([fn_token])
-                    # logger.log_info(f"[seq {seq_id}] fast extract accumulated: {fn_call['request']!r}")
-            else:
-                self._voice_diagnostic(seq_state, "function.extract.stop", reason="max_tool_tokens",
-                                       max_tokens=max_tool_tokens, chars=len(fn_call["request"]))
-                logger.log_error(
-                    f"[seq {seq_id}] Fast extract: exceeded {max_tool_tokens} steps without eotc_id, "
-                    f"accumulated_chars={len(fn_call['request'])}, resetting"
-                )
-                self._reset_fn_call_state(fn_call, seq_state)
+                        break
 
-        self._sync_audio_buffer_to_step(seq_id)
-        fn_call["extracting_tool"] = False
-        self._extraction_threads.pop(seq_id, None)
-        logger.log_info(f"[seq {seq_id}] Fast tool-token extraction done, state: {fn_call['state']}")
+                    self._llm_step(dummy_audio, [seq_id])
+
+                    step_idx = seq_state.decoder_global_step
+                    fn_token = seq_state.generated_function_tokens[0, step_idx].item()
+
+                    seq_state.decoder_global_step += 1
+
+                    if fn_token == self.eotc_id:
+                        sanitized = self.sanitize_function_text(seq_id, fn_call["request"])
+                        if sanitized:
+                            fn_call["request"] = sanitized
+                            fn_call["pending_function_text"] = sanitized
+                            self._voice_diagnostic(seq_state, "function.valid", chars=len(sanitized), source="fast_extract")
+                            # Mirror the ack/waiting_for_response transition from parse_function_call_tokens
+                            ack_message = self._select_tool_ack_message(seq_state, sanitized)
+                            if ack_message:
+                                fn_call["ack_tokens"] = self._build_ack_tokens(ack_message)
+                                fn_call["state"] = "speaking_ack"
+                                fn_call["frames_in_state"] = 0
+                                logger.log_info(
+                                    f"[seq {seq_id}] fast extract -> speaking_ack, ack_chars={len(ack_message)} "
+                                    f"(step: {seq_state.decoder_global_step})"
+                                )
+                            else:
+                                fn_call["state"] = "waiting_for_response"
+                                fn_call["frames_in_state"] = 0
+                                logger.log_info(
+                                    f"[seq {seq_id}] fast extract -> waiting_for_response "
+                                    f"(step: {seq_state.decoder_global_step})"
+                                )
+                        else:
+                            self._voice_diagnostic(seq_state, "function.invalid", chars=len(fn_call["request"]), source="fast_extract")
+                            logger.log_error(f"[seq {seq_id}] Fast extract: failed to sanitize chars={len(fn_call['request'])}")
+                            self._reset_fn_call_state(fn_call, seq_state)
+                        break
+                    elif fn_token != self.pad_id:
+                        fn_call["request"] += self.model.tokenizer.ids_to_text([fn_token])
+                        # logger.log_info(f"[seq {seq_id}] fast extract accumulated: {fn_call['request']!r}")
+                else:
+                    self._voice_diagnostic(seq_state, "function.extract.stop", reason="max_tool_tokens",
+                                           max_tokens=max_tool_tokens, chars=len(fn_call["request"]))
+                    logger.log_error(
+                        f"[seq {seq_id}] Fast extract: exceeded {max_tool_tokens} steps without eotc_id, "
+                        f"accumulated_chars={len(fn_call['request'])}, resetting"
+                    )
+                    self._reset_fn_call_state(fn_call, seq_state)
+        except Exception as exc:
+            seq_state.inference_error = "Tool request extraction failed; close this connection."
+            logger.log_error(f"[seq {seq_id}] Tool extraction failed: {type(exc).__name__}")
+        finally:
+            fn_call["extracting_tool"] = False
+            self._extraction_threads.pop(seq_id, None)
+            logger.log_info(f"[seq {seq_id}] Fast tool-token extraction done, state: {fn_call['state']}")
+
+    async def _inject_response_tokens(self, seq_id, seq_state, embeddings, tokens):
+        """Forced function tokens do not need predicted text logits or sampling.
+
+        Keep exactly the original append/anext protocol and one model step per
+        token. One coroutine owns the sequence for this operation; CPU embeddings
+        were copied in one transfer before scheduling it.
+        """
+        for index, token in enumerate(tokens):
+            if not self._seq_mgr.is_started(seq_id):
+                return index
+            if seq_state.fn_call["state"] != "process_response":
+                raise RuntimeError("Tool result state changed during injection")
+            await self._get_vllm_llm_next_token(seq_id, [1], [embeddings[index:index + 1]])
+            step = seq_state.decoder_global_step
+            seq_state.generated_text_tokens[:, step] = self.pad_id
+            seq_state.generated_function_tokens[:, step] = token
+            seq_state.fn_call["response_tokens"].popleft()
+            seq_state.decoder_global_step += 1
+        return len(tokens)
+
+    def _response_embeddings(self, seq_state, tokens):
+        """Match _llm_step: previous text/function tokens + zero perception.
+
+        The first step retains the actual previous text token (often ACK EOS).
+        Subsequent text is forced PAD, and the function channel is the previous
+        result token. The last result token is consumed by the next normal step.
+        """
+        previous = seq_state.decoder_global_step - 1
+        text = int(seq_state.generated_text_tokens[0, previous].item()) if previous >= 0 else self.pad_id
+        function = int(seq_state.generated_function_tokens[0, previous].item()) if previous >= 0 else self.pad_id
+        text_ids = torch.tensor([text] + [self.pad_id] * (len(tokens) - 1), device=self.model.device)
+        function_ids = torch.tensor([function] + tokens[:-1], device=self.model.device)
+        config = self.model.model_cfg.model.stt.model
+        combined = torch.zeros(len(tokens), self._encoded_audio_dim, device=self.model.device, dtype=DTYPE)
+        combined += self.model.embed_tokens(text_ids).to(DTYPE) * config.get("duplex_text_channel_weight", 1.0)
+        combined += self.model.embed_tokens(function_ids).to(DTYPE) * config.get("duplex_function_channel_weight", 1.0)
+        dtype = getattr(torch, self.model.llm_custom_input_specs[0].dtype)
+        return combined.to(dtype=dtype).cpu()
 
     @_log_time("Fast response-token injection", debug_only=False)
     def _fast_inject_response_tokens(self, seq_id: int) -> None:
-        """
-        Spin _llm_step with dummy zero audio, injecting tool-response tokens through the
-        function channel as fast as possible (not gated by realtime audio arrival).
-
-        Runs in a background daemon thread.  infer() skips the sequence while this runs
-        and resumes normal processing once all response_tokens are consumed (state → idle).
-        """
         logger = pb_utils.Logger
         logger.log_info(f"[seq {seq_id}] Fast response-token injection started")
-
         seq_state = self._seq_mgr[seq_id]
         fn_call = seq_state.fn_call
-
-        with torch.no_grad(), torch.inference_mode():
-            dummy_audio = torch.zeros(
-                1,
-                self.options.max_chunks_for_inference,
-                self._encoded_audio_dim,
-                device=self.model.device,
-                dtype=DTYPE,
-            )
-
-            while fn_call["state"] == "process_response":
-                if fn_call.get("extract_cancelled", False):
-                    logger.log_info(f"[seq {seq_id}] Response injection cancelled")
-                    break
-                if not self._seq_mgr.is_started(seq_id):
-                    logger.log_info(f"[seq {seq_id}] Sequence removed during response injection, stopping")
-                    break
-                buffer_capacity = seq_state.generated_text_tokens.shape[1]
-                if seq_state.decoder_global_step >= buffer_capacity:
-                    logger.log_error(
-                        f"[seq {seq_id}] Max decoder steps ({buffer_capacity}) reached during response injection, stopping"
-                    )
-                    seq_state.steps_exhausted = True
-                    self._reset_fn_call_state(fn_call, seq_state)
-                    break
-
-                self._llm_step(dummy_audio, [seq_id])
-                # _llm_step pops one response_token and writes it into generated_function_tokens;
-                # when the deque empties it calls _reset_fn_call_state → state becomes "idle".
-
-                seq_state.audio_chunk_idx = min(
-                    seq_state.audio_chunk_idx + 1, self.options.max_chunks_for_inference - 1
+        started = time.monotonic()
+        try:
+            with torch.no_grad(), torch.inference_mode():
+                tokens = list(fn_call["response_tokens"])
+                if seq_state.decoder_global_step + len(tokens) > seq_state.generated_text_tokens.shape[1]:
+                    raise RuntimeError("Tool result exceeds decoder capacity")
+                if tokens:
+                    embeddings = self._response_embeddings(seq_state, tokens)
+                    prepared = time.monotonic()
+                    completed = self._run_coro(self._inject_response_tokens(seq_id, seq_state, embeddings, tokens))
+                    preparation_ms = round((prepared - started) * 1000)
+                    append_wait_ms = round((time.monotonic() - prepared) * 1000)
+                    logger.log_info(f"[seq {seq_id}] Tool response consumption tokens={len(tokens)} "
+                                    f"completed={completed} preparation_ms={preparation_ms} append_wait_ms={append_wait_ms}")
+                    self._voice_diagnostic(seq_state, "function.inject", tokens=len(tokens), completed=completed,
+                                           preparation_ms=preparation_ms, append_wait_ms=append_wait_ms)
+                    if completed != len(tokens):
+                        return  # Connection ended; never replay an unknown partial write.
+                logger.log_info(
+                    f"Function call state transition: process_response -> idle (seq_id: {seq_id}) "
+                    f"(step: {seq_state.decoder_global_step})"
                 )
-                seq_state.decoder_global_step += 1
-
-        self._sync_audio_buffer_to_step(seq_id)
-        fn_call["injecting_response"] = False
-        self._injection_threads.pop(seq_id, None)
-        logger.log_info(f"[seq {seq_id}] Fast response-token injection done, state: {fn_call['state']}")
-
-    def _sync_audio_buffer_to_step(self, seq_id: int) -> None:
-        """Pad audio_buffer with zeros so it satisfies the min_samples check in infer().
-
-        Fast path threads advance decoder_global_step using dummy zero audio without
-        touching audio_buffer.  On return to normal inference, infer() requires:
-            audio_buffer.shape[1] >= (decoder_global_step + num_chunks_per_inference)
-                                      * num_samples_per_chunk
-        Padding with zeros is correct because the fast path used zero audio anyway.
-        """
-        if not self._seq_mgr.is_started(seq_id):
-            return
-        seq_state = self._seq_mgr[seq_id]
-        min_samples = (
-            seq_state.decoder_global_step + self.options.num_chunks_per_inference
-        ) * self.options.num_samples_per_chunk
-        current = seq_state.audio_buffer.shape[1]
-        if current < min_samples:
-            padding = torch.zeros(1, min_samples - current, device=self.model.device)
-            seq_state.audio_buffer = torch.cat([seq_state.audio_buffer, padding], dim=1)
-            pb_utils.Logger.log_info(
-                f"[seq {seq_id}] Padded audio_buffer by {min_samples - current} samples "
-                f"({current} -> {min_samples}) after fast path"
-            )
+                self._reset_fn_call_state(fn_call, seq_state)
+        except Exception as exc:
+            seq_state.inference_error = "Tool result injection failed; close this connection."
+            logger.log_error(f"[seq {seq_id}] Tool result injection failed: {type(exc).__name__}")
+        finally:
+            fn_call["injecting_response"] = False
+            self._injection_threads.pop(seq_id, None)
+            logger.log_info(f"[seq {seq_id}] Fast response-token injection done, state: {fn_call['state']}")
 
     def sanitize_function_text(self, seq_id, function_text):
         """
@@ -2112,7 +2111,68 @@ class TritonPythonModel:
         )
 
     @_log_time("### Time to infer chunk")
-    def infer(
+    def infer(self, audio_signal, function_response_batched, seq_info):
+        """Retain real input even while the decoder is busy with tool tokens.
+
+        Consume at most four real-audio windows per request to catch up without
+        unbounded GPU work. Tool steps never insert zeros into the input history.
+        """
+        results = [InferenceResult("", "", "", torch.tensor([[]], device=self.model.device), skipped=True)
+                   for _ in range(audio_signal.shape[0])]
+        for index, seq in enumerate(seq_info.sequence_ids):
+            seq_id = seq.item()
+            if seq_info.start_flags[index].item():
+                continue
+            state = self._seq_mgr[seq_id]
+            self._capture_tensor(seq_id, "triton-received-16k", audio_signal[index],
+                                 step=state.decoder_global_step, sample_rate=16000)
+            state.audio_buffer = torch.cat((state.audio_buffer, audio_signal[index].unsqueeze(0)), dim=1)
+            response = function_response_batched[index]
+            if response:
+                if len(state.pending_function_responses) >= 16:
+                    state.inference_error = "Too many pending tool results; close this connection."
+                else:
+                    state.pending_function_responses.append(response)
+        # Keep each semantic boundary in its original two-frame packet. The
+        # audio server cannot split an arbitrary concatenated EOS/BOS waveform.
+        if any(self._seq_mgr[seq.item()].pending_inference_output is not None
+               for seq in seq_info.sequence_ids):
+            for index, seq in enumerate(seq_info.sequence_ids):
+                state = self._seq_mgr[seq.item()]
+                if state.pending_inference_output is not None:
+                    results[index] = state.pending_inference_output
+                    state.pending_inference_output = None
+            return results
+        progressed_before = False
+        for _ in range(4):
+            window = self._infer_audio_window(audio_signal, function_response_batched, seq_info)
+            boundary = any(part.generated_function_text or "<s>" in part.generated_text
+                           or "</s>" in part.generated_text or "<s>" in part.generated_asr_text
+                           or "</s>" in part.generated_asr_text for part in window)
+            if boundary and progressed_before:
+                for index, part in enumerate(window):
+                    self._seq_mgr[seq_info.sequence_ids[index].item()].pending_inference_output = part
+                break
+            progressed = False
+            for index, part in enumerate(window):
+                result = results[index]
+                result.error = part.error or result.error
+                if part.skipped:
+                    continue
+                progressed = True
+                result.skipped = False
+                result.generated_text += part.generated_text
+                result.generated_asr_text += part.generated_asr_text
+                result.generated_function_text += part.generated_function_text
+                if part.generated_audio.numel():
+                    result.generated_audio = (part.generated_audio if not result.generated_audio.numel()
+                                              else torch.cat((result.generated_audio, part.generated_audio), dim=-1))
+            progressed_before |= progressed
+            if not progressed or boundary:
+                break
+        return results
+
+    def _infer_audio_window(
         self, audio_signal: torch.Tensor, function_response_batched: List[str], seq_info: SeqInfo
     ) -> List[InferenceResult]:
         """
@@ -2160,7 +2220,8 @@ class TritonPythonModel:
             # Stop processing sequences that have exhausted the pre-allocated step buffer.
             seq_state_check = self._seq_mgr[seq_id]
             buffer_capacity = seq_state_check.generated_text_tokens.shape[1]
-            if seq_state_check.decoder_global_step >= buffer_capacity or seq_state_check.steps_exhausted:
+            if (seq_state_check.decoder_global_step + self.options.num_chunks_per_inference > buffer_capacity
+                    or seq_state_check.steps_exhausted):
                 if not seq_state_check.steps_exhausted:
                     logger.log_error(
                         f"[seq {seq_id}] Max decoder steps ({buffer_capacity}) reached, stopping sequence"
@@ -2169,28 +2230,31 @@ class TritonPythonModel:
                 results_batched[batch_idx].error = f"Sequence {seq_id} exceeded max decoder steps ({buffer_capacity})"
                 continue
 
-            # While background tool-token extraction or response injection is running,
-            # return silence to keep the audio stream active.
-            if self._seq_mgr[seq_id].fn_call.get("extracting_tool", False) or self._seq_mgr[seq_id].fn_call.get(
-                "injecting_response", False
-            ):
-                results_batched[batch_idx].generated_audio = self._get_silence_audio_chunk()
+            if seq_state_check.inference_error:
+                results_batched[batch_idx].error = seq_state_check.inference_error
+                results_batched[batch_idx].skipped = True
                 continue
-
-            # Append input audio to buffer
-            self._capture_tensor(
-                seq_id,
-                "triton-received-16k",
-                audio_signal[batch_idx],
-                step=seq_state_check.decoder_global_step,
-                sample_rate=16000,
-            )
-            self._seq_mgr[seq_id].audio_buffer = torch.cat(
-                (self._seq_mgr[seq_id].audio_buffer, audio_signal[batch_idx].unsqueeze(0)), dim=1
-            )  # (1, T)
-
-            fn_state = self._seq_mgr[seq_id].fn_call["state"]
-            fn_response = function_response_batched[batch_idx]
+            # Input and results were queued before this check. Busy is not loss.
+            if seq_state_check.fn_call.get("extracting_tool", False) or seq_state_check.fn_call.get("injecting_response", False):
+                if not seq_state_check.voice_diagnostics.get("tool_audio_buffered"):
+                    seq_state_check.voice_diagnostics["tool_audio_buffered"] = True
+                    logger.log_info(f"[seq {seq_id}] Tool audio buffered "
+                                    f"received_samples={seq_state_check.audio_buffer.shape[1]} "
+                                    f"processed_frames={seq_state_check.audio_frames_processed}")
+                results_batched[batch_idx].skipped = True
+                continue
+            if seq_state_check.voice_diagnostics.pop("tool_audio_buffered", False):
+                logger.log_info(f"[seq {seq_id}] Tool audio resumed "
+                                f"received_samples={seq_state_check.audio_buffer.shape[1]} "
+                                f"processed_frames={seq_state_check.audio_frames_processed}")
+            fn_state = seq_state_check.fn_call["state"]
+            fn_response = ""
+            if seq_state_check.pending_function_responses:
+                if fn_state not in ("waiting_for_response", "speaking_ack"):
+                    results_batched[batch_idx].error = "Unexpected tool result state; close this connection."
+                    results_batched[batch_idx].skipped = True
+                    continue
+                fn_response = seq_state_check.pending_function_responses.popleft()
 
             if fn_response:
 
@@ -2220,7 +2284,7 @@ class TritonPythonModel:
                     )
 
             min_samples = (
-                self._seq_mgr[seq_id].decoder_global_step + self.options.num_chunks_per_inference
+                self._seq_mgr[seq_id].audio_frames_processed + self.options.num_chunks_per_inference
             ) * self.options.num_samples_per_chunk
 
             if self._seq_mgr[seq_id].audio_buffer.shape[1] < min_samples:
@@ -2236,7 +2300,7 @@ class TritonPythonModel:
             num_samples = min(min_samples, self.options.max_samples_for_inference)
             max_samples_in_batch = max(max_samples_in_batch, num_samples)
             seq_ids_batched.append(seq_id)
-            audio_to_encode.append(self._seq_mgr[seq_id].audio_buffer[:, -num_samples:])
+            audio_to_encode.append(self._seq_mgr[seq_id].audio_buffer[:, min_samples - num_samples:min_samples])
             buffer_len_tensor.append(torch.tensor([num_samples], device=self.model.device))
 
         if len(audio_to_encode) == 0:

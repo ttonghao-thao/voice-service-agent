@@ -69,7 +69,9 @@ class CueKBArguments(StrictModel):
     query: str = Field(min_length=1, max_length=2000, description=
         "The user's complete knowledge question in English. Preserve the original meaning, exact product names, "
         "model numbers, version identifiers, and technical terms. Resolve references such as 'this product' using "
-        "known conversation context. Do not invent missing information.")
+        "known conversation context. Include every requested detail and condition in the first query; do not send "
+        "only a product name when the user asked multiple questions. Never substitute attributes from tool examples. "
+        "Do not invent missing information.")
 
     @field_validator("query")
     @classmethod

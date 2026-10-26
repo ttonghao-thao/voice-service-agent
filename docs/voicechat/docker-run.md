@@ -10,23 +10,31 @@
 
 ```sh
 VOICECHAT_SNAPSHOT_ROOT=$(cd docs/voicechat && pwd)
+VOICECHAT_MODEL_ROOT=$(docker inspect --format '{{range .Mounts}}{{if eq .Destination "/data/models"}}{{.Source}}{{end}}{{end}}' nemotron-labs-voicechat)
+test -n "$VOICECHAT_MODEL_ROOT" && test -d "$VOICECHAT_MODEL_ROOT"
 ```
 
 文件身份、运行配置和工具闭环的核对统一在 [验证操作手册](../validation.md) 维护。
 
 ## 创建容器
 
-2026-10-22 的 `model.py` 和 `data_types.py` 补齐既有 PAD 强制结束后的等待新输入边界，静音时不再接纳重复正文/工具 token；新语音或待处理调用的有效结果恢复解码。保留 RNNT 显示转写的一次零输入修复、正常分轮/打断门槛和权重。两个完整文件必须配套只读挂载并重载进程，不能只更新 model.py。`audio_server.py` 的首 4 秒输入指纹和 ASR 交接哈希沿用下列已有 `VOICECHAT_DIAGNOSTICS=1`。不新增环境变量或运行挂载，不改变模板、GPU/端口参数。须重启整个 VoiceChat 容器才能让 Triton 重载 backend；挂载来源变更必须重新创建容器，不能只重启旧容器。具体健康检查及精简回传全部在统一验证手册，不在此复制验证步骤。
+本次 `model.py` / `data_types.py` 分离真实音频消费与工具 decoder 步数，工具期间保留音频和待处理结果，并有界追赶积压；正文/ASR/函数边界保持原两帧传输，不把 EOS/BOS 拼进任意长度音频。结果注入预先计算函数通道 embedding、使用单一协程顺序 append，跳过未使用的正文采样和重复 CPU 传递。引擎仍逐 token 执行，不能由 CPU 通过宣称 GPU 已提速。`prompt_template.jinja` 同步更换为忠实保留用户问题的格式示例，不能继续加载旧模板。
 
-先按照 [派生镜像构建说明](../../deploy/voicechat/README.md#更新运行镜像并启动) 从已验证的离线基础镜像构建发布镜像。构建命令必须包含 `--build-context agent_repo=/path/to/voice-service-agent`；发布镜像名写入以下变量：
+这三个完整文件必须配套加载，并保留已有 RNNT 显示修复、PAD 完成保护、正常识别/分轮门槛和权重。仍为原六个只读挂载，不新增环境变量、端口或 GPU 参数。沿用已验证离线派生镜像并按下面命令重新创建容器，让 Triton backend 与模板一同重载；仅更新磁盘文件或重启 API 不会加载 VoiceChat 修复。健康、文件身份和下一轮 A/B 回传统一见验证手册。
+
+本次运行库、官方客户端和权重没有改变，可沿用现有已验证派生镜像的不可变 image ID；先在删除旧容器前记录：
 
 ```sh
-VOICECHAT_RELEASE_IMAGE='YOUR_REGISTRY/voicechat:YOUR_RELEASE'
+VOICECHAT_RELEASE_IMAGE=$(docker inspect --format '{{.Image}}' nemotron-labs-voicechat)
+docker image inspect "$VOICECHAT_RELEASE_IMAGE" >/dev/null
 ```
+
+六个 bind mount 提供本次运行代码，因此不需要为本次修改下载基础镜像或权重。确需更新派生镜像时再按[构建说明](../../deploy/voicechat/README.md#更新运行镜像并启动) 构建并记录新的 digest。
 
 然后结束现有验证通话。若同名容器存在，停止并删除该容器，并用同一个 `$VOICECHAT_RELEASE_IMAGE` 创建容器：
 
 ```sh
+# Paired model/data/template runtime; recreate the container to load all three.
 docker run -d --name=nemotron-labs-voicechat \
   --runtime=nvidia \
   --gpus '"device=0,1"' \
@@ -41,7 +49,7 @@ docker run -d --name=nemotron-labs-voicechat \
   -e TTS_CUDA_VISIBLE_DEVICES=1 \
   -e LLM_GPU_MEM_UTIL=0.65 \
   -p 9000:9000 \
-  -v /home/thao/model-repo:/data/models \
+  -v "${VOICECHAT_MODEL_ROOT:?Set VOICECHAT_MODEL_ROOT}:/data/models" \
   --mount "type=bind,source=${VOICECHAT_SNAPSHOT_ROOT:?Set VOICECHAT_SNAPSHOT_ROOT}/opt/tritonserver/backends/nemotron-voicechat/checkpoint_utils/load_utils.py,target=/opt/tritonserver/backends/nemotron-voicechat/checkpoint_utils/load_utils.py,readonly" \
   --mount "type=bind,source=$VOICECHAT_SNAPSHOT_ROOT/s2s/audio_server.py,target=/s2s/audio_server.py,readonly" \
   --mount "type=bind,source=$VOICECHAT_SNAPSHOT_ROOT/s2s/prompt_template.jinja,target=/s2s/prompt_template.jinja,readonly" \

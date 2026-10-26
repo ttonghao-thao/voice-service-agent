@@ -106,7 +106,7 @@ def log_summary(text, conversation_id):
                               "basis": "server_log_not_speaker", "incomplete": header["truncated"]})
     # Bounded injection milestones expose ACK wait separately from injection work.
     milestones = [r for r in rows if r["event"].startswith("backend.")]
-    emit("backend_stages", {"rows": milestones[:18], "omitted": max(0, len(milestones) - 18)})
+    emit("backend_stages", {"rows": milestones[:32], "omitted": max(0, len(milestones) - 32)})
 
 
 async def saved_answers(conversation_id, window_start, window_end):

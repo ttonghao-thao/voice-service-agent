@@ -44,3 +44,21 @@ def test_call_or_response_id_correlates_sequence_without_asr_diagnostic():
     assert header['sequence_ids'] == ['123']
     assert header['voicechat_diagnostic_events'] == 1
     assert rows[-1]['event'] == 'backend.inject_started'
+
+
+def test_consumption_metrics_are_scoped_and_do_not_echo_tool_payloads():
+    header, rows = summarize([
+        '2026-10-25T00:00:00Z voice_input_transcribed conversation_id=chosen input_item_id=i1',
+        '2026-10-25T00:00:01Z voice_ws_diagnostic ' + json.dumps({
+            'event': 'asr.dispatch', 'sequence_id': 42, 'input_item_id': 'i1'}),
+        '2026-10-25T00:00:02Z [seq 42] Tool audio buffered received_samples=2560 processed_frames=0 text=PRIVATE',
+        '2026-10-25T00:00:03Z [seq 99] Tool response consumption tokens=999 completed=999 preparation_ms=1 append_wait_ms=1',
+        '2026-10-25T00:00:04Z [seq 42] Tool response consumption tokens=400 completed=400 preparation_ms=8 append_wait_ms=9000 text=PRIVATE',
+        '2026-10-25T00:00:05Z [seq 42] Tool audio resumed received_samples=12800 processed_frames=2',
+    ], 'chosen')
+    assert header['session_match'] == 'passed'
+    profile = next(r for r in rows if r['event'] == 'backend.inject_profile')
+    assert profile['tokens'] == profile['completed'] == 400
+    assert profile['preparation_ms'] == 8 and profile['append_wait_ms'] == 9000
+    assert next(r for r in rows if r['event'] == 'backend.audio_resumed')['processed_frames'] == 2
+    assert 'PRIVATE' not in json.dumps(rows) and '999' not in json.dumps(rows)

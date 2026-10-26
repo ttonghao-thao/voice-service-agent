@@ -64,4 +64,6 @@ def test_single_knowledge_base_call_example_matches_registered_query_schema():
     assert len(example) == 1 and example[0]["name"] == "search_knowledge_base"
     validate(example[0]["arguments"], CueKBArguments.model_json_schema())
     query = example[0]["arguments"]["query"].lower()
-    assert all(value in query for value in ("company documentation", "price", "weight", "storage", "shelf life"))
+    assert query == "can product ax be shipped, and how should it be stored after opening?"
+    assert "Never reuse example names or attributes" in rendered
+    assert "even without previous tool history" in rendered

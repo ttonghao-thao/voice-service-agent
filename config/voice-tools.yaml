@@ -11,7 +11,10 @@ tools:
       installation, configuration, troubleshooting, error codes, user manuals, documented
       procedures, firmware versions, and version differences. Also use it for follow-up
       questions about products discussed earlier in the conversation. If the user explicitly
-      asks what company or product documentation says, always use this tool. Do not use this
+      asks what company or product documentation says, always use this tool. A first-turn
+      named-product question also requires this tool. Include the exact product name and
+      every requested detail in the first query; examples are format illustrations, not
+      replacement attributes. Do not use this
       tool for greetings, casual conversation, jokes, general science, general technology
       concepts, or common knowledge that does not depend on company documentation. Never
       invent organization-specific or product-specific facts when documentation is required,
@@ -21,7 +24,7 @@ tools:
     ack_messages:
       - Let me check the documentation.
     examples:
-      - query: What does the company documentation say about the price, weight, storage requirements, and shelf life of Product AX?
+      - query: Can Product AX be shipped, and how should it be stored after opening?
     output_description: >-
       Returns short, traceable evidence excerpts for VoiceChat to answer from, or an explicit
       search failure, insufficient-evidence result or clarification. A failed or limited

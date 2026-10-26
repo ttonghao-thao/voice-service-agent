@@ -9,7 +9,8 @@
 | 需求、目的、范围、交付结论 | delivery.md |
 | 实际架构与关键取舍 | architecture.md、decisions/architecture-decisions.md |
 | 未解决事项与优先级 | TASK_BOARD.md |
-| 验证步骤、精简回传、当前证据与放行标准 | 唯一文件 docs/validation.md |
+| 当前验证步骤、精简回传、当前证据与放行标准 | 唯一执行入口 docs/validation.md |
+| 用户明确要求保留的历史验证方法 | docs/archive/ 下的停用归档，只读追溯 |
 | 配置默认值 / 操作 | config.py / deployment.md |
 | 接口字段与协议 | 代码、生成 contracts、interfaces 与 portal-protocol.md |
 | 外部 VoiceChat 完整文件/hash/启动 | docs/voicechat 源码、snapshot-manifest.json、docker-run.md |
@@ -20,4 +21,4 @@
 
 修改后检查本地链接/锚点、代码路径、围栏与 shell 语法、diff。纯文档不重跑应用回归。外部源码修改必须同步完整文件、manifest hash/来源和启动命令，不能仅交补丁。
 
-所有验证命令只在 `docs/validation.md` 维护，不能在该文档引入其他文档或要求操作者判断下一步。其他文档只能指向这个入口，不复制测试步骤。历史验证流水从 Git 追溯。
+当前验证命令只在 `docs/validation.md` 维护，操作流程必须自包含，不要求操作者转读其他文档或判断下一步。其他文档只能指向这个入口，不复制当前测试步骤。历史验证流水默认从 Git 追溯；按用户明确要求归档旧方法时，标明归档日期、停用状态和当前入口，当前手册从头整理，不能继续将旧轮次流程作为默认步骤。归档不追加更新，也不把历史通过改记为当前验收。

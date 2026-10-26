@@ -209,7 +209,7 @@ def test_model_logs_decoded_tool_name_before_websocket_processing(patched_backen
 def sequence(*, seq_id=42, text=PAD, function=PAD, previous_function=PAD, pads=7, content=2,
              function_state="idle", speaking=True, user_speech=0):
     return SimpleNamespace(
-        seq_id=seq_id, decoder_global_step=1, audio_chunk_idx=1,
+        seq_id=seq_id, decoder_global_step=1, audio_chunk_idx=1, audio_frames_processed=1,
         generated_text_tokens=TokenBuffer([CONTENT if content > 0 else BOS, text]),
         generated_function_tokens=TokenBuffer([previous_function, function]), generated_audio_tokens=AudioTokens(),
         rnnt_rolling_density=.5, rnnt_first_turn=False, rnnt_agent_speaking=speaking,
@@ -454,6 +454,7 @@ def test_actual_batch_generation_preserves_sotc_until_post_batch_parser(patched_
     assert seq.generated_text_tokens.tokens == [CONTENT, PAD, PAD]
     assert [inputs["text_tokens"].item() for _seq_id, inputs in captured] == [PAD, PAD]
     assert seq.decoder_global_step == 3 and seq.fn_call["state"] == "idle"
+    assert seq.audio_frames_processed == 3  # only the two real frames advance this cursor
     assert model.parse_function_call_tokens(42, TokenVector([SOTC, PAD])) == ""
     assert seq.fn_call["state"] == "waiting_for_request"
     assert not any(event.get("source") == "render_budget" for event in model.diagnostics)

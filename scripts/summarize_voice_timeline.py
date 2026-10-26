@@ -27,6 +27,9 @@ BACKEND = {
     "process_response -> idle": "backend.returned_idle",
     "Fast response-token injection done": "backend.inject_done",
     "Response injection cancelled": "backend.inject_cancelled",
+    "Tool audio buffered": "backend.audio_buffered",
+    "Tool audio resumed": "backend.audio_resumed",
+    "Tool response consumption": "backend.inject_profile",
 }
 
 
@@ -86,7 +89,9 @@ def summarize(lines, conversation_id):
         else:
             event = next((event for marker, event in BACKEND.items() if marker in line), None)
             if event:
-                rows.append({"at": at, "event": event, "sequence_id": sequence})
+                metrics = {key: int(value) for key, value in re.findall(
+                    r"\b(received_samples|processed_frames|tokens|completed|preparation_ms|append_wait_ms)=(\d+)", line)}
+                rows.append({"at": at, "event": event, "sequence_id": sequence, **metrics})
     header = {"conversation_id": conversation_id, "input_item_ids": sorted(inputs),
               "sequence_ids": sorted(sequences), "session_match": "passed" if sequences else "unverified",
               "model_function_count": model_calls if sequences else None,

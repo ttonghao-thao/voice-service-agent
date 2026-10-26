@@ -141,7 +141,10 @@ elif '/app/scripts/collect_validation_summary.py' in args:
     print('collection=complete business_acceptance=unassessed')
 elif '-c' in args:
     code = args[args.index('-c') + 1]
-    if 'json.load' in code:
+    if '/v1/realtime/health' in code:
+        if mode == 'voice-unready':
+            sys.exit(1)
+    elif 'json.load' in code:
         if mode == 'no-report':
             print('not a report', file=sys.stderr)
             sys.exit(1)
@@ -240,3 +243,10 @@ def test_timing_reports_first_reply_after_last_result_and_counts_later_reopening
     assert '"additional_answers_after_result":1' in output
     assert '"last_result_to_audio_ms":1000' in output
     assert '"last_answer_done":"2026-10-21T00:00:12Z"' in output
+
+
+def test_unready_voicechat_stops_before_sending_audio(fake_docker):
+    result = run_host({**fake_docker, 'FAKE_MODE': 'voice-unready'}, 'auto')
+    assert result.returncode == 2
+    assert 'stage=voicechat_health' in result.stdout
+    assert '--case-id' not in Path(fake_docker['DOCKER_TRACE']).read_text()

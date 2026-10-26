@@ -42,7 +42,7 @@ def model_harness(enabled=True):
 
 
 def state():
-    return SimpleNamespace(seq_id=42, decoder_global_step=0, voice_diagnostics={},
+    return SimpleNamespace(seq_id=42, awaiting_new_input=False, decoder_global_step=0, voice_diagnostics={},
                            rnnt_display_state={"y_sequence": [], "speech_confirmed": True,
                                                "blank_count": 0, "nonblank_total": 1},
                            rnnt_display_emitted_len=0, rnnt_display_turn_open=False,

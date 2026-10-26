@@ -28,7 +28,7 @@ check() {
   for file in run_native_cuekb_validation.py validate_native_cuekb.py probe_voicechat.py verify_deployment.py inspect_native_answer.py summarize_voice_timeline.py collect_validation_summary.py inspect_input_prefix.py; do
     verify_file "$API_CONTAINER" "scripts/$file" "/app/scripts/$file" || errors=1
   done
-  for file in apps/api/app/voice/relay.py apps/api/app/voice/provider.py apps/api/app/sessions/coordinator.py apps/api/app/agent_runtime/native_input.py apps/api/app/agent_runtime/native_cuekb.py apps/api/app/agent_runtime/cuekb_evidence.py apps/api/app/tools/adapters.py apps/api/app/tools/schemas.py apps/api/app/tools/registry.py apps/api/app/config.py apps/api/app/contracts.py apps/api/app/evidence_types.py config/voice-qa-prompt.txt; do
+  for file in apps/api/app/voice/relay.py apps/api/app/voice/provider.py apps/api/app/sessions/coordinator.py apps/api/app/agent_runtime/native_input.py apps/api/app/agent_runtime/native_cuekb.py apps/api/app/agent_runtime/cuekb_evidence.py apps/api/app/tools/adapters.py apps/api/app/tools/schemas.py apps/api/app/tools/registry.py apps/api/app/config.py apps/api/app/contracts.py apps/api/app/evidence_types.py config/voice-qa-prompt.txt config/voice-tools.yaml; do
     verify_file "$API_CONTAINER" "$file" "/app/$file" || errors=1
   done
   for file in cases.json hello.wav tcp_udp.wav black_pig_crisp_heart.wav golden_yolk.wav; do
@@ -40,7 +40,8 @@ check() {
   [[ "$errors" == 0 ]] || fail files_not_current
   docker exec "$API_CONTAINER" python -c 'import urllib.request; urllib.request.urlopen("http://127.0.0.1:8000/health/ready", timeout=5).close()' >"$STATE/health.log" 2>&1 || fail api_health
   docker exec "$VOICE_CONTAINER" python -c 'import os; assert os.getenv("VOICECHAT_DIAGNOSTICS") == "1"; assert os.getenv("USE_JINJA_TEMPLATE_PROMPT") == "1"; assert os.getenv("S2S_INFERENCE_CLOSE_ON_PAD_TAIL", "").lower() in ("1", "true"); assert os.getenv("S2S_INFERENCE_FORCE_SPEECH_SILENCE_ON_PAD", "").lower() in ("1", "true"); assert float(os.getenv("S2S_TTS_PAD_TAIL_RATIO", "3")) > 0' >"$STATE/voice-env.log" 2>&1 || fail voice_diagnostics_config
-  printf 'preparation=passed fixtures=matched voicechat_files=matched helpers=matched api_health=ready\n'
+  docker exec "$VOICE_CONTAINER" python -c 'import json,os,urllib.request; port=os.getenv("NIM_HTTP_API_PORT","9000"); result=json.load(urllib.request.urlopen("http://127.0.0.1:"+port+"/v1/realtime/health",timeout=5)); assert result.get("status")=="ok" and result.get("mode")=="triton" and result.get("triton_status")=="ready"' >"$STATE/voice-health.log" 2>&1 || fail voicechat_health
+  printf 'preparation=passed fixtures=matched voicechat_files=matched helpers=matched api_health=ready voicechat_health=ready\n'
   docker inspect --format 'runtime container={{.Name}} image={{.Image}} started={{.State.StartedAt}}' "$API_CONTAINER" "$VOICE_CONTAINER" 2>>"$STATE/setup.log" || fail runtime_metadata
 }
 collect() {
