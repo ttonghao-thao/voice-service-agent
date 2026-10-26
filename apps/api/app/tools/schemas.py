@@ -1,6 +1,6 @@
 import math
 from datetime import datetime
-from typing import Any, Literal
+from typing import Annotated, Any, Literal
 from uuid import UUID
 
 from app.contracts import Citation, StrictModel
@@ -24,6 +24,7 @@ class CueKBSearchInput(StrictModel):
 
 
 class CueKBSearchFilters(StrictModel):
+    product_entity_id: UUID | None = None
     document_ids: list[UUID] = Field(default_factory=list, max_length=100)
     product_model: str | None = None
     software_version: str | None = None
@@ -59,12 +60,23 @@ class CueKBSearchRequest(StrictModel):
     relations: CueKBRelationQuery = Field(default_factory=CueKBRelationQuery)
     max_evidence_bytes: int = Field(default=48000, ge=4096, le=128000)
     include_diagnostics: bool = False
+    selection_mode: Literal["ranked", "adaptive"] = "ranked"
+    selection_query: str | None = Field(default=None, min_length=1, max_length=2000)
+    query_facets: list[Annotated[str, Field(min_length=1, max_length=200)]] = Field(default_factory=list, max_length=8)
 
     @model_validator(mode="after")
     def unique_kbs(self):
         if len(set(self.kb_ids)) != len(self.kb_ids):
             raise ValueError("knowledge base IDs must not contain duplicates")
         return self
+
+
+class CueKBContextProvenance(EvidenceModel):
+    kind: Literal["parser_reference", "curated", "parser_continuation"]
+    source_unit_id: str = Field(min_length=1, max_length=200)
+    target_unit_id: str = Field(min_length=1, max_length=200)
+    provenance_id: str = Field(min_length=1, max_length=500)
+    reference_text: str | None = Field(default=None, min_length=1, max_length=500)
 
 
 class CueKBContextPart(EvidenceModel):
@@ -75,6 +87,8 @@ class CueKBContextPart(EvidenceModel):
     source_spans: list[CueKBSourceSpan] = Field(default_factory=list, max_length=64)
     role: ContextRole | None = None
     required: bool = False
+    applicability: CueKBApplicability = Field(default_factory=CueKBApplicability)
+    link_provenance: CueKBContextProvenance | None = None
 
 
 class CueKBRelation(EvidenceModel):
@@ -88,6 +102,8 @@ class CueKBRelation(EvidenceModel):
 
 
 class CueKBSearchHit(EvidenceModel):
+    fact_kind: Literal["statement", "specification", "comparison", "bundle", "general"] = "statement"
+    dependency_issues: list[Literal["unmatched_reference", "ambiguous_reference", "dependency_limit_exceeded", "dependency_cycle", "unsafe_dependency"]] = Field(default_factory=list, max_length=5)
     chunk_id: UUID
     document_id: UUID
     version_id: UUID
@@ -172,7 +188,23 @@ class CueKBRerankerDiagnostics(StrictModel):
     ] | None = None
 
 
+class CueKBSelectionDiagnostics(StrictModel):
+    method: Literal["adaptive"] = "adaptive"
+    version: Literal["evidence-set-v1"] = "evidence-set-v1"
+    calibration_status: Literal["not_configured", "applied", "binding_mismatch"]
+    profile_id: str | None = Field(default=None, pattern=r"^sha256:[a-f0-9]{64}$")
+    stop_reason: Literal["no_candidates", "relevance_exhausted", "no_information_gain", "max_hits", "payload_budget", "candidates_exhausted"]
+    considered: int = Field(default=0, ge=0, le=250)
+    assessed: int = Field(default=0, ge=0, le=250)
+    rejected: int = Field(default=0, ge=0, le=250)
+    redundant: int = Field(default=0, ge=0, le=250)
+    facet_count: int = Field(default=0, ge=0, le=8)
+    observed_facet_indices: list[Annotated[int, Field(ge=0, le=7)]] = Field(default_factory=list, max_length=8)
+    coverage_assessment: Literal["unassessed"] = "unassessed"
+
+
 class CueKBSearchDiagnostics(StrictModel):
+    selection: CueKBSelectionDiagnostics | None = None
     counts: CueKBCandidateCounts = Field(default_factory=CueKBCandidateCounts)
     omissions: CueKBOmissionCounts = Field(default_factory=CueKBOmissionCounts)
     sizes: CueKBPayloadSizes = Field(default_factory=CueKBPayloadSizes)

@@ -3,6 +3,20 @@
     "CueKBApplicability": {
       "additionalProperties": false,
       "properties": {
+        "reason_codes": {
+          "items": {
+            "enum": [
+              "missing_binding",
+              "no_reviewed_match",
+              "structure_missing",
+              "scope_conflict"
+            ],
+            "type": "string"
+          },
+          "maxItems": 4,
+          "title": "Reason Codes",
+          "type": "array"
+        },
         "status": {
           "default": "unknown",
           "enum": [
@@ -320,6 +334,20 @@
           "default": false,
           "title": "Required",
           "type": "boolean"
+        },
+        "applicability": {
+          "$ref": "#/$defs/CueKBApplicability"
+        },
+        "link_provenance": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/CueKBContextProvenance"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null
         }
       },
       "required": [
@@ -329,6 +357,60 @@
         "title_path"
       ],
       "title": "CueKBContextPart",
+      "type": "object"
+    },
+    "CueKBContextProvenance": {
+      "additionalProperties": false,
+      "properties": {
+        "kind": {
+          "enum": [
+            "parser_reference",
+            "curated",
+            "parser_continuation"
+          ],
+          "title": "Kind",
+          "type": "string"
+        },
+        "source_unit_id": {
+          "maxLength": 200,
+          "minLength": 1,
+          "title": "Source Unit Id",
+          "type": "string"
+        },
+        "target_unit_id": {
+          "maxLength": 200,
+          "minLength": 1,
+          "title": "Target Unit Id",
+          "type": "string"
+        },
+        "provenance_id": {
+          "maxLength": 500,
+          "minLength": 1,
+          "title": "Provenance Id",
+          "type": "string"
+        },
+        "reference_text": {
+          "anyOf": [
+            {
+              "maxLength": 500,
+              "minLength": 1,
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Reference Text"
+        }
+      },
+      "required": [
+        "kind",
+        "source_unit_id",
+        "target_unit_id",
+        "provenance_id"
+      ],
+      "title": "CueKBContextProvenance",
       "type": "object"
     },
     "CueKBOmissionCounts": {
@@ -539,6 +621,17 @@
     "CueKBSearchDiagnostics": {
       "additionalProperties": false,
       "properties": {
+        "selection": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/CueKBSelectionDiagnostics"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null
+        },
         "counts": {
           "$ref": "#/$defs/CueKBCandidateCounts"
         },
@@ -618,6 +711,33 @@
     "CueKBSearchHit": {
       "additionalProperties": false,
       "properties": {
+        "fact_kind": {
+          "default": "statement",
+          "enum": [
+            "statement",
+            "specification",
+            "comparison",
+            "bundle",
+            "general"
+          ],
+          "title": "Fact Kind",
+          "type": "string"
+        },
+        "dependency_issues": {
+          "items": {
+            "enum": [
+              "unmatched_reference",
+              "ambiguous_reference",
+              "dependency_limit_exceeded",
+              "dependency_cycle",
+              "unsafe_dependency"
+            ],
+            "type": "string"
+          },
+          "maxItems": 5,
+          "title": "Dependency Issues",
+          "type": "array"
+        },
         "chunk_id": {
           "format": "uuid",
           "title": "Chunk Id",
@@ -819,6 +939,114 @@
         "context_state"
       ],
       "title": "CueKBSearchHit",
+      "type": "object"
+    },
+    "CueKBSelectionDiagnostics": {
+      "additionalProperties": false,
+      "properties": {
+        "method": {
+          "const": "adaptive",
+          "default": "adaptive",
+          "title": "Method",
+          "type": "string"
+        },
+        "version": {
+          "const": "evidence-set-v1",
+          "default": "evidence-set-v1",
+          "title": "Version",
+          "type": "string"
+        },
+        "calibration_status": {
+          "enum": [
+            "not_configured",
+            "applied",
+            "binding_mismatch"
+          ],
+          "title": "Calibration Status",
+          "type": "string"
+        },
+        "profile_id": {
+          "anyOf": [
+            {
+              "pattern": "^sha256:[a-f0-9]{64}$",
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Profile Id"
+        },
+        "stop_reason": {
+          "enum": [
+            "no_candidates",
+            "relevance_exhausted",
+            "no_information_gain",
+            "max_hits",
+            "payload_budget",
+            "candidates_exhausted"
+          ],
+          "title": "Stop Reason",
+          "type": "string"
+        },
+        "considered": {
+          "default": 0,
+          "maximum": 250,
+          "minimum": 0,
+          "title": "Considered",
+          "type": "integer"
+        },
+        "assessed": {
+          "default": 0,
+          "maximum": 250,
+          "minimum": 0,
+          "title": "Assessed",
+          "type": "integer"
+        },
+        "rejected": {
+          "default": 0,
+          "maximum": 250,
+          "minimum": 0,
+          "title": "Rejected",
+          "type": "integer"
+        },
+        "redundant": {
+          "default": 0,
+          "maximum": 250,
+          "minimum": 0,
+          "title": "Redundant",
+          "type": "integer"
+        },
+        "facet_count": {
+          "default": 0,
+          "maximum": 8,
+          "minimum": 0,
+          "title": "Facet Count",
+          "type": "integer"
+        },
+        "observed_facet_indices": {
+          "items": {
+            "maximum": 7,
+            "minimum": 0,
+            "type": "integer"
+          },
+          "maxItems": 8,
+          "title": "Observed Facet Indices",
+          "type": "array"
+        },
+        "coverage_assessment": {
+          "const": "unassessed",
+          "default": "unassessed",
+          "title": "Coverage Assessment",
+          "type": "string"
+        }
+      },
+      "required": [
+        "calibration_status",
+        "stop_reason"
+      ],
+      "title": "CueKBSelectionDiagnostics",
       "type": "object"
     },
     "CueKBSourceSpan": {

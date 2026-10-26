@@ -50,6 +50,7 @@ class CueKBApplicableCondition(EvidenceModel):
 
 
 class CueKBApplicability(EvidenceModel):
+    reason_codes: list[Literal["missing_binding", "no_reviewed_match", "structure_missing", "scope_conflict"]] = Field(default_factory=list, max_length=4)
     status: Literal["resolved", "unknown", "ambiguous"] = "unknown"
     subjects: list[CueKBApplicableSubject] = Field(default_factory=list, max_length=8)
     conditions: list[CueKBApplicableCondition] = Field(default_factory=list, max_length=20)

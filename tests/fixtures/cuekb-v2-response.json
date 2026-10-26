@@ -128,7 +128,14 @@
           "source_text": "Input voltage: 12 V. Do not exceed 30 C.",
           "title_path": [
             "Product A"
-          ]
+          ],
+          "applicability": {
+            "status": "unknown",
+            "subjects": [],
+            "conditions": [],
+            "reason_codes": []
+          },
+          "link_provenance": null
         }
       ],
       "context_state": "complete",

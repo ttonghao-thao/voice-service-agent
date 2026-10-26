@@ -341,3 +341,9 @@ python3.12 -m venv "$VOICECHAT_CPU_ENV"
 "$VOICECHAT_CPU_ENV/bin/python" -m pip install --disable-pip-version-check -r docs/voicechat/s2s/tests/requirements.txt
 "$VOICECHAT_CPU_ENV/bin/python" -m pytest -q docs/voicechat/s2s/tests
 ```
+
+## 企业RAG重构P0契约同步（进行中）
+
+消费者补齐CueKB `1d483fc`的事实类型、依赖问题、上下文归属/来源与动态选择诊断；继续禁止未知字段。不代表证据充分性评估、新文档树或语音性能重构已经交付。验证结果以本次运行回执为准。
+
+本次P0验证：契约与原生CueKB集成432 passed（1条现有Starlette弃用警告），专项43 passed；Ruff、契约生成、git diff --check通过。原生集成为测试环境，未验证真实GPU性能。首次扩大回归因PYTHONPATH缺仓库根而收集失败，修正为`PYTHONPATH=.:apps/api`后完整通过。

@@ -395,6 +395,20 @@
     "CueKBApplicability": {
       "additionalProperties": false,
       "properties": {
+        "reason_codes": {
+          "items": {
+            "enum": [
+              "missing_binding",
+              "no_reviewed_match",
+              "structure_missing",
+              "scope_conflict"
+            ],
+            "type": "string"
+          },
+          "maxItems": 4,
+          "title": "Reason Codes",
+          "type": "array"
+        },
         "status": {
           "default": "unknown",
           "enum": [
