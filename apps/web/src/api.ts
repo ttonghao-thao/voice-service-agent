@@ -16,6 +16,7 @@ export interface SourceSpan {
 }
 export interface CitationApplicability {
   status: "resolved" | "unknown" | "ambiguous";
+  reason_codes?: ("missing_binding" | "no_reviewed_match" | "structure_missing" | "scope_conflict")[];
   subjects: {
     entity_id?: string | null;
     display_name: string;
@@ -45,8 +46,18 @@ export interface Citation {
     source_spans?: SourceSpan[];
     required?: boolean;
     role?: "attribution" | "table_header" | "condition" | "exception" | "continuation" | null;
+    applicability?: CitationApplicability;
+    link_provenance?: {
+      kind: "parser_reference" | "curated" | "parser_continuation";
+      source_unit_id: string;
+      target_unit_id: string;
+      provenance_id: string;
+      reference_text?: string | null;
+    } | null;
   }[];
   context_truncated: boolean;
+  fact_kind?: "statement" | "specification" | "comparison" | "bundle" | "general";
+  dependency_issues?: ("unmatched_reference" | "ambiguous_reference" | "dependency_limit_exceeded" | "dependency_cycle" | "unsafe_dependency")[];
   context_omitted: boolean;
   hits_omitted: number;
   relations: {

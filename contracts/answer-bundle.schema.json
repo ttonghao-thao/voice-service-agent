@@ -118,6 +118,33 @@
         "applicability": {
           "$ref": "#/$defs/CueKBApplicability"
         },
+        "fact_kind": {
+          "default": "statement",
+          "enum": [
+            "statement",
+            "specification",
+            "comparison",
+            "bundle",
+            "general"
+          ],
+          "title": "Fact Kind",
+          "type": "string"
+        },
+        "dependency_issues": {
+          "items": {
+            "enum": [
+              "unmatched_reference",
+              "ambiguous_reference",
+              "dependency_limit_exceeded",
+              "dependency_cycle",
+              "unsafe_dependency"
+            ],
+            "type": "string"
+          },
+          "maxItems": 5,
+          "title": "Dependency Issues",
+          "type": "array"
+        },
         "source_spans": {
           "items": {
             "$ref": "#/$defs/CueKBSourceSpan"

@@ -1,6 +1,6 @@
 """Closed CueKB V2 evidence types shared by wire contracts and stored citations.
 
-Based on CueKB dac382e282f12ae1c1b89366d5c058725d9f13c6. Evidence text is
+Checked against CueKB 8a5aacce1184b95cacd391347183491a0f075d9f. Evidence text is
 never stripped or rewritten during validation: exact source identity matters.
 """
 
@@ -62,6 +62,10 @@ class CueKBApplicability(EvidenceModel):
         return self
 
 
+CueKBFactKind = Literal["statement", "specification", "comparison", "bundle", "general"]
+CueKBDependencyIssue = Literal[
+    "unmatched_reference", "ambiguous_reference", "dependency_limit_exceeded", "dependency_cycle", "unsafe_dependency"
+]
 ContextRole = Literal["attribution", "table_header", "condition", "exception", "continuation"]
 ContextState = Literal["disabled", "complete", "truncated", "unresolved"]
 ContextOmission = Literal[

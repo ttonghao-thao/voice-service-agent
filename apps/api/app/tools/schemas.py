@@ -9,6 +9,8 @@ from app.evidence_types import (
     ContextRole,
     ContextState,
     CueKBApplicability,
+    CueKBDependencyIssue,
+    CueKBFactKind,
     CueKBSourceSpan,
     EvidenceModel,
     RankingMethod,
@@ -70,6 +72,16 @@ class CueKBSearchRequest(StrictModel):
             raise ValueError("knowledge base IDs must not contain duplicates")
         return self
 
+    @model_validator(mode="after")
+    def adaptive_inputs(self):
+        if self.selection_mode != "adaptive" and (self.selection_query is not None or self.query_facets):
+            raise ValueError("selection inputs require adaptive mode")
+        if any(not facet.strip() for facet in self.query_facets) or (
+            self.selection_query is not None and not self.selection_query.strip()
+        ):
+            raise ValueError("selection inputs must not be blank")
+        return self
+
 
 class CueKBContextProvenance(EvidenceModel):
     kind: Literal["parser_reference", "curated", "parser_continuation"]
@@ -102,8 +114,8 @@ class CueKBRelation(EvidenceModel):
 
 
 class CueKBSearchHit(EvidenceModel):
-    fact_kind: Literal["statement", "specification", "comparison", "bundle", "general"] = "statement"
-    dependency_issues: list[Literal["unmatched_reference", "ambiguous_reference", "dependency_limit_exceeded", "dependency_cycle", "unsafe_dependency"]] = Field(default_factory=list, max_length=5)
+    fact_kind: CueKBFactKind = "statement"
+    dependency_issues: list[CueKBDependencyIssue] = Field(default_factory=list, max_length=5)
     chunk_id: UUID
     document_id: UUID
     version_id: UUID

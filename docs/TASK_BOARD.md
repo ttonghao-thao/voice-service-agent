@@ -4,6 +4,7 @@
 
 | 优先级 | 问题/任务 | 当前状态 | 完成条件 |
 | --- | --- | --- | --- |
+| 回溯完成，消费修补待部署 | aba0b53 影响与 CueKB 8a5aacc 兼容 | 相同响应在提交前后模型结果完全相同；旧 backend 两版均复现跨线程注入错误，87f5ef7 尚未部署。搜索字段集兼容；补齐 Citation 事实类型/依赖问题、必要上下文独立归属与 adaptive 参数校验 | 最新 main 一次部署后验证 ACK/idle/回答；不回退 DTO 补齐、不自动切换 adaptive，不把 CPU 对照当现场通过 |
 | 阻塞，已修复待现场 | 工具期间 ACK 中断 | 真实后台事件循环复现 inference tensor 写入 RuntimeError；注入改为窄线程局部模式，sender 按 PCM 样本时钟发送补处理输出；失败类型/剩余 token 加入摘要 | 完整 ACK，无播放积压/VOICE_UNAVAILABLE，成功回 idle 后正式回答；不扩大浏览器缓冲或重放工具 |
 | 已编码，待 GPU 时延 | VoiceChat 工具结果消费时延 | 预计算函数 embedding、单协程顺序注入，移除未使用的正文采样/重复 CPU 传递；仍每 token 一次引擎步骤，常规日志拆分准备/append 等待 | 在同一 sequence/cache/function 通道下验证性能方案，保留必要事实与条件；真实 GPU 时间线复测，不靠 HTTP 超时或提高预算掩盖 |
 | 现场仍失败，暂停堆提示 | Golden Yolk / Black Pig 独立首问未触发工具 | 最新同一提示 hash 下两种首问仍一般回答，Golden 查询又错拼并漏属性；本轮先恢复 ACK/注入链路，再评估原生模型遵循与设计路径 | 原生工具策略对独立产品问题及追问都正确，不用前置 Black 作为通过条件；不新增分类器或强制工具选择 |

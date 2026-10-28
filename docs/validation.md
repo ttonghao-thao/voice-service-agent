@@ -1,6 +1,6 @@
 # 当前问题验证：工具等待、首问触发与回答完整性
 
-更新：2026-10-28。当前唯一执行入口；历史验证方法已归档。**第 10 节记录最新“ACK 中断”现场结果与本次修复。CueKB 已返回证据；VoiceChat 注入/播放回归待修复后实机复测，首问工具选择仍未通过。** 第 8–9 节保留上一轮证据与实现背景。更新后按第 2–7 节执行相同 A/B，不把旧结果当作新版本通过。所有命令在**部署主机的本项目根目录**执行，操作者只操作、观察和回传，不需要挑日志、找会话 ID 或判断根因。
+更新：2026-10-28。当前唯一执行入口；历史验证方法已归档。**第 10 节记录“ACK 中断”，第 11 节记录 aba0b53 回溯和 CueKB 8a5aacc 接口核对。用户确认 87f5ef7 尚未部署，不能把其本地修复记作现场通过。CueKB 已返回证据；首问工具选择仍未通过。** 第 8–9 节保留上一轮证据与实现背景。更新后按第 2–7 节执行相同 A/B，不把旧结果当作新版本通过。所有命令在**部署主机的本项目根目录**执行，操作者只操作、观察和回传，不需要挑日志、找会话 ID 或判断根因。
 
 ## 1. 本轮要回答什么
 
@@ -24,6 +24,8 @@
 本次 API、采集器、query schema、全局目录默认值和 VoiceChat model/data/template 均有修改。只重启 API 不足以生效。下面命令用于现有本项目单知识工具部署：构建并重新创建 API，应用已检入的目录配置；记录原 VoiceChat 的已验证镜像 ID 和模型目录，再用原 GPU/端口参数及本仓库六个只读挂载重新创建 VoiceChat。Web 源码未改，无需重建 Web；门户后续强制刷新即可。运行库和权重不变，不下载或猜测基础镜像。
 
 10 月 28 日补充：本次必须加载新的 `model.py` **和 `s2s/audio_server.py`**：前者修复后台协程写入 inference tensor，后者在独立发送任务按 PCM 样本时钟发送补处理音频。下面已有六个挂载覆盖两者，无新增依赖、环境变量或挂载。API 重建用于加载失败阶段采集器；提示词/目录、Web、CueKB 与权重本次不再修改。
+
+接口核对后补充：本次 API 还需加载第 11 节的 Citation/必要上下文消费修补。一次部署最新 main 即包含尚未部署的 87f5ef7；仍按本节更新 API 并重新创建 VoiceChat。Web 仅补充 TypeScript 数据类型，未改播放或页面行为；无需为类型定义单独重建 Web。CueKB 的数据库/审核升级由其项目负责，本项目不运行其迁移或重新发布资料。
 
 ```bash
 bash <<'SH'
@@ -373,6 +375,42 @@ python3.12 -m venv "$VOICECHAT_CPU_ENV"
 按第 2 节部署后只复测相同 A/B 一轮：完整 ACK、注入回 idle、正式回答及同连接下一段均需观察；任何异常保留输出并结束当前窗口再开下一个。未实际进行 GPU、浏览器听音或 CueKB 联调的本地测试不作为放行证据。
 
 本轮开发检查：VoiceChat 独立 CPU 全量 **48 passed**；本项目受影响的时间线/采集器/原生工具验证/完整 backend 补丁回归 **130 passed**；Ruff、12 个快照 SHA-256、完整 Python 编译、4 个外部修改文件同步核对通过。上述样本节奏测试使用受控时钟和 PCM，不是浏览器现场听音。本环境未部署、无 GPU，也未发送新的真实 CueKB 请求。
+
+## 11. aba0b53 回溯与 CueKB 最新接口核对（2026-10-28）
+
+### 11.1 aba0b53 是否引入 ACK 中断
+
+结论：**不支持把 aba0b53 的严格字段补齐认定为中断根因。** 单提交不修改 VoiceChat backend/audio_server、API relay、浏览器 Worklet、CueKB Adapter 或证据投影方法。它新增可解析字段、默认 ranked 选择参数和测试/生成契约；不改变 GPU、音频输出节奏或工具注入算法。完整升级到该提交时也会带入更早的 fac1b7a，不能把部署后的现象直接归因到最后一条提交。
+
+方法一：把 986f442（该提交父版本）与 aba0b53 的 API 源码分别解包到临时目录，在同一固定依赖环境执行实际 Adapter → NativeCueKBExecutor → NativeInputSearch → voice_result，用同一份旧版公开合成响应、相同查询/KB/预算和受控 HTTP 传输。实际模型结果均为 **576 字节**，排序 JSON 的 SHA-256 均为 `157c05b22e2fd7cf909ae70d218459d652bc654c21d6249bbfd3eeb2d06fee87`，逐字段相同。请求只增加 `selection_mode=ranked`、`selection_query=null`、`query_facets=[]`、`filters.product_entity_id=null`；最新 CueKB DTO 接受这些默认值，未自动切换 adaptive。新增默认结构会增加 API 内部元数据体积，但本样本没有增加实际模型结果或改变播放；临近预算时的完整组取舍仍由预算保护负责。
+
+方法二：分别载入三个提交的实际 backend 注入方法，在 inference_mode 下创建历史 tensor，再交给真实后台事件循环线程。受控引擎相同、待注入 token 相同，不运行 GPU：
+
+| backend 版本 | 引擎调用数（共 3 tokens） | 结束状态 | 结果 |
+| --- | --- | --- | --- |
+| 986f442（aba0b53 之前） | 1 | process_response | 注入失败，历史写入抛 RuntimeError |
+| aba0b53 | 1 | process_response | 同上 |
+| 87f5ef7（用户确认尚未部署） | 3 | idle | 全部完成，无错误 |
+
+缺陷可追溯到 fac1b7a 将历史 tensor 写入移入后台协程；Triton execute() 的线程局部 inference_mode 不会传播到后台线程。同线程 asyncio.run 测试会掩盖它。此前“432 项契约与集成通过”不包含真实后台 inference tensor 写入和浏览器输出节奏，所以不能排除此缺陷。现有现场时序与它吻合，但未取得现场异常堆栈；播放缓冲溢出仍是第 10 节的另一条输出路径问题，不能把所有截图都归成同一个异常。回退 aba0b53 既不会修复该代码缺陷，还会失去新版字段兼容。
+
+另查出 aba0b53 确实影响了旧验证脚本：连续对话评估两处、自然修订测试一处仍按不含 product_entity_id 的旧 filters 字典精确比较。新增 null 字段令这些检查误报；在未修改的 87f5ef7 临时副本运行 C01 同样失败，已确认属于本次编码前的验证兼容缺口。本轮更新预期为显式 product_entity_id=null，仍精确检查服务端产品/版本条件，没有放宽授权或结果标准。这不是音频运行代码，不能用它解释浏览器溢出或 backend 注入异常；432 项子集通过也不能代替完整持续对话回归。
+
+### 11.2 CueKB 8a5aacc 接口影响
+
+本轮读取 CueKB main 的 `8a5aacce1184b95cacd391347183491a0f075d9f`，对照 schemas/domain、检索实现、生成契约及接入文档。最新请求/响应/命中/上下文/归属/选择诊断字段集与本项目同步后的 DTO 一致；本地仍保持未知字段拒绝和原有 UUID/非空证据检查。最新新增审核分类、复选产品及草稿状态字段，以及源树分页接口，属于管理链路；本项目仅调用 /v2/search，不需要引入这些管理 DTO 或额外请求。没有新检索必填参数、协议重试或新模型调用要求。
+
+8a5aacc 将可选相关性校准文件无效从构造检索服务时抛错，改为继续未校准检索并标记 `retrieval_status=degraded` / `degraded_reasons=[relevance_profile_invalid]`；有效旧词法 revision 可体现为 adaptive `calibration_status=binding_mismatch`。已有字符串原因字段可接收，不能把 HTTP 200/degraded+hits 当作工具错误或证据已充分；无证据的 degraded 仍明确不可用。本轮用 CueKB 实际 V2SearchResponse 序列化合成 ranked/adaptive 降级响应，再由本项目 DTO 解析通过；实际 ranked 请求也经其 V2SearchRequest 验证。此前 409 没有响应体，本次不倒推它必由校准文件引起。
+
+需要修补的是先前 DTO 补齐之后的消费缺口，而非另一次搜索字段扩展：
+
+- `fact_kind`、`dependency_issues` 此前只进入搜索 DTO，Adapter 构造 Citation 时丢失。现保留到 Citation/生成契约/门户类型；存在未解决依赖的组不会因 context_state=complete 而被采用，历史 Citation 用默认值兼容。
+- 必要上下文此前合为字符串放在主事实的归属下。现实际模型结果的 context 为必要片段列表，每段保留原文、角色和自己的 applicability/reason_codes，unknown 不继承主事实的 resolved 产品；原始 link_provenance、来源和完整结构仍留在 Citation 审计。非默认事实类型进入模型证据，不把比较/套件默认为普通单品陈述。
+- 请求 DTO 补齐与上游相同的“选择专用参数仅供 adaptive、非空白”校验；实际请求继续 ranked，不自动启用动态选择。原生结果按实际投影后的 JSON 计费，同一预算内完整组取舍，不截断条件、不提高预算。
+
+这次修补只涉及本项目 API、契约、门户 TypeScript 类型和测试；VoiceChat 完整运行文件沿用 87f5ef7，不另改其模型/提示/音频。先部署最新 main，再按 A/B 听完整 ACK、确认注入 idle 和正式回答；首问路由、错拼/漏项及成功注入的 GPU 时延仍单独验收。
+
+本轮检查：接口与原生 CueKB 集成 **116 passed**；完整回归首轮 **691 passed / 6 failed**，6 项均为上述旧 filters 预期；修正后连续对话/修订 **26 passed**，覆盖全部 6 项，其他 691 项的结果来自前述全量运行，期间生产代码未再变动。VoiceChat 独立 CPU **48 passed**；Web TypeScript/生产构建、契约导出、Ruff、12 个完整快照 hash、文档链接/命令语法与差异检查通过。CueKB 工作区保持无修改；未部署、未调用新的真实 CueKB/语音模型、未做 GPU 或现场听音。
 
 ## 企业RAG重构P0契约同步（进行中）
 

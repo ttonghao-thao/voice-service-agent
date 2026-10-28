@@ -341,7 +341,8 @@ async def test_native_query_reaches_cuekb_without_an_answer_model(tmp_path, monk
                 assert wire["sources"][-2]["text"] == "Product AX weighs 100 grams."
                 assert wire["sources"][-1]["text"] == "Product AX costs 20 dollars."
             if scenario in ("required_condition", "required_optional_truncated"):
-                assert "only indoors" in wire["sources"][0]["context"]
+                assert any("only indoors" in part["text"] for part in wire["sources"][0]["context"])
+                assert all(part["applicability"]["status"] == "unknown" for part in wire["sources"][0]["context"])
                 assert "Partial neighbor" not in json.dumps(wire)
             if scenario in ("unknown", "ambiguous"):
                 assert wire["sources"][0]["applicability"]["status"] == scenario

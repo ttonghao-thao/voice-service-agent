@@ -5,6 +5,8 @@ query, document tag, nearby hit, or score. Optional neighbors are not required
 to synthesize an answer and do not consume the native function-channel budget.
 """
 
+from app.evidence_types import CueKBApplicability
+
 # Registered policy is shared by initial admission and the per-input merger so
 # evidence always leaves room for the real terminal result, not just raw text.
 ANSWER_INSTRUCTIONS = (
@@ -20,7 +22,7 @@ class IncompleteEvidence(ValueError):
 
 def compact_applicability(scope):
     """Keep readable scope and attribution type; no entity IDs or duplicated spans."""
-    return {
+    result = {
         "status": scope.status,
         "subjects": [
             {key: value for key, value in {
@@ -34,6 +36,9 @@ def compact_applicability(scope):
         "conditions": [{"text": condition.text, "source_kind": condition.source_kind}
                        for condition in scope.conditions],
     }
+    if scope.reason_codes:
+        result["reason_codes"] = list(scope.reason_codes)
+    return result
 
 
 def evidence_item(citation):
@@ -48,7 +53,7 @@ def evidence_item(citation):
             "context": citation.context, "conditions": citation.metadata}
     if citation.cuekb_schema_version != "2":
         return item
-    if citation.context_state not in ("complete", "truncated", "disabled"):
+    if citation.dependency_issues or citation.context_state not in ("complete", "truncated", "disabled"):
         raise IncompleteEvidence("unresolved")
     if citation.block_kind == "heading":
         raise IncompleteEvidence("heading")
@@ -69,13 +74,26 @@ def evidence_item(citation):
         context_state=citation.context_state,
         required_context_chunks=len(required),
     )
+    if citation.fact_kind != "statement":
+        item["fact_kind"] = citation.fact_kind
+    if required:
+        # Required parts carry their own scope. Flattened text under the main
+        # fact's resolved product used to hide unknown/conflicting attribution.
+        # Raw spans and link_provenance stay in Citation for audit, not speech.
+        item["required_context"] = [
+            {"text": part["source_text"], "role": part.get("role"),
+             "applicability": compact_applicability(CueKBApplicability.model_validate(part.get("applicability") or {}))}
+            for part in required
+        ]
     return item
 
 
 def model_source(item):
     source = {"text": item["text"]}
-    for key in ("title", "context", "conditions", "applicability"):
+    for key in ("title", "context", "conditions", "applicability", "fact_kind"):
         value = item.get(key)
+        if key == "context" and item.get("required_context"):
+            value = item["required_context"]
         if key == "title" and value == "Source excerpt":
             continue
         if value and value != item["text"]:

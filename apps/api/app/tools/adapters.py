@@ -239,6 +239,7 @@ class CueKBAdapter:
                 context_truncated=hit.context_truncated, context_state=hit.context_state,
                 context_omissions=list(hit.context_omissions),
                 applicability=hit.applicability, source_spans=hit.source_spans,
+                fact_kind=hit.fact_kind, dependency_issues=hit.dependency_issues,
                 processing_profile=hit.processing_profile, source_unit_id=hit.source_unit_id,
                 block_kind=hit.block_kind,
                 score=hit.score, score_type=hit.score_type, stage_scores=hit.stage_scores,

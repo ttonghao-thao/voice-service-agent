@@ -9,6 +9,8 @@ from app.evidence_types import (
     ContextOmission,
     ContextState,
     CueKBApplicability,
+    CueKBDependencyIssue,
+    CueKBFactKind,
     CueKBSourceSpan,
     RankingMethod,
 )
@@ -150,6 +152,8 @@ class Citation(StrictModel):
     score_type: Literal["rrf", "rerank"] | None = None
     stage_scores: dict[str, FiniteFloat] = Field(default_factory=dict)
     applicability: CueKBApplicability = Field(default_factory=CueKBApplicability)
+    fact_kind: CueKBFactKind = "statement"
+    dependency_issues: list[CueKBDependencyIssue] = Field(default_factory=list, max_length=5)
     source_spans: list[CueKBSourceSpan] = Field(default_factory=list, max_length=64)
     processing_profile: str | None = None
     source_unit_id: str | None = None
