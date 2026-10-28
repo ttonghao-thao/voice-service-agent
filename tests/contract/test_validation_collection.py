@@ -223,6 +223,19 @@ def test_mismatch_stops_before_audio_and_pending_web_blocks_auto(fake_docker):
     assert 'web_capture_not_started' in run_host(fake_docker, 'web-end').stdout
 
 
+def test_failed_web_start_identifies_hash_direction_and_creates_no_capture_window(fake_docker):
+    result = run_host({**fake_docker, 'FAKE_MODE': 'mismatch'}, 'web-start', 'golden_yolk')
+    assert result.returncode == 2
+    assert f'checkout root={ROOT} commit=' in result.stdout
+    assert 'version_source expected=host_checkout actual=container_disk' in result.stdout
+    assert 'runtime container=' in result.stdout
+    assert 'web_capture=started' not in result.stdout
+    ended = run_host(fake_docker, 'web-end')
+    assert ended.returncode == 2 and 'stage=web_capture_not_started' in ended.stdout
+    trace = Path(fake_docker['DOCKER_TRACE']).read_text()
+    assert "['logs'" not in trace and '--case-id' not in trace
+
+
 def test_timing_reports_first_reply_after_last_result_and_counts_later_reopenings(capsys):
     events = [
         ('00:00:01', f'voice_audio_first_sent conversation_id={CHOSEN} response_id=early input_item_id=i1'),

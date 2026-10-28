@@ -1,6 +1,6 @@
 # 当前问题验证：工具等待、首问触发与回答完整性
 
-更新：2026-10-28。当前唯一执行入口；历史验证方法已归档。**第 10 节记录“ACK 中断”，第 11 节记录 aba0b53 回溯和 CueKB 8a5aacc 接口核对。用户确认 87f5ef7 尚未部署，不能把其本地修复记作现场通过。CueKB 已返回证据；首问工具选择仍未通过。** 第 8–9 节保留上一轮证据与实现背景。更新后按第 2–7 节执行相同 A/B，不把旧结果当作新版本通过。所有命令在**部署主机的本项目根目录**执行，操作者只操作、观察和回传，不需要挑日志、找会话 ID 或判断根因。
+更新：2026-10-28。当前唯一执行入口；历史验证方法已归档。**第 12 节记录最新版本检查失败：宿主执行目录的文件较旧，API 七个文件匹配 63a7400，VoiceChat 日志仍为修复前代码。先执行第 2 节对齐部署，check 通过后才开始 A/B。** 第 10 节记录“ACK 中断”，第 11 节记录 aba0b53 回溯和 CueKB 8a5aacc 接口核对；尚无加载 87f5ef7 修复后的现场通过证据。CueKB 已返回证据，首问工具选择仍未通过。所有命令在**部署主机的本项目根目录**执行，操作者只操作、观察和回传，不需要挑日志、找会话 ID 或判断根因。
 
 ## 1. 本轮要回答什么
 
@@ -18,6 +18,30 @@
 ## 2. 更新本次代码并检查部署
 
 本节在部署主机执行，不是开发环境已经部署的记录。先将本次完整提交检出到主机项目目录，保持已有 `.env`、已验证的双 GPU（0,1）配置、9000 端口及模型挂载；停止旧测试通话，本次窗口内不要有其他测试用户。CueKB 由其运行方发布新版，本仓库不替它迁移、修改内容或重建索引。
+
+### 2.0 先同步执行目录
+
+`version=failed` 的 expected 来自**执行脚本所在目录的宿主文件**，actual 来自容器磁盘；expected 不等于远程 main 的最新版本。最新现场恰好是宿主较旧、API 已更新。先在当前本项目目录执行下段，再使用更新后的本页执行 2.1 和 2.2；不要从旧目录构建覆盖新 API。命令保留 `.env` 和数据卷，不丢弃本地修改；受跟踪文件有修改或本地 main 与远端不一致时明确停止，回传失败行。
+
+```bash
+bash <<'SH'
+set -euo pipefail
+if ! git diff --quiet || ! git diff --cached --quiet; then
+  printf 'checkout=failed reason=LOCAL_TRACKED_CHANGES_PRESERVED\n'
+  exit 1
+fi
+git fetch origin main
+git switch main
+git merge --ff-only origin/main
+if [[ "$(git rev-parse HEAD)" != "$(git rev-parse origin/main)" ]]; then
+  printf 'checkout=failed reason=LOCAL_MAIN_DIFFERS_FROM_ORIGIN\n'
+  exit 1
+fi
+printf 'checkout=updated root=%s commit=%s\n' "$(pwd)" "$(git rev-parse --short HEAD)"
+SH
+```
+
+`git pull` 只更新文件，不会重建 API，也不会重新加载 VoiceChat Python 进程。后续重新创建 VoiceChat 时，第 2.1 节的六个绝对路径挂载统一指向这个目录。即便磁盘文件 hash 已匹配，也必须完成进程重载；不能以在旧容器里复制文件代替部署。
 
 ### 2.1 配套更新 API、目录与 VoiceChat
 
@@ -90,13 +114,15 @@ git rev-parse --short HEAD
 bash scripts/validate_deployment.sh check
 ```
 
-正常得到 preparation=passed 和 API/VoiceChat 的 runtime 身份行。入口会核对应用、采集器、query schema、目录 YAML、原始 WAV、VoiceChat 六个运行文件及既有诊断配置，并检查 VoiceChat 为真实 Triton/model ready（拒绝 loopback）。出现 version=failed / collection=failed 就停止并回传；不自行复制文件、降低检查或再次重建。文件匹配不证明 GPU 提速、模型首问选工具正确或 CueKB 内容已通过。
+正常得到 checkout 的目录/提交/分支、preparation=passed 和 API/VoiceChat 的 runtime 身份行。入口会核对应用、采集器、query schema、目录 YAML、原始 WAV、VoiceChat 六个运行文件及既有诊断配置，并检查 VoiceChat 为真实 Triton/model ready（拒绝 loopback）。哈希失败时额外标注 version_source expected=host_checkout actual=container_disk，并输出容器 image/start 时间。出现 version=failed / collection=failed 就停止并回传；不自行复制文件、降低检查或再次重建。文件匹配不证明已运行的 Python 加载了新代码，也不证明 GPU 提速、模型首问选工具正确或 CueKB 内容已通过。
 
 浏览器强制刷新门户，打开 F12 → Console，开启 **Preserve log**，过滤 voice_file，清空旧 Console 内容。保持门户前台、声音可播放，不锁屏或切后台。固定使用仓库 artifacts/native-cuekb/golden_yolk.wav 与 artifacts/native-cuekb/black_pig_crisp_heart.wav，选择 **Audio file → Choose WAV**。Python 和采集在容器内执行，宿主机无需 Python，不手工导出 HAR 或运行 docker logs。
 
 ## 3. 通话 A：Golden Yolk 独立首问
 
 **假设：**独立首问未触发可能发生在语音识别、分轮或原生工具选择阶段，不能先判为 CueKB 慢。预期取得完整两段问题及该次实际模型/工具事件；是否出现 Checking knowledge 只作观察。
+
+A、B 均须先得到 `preparation=passed` **和** `web_capture=started`，再点击门户 Start file call。任何 version/collection 失败都停止，不播放录音、不继续 B，也不执行第 5 节采集；web-start 版本检查失败时没有创建窗口，随后 web-end 只会返回 web_capture_not_started。
 
 1. 确认已 End call，宿主机开始一个新的采集窗口：
 
@@ -411,6 +437,24 @@ python3.12 -m venv "$VOICECHAT_CPU_ENV"
 这次修补只涉及本项目 API、契约、门户 TypeScript 类型和测试；VoiceChat 完整运行文件沿用 87f5ef7，不另改其模型/提示/音频。先部署最新 main，再按 A/B 听完整 ACK、确认注入 idle 和正式回答；首问路由、错拼/漏项及成功注入的 GPU 时延仍单独验收。
 
 本轮检查：接口与原生 CueKB 集成 **116 passed**；完整回归首轮 **691 passed / 6 failed**，6 项均为上述旧 filters 预期；修正后连续对话/修订 **26 passed**，覆盖全部 6 项，其他 691 项的结果来自前述全量运行，期间生产代码未再变动。VoiceChat 独立 CPU **48 passed**；Web TypeScript/生产构建、契约导出、Ruff、12 个完整快照 hash、文档链接/命令语法与差异检查通过。CueKB 工作区保持无修改；未部署、未调用新的真实 CueKB/语音模型、未做 GPU 或现场听音。
+
+## 12. 最新现场：执行目录与运行版本不一致（2026-10-28）
+
+假设：此次仍在使用混合部署，尚未验证已交付的注入修复。方法：将用户提供的七组 expected/actual SHA-256 与 Git 提交文件逐一比对，再核对异常文案、源码行号和 web-start 的执行顺序。结果：
+
+| 项目 | 核对结果 | 含义 |
+| --- | --- | --- |
+| 两个采集脚本 run_native_cuekb_validation / summarize_voice_timeline | expected 匹配 986f442/aba0b53，actual 匹配 87f5ef7/63a7400 | 宿主执行目录的采集脚本较旧，容器文件较新 |
+| cuekb_evidence / adapters / schemas / contracts / evidence_types | expected 为 63a7400 之前的文件，actual 五项全部精确匹配 63a7400 | API 容器已包含本轮接口修补；不能把 expected 当作最新版本、从旧目录重建降级 API |
+| VoiceChat RuntimeError | `model.py:1923` 的旧异常文案、1927 的 finally 行与 aba0b53 backend 精确一致；87f5ef7 对应行号和文案已改变，应包含 error_type/remaining_tokens | 日志对应修复前已加载代码。可能是旧挂载来源或进程未重载；现有材料不能区分，也不能由磁盘 hash 通过证明加载成功 |
+| VoiceChat 运行数据 | 38.9 ms 后仍 process_response，推理返回 500 后终止连接、abort 请求；该连接 Dropped=0 | 符合此前注入异常退出路径，不能算新修复失败；Dropped=0 也不代表工具结果已消费 |
+| web_capture_not_started / NO_CURRENT_WINDOW_OR_SESSION | web-start 在版本校验时退出，先于创建 web-pending | 没有本次窗口可供 web-end 或时间线采集；不是第二个独立检索故障 |
+
+本轮不再修改推理算法。部署命令经核对：Dockerfile 会复制上述 API 文件，Compose API 无源码 bind mount，按第 2.1 节正确目录 build+force-recreate 会加载构建内容；VoiceChat 则须用本仓库 docs/voicechat 六个绝对路径重新创建。未发现这段命令本身漏装上述文件的缺陷，现场缺少的是统一执行目录与进程加载身份。
+
+处理顺序固定为第 2.0 节完整同步 main → 第 2.1 节重建 API/重新创建 VoiceChat → 第 2.2 节等待就绪并 check → 通过后才 web-start/播放。已有已验证的 GPU 镜像 ID、模型目录、双 GPU 配置和数据卷保留；不复制单文件或绕过版本检查。此次仅增强宿主检查输出的目录/提交、哈希方向和失败时容器身份，保护逻辑保持；真实部署/听音仍由现场复测，不把本地工具模拟当作已修复生产。
+
+本轮开发检查：采集/部署专项 **24 passed**，包含版本不匹配时不创建窗口、不启动自动音频或采集的回归；Ruff、shell 语法、文档链接与围栏、部署命令语法、差异检查通过。未修改 VoiceChat 运行文件或 API 推理逻辑，未进行生产部署。
 
 ## 企业RAG重构P0契约同步（进行中）
 

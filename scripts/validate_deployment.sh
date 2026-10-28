@@ -23,8 +23,15 @@ verify_file() {
     return 1
   fi
 }
+runtime_identity() {
+  docker inspect --format 'runtime container={{.Name}} image={{.Image}} started={{.State.StartedAt}}' "$API_CONTAINER" "$VOICE_CONTAINER" 2>>"$STATE/setup.log"
+}
 check() {
   local file errors=0
+  local commit branch
+  commit=$(git rev-parse --short HEAD 2>/dev/null) || commit=unavailable
+  branch=$(git branch --show-current 2>/dev/null) || branch=unavailable
+  printf 'checkout root=%s commit=%s branch=%s\n' "$ROOT" "$commit" "${branch:-detached}"
   for file in run_native_cuekb_validation.py validate_native_cuekb.py probe_voicechat.py verify_deployment.py inspect_native_answer.py summarize_voice_timeline.py collect_validation_summary.py inspect_input_prefix.py; do
     verify_file "$API_CONTAINER" "scripts/$file" "/app/scripts/$file" || errors=1
   done
@@ -37,12 +44,17 @@ check() {
   for file in s2s/audio_server.py s2s/prompt_template.jinja opt/tritonserver/backends/nemotron-voicechat/model.py opt/tritonserver/backends/nemotron-voicechat/data_types.py opt/tritonserver/backends/nemotron-voicechat/runtime_setup.py opt/tritonserver/backends/nemotron-voicechat/checkpoint_utils/load_utils.py; do
     verify_file "$VOICE_CONTAINER" "docs/voicechat/$file" "/$file" || errors=1
   done
-  [[ "$errors" == 0 ]] || fail files_not_current
+  if [[ "$errors" != 0 ]]; then
+    # expected is the invoking directory's file, not proof of the latest main.
+    printf 'version_source expected=host_checkout actual=container_disk\n'
+    runtime_identity || true
+    fail files_not_current
+  fi
   docker exec "$API_CONTAINER" python -c 'import urllib.request; urllib.request.urlopen("http://127.0.0.1:8000/health/ready", timeout=5).close()' >"$STATE/health.log" 2>&1 || fail api_health
   docker exec "$VOICE_CONTAINER" python -c 'import os; assert os.getenv("VOICECHAT_DIAGNOSTICS") == "1"; assert os.getenv("USE_JINJA_TEMPLATE_PROMPT") == "1"; assert os.getenv("S2S_INFERENCE_CLOSE_ON_PAD_TAIL", "").lower() in ("1", "true"); assert os.getenv("S2S_INFERENCE_FORCE_SPEECH_SILENCE_ON_PAD", "").lower() in ("1", "true"); assert float(os.getenv("S2S_TTS_PAD_TAIL_RATIO", "3")) > 0' >"$STATE/voice-env.log" 2>&1 || fail voice_diagnostics_config
   docker exec "$VOICE_CONTAINER" python -c 'import json,os,urllib.request; port=os.getenv("NIM_HTTP_API_PORT","9000"); result=json.load(urllib.request.urlopen("http://127.0.0.1:"+port+"/v1/realtime/health",timeout=5)); assert result.get("status")=="ok" and result.get("mode")=="triton" and result.get("triton_status")=="ready"' >"$STATE/voice-health.log" 2>&1 || fail voicechat_health
   printf 'preparation=passed fixtures=matched voicechat_files=matched helpers=matched api_health=ready voicechat_health=ready\n'
-  docker inspect --format 'runtime container={{.Name}} image={{.Image}} started={{.State.StartedAt}}' "$API_CONTAINER" "$VOICE_CONTAINER" 2>>"$STATE/setup.log" || fail runtime_metadata
+  runtime_identity || fail runtime_metadata
 }
 collect() {
   local start=$1 end=$2 dir=$3 cid=${4:-} prefix_case=${5:-} code=0
