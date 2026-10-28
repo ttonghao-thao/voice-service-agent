@@ -62,3 +62,27 @@ def test_consumption_metrics_are_scoped_and_do_not_echo_tool_payloads():
     assert profile['preparation_ms'] == 8 and profile['append_wait_ms'] == 9000
     assert next(r for r in rows if r['event'] == 'backend.audio_resumed')['processed_frames'] == 2
     assert 'PRIVATE' not in json.dumps(rows) and '999' not in json.dumps(rows)
+
+
+def test_injection_finally_is_not_success_and_failure_metadata_survives_collection():
+    from io import StringIO
+
+    from scripts.run_native_cuekb_validation import backend_injection_line, read_voicechat_evidence
+
+    logs = [
+        '2026-10-28T00:00:00Z voice_input_transcribed conversation_id=chosen input_item_id=i1',
+        '2026-10-28T00:00:01Z voice_ws_diagnostic ' + json.dumps({
+            'event': 'asr.dispatch', 'sequence_id': 42, 'input_item_id': 'i1'}),
+        '2026-10-28T00:00:02Z [seq 42] Fast response-token injection started',
+        '2026-10-28T00:00:03Z [seq 420] Tool result injection failed: error_type=ValueError remaining_tokens=999',
+        '2026-10-28T00:00:04Z [seq 42] Tool result injection failed: error_type=RuntimeError remaining_tokens=530 PRIVATE',
+        '2026-10-28T00:00:05Z [seq 42] Fast response-token injection done, state: process_response',
+    ]
+    _, rows = summarize(logs, 'chosen')
+    assert rows[-1]['state'] == 'process_response'
+    assert rows[-2]['event'] == 'backend.inject_failed'
+    assert rows[-2]['error_type'] == 'RuntimeError' and rows[-2]['remaining_tokens'] == 530
+    assert 'PRIVATE' not in json.dumps(rows) and '999' not in json.dumps(rows)
+    selected = read_voicechat_evidence(StringIO('\n'.join(logs)))
+    line = backend_injection_line(selected, '42')
+    assert 'status=failed' in line and 'failed=1' in line and 'done_idle=0' in line

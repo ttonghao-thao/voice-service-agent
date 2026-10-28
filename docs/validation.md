@@ -1,13 +1,14 @@
 # 当前问题验证：工具等待、首问触发与回答完整性
 
-更新：2026-10-25。当前唯一执行入口；历史验证方法已归档。**第 8 节为修复前真实 A/B；本次已编码，第 9 节记录范围与本地检查。CueKB 新版按用户确认已支持内容侧优化、待联调。** 更新后按第 2–7 节执行相同 A/B，不把旧结果当作新版本通过。所有命令在**部署主机的本项目根目录**执行，操作者只操作、观察和回传，不需要挑日志、找会话 ID 或判断根因。
+更新：2026-10-28。当前唯一执行入口；历史验证方法已归档。**第 10 节记录最新“ACK 中断”现场结果与本次修复。CueKB 已返回证据；VoiceChat 注入/播放回归待修复后实机复测，首问工具选择仍未通过。** 第 8–9 节保留上一轮证据与实现背景。更新后按第 2–7 节执行相同 A/B，不把旧结果当作新版本通过。所有命令在**部署主机的本项目根目录**执行，操作者只操作、观察和回传，不需要挑日志、找会话 ID 或判断根因。
 
 ## 1. 本轮要回答什么
 
-用户已报告最新 CueKB V2 上线并验证，但仍有以下问题。本轮是定位采集，不是上线或修复后的放行测试。
+本轮先验证 ACK 能完整播放、工具结果能成功注入并继续回答。CueKB 10 月 28 日两次已返回 5 条证据，不能再把 10 月 27 日的 409 当成本轮根因；真实端到端结果仍未通过。
 
 | 当前问题 | 已有证据 | 本轮验证目标 |
 | --- | --- | --- |
+| 查询时 ACK 中断，播放积压或 VOICE_UNAVAILABLE | 两次注入均开始后约 39 ms 退出、未回 idle；本地已复现跨线程写 inference tensor 的 RuntimeError，补处理 ACK 存在突发输出 | 完整听到 ACK；无连接异常，backend_injection=complete 且 returned_idle/done_idle 各一次，随后出现正式回答；核对播放与服务器完成时间 |
 | Checking knowledge 长、常见两次调用 | 用户报告检索不到 1 秒，但调用间隔超过 10 秒；代码确认 VoiceChat 逐 token 注入结果，并可能先等待 ACK 结束 | 分开检索、应用交付、ACK/调度、结果注入，以及下一次工具生成或回答的时间；确认第二次是否属于同一输入、查询了什么 |
 | Golden Yolk 独立不触发，Black Pig 后触发 | 用户观察；工具描述已覆盖两种产品，Golden WAV 有追问式开头和中间停顿 | 对照全新连接的 Golden 与同连接 Black Pig 后的 Golden，核对实际输入、分轮、模型调用和 query，而不只看界面状态 |
 | 回答漏项、数值及条件表达不稳 | Black Pig 一段称未找到重量，另一段报 65 克，尚不知是否同次提问；Golden 漏答运输 | 明确每段答案属于哪次输入，核对价格/重量/层数/最佳食用时间，以及运输/保质期/开封储存；保留真实来源 |
@@ -21,6 +22,8 @@
 ### 2.1 配套更新 API、目录与 VoiceChat
 
 本次 API、采集器、query schema、全局目录默认值和 VoiceChat model/data/template 均有修改。只重启 API 不足以生效。下面命令用于现有本项目单知识工具部署：构建并重新创建 API，应用已检入的目录配置；记录原 VoiceChat 的已验证镜像 ID 和模型目录，再用原 GPU/端口参数及本仓库六个只读挂载重新创建 VoiceChat。Web 源码未改，无需重建 Web；门户后续强制刷新即可。运行库和权重不变，不下载或猜测基础镜像。
+
+10 月 28 日补充：本次必须加载新的 `model.py` **和 `s2s/audio_server.py`**：前者修复后台协程写入 inference tensor，后者在独立发送任务按 PCM 样本时钟发送补处理音频。下面已有六个挂载覆盖两者，无新增依赖、环境变量或挂载。API 重建用于加载失败阶段采集器；提示词/目录、Web、CueKB 与权重本次不再修改。
 
 ```bash
 bash <<'SH'
@@ -131,6 +134,8 @@ bash scripts/validate_deployment.sh check
 
 **A、B 各执行一次：**先在门户点击 **End call**，随后在宿主机执行下面整段。不要在 A/B 之间留下未关闭的采集窗口。
 
+即使 A 提前报错，也必须先执行本节采集，再开始 B。如果 web-start 显示 `web_capture_already_started`，说明上个窗口尚未结束；先执行本节保存现有窗口，不删除状态、不覆盖窗口。当前窗口可能包含两次通话，采集器会按会话分别输出；这个采集保护错误不代表 Black Pig 的模型或 CueKB 调用失败。
+
 该命令先调用现有 web-end，再自动使用本窗口的文件和会话输出阶段时间线与分轮元数据。只读已有记录，不发送录音、不发起模型或 CueKB 请求；原始日志仍留在本机。采集失败也保留本次输出，不读取上一次结果。
 
 ```bash
@@ -238,6 +243,8 @@ portal_answers=按显示顺序保留全部答案；每段标注 A、B-Black 或 
 
 `input_timing.answer_audio` 选择最后结果之后的首个完成回答，不保证包含之前曾出现的正式回答；不能单凭该指标排除“先答后查”。完整 `stage` 中的各次 response 才用于核对这条路径。`backend_injection` 的 token 值是 min/max 范围，不能假设每次注入长度相同。若有 truncated、omitted、缺边界或无法关联，只报告已测区间，不推算缺失阶段。
 
+`backend.inject_done` 来自 finally，只代表线程退出。必须同时见 `backend.returned_idle` 和 done 的 `state=idle` 才算完成。新增 `backend.inject_failed` 输出安全异常类型及剩余 token 数，backend_injection 的 `failed` 计数和 `status=failed` 标识明确失败；不打印异常正文、工具正文或凭据。失败的 39 ms 不能算作消费数百 token 的提速数据。PCM 发送现在按样本时钟进行，服务端 ACK done 仍不能代替浏览器实际听音。
+
 ### 7.2 首问触发与内容
 
 | 检查项 | 判据 |
@@ -341,6 +348,31 @@ python3.12 -m venv "$VOICECHAT_CPU_ENV"
 "$VOICECHAT_CPU_ENV/bin/python" -m pip install --disable-pip-version-check -r docs/voicechat/s2s/tests/requirements.txt
 "$VOICECHAT_CPU_ENV/bin/python" -m pytest -q docs/voicechat/s2s/tests
 ```
+
+## 10. 最新现场：ACK 中断与本次修复（2026-10-28）
+
+### 10.1 已知结果
+
+现场准备检查均通过，两个会话收到相同 9893 字符提示词、同一 SHA-256 `94a98aef2ce00991dd4009ec741a805a41e8fb40d7c7717d20a936e2ac9e0bc6`，工具注册为 search_knowledge_base。准备通过只证明健康与文件身份，不代表推理逻辑正确。采集窗口 UTC 14:09:43–14:13:47 同时覆盖下面两个会话；第二个 web-start 因旧窗口未结束而拒绝，不抹掉窗口内已经发生的第二通话。
+
+| 会话 | 原生工具与 CueKB | 注入与最终结果 |
+| --- | --- | --- |
+| Golden 独立，CID b660297b-a251-41f9-b598-b5286cc6fe4b / sequence 2608292347 | 产品首句未查并开始一般回答；运输/保质期/开封储存第二段调用一次，query 错写为 Monkey Golden Yeast Moon Cake 且丢失属性。CueKB 129 ms，5 条 resolved 证据，状态 degraded，reranker 未配置/执行 | 691 tokens；UTC 14:10:02.276204 开始，14:10:02.315103 finally 退出，约 38.9 ms；未回 idle、无正式回答。附件 1 显示 Audio playback fell behind；连接关闭后 Turn canceled |
+| Black → Golden，CID 6dac64a0-34b5-4fc6-ab97-a1269361be37 / sequence 4021977475 | Black 完整问题未查，模型回答无文档访问；随后 Golden 产品句调用一次，query Monkey Golden Yolk Moon Cake。CueKB 208 ms，5 条 resolved 证据，状态 degraded，reranker 未配置/执行 | 531 tokens；UTC 14:12:58.176658 开始，14:12:58.214924 finally 退出，约 38.3 ms；未回 idle、无正式回答。附件 2 显示 VOICE_UNAVAILABLE，Golden 后半段转写中断；连接关闭后 Turn canceled |
+
+两次调用都是不同会话的一次调用，不能算同输入检索两次。CueKB 服务内部总耗时分别约 122/197 ms，应用工具接收到提交结果约 236/313 ms；此次检索成功返回候选，不再出现 409。resolved=5 表示上游归属字段已给出，不认证模型错拼名称仍找对产品；degraded 和 reranker 未配置本身不等于调用失败。没有完整口述答案，本轮无法验收证据充分性、事实准确率或成功消费的 GPU 耗时。
+
+### 10.2 复现、修改与边界
+
+假设一：工具注入新协程违反 PyTorch 线程局部模式。方法：在 inference_mode 下创建与 execute() 相同的历史 tensor，使用真实后台事件循环线程提交注入协程。修复前第一步引擎返回后写历史抛 RuntimeError，decoder 步数未提交、线程退出仍处于 process_response；同线程 asyncio.run 夹具不会复现。修复在 await **之后**的历史写入周围开启窄 inference_mode，不跨 await 持有模式，避免影响同事件循环其他任务。成功与第二次 append 失败分别验证；部分失败仍明确结束且不重放。本地复现确认此缺陷，现场摘要未保留异常类型，不能声称已从生产原始堆栈证实同一个异常。
+
+假设二：保留真实音频后的补处理使 ACK 输出超过实时播放速度。方法：将超过两秒的补处理 ACK 和相邻回答一次入队，经实际 sender 和受控时钟发送，核对字节/ID/顺序和播放领先量。原 sender 不按样本时钟限速，可能冲破浏览器原有一秒 ring；现将等待放在独立的每会话有序 writer，按实际 PCM24k 字节数控制发送，空闲或网络阻塞不积累突发额度。输入接收、模型调度继续工作，队列上限和浏览器保护保持原值。不以删音频、加快播放或扩大缓冲掩盖。现场没有浏览器队列明细，不能把所有中断归到这一条；另一张截图的模型异常可由假设一解释。
+
+首问未查、Golden 错拼和漏掉全部查询属性仍有真实失败证据。此前已加强提示，连续同一路径未改善，本轮停止继续堆提示词，不添加转写分类/强制工具选择；先恢复工具结果到完整回答的链路，再评估原生模型遵循能力和设计路径。Golden 独立两段的第二段在本次完整转写，另一会话第二段在断连时中断，不能都归因于输入丢失。
+
+按第 2 节部署后只复测相同 A/B 一轮：完整 ACK、注入回 idle、正式回答及同连接下一段均需观察；任何异常保留输出并结束当前窗口再开下一个。未实际进行 GPU、浏览器听音或 CueKB 联调的本地测试不作为放行证据。
+
+本轮开发检查：VoiceChat 独立 CPU 全量 **48 passed**；本项目受影响的时间线/采集器/原生工具验证/完整 backend 补丁回归 **130 passed**；Ruff、12 个快照 SHA-256、完整 Python 编译、4 个外部修改文件同步核对通过。上述样本节奏测试使用受控时钟和 PCM，不是浏览器现场听音。本环境未部署、无 GPU，也未发送新的真实 CueKB 请求。
 
 ## 企业RAG重构P0契约同步（进行中）
 

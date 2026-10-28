@@ -18,6 +18,8 @@ test -n "$VOICECHAT_MODEL_ROOT" && test -d "$VOICECHAT_MODEL_ROOT"
 
 ## 创建容器
 
+2026-10-28 修复必须配套加载最新 `model.py` 和 `s2s/audio_server.py`：后台注入协程在自己的线程局部 inference_mode 内写历史 tensor，且不跨 await 持有模式；有序输出 writer 按 PCM 样本时钟发送补处理 ACK，避免突发超过门户缓冲。仍用下面已有六个挂载，无新参数或运行依赖；模型/提示词/识别门槛不再调整。须重新创建容器使两处运行代码一起生效。
+
 本次 `model.py` / `data_types.py` 分离真实音频消费与工具 decoder 步数，工具期间保留音频和待处理结果，并有界追赶积压；正文/ASR/函数边界保持原两帧传输，不把 EOS/BOS 拼进任意长度音频。结果注入预先计算函数通道 embedding、使用单一协程顺序 append，跳过未使用的正文采样和重复 CPU 传递。引擎仍逐 token 执行，不能由 CPU 通过宣称 GPU 已提速。`prompt_template.jinja` 同步更换为忠实保留用户问题的格式示例，不能继续加载旧模板。
 
 这三个完整文件必须配套加载，并保留已有 RNNT 显示修复、PAD 完成保护、正常识别/分轮门槛和权重。仍为原六个只读挂载，不新增环境变量、端口或 GPU 参数。沿用已验证离线派生镜像并按下面命令重新创建容器，让 Triton backend 与模板一同重载；仅更新磁盘文件或重启 API 不会加载 VoiceChat 修复。健康、文件身份和下一轮 A/B 回传统一见验证手册。

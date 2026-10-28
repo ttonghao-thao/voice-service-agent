@@ -26,6 +26,8 @@ BACKEND = {
     "Fast response-token injection started": "backend.inject_started",
     "process_response -> idle": "backend.returned_idle",
     "Fast response-token injection done": "backend.inject_done",
+    "Tool result injection failed:": "backend.inject_failed",
+    "Tool extraction failed:": "backend.extract_failed",
     "Response injection cancelled": "backend.inject_cancelled",
     "Tool audio buffered": "backend.audio_buffered",
     "Tool audio resumed": "backend.audio_resumed",
@@ -90,7 +92,15 @@ def summarize(lines, conversation_id):
             event = next((event for marker, event in BACKEND.items() if marker in line), None)
             if event:
                 metrics = {key: int(value) for key, value in re.findall(
-                    r"\b(received_samples|processed_frames|tokens|completed|preparation_ms|append_wait_ms)=(\d+)", line)}
+                    r"\b(received_samples|processed_frames|tokens|completed|preparation_ms|append_wait_ms|remaining_tokens)=(\d+)", line)}
+                if event in ("backend.inject_failed", "backend.extract_failed"):
+                    error_type = re.search(r"(?:error_type=|failed: )([A-Za-z_][A-Za-z0-9_]{0,63})(?=\s|$)", line)
+                    if error_type:
+                        metrics["error_type"] = error_type[1]
+                if event == "backend.inject_done":
+                    state = re.search(r"state: (idle|process_response|speaking_ack|waiting_for_response)(?=\s|$)", line)
+                    if state:
+                        metrics["state"] = state[1]
                 rows.append({"at": at, "event": event, "sequence_id": sequence, **metrics})
     header = {"conversation_id": conversation_id, "input_item_ids": sorted(inputs),
               "sequence_ids": sorted(sequences), "session_match": "passed" if sequences else "unverified",

@@ -5,6 +5,7 @@ import hashlib
 import importlib.util
 import json
 from pathlib import Path
+from types import SimpleNamespace
 
 import numpy as np
 import pytest
@@ -41,6 +42,81 @@ def pending(session):
 def pcm(events):
     return np.frombuffer(b"".join(base64.b64decode(e["delta"]) for e in events
                                  if e["type"] == "response.output_audio.delta"), dtype="<i2")
+
+
+@pytest.mark.asyncio
+async def test_fast_catchup_pcm_is_paced_without_loss_and_preserves_tool_and_done_order(monkeypatch):
+    clock = [100.0]
+    sleep = asyncio.sleep
+
+    async def advance(delay):
+        clock[0] += delay
+        await sleep(0)
+
+    monkeypatch.setattr(server, 'time', SimpleNamespace(monotonic=lambda: clock[0]))
+    monkeypatch.setattr(server.asyncio, 'sleep', advance)
+    sent = []
+
+    class PacedSocket(Socket):
+        async def send_text(self, text):
+            event = json.loads(text)
+            sent.append((clock[0], event))
+            self.events.append(event)
+
+    socket = PacedSocket()
+    session = server.AudioSession('paced', socket)
+    # More than two seconds produced instantly, as after fast tool extraction.
+    await session._dispatch_model_output(np.full(3528 * 13, .3, np.float32), '<s>' + ACK, '', CALL)
+    await session._dispatch_model_output(np.full(1764, .2, np.float32), '</s>', '', '')
+    await session._dispatch_model_output(np.full(1764, -.3, np.float32), '<s>Next</s>', '', '')
+    expected = list(session.output_events._queue)
+    writer = asyncio.create_task(session._send_loop())
+    try:
+        await asyncio.wait_for(session.output_events.join(), 2)
+    finally:
+        writer.cancel()
+        with pytest.raises(asyncio.CancelledError):
+            await writer
+    assert socket.events == expected  # every byte, ID and boundary in order
+    audio = [(at, len(base64.b64decode(e['delta'])) // 2) for at, e in sent
+             if e['type'] == 'response.output_audio.delta']
+    assert sum(n for _, n in audio) > 24000 * 2
+    queued, previous = 0, audio[0][0]
+    for at, samples in audio:
+        queued = max(0, queued - (at - previous) * 24000) + samples
+        assert queued <= 3841  # below the unchanged one-second portal ring
+        previous = at
+    assert audio[-1][0] - audio[0][0] > 2
+    assert next(i for i, e in enumerate(expected) if e['type'] == 'response.function_call_arguments.done') < next(
+        i for i, e in enumerate(expected) if e['type'] == 'response.output_audio.delta')
+
+
+@pytest.mark.asyncio
+async def test_output_clock_has_no_credit_after_idle_and_wait_is_cancellable(monkeypatch):
+    clock = [100.0]
+    sleeps = []
+
+    async def advance(delay):
+        sleeps.append(delay)
+        clock[0] += delay
+
+    monkeypatch.setattr(server, 'time', SimpleNamespace(monotonic=lambda: clock[0]))
+    monkeypatch.setattr(server.asyncio, 'sleep', advance)
+    session = server.AudioSession('clock', Socket())
+    event = {'type': 'response.output_audio.delta', 'delta': base64.b64encode(bytes(3840)).decode()}
+    await session._pace_output_audio(event)
+    clock[0] += 5  # stalled connection or idle between replies
+    await session._pace_output_audio(event)
+    assert sleeps == []
+    await session._pace_output_audio(event)
+    assert sleeps == pytest.approx([.08])
+
+    async def cancel(delay):
+        raise asyncio.CancelledError
+
+    monkeypatch.setattr(server.asyncio, 'sleep', cancel)
+    with pytest.raises(asyncio.CancelledError):
+        await session._pace_output_audio(event)
 
 
 @pytest.mark.asyncio

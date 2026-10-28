@@ -1,0 +1,28 @@
+--- a/opt/tritonserver/backends/nemotron-voicechat/model.py
++++ b/opt/tritonserver/backends/nemotron-voicechat/model.py
+@@ -1864,8 +1864,13 @@
+                 raise RuntimeError("Tool result state changed during injection")
+             await self._get_vllm_llm_next_token(seq_id, [1], [embeddings[index:index + 1]])
+             step = seq_state.decoder_global_step
+-            seq_state.generated_text_tokens[:, step] = self.pad_id
+-            seq_state.generated_function_tokens[:, step] = token
++            # execute() allocated these inference tensors on the Triton thread.
++            # PyTorch modes are thread-local: the worker's inference_mode does
++            # not reach this event-loop thread. Never hold the mode over await,
++            # which would also change it for unrelated tasks on that loop.
++            with torch.inference_mode():
++                seq_state.generated_text_tokens[:, step] = self.pad_id
++                seq_state.generated_function_tokens[:, step] = token
+             seq_state.fn_call["response_tokens"].popleft()
+             seq_state.decoder_global_step += 1
+         return len(tokens)
+@@ -1920,7 +1925,8 @@
+                 self._reset_fn_call_state(fn_call, seq_state)
+         except Exception as exc:
+             seq_state.inference_error = "Tool result injection failed; close this connection."
+-            logger.log_error(f"[seq {seq_id}] Tool result injection failed: {type(exc).__name__}")
++            logger.log_error(f"[seq {seq_id}] Tool result injection failed: error_type={type(exc).__name__} "
++                             f"remaining_tokens={len(fn_call['response_tokens'])}")
+         finally:
+             fn_call["injecting_response"] = False
+             self._injection_threads.pop(seq_id, None)

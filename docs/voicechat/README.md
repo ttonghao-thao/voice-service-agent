@@ -14,6 +14,8 @@ PAD 补丁前的完整快照保存在 Git commit `b924c72a295bdca428ea3c841fdfca
 
 ## 快照范围
 
+2026-10-28 更新：backend 注入历史写入修复线程局部 inference_mode，WebSocket writer 按 PCM 样本时钟发送积压输出。测试覆盖真实后台事件循环、部分失败不重放、跨 await 不泄漏模式和超过两秒 ACK 的发送节奏/字节顺序；CPU 通过不等于 GPU/听音验收。
+
 | Speech 相对路径 | 内容 |
 | --- | --- |
 | `s2s/audio_server.py` | WebSocket 响应生命周期、隔离采集、Prompt 工具名/hash、首 4 秒输入及 ASR 哈希诊断，以及原生调用批次声明/聚合结果校验；无业务查询重放 |

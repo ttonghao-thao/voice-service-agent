@@ -95,6 +95,8 @@ VOICECHAT_LOG_MARKERS = (
     "Fast response-token injection started",
     "process_response -> idle",
     "Fast response-token injection done",
+    "Tool result injection failed:",
+    "Tool extraction failed:",
     "Response injection cancelled",
     "Max decoder steps",
 )
@@ -337,11 +339,12 @@ def backend_injection_line(text, sequence_id):
         "started": "Fast response-token injection started", "returned_idle": "process_response -> idle",
         "done_idle": "Fast response-token injection done, state: idle", "cancelled": "Response injection cancelled",
         "decoder_limit": "Max decoder steps",
+        "failed": "Tool result injection failed:",
     }
     counts = {key: sum(marker in line for line in rows) for key, marker in markers.items()}
     sizes = [tuple(map(int, match.groups())) for line in rows
              if (match := re.search(r"response_chars=(\d+).*Token length:(\d+)", line))]
-    status = ("unverified" if not any(counts.values()) else
+    status = ("failed" if counts["failed"] else "unverified" if not any(counts.values()) else
               "complete" if counts["received"] > 0
               and counts["received"] == counts["returned_idle"] == counts["done_idle"]
               and not counts["cancelled"] and not counts["decoder_limit"] else "incomplete")

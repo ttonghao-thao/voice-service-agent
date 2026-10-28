@@ -8,6 +8,7 @@ These tests do not establish GPU speed, native routing or speech accuracy.
 import ast
 import asyncio
 import copy
+import threading
 from collections import deque
 from dataclasses import dataclass
 from pathlib import Path
@@ -234,6 +235,50 @@ def test_failed_partial_injection_closes_instead_of_hanging_or_replaying():
     assert len(model.appended) == 1 and list(s.fn_call['response_tokens']) == [5, 6]
     assert feed(model, [[3, 4]])[0].error
     assert len(model.appended) == 1
+
+
+@pytest.mark.parametrize('fail_second', [False, True])
+def test_inference_tensor_history_is_updated_on_real_background_loop_without_mode_leak(fail_second):
+    # Production execute() creates history under inference_mode; _run_coro
+    # submits to a separate event-loop thread. asyncio.run on the caller thread
+    # hides the missing thread-local mode and used to let this regression pass.
+    with torch.inference_mode():
+        model, s, messages = injection_harness()
+    assert s.generated_text_tokens.is_inference()
+    loop = asyncio.new_event_loop()
+    thread = threading.Thread(target=loop.run_forever)
+    thread.start()
+    append = model._get_vllm_llm_next_token
+
+    async def checked_append(*args):
+        assert not torch.is_inference_mode_enabled()
+        await asyncio.sleep(0)
+        assert not torch.is_inference_mode_enabled()
+        if fail_second and model.appended:
+            raise RuntimeError('engine failed')
+        return await append(*args)
+
+    async def mode_after():
+        return torch.is_inference_mode_enabled()
+
+    model._get_vllm_llm_next_token = checked_append
+    model._run_coro = lambda coro: asyncio.run_coroutine_threadsafe(coro, loop).result(timeout=5)
+    try:
+        model._fast_inject_response_tokens(1)
+        assert not model._run_coro(mode_after())
+        if fail_second:
+            assert s.inference_error and s.decoder_global_step == 21
+            assert len(model.appended) == 1 and list(s.fn_call['response_tokens']) == [5, 6]
+            assert any('error_type=RuntimeError remaining_tokens=2' in message for message in messages)
+        else:
+            assert s.inference_error is None and s.fn_call['state'] == 'idle'
+            assert s.generated_function_tokens[0, 20:23].tolist() == [4, 5, 6]
+            assert s.decoder_global_step == 23 and len(model.appended) == 3
+        assert not s.fn_call['injecting_response'] and not model._injection_threads
+    finally:
+        loop.call_soon_threadsafe(loop.stop)
+        thread.join(timeout=5)
+        loop.close()
 
 
 def test_catchup_preserves_two_frame_eos_bos_packets_and_buffers_new_input():

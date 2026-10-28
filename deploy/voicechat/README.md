@@ -4,6 +4,8 @@
 
 ## 同步运行文件
 
+2026-10-28 补充交付 `model.py` 的跨线程 inference tensor 写入修复和 `s2s/audio_server.py` 的 PCM 输出节奏修复。完整文件与 CPU 回归同步收录；`tool-output-recovery.patch` 只供 backend 固定基线逆向检查，不代替两个运行文件。部署仍直接挂载本仓库六文件、重新创建容器，无新依赖/权重；现场注入成功和实际听音仍待复测。
+
 本次配套更新 `model.py` / `data_types.py` 的工具期间音频保留、独立消费游标、原两帧输出边界和函数结果注入热路径；`prompt_template.jinja` 同步保留完整问题与独立首问策略。沿用已生效的 RNNT 显示初始化、原识别/打断门槛、PAD 保护及权重，不新增引擎能力或开关。audio_server.py 的输入/ASR 哈希诊断和显式批次仍保留，必须与 API 配套。CueKB 内容优化按用户提供的新版本已支持、等待真实联调处理，本仓库不修改 CueKB。
 
 先保存现场源码，再将 `docs/voicechat/` 中受维护的完整文件同步到 Speech 的相同相对路径。不要覆盖整个 Speech 工程，也不要只应用早期 response-lifecycle.patch 代替最新完整文件。历史 patch/manifest 仅保留给固定基线回归和追溯，不作为当前运行文件 hash。

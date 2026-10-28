@@ -3,20 +3,20 @@
   "source_branch": "nemotron-labs-voicechat",
   "source_commit": "097dfe9e2f55baf653b83035868bdc89849f1b47",
   "local_source_root": "/Users/snowking/Documents/speech",
-  "snapshot_date": "2026-10-25",
+  "snapshot_date": "2026-10-28",
   "files": {
     "docs/voicechat-api.md": "f760e203e2521e5ca68ab4344480e5a7f62673d919b0a2ff52c4682d00c6dd23",
     "opt/tritonserver/backends/nemotron-voicechat/data_types.py": "2e2e598f98f86f0a8a6f752b9965c648a38dc642cde16a4f1f3a50d3eedd9b84",
-    "opt/tritonserver/backends/nemotron-voicechat/model.py": "bd192f87695e6fe671fc478682603bcedf3df78317847d9e3ab327b68e1b1958",
+    "opt/tritonserver/backends/nemotron-voicechat/model.py": "aecb4efe7fd8b02e2101b531af4aa13e4ec3e4fc00146b08dcb300dc5d3ca91f",
     "opt/tritonserver/backends/nemotron-voicechat/runtime_setup.py": "f89b36f66222b3384791b5eecc98d82ae54fe7dd01f086224d4dfc1514fa28cc",
-    "s2s/audio_server.py": "3582d87ae1e89e18766847b78fc5000cb5a022496a56d029a7512f760d1dd07b",
+    "s2s/audio_server.py": "537685bbfb8a79f3f553cade8b83c06da5b5051e6cbe3fbe462b03702c81179c",
     "s2s/tests/requirements.txt": "f82f57cefb76b9a9fb9bc131288bca7930d0a0f0492ec21a1917e206e76e825f",
-    "s2s/tests/test_response_lifecycle.py": "20ac6b973f1da356f09444e89b0528a673400fafcc93de60b5f20ee38e565a37",
+    "s2s/tests/test_response_lifecycle.py": "668db2c94d4221d8812e1994bf481d8c6ec308b0b203540c70c02cd93958ffc2",
     "s2s/tests/test_voice_diagnostics.py": "14e6fee41631b760a9e167226a43d6e939c135bb119a980017fdd83df5b590c3",
     "s2s/prompt_template.jinja": "b2ce74bb14f026ccb999c049095c44d3197b40565cb8f8c5d2b393c3feeb1472",
     "opt/tritonserver/backends/nemotron-voicechat/checkpoint_utils/load_utils.py": "0a657d1aef0bf8b1d482ec092ba7682f74731b7bf6ce9a318665f88e404dc13c",
     "s2s/tests/test_rnnt_transcript.py": "8429611edc932e9313b2b74969286bdecf4e7e5b6b0973a6ce9eb9e6b3442a45",
-    "s2s/tests/test_tool_consumption.py": "f6c38295c603e8b51a313aaee4296e23688fbdc50cf55e87611d58d84142705e"
+    "s2s/tests/test_tool_consumption.py": "a2da413ff6792977d4be1c472bd756962b60179df724006ab18609f31aef0e8e"
   },
   "base_snapshot_commit": "b924c72a295bdca428ea3c841fdfca8a26aac53a",
   "updated_in_repository": [
@@ -44,11 +44,13 @@
     "deploy/voicechat/rnnt-transcript-bootstrap.patch",
     "deploy/voicechat/completed-reply-wait.patch",
     "deploy/voicechat/tool-consumption.patch",
-    "faithful-native-query-example"
+    "faithful-native-query-example",
+    "deploy/voicechat/tool-output-recovery.patch",
+    "paced-pcm-output-writer"
   ],
   "file_sources": {
     "s2s/audio_server.py": {
-      "source": "Repository adaptation: retain native batch aggregate results; add metadata-only first-four-second PCM16 fingerprints for decoded/resampled/submitted audio, dropped-input count, and cumulative/raw-to-final ASR hashes. Uses existing diagnostic flag; this file does not alter RNNT, prompt, audio or inference parameters."
+      "source": "Repository adaptation: retain native batch aggregate results; add metadata-only first-four-second PCM16 fingerprints for decoded/resampled/submitted audio, dropped-input count, and cumulative/raw-to-final ASR hashes. Uses existing diagnostic flag; this file does not alter RNNT, prompt, audio or inference parameters. Pace PCM24k output in the existing ordered per-session writer by actual packet sample duration; no burst credit after idle/network delay. Leave inference/input scheduling independent, retain bounded queue and unchanged portal one-second ring."
     },
     "s2s/prompt_template.jinja": {
       "source": "User-supplied deployed voicechat-prompt-template.jinja; strict session policy and single-call examples updated in this repository; search_knowledge_base(query) example covers consumer and business product facts and forbids lack-of-access responses when a registered tool covers the request Replace fixed multi-attribute catalog example with a format-only faithful user/query pair; require exact real attributes and native first-question product lookup.",
@@ -60,10 +62,10 @@
       "equivalent_crlf_sha256": "fef1389a273a0d55a7024e2520d229a6db6fec48aa2deb22594e6131a3c122a6"
     },
     "s2s/tests/test_response_lifecycle.py": {
-      "source": "Repository CPU regression: real decode/resample/submission fingerprints, unmodified samples, ASR parts and IDs, diagnostics disabled, and no transcript content in logs; retain batch aggregate result tests."
+      "source": "Repository CPU regression: real decode/resample/submission fingerprints, unmodified samples, ASR parts and IDs, diagnostics disabled, and no transcript content in logs; retain batch aggregate result tests. Deterministic-clock regression sends more than two seconds of catch-up ACK plus adjacent response PCM through the real ordered writer; verifies packet identity/order, bounded playback lead, idle no-credit and cancellation."
     },
     "opt/tritonserver/backends/nemotron-voicechat/model.py": {
-      "source": "Repository RNNT display-only fix: initialize predictor with y=None, add_sos=False (one zero step) to match NeMo GreedyRNNTInfer; preserve EOU/BOU, encoder frames, thresholds, weights and tool/PAD behavior. The upstream VoiceChat wrapper also has the former double-zero pattern; CPU recurrence/counterexample tests do not establish the deployed speech root cause or accuracy. Repository completion follow-up: after the existing PAD-tail forced EOS, suppress unsolicited text/function tokens before TTS, parsing and subsequent model history until new RNNT speech or a result for an outstanding native call. Preserve the display predictor fix, listening, original thresholds, ACK and full-duplex context; no weight or engine speed changes. Tool consumption repair: real audio cursor and ordered buffered catch-up independent of synthetic tool steps; queued results survive busy sequences; vectorized forced function embeddings and one coroutine skip unused sampling/per-token CPU copies; keep the same one-token append/anext engine contract. Fail partial writes explicitly without replay; no trained weights or RNNT thresholds changed. CPU recurrence/buffering checks do not establish native routing or GPU speed.",
+      "source": "Repository RNNT display-only fix: initialize predictor with y=None, add_sos=False (one zero step) to match NeMo GreedyRNNTInfer; preserve EOU/BOU, encoder frames, thresholds, weights and tool/PAD behavior. The upstream VoiceChat wrapper also has the former double-zero pattern; CPU recurrence/counterexample tests do not establish the deployed speech root cause or accuracy. Repository completion follow-up: after the existing PAD-tail forced EOS, suppress unsolicited text/function tokens before TTS, parsing and subsequent model history until new RNNT speech or a result for an outstanding native call. Preserve the display predictor fix, listening, original thresholds, ACK and full-duplex context; no weight or engine speed changes. Tool consumption repair: real audio cursor and ordered buffered catch-up independent of synthetic tool steps; queued results survive busy sequences; vectorized forced function embeddings and one coroutine skip unused sampling/per-token CPU copies; keep the same one-token append/anext engine contract. Fail partial writes explicitly without replay; no trained weights or RNNT thresholds changed. CPU recurrence/buffering checks do not establish native routing or GPU speed. Cross-thread injection recovery: update inference-tensor history inside a narrow inference_mode on the event-loop thread, never across await. Preserve one append per token, no replay on partial failure; report safe error type and remaining token count.",
       "reference_commit": "097dfe9e2f55baf653b83035868bdc89849f1b47",
       "reference_symbols": {
         "nemo/collections/asr/modules/rnnt.py": "RNNTDecoder.predict",
@@ -81,7 +83,7 @@
       "source": "Repository sequence-local awaiting_new_input field for the existing PAD completion fallback; reset on new speech or a valid outstanding tool result. Full source mounted with model.py. Real audio frame cursor, bounded pending function results and explicit inference-error state for busy tool paths."
     },
     "s2s/tests/test_tool_consumption.py": {
-      "source": "CPU tests execute archived infer/forced-injection methods with distinct real-audio ramps, per-sequence routing, pending results, channel recurrence, one coroutine and partial-write failure. No trained model or GPU speed claims."
+      "source": "CPU tests execute archived infer/forced-injection methods with distinct real-audio ramps, per-sequence routing, pending results, channel recurrence, one coroutine and partial-write failure. No trained model or GPU speed claims. Real background event-loop regression with inference tensors allocated on another thread, successful and partial failed injection, and no mode leaked across await or to unrelated tasks."
     },
     "s2s/tests/test_voice_diagnostics.py": {
       "source": "CPU diagnostic metadata tests. CPU fixture includes the existing awaiting_new_input completion field."

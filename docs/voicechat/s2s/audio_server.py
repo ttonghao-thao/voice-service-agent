@@ -405,6 +405,7 @@ class AudioSession:
         self.inference_queue: asyncio.Queue = asyncio.Queue(maxsize=MAX_QUEUE_SIZE)
         self.send_task: Optional[asyncio.Task] = None
         self.output_events: asyncio.Queue = asyncio.Queue(maxsize=MAX_QUEUE_SIZE)
+        self._audio_send_deadline = 0.0
         self._prompt_task: Optional[asyncio.Task] = None
         self.running = True
         self.do_warmup = False  # Default: False, can be set to True to enable warmup
@@ -986,6 +987,21 @@ class AudioSession:
             except asyncio.CancelledError:
                 pass
 
+    async def _pace_output_audio(self, event):
+        """Send PCM by its sample clock, including fast decoder catch-up output.
+
+        Keep this wait in the per-session writer, outside inference scheduling
+        and input reception. Idle/network delays never earn burst credit. One
+        shared clock also covers adjacent response IDs and final short chunks.
+        """
+        if event["type"] != "response.output_audio.delta":
+            return
+        duration = len(base64.b64decode(event["delta"])) / (OUTPUT_SAMPLE_RATE * BYTES_PER_SAMPLE * CHANNELS)
+        delay = self._audio_send_deadline - time.monotonic()
+        if delay > 0:
+            await asyncio.sleep(delay)
+        self._audio_send_deadline = time.monotonic() + duration
+
     async def _send_loop(self):
         """One ordered writer for audio, transcripts, tool events and turn boundaries."""
         logger.info(f"Client {self.client_id}: Send loop started")
@@ -993,6 +1009,7 @@ class AudioSession:
             while self.running:
                 event = await self.output_events.get()
                 try:
+                    await self._pace_output_audio(event)
                     await asyncio.wait_for(self.websocket.send_text(json.dumps(event)), timeout=2.0)
                     self._output_sent_seq += 1
                     self._trace_output_event(event, "sent", self._output_sent_seq)
