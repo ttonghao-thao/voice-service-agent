@@ -18,6 +18,37 @@ ACK = "Please wait while I check the knowledge base."
 CALL = json.dumps([{"name": "consult_service_agent", "arguments": {"user_request": "hello"}}])
 
 
+@pytest.mark.asyncio
+@pytest.mark.parametrize("followup_before_result", [False, True])
+async def test_tool_answer_retains_owner_and_groups_followup_after_real_ack_boundary(followup_before_result):
+    session = server.AudioSession("correlation", Socket())
+    session.tools = json.dumps([{"name": "consult_service_agent", "ack_messages": [ACK]}])
+    await session._emit_speech_started()
+    original = session._input_item_id
+    await session._dispatch_model_output(np.zeros(1764, np.float32), "<s>" + ACK, "", CALL)
+    events = pending(session)
+    call = next(event for event in events if event["type"] == "response.function_call_arguments.done")
+    if followup_before_result:
+        await session._emit_speech_started()
+    await session.handle_function_call_output({"call_id": call["call_id"], "output": "facts"})
+    session._activate_function_result(session.function_call_output.popleft())
+    if not followup_before_result:
+        await session._emit_speech_started()
+    followup = session._input_item_id
+    await session._dispatch_model_output(np.zeros(1764, np.float32), "</s>", "", "")
+    assert session._awaiting_tool_answers  # ACK must never consume the answer obligation.
+    await session._dispatch_model_output(np.zeros(1764, np.float32), "<s>Documented answer.</s>", "", "")
+    answer = next(event for event in pending(session) if event.get("transcript") == "Documented answer.")
+    assert answer["input_item_id"] == original
+    assert answer["related_input_item_ids"] == [followup]
+    assert answer["tool_call_ids"] == [call["call_id"]]
+    assert not session._awaiting_tool_answers and not session._answer_inputs
+    await session._emit_speech_started()
+    await session._dispatch_model_output(np.zeros(1764, np.float32), "<s>Hello.</s>", "", "")
+    general = next(event for event in pending(session) if event.get("transcript") == "Hello.")
+    assert general["input_item_id"] == session._input_item_id and not general["tool_call_ids"]
+
+
 class Socket:
     def __init__(self):
         self.events = []

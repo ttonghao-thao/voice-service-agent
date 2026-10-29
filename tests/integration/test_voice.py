@@ -12,7 +12,8 @@ from starlette.websockets import WebSocketDisconnect
 pytestmark = pytest.mark.usefixtures("legacy_native_catalog")
 
 
-def test_native_bridge_dedup_tool_before_transcript_and_ticket(tmp_path):
+@pytest.mark.parametrize("modern_context", [False, True])
+def test_native_bridge_dedup_tool_before_transcript_and_ticket(tmp_path, modern_context):
     app = create_app(
         Settings(
             _env_file=None, auto_create_schema=True, database_url=f"sqlite+aiosqlite:///{tmp_path}/ws.db"
@@ -48,16 +49,17 @@ def test_native_bridge_dedup_tool_before_transcript_and_ticket(tmp_path):
 
         async def submit_tool_result(self, call_id, text):
             returns.append((call_id, json.loads(text)))
+            context = {"input_item_id": "input-1", "related_input_item_ids": [], "tool_call_ids": [call_id]} if modern_context else {}
             await self.queue.put(
                 VoiceEvent(
                     "speech_text.done",
-                    {"response_id": "r1", "item_id": "spoken", "text": "Synthetic integration result returned."},
+                    {"response_id": "r1", "item_id": "spoken", "text": "Synthetic integration result returned.", **context},
                 )
             )
             await self.queue.put(
                 VoiceEvent(
                     "speech_text.done",
-                    {"response_id": "r1", "item_id": "spoken", "text": "A second spoken sentence."},
+                    {"response_id": "r1", "item_id": "spoken", "text": "A second spoken sentence.", **context},
                 )
             )
 

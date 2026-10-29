@@ -54,6 +54,7 @@ const recordingStageLabels: Record<RecordingProgress["stage"], string> = {
   sending: "Sending recording in real time",
   tail_pending: "Finishing recording input",
   waiting_answer: "Recording sent. Waiting for reply",
+  reply_complete: "Reply finished. Ready for another recording",
   incomplete: "Recording input interrupted",
   ended: "File call ended",
 };
@@ -99,7 +100,7 @@ export default function App() {
     Record<string, { text: string; done: boolean }>
   >({});
   const [spoken, setSpoken] = useState<
-    Record<string, { turnId: string; inputKey?: string; answerKind?: string; text: string; done: boolean }>
+    Record<string, { turnId: string; inputKey?: string; relatedInputKeys?: string[]; answerKind?: string; text: string; done: boolean }>
   >({});
   const [timeline, setTimeline] = useState<string[]>([]);
   const [atBottom, setAtBottom] = useState(true);
@@ -220,6 +221,8 @@ export default function App() {
         const key = `${record.epoch}:${record.source_id}:${record.payload.segment_index || 0}`;
         next[key] = {
           inputKey: record.payload.input_item_id ? `input:${record.epoch}:${record.payload.input_item_id}` : undefined,
+          relatedInputKeys: (record.payload.related_input_item_ids || []).map((item) => `input:${record.epoch}:${item}`),
+          answerKind: record.payload.answer_kind,
           turnId: record.payload.turn_id || `input:${record.epoch}:${record.payload.input_item_id}`,
           text: record.payload.text,
           done: true,
@@ -405,6 +408,7 @@ export default function App() {
           [key]: {
             turnId: event.turn_id || inputKey!,
             inputKey,
+            relatedInputKeys: ((event.payload.related_input_item_ids || []) as string[]).map((item) => `input:${event.epoch}:${item}`),
             answerKind: String(event.payload.answer_kind || "general"),
             text: done
               ? String(event.payload.text || "")
@@ -1047,6 +1051,7 @@ export default function App() {
                   .map((part) => part.text)
                   .filter(Boolean)
                   .join(" ");
+                const linkedReply = Object.values(spoken).find((part) => part.relatedInputKeys?.includes(key));
                 const presentationFailed = Object.values(presentations).some(
                   (item) => (item.inputKey ? item.inputKey === key : item.turnId === (t?.id || key)) && item.status === "failed",
                 );
@@ -1062,7 +1067,8 @@ export default function App() {
                       {!t && !speech && (
                         <small className="input-status">
                           {input?.done
-                            ? voiceState === "ready"
+                            ? linkedReply ? "Included in the knowledge reply above."
+                              : voiceState === "ready"
                               ? "Waiting for request"
                               : "Request not accepted"
                             : voiceState === "ready"
@@ -1097,7 +1103,9 @@ export default function App() {
                             }
                           >
                             {speechParts.some((part) => !part.done) ? "Speaking" :
-                              (t.answer && answerLabel(t.answer)) || statuses[visibleTurnStatus(t)] || visibleTurnStatus(t)}
+                              (t.answer && answerLabel(t.answer)) ||
+                              (visibleTurnStatus(t) === "running" && t.execution_phase === "awaiting_provider_answer"
+                                ? "Preparing reply" : statuses[visibleTurnStatus(t)] || visibleTurnStatus(t))}
                           </Tag>
                         </div>
                         {t.channel === "voice" ? (
@@ -1126,7 +1134,9 @@ export default function App() {
                             ) : visibleTurnStatus(t) === "running" ? (
                               <div className="processing">
                                 <LoadingOutlined />{" "}
-                                {progress || "Processing your question"}
+                                {t.execution_phase === "awaiting_provider_answer"
+                                  ? "Sources received. Preparing the spoken reply."
+                                  : progress || "Processing your question"}
                               </div>
                             ) : (
                               <p className="muted">

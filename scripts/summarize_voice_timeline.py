@@ -32,6 +32,7 @@ BACKEND = {
     "Tool audio buffered": "backend.audio_buffered",
     "Tool audio resumed": "backend.audio_resumed",
     "Tool response consumption": "backend.inject_profile",
+    "Voice LLM finished": "backend.request_finished",
 }
 
 
@@ -92,7 +93,11 @@ def summarize(lines, conversation_id):
             event = next((event for marker, event in BACKEND.items() if marker in line), None)
             if event:
                 metrics = {key: int(value) for key, value in re.findall(
-                    r"\b(received_samples|processed_frames|tokens|completed|preparation_ms|append_wait_ms|remaining_tokens)=(\d+)", line)}
+                    r"\b(received_samples|processed_frames|tokens|completed|preparation_ms|append_wait_ms|remaining_tokens|prompt_tokens|appended_tokens|output_tokens|decoder_steps)=(\d+)", line)}
+                if event == "backend.request_finished":
+                    reason = re.search(r"\breason=([A-Za-z_]{1,64})(?=\s|$)", line)
+                    if reason:
+                        metrics["reason"] = reason[1]
                 if event in ("backend.inject_failed", "backend.extract_failed"):
                     error_type = re.search(r"(?:error_type=|failed: )([A-Za-z_][A-Za-z0-9_]{0,63})(?=\s|$)", line)
                     if error_type:

@@ -1,13 +1,15 @@
 # 当前问题验证：工具等待、首问触发与回答完整性
 
-更新：2026-10-28。当前唯一执行入口；历史验证方法已归档。**第 12 节记录最新版本检查失败：宿主执行目录的文件较旧，API 七个文件匹配 63a7400，VoiceChat 日志仍为修复前代码。先执行第 2 节对齐部署，check 通过后才开始 A/B。** 第 10 节记录“ACK 中断”，第 11 节记录 aba0b53 回溯和 CueKB 8a5aacc 接口核对；尚无加载 87f5ef7 修复后的现场通过证据。CueKB 已返回证据，首问工具选择仍未通过。所有命令在**部署主机的本项目根目录**执行，操作者只操作、观察和回传，不需要挑日志、找会话 ID 或判断根因。
+更新：2026-10-29。当前唯一执行入口；历史验证方法已归档。**第 13 节记录最新现场及本轮修复：b6960e0 准备通过，530-token 注入完成但耗时 17.216 秒；多轮回答归属、任务收尾和 vLLM 请求结束处理仍失败。** 本次需配套更新 API、Web 和 VoiceChat，再执行同一 A/B；第 12 节保留此前部署不一致的追溯，不作为本次根因。首问工具选择及真实 GPU 提速仍待验收。所有命令在**部署主机的本项目根目录**执行，操作者只操作、观察和回传，不需要挑日志、找会话 ID 或判断根因。
 
 ## 1. 本轮要回答什么
 
-本轮先验证 ACK 能完整播放、工具结果能成功注入并继续回答。CueKB 10 月 28 日两次已返回 5 条证据，不能再把 10 月 27 日的 409 当成本轮根因；真实端到端结果仍未通过。
+本轮验证完整工具结果消费、多轮补充输入关联、原任务结清、同连接下一问以及引擎结束的正常收尾。最新 CueKB 返回 5 条证据只用 122 ms，后续 17.216 秒主要是模型消费；不把 Searching 文案等同于 CueKB 仍在执行。
 
 | 当前问题 | 已有证据 | 本轮验证目标 |
 | --- | --- | --- |
+| 请求消失后仍向旧 ID append，END 再次异常 | 99.673 秒连接时长时出现 request not found；旧封装忽略 output.finished | 不再追加终止请求；摘要给出 backend.request_finished 的 reason/prompt/appended/output 计数；END 独立清理，不复现 500 清理异常 |
+| 第一段一直 Searching，补充输入显示一般回答 | 工具属于第一段，注入后回答关联第二段；原回答 future 没结清 | 保留工具所属输入和补充输入关联；原知识任务结清，补充段显示 Included in the knowledge reply above，同连接下一问正常 |
 | 查询时 ACK 中断，播放积压或 VOICE_UNAVAILABLE | 两次注入均开始后约 39 ms 退出、未回 idle；本地已复现跨线程写 inference tensor 的 RuntimeError，补处理 ACK 存在突发输出 | 完整听到 ACK；无连接异常，backend_injection=complete 且 returned_idle/done_idle 各一次，随后出现正式回答；核对播放与服务器完成时间 |
 | Checking knowledge 长、常见两次调用 | 用户报告检索不到 1 秒，但调用间隔超过 10 秒；代码确认 VoiceChat 逐 token 注入结果，并可能先等待 ACK 结束 | 分开检索、应用交付、ACK/调度、结果注入，以及下一次工具生成或回答的时间；确认第二次是否属于同一输入、查询了什么 |
 | Golden Yolk 独立不触发，Black Pig 后触发 | 用户观察；工具描述已覆盖两种产品，Golden WAV 有追问式开头和中间停顿 | 对照全新连接的 Golden 与同连接 Black Pig 后的 Golden，核对实际输入、分轮、模型调用和 query，而不只看界面状态 |
@@ -21,7 +23,7 @@
 
 ### 2.0 先同步执行目录
 
-`version=failed` 的 expected 来自**执行脚本所在目录的宿主文件**，actual 来自容器磁盘；expected 不等于远程 main 的最新版本。最新现场恰好是宿主较旧、API 已更新。先在当前本项目目录执行下段，再使用更新后的本页执行 2.1 和 2.2；不要从旧目录构建覆盖新 API。命令保留 `.env` 和数据卷，不丢弃本地修改；受跟踪文件有修改或本地 main 与远端不一致时明确停止，回传失败行。
+`version=failed` 的 expected 来自**执行脚本所在目录的宿主文件**，actual 来自容器磁盘；expected 不等于远程 main 的最新版本。先在当前本项目目录执行下段，再使用更新后的本页执行 2.1 和 2.2；不要从旧目录构建覆盖新 API。命令保留 `.env` 和数据卷，不丢弃本地修改；受跟踪文件有修改或本地 main 与远端不一致时明确停止，回传失败行。
 
 ```bash
 bash <<'SH'
@@ -43,13 +45,9 @@ SH
 
 `git pull` 只更新文件，不会重建 API，也不会重新加载 VoiceChat Python 进程。后续重新创建 VoiceChat 时，第 2.1 节的六个绝对路径挂载统一指向这个目录。即便磁盘文件 hash 已匹配，也必须完成进程重载；不能以在旧容器里复制文件代替部署。
 
-### 2.1 配套更新 API、目录与 VoiceChat
+### 2.1 配套更新 API、Web 与 VoiceChat
 
-本次 API、采集器、query schema、全局目录默认值和 VoiceChat model/data/template 均有修改。只重启 API 不足以生效。下面命令用于现有本项目单知识工具部署：构建并重新创建 API，应用已检入的目录配置；记录原 VoiceChat 的已验证镜像 ID 和模型目录，再用原 GPU/端口参数及本仓库六个只读挂载重新创建 VoiceChat。Web 源码未改，无需重建 Web；门户后续强制刷新即可。运行库和权重不变，不下载或猜测基础镜像。
-
-10 月 28 日补充：本次必须加载新的 `model.py` **和 `s2s/audio_server.py`**：前者修复后台协程写入 inference tensor，后者在独立发送任务按 PCM 样本时钟发送补处理音频。下面已有六个挂载覆盖两者，无新增依赖、环境变量或挂载。API 重建用于加载失败阶段采集器；提示词/目录、Web、CueKB 与权重本次不再修改。
-
-接口核对后补充：本次 API 还需加载第 11 节的 Citation/必要上下文消费修补。一次部署最新 main 即包含尚未部署的 87f5ef7；仍按本节更新 API 并重新创建 VoiceChat。Web 仅补充 TypeScript 数据类型，未改播放或页面行为；无需为类型定义单独重建 Web。CueKB 的数据库/审核升级由其项目负责，本项目不运行其迁移或重新发布资料。
+下面命令从同一目录构建并重新创建 API 与 Web，再用原 VoiceChat 的已验证镜像 ID、模型目录、GPU/端口参数及六个只读挂载重新创建 VoiceChat。本次 model/data/audio_server 必须配套加载；Web 页面阶段、输入关联和文件播放完成状态有实际行为修改，必须重建 Web 后强制刷新浏览器。运行库、权重、工具目录和识别门槛不变；CueKB 的数据库/审核升级由其项目负责。
 
 ```bash
 bash <<'SH'
@@ -65,9 +63,13 @@ if (
   docker image inspect "$VOICECHAT_RELEASE_IMAGE" >/dev/null
   API_IMAGE=$(docker compose --env-file .env -f deploy/compose.production.yaml config --images | sed -n '/^voice-service-agent-api:/ {p;q;}')
   test -n "$API_IMAGE"
+  WEB_IMAGE=$(docker compose --env-file .env -f deploy/compose.production.yaml config --images | sed -n '/^voice-service-agent-web:/ {p;q;}')
+  test -n "$WEB_IMAGE"
   docker build -f deploy/Dockerfile.api -t "$API_IMAGE" .
+  docker build -f deploy/Dockerfile.web -t "$WEB_IMAGE" .
   docker compose --env-file .env -f deploy/compose.production.yaml up -d --no-deps --force-recreate --wait --wait-timeout 180 api
   docker compose --env-file .env -f deploy/compose.production.yaml exec -T api python /app/scripts/configure_native_cuekb.py --apply
+  docker compose --env-file .env -f deploy/compose.production.yaml up -d --no-deps --force-recreate --wait --wait-timeout 180 web
   docker stop nemotron-labs-voicechat
   docker rm nemotron-labs-voicechat
 # Paired model/data/template runtime; recreate the container to load all three.
@@ -455,6 +457,32 @@ python3.12 -m venv "$VOICECHAT_CPU_ENV"
 处理顺序固定为第 2.0 节完整同步 main → 第 2.1 节重建 API/重新创建 VoiceChat → 第 2.2 节等待就绪并 check → 通过后才 web-start/播放。已有已验证的 GPU 镜像 ID、模型目录、双 GPU 配置和数据卷保留；不复制单文件或绕过版本检查。此次仅增强宿主检查输出的目录/提交、哈希方向和失败时容器身份，保护逻辑保持；真实部署/听音仍由现场复测，不把本地工具模拟当作已修复生产。
 
 本轮开发检查：采集/部署专项 **24 passed**，包含版本不匹配时不创建窗口、不启动自动音频或采集的回归；Ruff、shell 语法、文档链接与围栏、部署命令语法、差异检查通过。未修改 VoiceChat 运行文件或 API 推理逻辑，未进行生产部署。
+
+## 13. 请求结束、多轮回答与结果负载修复（2026-10-29）
+
+### 13.1 现场证据与定位
+
+b6960e0 的 Golden 独立 preparation 通过，API 于 04:41:52、VoiceChat 于 04:33:24 重建。本次不能继续归因为旧文件。Golden 的 sequence 1310895159 在连接时长 99.673 秒报 append_request request not found；当前 backend 未读取 output.finished，保留旧 generator/start 状态继续追加；END 也先走正常推理，所以清理重复遇到异常。CPU 真实方法复现表明 terminal output 被误作普通 token。底层到底为何结束仍缺现场 finish_reason，不能把 99.673 秒当 105 秒 watchdog，也不能仅凭 max_model_len=6144 认定现场必达上限。
+
+Black → Golden 的 sequence 2420721760 中：CueKB 04:46:48.500 返回 5 条，耗时 122 ms；工具结果 48.550 提交；backend 48.763 收到、49.518 开始注入，04:47:06.739 完成 530/530 tokens，准备 5 ms、append_wait 17216 ms。后半段 input f1c4e089… 于 49.635 开始、08.661 完成转写，等待约 19.026 秒；新回答 703c0ee7… 被关联该段，首段 bc6da698… 的回答观察器悬挂。黑猪采集准备另报 voicechat_health，因此这一段是可用于定位的现场片段，不能记作健康准备通过的独立 B 验收。
+
+图 1 已有未核验口述答案，但文件底部仍 waiting reply；图 2 原任务 Searching 与第二段一般回答并存。running→Searching、回答首次出现时绑定 latest_input、文件发完后状态不随实际播放完成更新，分别导致这三种显示。未核验标签继续保留，首问缺工具、漏答保质期和事实条件检查不因显示修复自动通过。
+
+### 13.2 本次实现及约束
+
+1. VoiceChat 处理引擎 finished/生成器耗尽和 missing-request，保存终止状态，后续不再 append、不重放；正常结束给会话轮换码，未知失效明确关闭。END 独立终止 LLM/TTS、释放序列并刷新最终显示 ASR，不调用正常 decoder；LLM abort 等待上限 1 秒，即使出错或不返回也继续清理 TTS/序列。常规日志增加 finished reason、prompt/appended/output token 与 decoder 步计数，摘要输出 backend.request_finished；这些计数用于定位，不把三项简单相加当实际 context 长度。
+2. 服务在函数输出送入 Triton 时保留原生调用→输入关联；等待期间的补充输入与后续正式回答一起快照，ACK 不结清工具回答义务。API 复核已知调用/输入与响应内关联不变；普通语音不取消查询、不新增模型选择器。仅旧协议无法区分交错回答时明确失败，不按最新或最早输入猜归属。正式回答仍由原 Coordinator 观察器按实际证据核验和唯一提交；related inputs 表示该段处于同一待回答上下文，不认证每个属性均已覆盖。
+3. 工具结果提交后，原生回答默认最多等待 60 秒，包含注入与回答完成；由 VOICE_NATIVE_ANSWER_TIMEOUT_SECONDS 在 1–120 秒内配置。超过后明确 VOICE_ANSWER_TIMEOUT，关闭连接并结清 observer，不触发重试。检索时限、105 秒连接上限和固定 30 秒宽限保持。
+4. API 只把多来源完全相同的 title/applicability/fact_kind 提取为 source_defaults，补充一句应用默认字段的说明。原始来源、必要上下文、各自 unknown/ambiguous 归属、审计 Citation 与检查证据不变；去重仍使用完整来源、预算沿用原有保守上限。三组合成完整证据从 **1066→727 字节（减少 31.8%）**，还原后逐字段相同。这是负载数据，不是实际 Golden 530 tokens 的提速测量；引擎仍逐 token 执行，未启用未经 GPU/实际引擎验证的批量追加。
+5. 门户依据 awaiting_provider_answer 显示 Preparing reply，补充输入标为 Included in the knowledge reply above，历史刷新保留关联和知识回答分类。文件在实际 answer 播放 ACK 完成后显示 Reply finished，状态不以固定 ACK/仅 audio.done 为准；发送下一文件后旧回答不改变新文件状态，通话保持。
+
+### 13.3 部署后验证效果
+
+只按第 2 节配套部署 API、Web、VoiceChat，然后执行第 3–5 节同一 A/B，保留原文件、停顿和预算；无需新参数或额外用例。出现 preparation/health 失败就停止，不能继续播放并记为通过。
+
+回传本次有界后台摘要与两次实际门户结果：原任务应得到终态、补充输入应有明确关联，同连接下一问仍能回答；完整 ACK/注入/回答分别核对。记录 tokens、completed、append_wait_ms 和 result→answer 时间，与本节 530/17.216 秒比较，不能由字节下降直接换算 GPU 秒数。若触发引擎结束，应有明确会话结束/轮换，END 不再报同一追加异常；摘要中的 reason 和计数用于确定剩余的长度/引擎原因。Answer not verified 仍按具体 answer_check 原因及实际来源评估，不改成成功以通过验收。
+
+本轮开发验证：API 全量 **710 passed**；随后旧桥接新增上下文字段兼容补充，相关完整专项 **65 passed**。VoiceChat 独立 CPU **56 passed**；Web 音频/文件回归 **39 passed**，真实 Chromium 的关联/历史与一般回答检查 **2 passed**，TypeScript/生产构建通过。首轮 API 全量曾因两处手工夹具缺新增状态字段而失败，补齐夹具后上述全量通过，未放宽运行检查；浏览器初次启动使用了不允许 mock 的生产入口，改用仓库显式隔离模拟入口后通过。存在既有 Starlette 弃用警告。Ruff、契约生成、完整快照 hash/编译、模型补丁逆向及文档/命令检查通过。浏览器使用受控服务端输出，本环境未部署生产，无真实 GPU/CueKB/原音频听音结论。
 
 ## 企业RAG重构P0契约同步（进行中）
 

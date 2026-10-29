@@ -9,6 +9,7 @@ export interface RecordingProgress {
     | "sending"
     | "tail_pending"
     | "waiting_answer"
+    | "reply_complete"
     | "incomplete"
     | "ended";
   sourceEnded: boolean;
@@ -55,6 +56,9 @@ export class VoiceClient {
   private fileSourceEnded = false;
   private sentFileSamples = 0;
   private fileComplete = false;
+  private fileInputs = new Set<string>();
+  private knownFileInputs = new Set<string>();
+  private fileAnswerResponses = new Set<string>();
   private recordingStopped = true;
   private recordingStage?: RecordingProgress["stage"];
   private recordingSourceEnded = false;
@@ -150,6 +154,8 @@ export class VoiceClient {
     this.fileArmed = true;
     this.fileComplete = false;
     this.fileSourceEnded = false;
+    this.fileInputs.clear();
+    this.fileAnswerResponses.clear();
     this.sentFileSamples = 0;
     this.recordingStage = undefined;
     this.recordingStopped = false;
@@ -195,6 +201,7 @@ export class VoiceClient {
     this.input = input;
     this.fileArmed = false;
     this.diagnosticAudio.clear();
+    this.knownFileInputs.clear();
     this.diagnosticText.clear();
     this.fileSourceEnded = false;
     this.fileComplete = false;
@@ -314,6 +321,8 @@ export class VoiceClient {
         } else if (d.type === "capture" && this.input.kind === "microphone") {
           this.sendAudio(new Uint8Array(d.pcm));
         } else if (d.type === "ack" && !this.suppressed) {
+          if (d.done && this.fileComplete && this.fileAnswerResponses.has(d.response))
+            this.emitRecording("reply_complete");
           if (d.done && this.activeResponse === d.response)
             this.activeResponse = "";
           this.ws.send(
@@ -383,6 +392,16 @@ export class VoiceClient {
           this.node?.port.postMessage({ type: "ready", epoch: this.epoch });
           this.onState("ready");
           this.armRecording();
+        }
+        if (event.type.startsWith("portal.transcript.") && this.input.kind === "file") {
+          const id = String(event.payload.item_id);
+          if (!this.knownFileInputs.has(id)) this.fileInputs.add(id);
+          this.knownFileInputs.add(id);
+        }
+        if (event.type === "portal.speech_text.done" && event.payload.phase === "answer" && this.fileComplete) {
+          const inputs = [event.payload.input_item_id, ...((event.payload.related_input_item_ids || []) as string[])];
+          if (inputs.some((id) => this.fileInputs.has(String(id))))
+            this.fileAnswerResponses.add(String(event.payload.response_id));
         }
         if (event.type === "portal.audio.delta" && !this.suppressed) {
           const response = String(event.payload.response_id);

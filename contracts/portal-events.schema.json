@@ -1933,6 +1933,14 @@
           "default": null,
           "title": "Input Item Id"
         },
+        "related_input_item_ids": {
+          "items": {
+            "type": "string"
+          },
+          "maxItems": 128,
+          "title": "Related Input Item Ids",
+          "type": "array"
+        },
         "answer_kind": {
           "anyOf": [
             {

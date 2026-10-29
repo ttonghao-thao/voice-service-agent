@@ -470,6 +470,12 @@ class AudioSession:
         self._response_id: Optional[str] = None
         self._output_item_id: Optional[str] = None
         self._input_item_id: Optional[str] = None
+        self._response_input_item_id = None
+        self._response_call_ids = []
+        self._response_related_inputs = []
+        self._function_inputs = {}
+        self._awaiting_tool_answers = {}
+        self._answer_inputs = []
 
         # Function calling state variables
         self.function_call_output = deque()
@@ -703,6 +709,10 @@ class AudioSession:
     def _queue_output_event(self, event: dict) -> None:
         # Snapshot IDs at production time. A later model turn cannot relabel
         # packets waiting on a slow WebSocket connection.
+        if event.get("response_id") == self._response_id and self._response_input_item_id:
+            event.setdefault("input_item_id", self._response_input_item_id)
+            event["tool_call_ids"] = list(self._response_call_ids)
+            event["related_input_item_ids"] = list(self._response_related_inputs)
         try:
             self.output_events.put_nowait(event)
         except asyncio.QueueFull as exc:
@@ -1113,6 +1123,10 @@ class AudioSession:
         """Emit VAD speech_started (Pipecat/OpenAI Realtime compatibility)."""
         self._speech_active = True
         self._input_item_id = str(uuid.uuid4())
+        if self._awaiting_tool_answers or self.function_batches or self.function_call_output:
+            if len(self._answer_inputs) >= 128:
+                raise ValueError("Too many inputs awaiting a tool answer")
+            self._answer_inputs.append(self._input_item_id)
         msg = {
             "type": "input_audio_buffer.speech_started",
             "event_id": str(uuid.uuid4()),
@@ -1143,6 +1157,12 @@ class AudioSession:
         self._response_active = True
         self._response_has_speech = False
         self._response_id = str(uuid.uuid4())
+        self._response_call_ids = list(self._awaiting_tool_answers)
+        self._response_input_item_id = (list(self._awaiting_tool_answers.values())[-1]
+                                        if self._awaiting_tool_answers else self._input_item_id)
+        self._response_related_inputs = list(dict.fromkeys(
+            item for item in [*self._answer_inputs, self._input_item_id]
+            if self._awaiting_tool_answers and item and item != self._response_input_item_id))
         self._output_item_id = str(uuid.uuid4())
         for msg in [
             {
@@ -1486,6 +1506,7 @@ class AudioSession:
             # Send function call output to Triton if available
             function_call_item = self.function_call_output.popleft() if self.function_call_output else None
             if function_call_item:
+                self._activate_function_result(function_call_item)
                 output = function_call_item.get("output", "")
                 output_str = output if isinstance(output, str) else json.dumps(output)
                 logger.info(f"Client {self.client_id}: Sending function call output to Triton: chars={len(output_str)}")
@@ -1593,7 +1614,9 @@ class AudioSession:
         except Exception as e:
             logger.error(f"Client {self.client_id}: Error processing audio: {e}", exc_info=True)
             try:
-                await self._emit_error(error_message=str(e), error_type="internal_error", error_code="inference_error")
+                code = "voice_session_rotation_required" if "VOICE_SESSION_ROTATION_REQUIRED:" in str(e) else "inference_error"
+                await self._emit_error(error_message="Voice model request ended. Restart voice.",
+                                       error_type="internal_error", error_code=code)
             except Exception:
                 logger.debug(f"Client {self.client_id}: Could not send error message (client may have disconnected)")
             raise
@@ -1663,6 +1686,14 @@ class AudioSession:
             await self._emit_output_text_done(transcript)
         self.accumulated_agent_transcript = []
         await self._emit_response_done()
+        tools = json.loads(self.tools) if isinstance(self.tools, str) else self.tools
+        acknowledgments = {" ".join(ack.split()) for tool in tools
+                           for ack in tool.get("ack_messages", [])}
+        if transcript.strip() and " ".join(transcript.split()) not in acknowledgments:
+            for call_id in self._response_call_ids:
+                self._awaiting_tool_answers.pop(call_id, None)
+            if not self._awaiting_tool_answers:
+                self._answer_inputs.clear()
 
     async def _process_function_text(self, function_text: str) -> None:
         """Process the function text response from the Triton inference"""
@@ -1681,12 +1712,16 @@ class AudioSession:
         self._voice_diagnostic("function.parsed", chars=len(function_text), calls=len(calls))
         if not self._response_active:
             await self._emit_response_created()
+        self._response_input_item_id = self._input_item_id
+        self._response_call_ids = []
+        self._response_related_inputs = []
         response_id = self._response_id
         batch_id = str(uuid.uuid4())
         call_ids = [str(uuid.uuid4()) for _ in calls]
         self.function_batches[batch_id] = call_ids
         self.function_call_batches.update({call_id: batch_id for call_id in call_ids})
         for output_index, call in enumerate(calls):
+            self._function_inputs[call_ids[output_index]] = self._input_item_id
             arguments = call.get("arguments", call.get("parameters", {}))
             if isinstance(arguments, str):
                 arguments = json.loads(arguments)
@@ -1699,6 +1734,7 @@ class AudioSession:
                 "item_id": str(uuid.uuid4()),
                 "output_index": output_index,
                 "call_id": call_ids[output_index],
+                "input_item_id": self._input_item_id,
                 "native_batch_id": batch_id,
                 "native_batch_size": len(calls),
                 "name": call.get("name", ""),
@@ -1864,6 +1900,15 @@ class AudioSession:
                         f"call_id={str(item.get('call_id', ''))[:128]} "
                         f"chars={len(output if isinstance(output, str) else json.dumps(output))}")
             self.function_call_output.append(item)
+
+    def _activate_function_result(self, item):
+        """The result's native call owns its next spoken answer, including follow-ups.
+
+        This is consumption provenance, not a claim that the model answered all
+        questions. The API still checks the actual spoken text against evidence.
+        """
+        for call_id in item.get("native_call_ids", [item["call_id"]]):
+            self._awaiting_tool_answers[call_id] = self._function_inputs.pop(call_id)
 
 
 @asynccontextmanager

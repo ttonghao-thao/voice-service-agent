@@ -55,6 +55,28 @@ def voice_result(ready):
     return result
 
 
+def compact_voice_result(result):
+    """Factor only identical source metadata; every excerpt/condition is intact.
+
+    This is a wire projection, not admission or ranking. The original sources
+    remain authoritative for deduplication, citations and presentation checks.
+    """
+    sources = result.get("sources", [])
+    if len(sources) < 2:
+        return result
+    defaults = {key: sources[0][key] for key in ("title", "applicability", "fact_kind")
+                if key in sources[0] and all(key in source and source[key] == sources[0][key] for source in sources)}
+    if not defaults:
+        return result
+    compact = {**result, "source_defaults": defaults,
+               "sources": [{key: value for key, value in source.items() if key not in defaults}
+                           for source in sources],
+               "instructions": "Apply source_defaults to every source. " + result.get("instructions", "")}
+    def size(value):
+        return len(json.dumps(value, ensure_ascii=True, separators=(",", ":")))
+    return compact if size(compact) < size(result) else result
+
+
 def spoken_citations(ready):
     """Check admitted text/conditions while retaining raw citations for audit.
 

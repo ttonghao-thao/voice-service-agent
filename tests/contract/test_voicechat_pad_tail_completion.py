@@ -555,7 +555,7 @@ def websocket_harness():
         ast.ImportFrom(module="__future__", names=[ast.alias(name="annotations")], level=0),
         ast.ClassDef(name="RealDispatch", bases=[], keywords=[], body=methods, decorator_list=[], type_params=[]),
     ], type_ignores=[])
-    namespace = {"asyncio": asyncio, "uuid": uuid, "base64": base64, "SEND_OUTPUT_TEXT_EVENTS": False,
+    namespace = {"asyncio": asyncio, "uuid": uuid, "base64": base64, "json": json, "SEND_OUTPUT_TEXT_EVENTS": False,
                  "MODEL_OUTPUT_SAMPLE_RATE": 22050, "OUTPUT_SAMPLE_RATE": 24000,
                  "PCM16Codec": ControlledCodec,
                  "soxr": SimpleNamespace(ResampleStream=ControlledResampler),
@@ -569,6 +569,10 @@ def websocket_harness():
     session._trace_output_event = lambda *_args: None
     session._response_active = session._response_has_speech = False
     session._response_id = session._output_item_id = None
+    session._input_item_id = session._response_input_item_id = None
+    session._awaiting_tool_answers = {}
+    session._answer_inputs = session._response_call_ids = session._response_related_inputs = []
+    session.tools = "[]"
     session.accumulated_agent_transcript = []
     return session
 
@@ -595,6 +599,7 @@ def function_call_harness():
     session.function_call_output = deque()
     session.function_batches = {}
     session.function_call_batches = {}
+    session._function_inputs = {}
     session.tools = json.dumps([{"name": "search_knowledge_base"}])
     session._input_item_id = "input-1"
     session.events = []

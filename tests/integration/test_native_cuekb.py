@@ -26,6 +26,125 @@ from websockets.asyncio.server import serve
 KB = "00000000-0000-4000-8000-000000000001"
 
 
+@pytest.mark.parametrize("scenario", ["followup", "uncorrelated", "unknown_call", "timeout", "engine_finished"])
+def test_interleaved_native_answer_is_correlated_or_fails_boundedly(tmp_path, scenario):
+    """Real API/WS, controlled inference: group follow-up, settle original, keep listening."""
+    s = configuration(tmp_path, voice_provider="nvidia", voicechat_api_key="fixture",
+                      voicechat_ws_url="ws://127.0.0.1:1", voice_native_answer_timeout_seconds=1)
+    app = create_app(s)
+    pcm = base64.b64encode(b"\x01\x00" * 1920).decode()
+    searches = []
+
+    def search(request):
+        searches.append(json.loads(request.content))
+        return httpx.Response(200, json=evidence())
+
+    async def voicechat(ws):
+        await ws.send(json.dumps({"type": "session.created"}))
+        registration = json.loads(await ws.recv())["session"]
+        await ws.send(json.dumps({"type": "session.updated", "session": registration}))
+        began = False
+
+        async def send(kind, **payload):
+            await ws.send(json.dumps({"type": kind, **payload}))
+
+        async def speech(item, text):
+            await send("input_audio_buffer.speech_started", item_id=item)
+            await send("conversation.item.input_audio_transcription.completed", item_id=item, transcript=text)
+            await send("input_audio_buffer.speech_stopped", item_id=item)
+
+        async for raw in ws:
+            event = json.loads(raw)
+            if event["type"] == "input_audio_buffer.append":
+                if began:
+                    await speech("third", "Thank you.")
+                    await send("response.output_audio_transcript.done", response_id="general", input_item_id="third", transcript="You are welcome.")
+                    await send("response.output_audio.delta", response_id="general", input_item_id="third", delta=pcm)
+                    await send("response.output_audio.done", response_id="general", input_item_id="third")
+                    continue
+                began = True
+                await speech("first", "How many connections does Product AX support?")
+                await send("response.function_call_arguments.done", response_id="ack", input_item_id="first",
+                           call_id="call", name="search_knowledge_base", arguments='{"query":"Product AX connections"}')
+                await send("response.output_audio_transcript.done", response_id="ack", input_item_id="first", transcript="Let me check the documentation.")
+                await send("response.output_audio.done", response_id="ack", input_item_id="first")
+            elif event["type"] == "conversation.item.create":
+                await speech("followup", "What is its connection limit?")
+                if scenario == "timeout":
+                    continue
+                if scenario == "engine_finished":
+                    await send("error", error={"code": "voice_session_rotation_required"})
+                    continue
+                context = {} if scenario == "uncorrelated" else {
+                    "input_item_id": "first", "related_input_item_ids": ["followup"],
+                    "tool_call_ids": ["forged" if scenario == "unknown_call" else "call"]}
+                await send("response.output_audio_transcript.done", response_id="answer", transcript="Product AX supports 10 connections.", **context)
+                await send("response.output_audio.delta", response_id="answer", delta=pcm, **context)
+                await send("response.output_audio.done", response_id="answer", **context)
+
+    with TestClient(app) as client:
+        http = httpx.AsyncClient(transport=httpx.MockTransport(search))
+        app.state.registry.adapters["cuekb_http"] = CueKBAdapter(s, http)
+
+        async def start():
+            return await serve(voicechat, "127.0.0.1", 0)
+
+        server = client.portal.call(start)
+        s.voicechat_ws_url = f"ws://127.0.0.1:{server.sockets[0].getsockname()[1]}"
+        try:
+            cid = client.post("/api/v1/conversations", json={}).json()["id"]
+            issued = client.post(f"/api/v1/conversations/{cid}/voice-sessions", json={}).json()
+            with client.websocket_connect(issued["ws_url"], headers={"Origin": s.public_origin}) as ws:
+                assert ws.receive_json()["type"] == "portal.session.ready"
+                ws.send_json({"type": "portal.audio.append", "epoch": issued["epoch"], "seq": 0,
+                              "payload": {"format": "pcm16", "sample_rate": 24000, "audio": pcm}})
+                events = []
+                while True:
+                    event = ws.receive_json()
+                    events.append(event)
+                    if event["type"] == "portal.error" or (event["type"] == "portal.audio.done" and event["payload"]["response_id"] == "answer"):
+                        break
+                if scenario == "followup":
+                    assert not any(event["type"] == "portal.error" for event in events)
+                    spoken = next(event["payload"] for event in events if event["type"] == "portal.speech_text.done" and event["payload"]["phase"] == "answer")
+                    assert spoken["input_item_id"] == "first" and spoken["related_input_item_ids"] == ["followup"]
+                    assert spoken["answer_kind"] == "knowledge"
+                    for _ in range(100):
+                        messages = client.get(f"/api/v1/conversations/{cid}/messages").json()
+                        original = next(item for item in messages["items"] if item.get("input_item_id") == "first")
+                        if original["answer"]:
+                            break
+                        time.sleep(.01)
+                    assert original["answer"]["status"] == "answered"
+                    assert not app.state.coordinator.awaiting_answers
+                    recorded = next(record for record in messages["records"] if record["kind"] == "voicechat_transcript")
+                    assert recorded["payload"]["related_input_item_ids"] == ["followup"]
+                    ws.send_json({"type": "portal.audio.append", "epoch": issued["epoch"], "seq": 1,
+                                  "payload": {"format": "pcm16", "sample_rate": 24000, "audio": pcm}})
+                    while True:
+                        event = ws.receive_json()
+                        assert event["type"] != "portal.error", event
+                        if event["type"] == "portal.speech_text.done":
+                            assert event["payload"]["input_item_id"] == "third"
+                            assert event["payload"]["answer_kind"] == "general"
+                            break
+                else:
+                    expected = "VOICE_ANSWER_TIMEOUT" if scenario == "timeout" else (
+                        "VOICE_SESSION_ROTATION_REQUIRED" if scenario == "engine_finished" else "VOICE_PROTOCOL_ERROR")
+                    assert events[-1]["payload"]["code"] == expected
+            for _ in range(100):
+                if not app.state.coordinator.awaiting_answers:
+                    break
+                time.sleep(.01)
+            assert not app.state.coordinator.awaiting_answers and len(searches) == 1
+        finally:
+            async def stop():
+                server.close()
+                await server.wait_closed()
+                await http.aclose()
+            client.portal.call(stop)
+
+
 def configuration(tmp_path, **overrides):
     return Settings(_env_file=None, auto_create_schema=True, agent_provider="disabled",
         cuekb_mode="real", cuekb_base_url="https://cuekb.fixture", cuekb_api_key="server-only",

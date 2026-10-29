@@ -56,6 +56,8 @@ class Settings(BaseSettings):
     # 30s active-answer grace. Coverage/streaming changes must not raise these.
     voice_session_max_seconds: int = 105
     voice_max_retrievals_per_input: int = Field(default=2, ge=1, le=2)
+    # Native result consumption + spoken answer, separate from retrieval time.
+    voice_native_answer_timeout_seconds: float = Field(default=60, ge=1, le=120)
     max_voice_sessions: int = 8
     default_locale: Literal["en-US"] = "en-US"
     required_voice_languages: Literal["en-US"] = "en-US"

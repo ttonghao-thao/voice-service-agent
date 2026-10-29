@@ -1,0 +1,127 @@
+--- a/opt/tritonserver/backends/nemotron-voicechat/model.py
++++ b/opt/tritonserver/backends/nemotron-voicechat/model.py
+@@ -518,8 +518,13 @@
+         seq_state = self._seq_mgr[seq_id]
+ 
++        if seq_state.inference_error:
++            raise RuntimeError(seq_state.inference_error)
++
+         input_dtype = self.model.llm_custom_input_specs[0].dtype
+         custom_inputs = {"combined_embeds": input_embeds[0].to(dtype=getattr(torch, input_dtype)).cpu()}
+ 
+         if seq_state.vllm_llm_generator is None:
++            seq_state.vllm_prompt_tokens = len(prompt_token_ids)
++            seq_state.vllm_appended_tokens = 0
+             logger.log_verbose(f"Initializing vLLM LLM generator")
+             inputs = {"type": "tokens", "prompt_token_ids": prompt_token_ids, "custom_inputs": custom_inputs}
+@@ -531,10 +536,35 @@
+         if seq_state.vllm_llm_start:
+             logger.log_verbose("Appending custom embeddings")
+-            await self.model.llm.append_request(
+-                request_id=str(seq_id), custom_inputs=custom_inputs,
+-            )
++            try:
++                await self.model.llm.append_request(
++                    request_id=str(seq_id), custom_inputs=custom_inputs,
++                )
++                seq_state.vllm_appended_tokens += custom_inputs["combined_embeds"].shape[0]
++            except ValueError as exc:
++                seq_state.inference_error = "Voice model request is unavailable; close this connection."
++                seq_state.vllm_llm_start = False
++                raise RuntimeError(seq_state.inference_error) from exc
+             logger.log_verbose(f"appended request *******")
+         logger.log_verbose("get next token *******")
+-        output = await anext(seq_state.vllm_llm_generator)
++        try:
++            output = await anext(seq_state.vllm_llm_generator)
++        except StopAsyncIteration:
++            logger.log_info(f"[seq {seq_id}] Voice LLM finished reason=generator_exhausted "
++                            f"prompt_tokens={seq_state.vllm_prompt_tokens} appended_tokens={seq_state.vllm_appended_tokens}")
++            seq_state.inference_error = "VOICE_SESSION_ROTATION_REQUIRED: Voice model request ended."
++            seq_state.vllm_llm_start = False
++            raise RuntimeError(seq_state.inference_error) from None
++        except ValueError as exc:
++            seq_state.inference_error = "Voice model request failed; close this connection."
++            raise RuntimeError(seq_state.inference_error) from exc
++        if output.finished:
++            reason = output.outputs[0].finish_reason
++            logger.log_info(f"[seq {seq_id}] Voice LLM finished reason={reason} "
++                            f"output_tokens={len(output.outputs[0].token_ids)} "
++                            f"prompt_tokens={seq_state.vllm_prompt_tokens} appended_tokens={seq_state.vllm_appended_tokens} "
++                            f"decoder_steps={seq_state.decoder_global_step}")
++            seq_state.vllm_llm_start = False
++            seq_state.inference_error = "VOICE_SESSION_ROTATION_REQUIRED: Voice model request finished."
++            raise RuntimeError(seq_state.inference_error)
+         seq_state.vllm_llm_start = True
+         logger.log_verbose("Received LLM output")
+@@ -549,7 +579,10 @@
+         logger = pb_utils.Logger
+         logger.log_verbose("***VLLM LLM Cleanup***")
+-        await self.model.llm.abort(str(seq_id))
+         seq_state = self._seq_mgr[seq_id]
+-        seq_state.vllm_llm_generator = None
++        try:
++            await asyncio.wait_for(self.model.llm.abort(str(seq_id)), timeout=1.0)
++        finally:
++            seq_state.vllm_llm_generator = None
++            seq_state.vllm_llm_start = False
+ 
+     async def _vllm_llm_step(self, seq_id, input_embeds):
+@@ -1925,5 +1958,5 @@
+                 self._reset_fn_call_state(fn_call, seq_state)
+         except Exception as exc:
+-            seq_state.inference_error = "Tool result injection failed; close this connection."
++            seq_state.inference_error = seq_state.inference_error or "Tool result injection failed; close this connection."
+             logger.log_error(f"[seq {seq_id}] Tool result injection failed: error_type={type(exc).__name__} "
+                              f"remaining_tokens={len(fn_call['response_tokens'])}")
+@@ -2375,4 +2408,50 @@
+     @_log_time("Execute")
+     def execute(self, requests):
++        """END is cleanup, including after failed inference; never decode on END."""
++        responses = [None] * len(requests)
++        active, indexes = [], []
++        for index, request in enumerate(requests):
++            end = from_dlpack(pb_utils.get_input_tensor_by_name(request, "END"))
++            if not end[0].item():
++                active.append(request)
++                indexes.append(index)
++                continue
++            final_asr = self._finalize_sequence(request.correlation_id())
++            responses[index] = pb_utils.InferenceResponse(output_tensors=[
++                pb_utils.Tensor(name, np.array([final_asr.encode("utf-8") if name == "output_asr_text" else b""], dtype=np.object_))
++                for name in ("output_text", "output_asr_text", "output_function_text")
++            ] + [pb_utils.Tensor("output_audio", np.empty((1, 0), dtype=np.float32))])
++        if active:
++            for index, response in zip(indexes, self._execute_active(active), strict=True):
++                responses[index] = response
++        return responses
++
++    def _finalize_sequence(self, seq_id):
++        try:
++            state = self._seq_mgr[seq_id]
++        except (KeyError, ValueError):
++            return ""
++        self._seq_mgr.mark_end(seq_id)
++        state.fn_call["extract_cancelled"] = True
++        state.fn_call["inject_cancelled"] = True
++        # Abort before joining: an outstanding anext must be unblocked first.
++        for cleanup in (lambda: self._run_coro(self._vllm_llm_cleanup(seq_id)),
++                        lambda: self.model.tts.stream_abort_request(seq_id)):
++            try:
++                cleanup()
++            except Exception as exc:
++                pb_utils.Logger.log_error(f"[seq {seq_id}] Cleanup error_type={type(exc).__name__}")
++        for threads in (self._extraction_threads, self._injection_threads):
++            worker = threads.pop(seq_id, None)
++            if worker and worker.is_alive():
++                worker.join(timeout=1.0)
++        with torch.inference_mode():
++            self._append_rnnt_display_output(state, agent_bos_fired=False, force_publish=True, close_turn=True)
++        final_asr = state.rnnt_display_pending_text
++        self._voice_diagnostic(state, "sequence.end", state=state.fn_call["state"])
++        self._seq_mgr.remove(seq_id)
++        return final_asr
++
++    def _execute_active(self, requests):
+         logger = pb_utils.Logger
+         responses = []

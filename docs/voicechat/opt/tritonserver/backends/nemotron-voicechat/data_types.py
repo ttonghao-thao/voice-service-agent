@@ -46,6 +46,8 @@ class TritonSeqState:
     speech_state: torch.Tensor = None
     vllm_llm_generator = None
     vllm_llm_start = False
+    vllm_prompt_tokens: int = 0
+    vllm_appended_tokens: int = 0
     system_prompt: str = ""
     tool_ack_messages: Dict[str, List[str]] = field(default_factory=dict)  # tool_name -> ack_messages
 

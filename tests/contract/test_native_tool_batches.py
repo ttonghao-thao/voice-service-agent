@@ -46,3 +46,20 @@ def test_no_timing_based_coalescing_of_legacy_calls():
     payload = {"call_id": "c", "name": "search_knowledge_base", "arguments": '{}'}
     assert batches.append(payload, "input", True).after_terminal is True
     assert not batches.pending
+
+
+@pytest.mark.parametrize("metadata", [
+    {"input_item_id": ""}, {"tool_call_ids": ["c", "c"]},
+    {"related_input_item_ids": [None]}, {"tool_call_ids": "c"},
+])
+def test_response_context_is_validated(metadata):
+    with pytest.raises(DomainError):
+        normalize({"type": "response.output_audio.done", "response_id": "r", **metadata})
+
+
+def test_response_context_survives_normalization_and_finished_engine_requests_rotation():
+    context = {"input_item_id": "first", "related_input_item_ids": ["followup"], "tool_call_ids": ["call"]}
+    payload = normalize({"type": "response.output_audio.done", "response_id": "r", **context}).payload
+    assert all(payload[key] == value for key, value in context.items())
+    with pytest.raises(DomainError, match="VOICE_SESSION_ROTATION_REQUIRED"):
+        normalize({"type": "error", "error": {"code": "voice_session_rotation_required"}})

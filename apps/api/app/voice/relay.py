@@ -13,6 +13,7 @@ import time
 
 import anyio
 from app.agent_runtime.direct import EvidenceReady
+from app.agent_runtime.native_cuekb import compact_voice_result
 from app.agent_runtime.native_input import ANSWER_INSTRUCTIONS, FINAL_INSTRUCTIONS, NativeInputSearch
 from app.contracts import (
     AnswerBundle,
@@ -38,6 +39,7 @@ async def relay(gateway, ws, session, provider):
     calls = asyncio.Queue(maxsize=16)
     upstream_lock = asyncio.Lock()
     inputs, seen_calls, responses, tool_inputs = {}, {}, {}, {}
+    call_inputs = {}
     searches = {}
     batches = ToolBatches()
     terminal_sent = set()
@@ -185,7 +187,7 @@ async def relay(gateway, ws, session, provider):
                           "search_state": "finished", "instructions": ANSWER_INSTRUCTIONS + FINAL_INSTRUCTIONS}
             if batch.size > 1:
                 result["call_results"] = outcomes
-            text = json.dumps(result, ensure_ascii=True, separators=(",", ":"))
+            text = json.dumps(compact_voice_result(result), ensure_ascii=True, separators=(",", ":"))
             if len(text.encode()) > gateway.settings.qa_direct_evidence_max_bytes:
                 raise DomainError("VOICE_EVIDENCE_BUDGET", "The aggregate tool result exceeds its byte limit.", 502, True)
             call_ids = [p["call_id"] for p in batch.calls]
@@ -207,6 +209,7 @@ async def relay(gateway, ws, session, provider):
                     await store.delivery(cid, epoch, call_id, "tool_result", "write_started", turn.id, turn.request_revision,
                         input_item_id=item_id)
                 tool_inputs[item_id]["sent"] = True
+                tool_inputs[item_id]["answer_deadline"] = time.monotonic() + gateway.settings.voice_native_answer_timeout_seconds
                 async with upstream_lock:
                     async with asyncio.timeout(2):
                         if batch.id:
@@ -214,6 +217,8 @@ async def relay(gateway, ws, session, provider):
                         else:
                             await provider.submit_tool_result(call_ids[0], text)
                 search.remember_delivery(result)
+                if tool_inputs[item_id]["evidence"]:
+                    emit("tool.started", {"message": "Sources received. Preparing the spoken reply."})
                 if result.get("search_state") == "finished":
                     terminal_sent.add(item_id)
                 for call_id in call_ids:
@@ -277,38 +282,42 @@ async def relay(gateway, ws, session, provider):
                 continue
             if event.kind == "tool":
                 call_id = body["call_id"]
+                item_id = body.get("input_item_id", latest_input)
                 # Only identical notifications of the same native call are
                 # deduplicated. New IDs/queries remain actual model requests.
                 fingerprint = (body["name"], body["arguments"], body.get("native_batch_id"),
-                               body.get("native_batch_size"), body.get("output_index"))
+                               body.get("native_batch_size"), body.get("output_index"), item_id)
                 if call_id in seen_calls:
                     if seen_calls[call_id] != fingerprint:
                         raise DomainError("VOICE_PROTOCOL_ERROR", "A tool call ID was reused with different arguments.", 502)
                     continue
-                if latest_input is None:
+                if item_id is None or item_id not in inputs:
                     raise DomainError("VOICE_INPUT_INCOMPLETE", "The tool call has no customer input.", 502)
                 if len(seen_calls) >= 128:
                     raise DomainError("VOICE_TOOL_LIMIT", "Too many tool calls in this connection.", 502, True)
                 seen_calls[call_id] = fingerprint
+                call_inputs[call_id] = item_id
                 try:
-                    batch = batches.append(body, latest_input, latest_input in terminal_sent)
+                    batch = batches.append(body, item_id, item_id in terminal_sent)
                     if batch is not None:
                         calls.put_nowait(batch)
                 except asyncio.QueueFull as exc:
                     raise DomainError("VOICE_TOOL_LIMIT", "Too many pending tool calls.", 502, True) from exc
                 logger.info("voice_tool_call_received conversation_id=%s call_id=%s tool=%s input_item_id=%s",
-                    cid, call_id, body["name"], latest_input)
+                    cid, call_id, body["name"], item_id)
                 # ACK metadata is available before the worker starts.
                 rid = body.get("response_id")
                 if rid:
-                    response = response_for(rid)
+                    response = response_for(rid, body)
                     tool = session.tool_catalog.get(body["name"])
                     response["acks"] = tool.ack_messages if tool else ()
                 continue
             if not event.kind.startswith(("audio.", "speech_text.")):
                 continue
             rid = body["response_id"]
-            response = response_for(rid)
+            response = response_for(rid, body)
+            for key in ("input_item_id", "tool_call_ids", "related_input_item_ids"):
+                body.pop(key, None)
             if event.kind == "audio.delta" and not response.get("audio_received"):
                 response["audio_received"] = True
                 logger.info("voice_audio_first_received conversation_id=%s response_id=%s input_item_id=%s",
@@ -334,9 +343,12 @@ async def relay(gateway, ws, session, provider):
                     if not response["ack"]:
                         await store.record(cid, epoch, "voicechat_transcript", rid, {
                             **body, "input_item_id": response["input"],
+                            "related_input_item_ids": response["related_inputs"],
+                            "answer_kind": "knowledge" if operation else "general",
                             "_authorized_kb_ids": sorted(session.principal.knowledge_base_ids) if operation else []})
                 body.update(phase="status" if response["ack"] else "answer", segment_index=0,
-                    input_item_id=response["input"], answer_kind="knowledge" if operation else "general")
+                    input_item_id=response["input"], related_input_item_ids=response["related_inputs"],
+                    answer_kind="knowledge" if operation else "general")
             if event.kind == "audio.done":
                 body["phase"] = "status" if response["ack"] else "answer"
                 response["done"] = True
@@ -351,12 +363,33 @@ async def relay(gateway, ws, session, provider):
             emit(event.kind, body)
         raise DomainError("VOICE_UNAVAILABLE", "VoiceChat disconnected. Restart voice.", 503, True)
 
-    def response_for(rid):
+    def response_for(rid, body):
         if rid not in responses:
             if len(responses) >= 1024:
                 raise DomainError("VOICE_SESSION_ROTATION_REQUIRED", "Reconnect to continue the conversation.", 409, True)
-            responses[rid] = {"input": latest_input, "text": "", "ack": False, "acks": (),
+            item_id = body.get("input_item_id", latest_input)
+            related = body.get("related_input_item_ids", [])
+            if item_id not in inputs or any(item not in inputs or item == item_id for item in related):
+                raise DomainError("VOICE_PROTOCOL_ERROR", "Response has an unknown input association.", 502)
+            for call in body.get("tool_call_ids", []):
+                if call not in call_inputs:
+                    raise DomainError("VOICE_PROTOCOL_ERROR", "Response refers to an unknown tool call.", 502)
+            if body.get("tool_call_ids") and item_id not in {call_inputs[call] for call in body["tool_call_ids"]}:
+                raise DomainError("VOICE_PROTOCOL_ERROR", "Response does not match its tool context.", 502)
+            # A legacy provider cannot safely disambiguate an interleaved answer.
+            if "input_item_id" not in body and any(
+                key != item_id and operation["turn"] in coordinator.awaiting_answers
+                for key, operation in tool_inputs.items()
+            ):
+                raise DomainError("VOICE_PROTOCOL_ERROR", "Upgrade VoiceChat for interleaved answer association.", 502)
+            responses[rid] = {"input": item_id, "related_inputs": related,
+                              "tool_call_ids": body.get("tool_call_ids", []), "text": "", "ack": False, "acks": (),
                               "sent": 0, "done": False, "sent_done": False, "streamed_chars": 0, "stream_text": ""}
+        elif body.get("input_item_id", responses[rid]["input"]) != responses[rid]["input"]:
+            raise DomainError("VOICE_PROTOCOL_ERROR", "A response changed its input association.", 502)
+        elif any(key in body and body[key] != responses[rid][stored]
+                 for key, stored in (("tool_call_ids", "tool_call_ids"), ("related_input_item_ids", "related_inputs"))):
+            raise DomainError("VOICE_PROTOCOL_ERROR", "A response changed its tool context.", 502)
         return responses[rid]
 
     async def browser():
@@ -405,6 +438,9 @@ async def relay(gateway, ws, session, provider):
             if snapshot.revision != session.catalog_revision or snapshot.definitions != session.tool_definitions:
                 raise DomainError("VOICE_TOOL_CONFIGURATION_CHANGED", "Voice tools changed. Reconnect.", 409, True)
             batches.check_timeout()
+            if any(operation.get("answer_deadline", float("inf")) < time.monotonic()
+                   and operation["turn"] in coordinator.awaiting_answers for operation in tool_inputs.values()):
+                raise DomainError("VOICE_ANSWER_TIMEOUT", "The sources returned, but the spoken answer did not finish. Restart voice.", 504, True)
             if time.monotonic() - last_input > 5:
                 raise DomainError("AUDIO_BACKPRESSURE", "Audio capture stalled. Restart voice.", 409, True)
             elapsed = time.monotonic() - started

@@ -141,6 +141,8 @@ async def saved_answers(conversation_id, window_start, window_end):
             emit("record", {"kind": record.kind, "epoch": record.epoch,
                             "input_item_id": payload.get("input_item_id", payload.get("item_id")),
                             "response_id": payload.get("response_id"),
+                            "related_input_item_ids": payload.get("related_input_item_ids", [])[:8],
+                            "related_inputs_omitted": max(0, len(payload.get("related_input_item_ids", [])) - 8),
                             "status": payload.get("status"), **clipped(payload.get("text"), 1200)})
         for turn in reversed(turns[:8]):
             answer = turn.answer or {}

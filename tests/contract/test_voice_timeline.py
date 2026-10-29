@@ -3,6 +3,17 @@ import json
 from scripts.summarize_voice_timeline import summarize
 
 
+def test_engine_finish_reason_and_token_counts_are_reported_without_request_payload():
+    _, rows = summarize([
+        '2026-10-29T00:00:00Z voice_input_transcribed conversation_id=chosen input_item_id=i1',
+        '2026-10-29T00:00:01Z voice_ws_diagnostic ' + json.dumps({'event': 'asr.dispatch', 'sequence_id': 42, 'input_item_id': 'i1'}),
+        '2026-10-29T00:00:02Z [seq 42] Voice LLM finished reason=length output_tokens=3000 prompt_tokens=2500 appended_tokens=2000 decoder_steps=2000 text=PRIVATE',
+    ], 'chosen')
+    assert rows[-1] == {'at': '2026-10-29T00:00:02Z', 'event': 'backend.request_finished', 'sequence_id': '42',
+                        'reason': 'length', 'output_tokens': 3000, 'prompt_tokens': 2500, 'appended_tokens': 2000, 'decoder_steps': 2000}
+    assert 'PRIVATE' not in json.dumps(rows)
+
+
 def test_timeline_correlates_sequence_and_omits_other_sessions_and_payloads():
     lines = [
         '2026-10-21T01:00:00Z voice_input_transcribed conversation_id=chosen input_item_id=i2',

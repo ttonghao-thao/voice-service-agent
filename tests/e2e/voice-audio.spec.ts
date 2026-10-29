@@ -10,6 +10,46 @@ test.use({
   permissions: ["microphone"],
 });
 
+test("Knowledge reply groups interleaved follow-up and shows preparing after retrieval", async ({ page }) => {
+  let conversationId = "";
+  let emit: (type: string, payload: Record<string, unknown>) => void;
+  let records: unknown[] = [];
+  page.on("response", async (response) => {
+    if (response.url().endsWith("/api/v1/conversations") && response.request().method() === "POST")
+      conversationId = (await response.json()).id;
+  });
+  await page.route("**/api/v1/conversations/*/messages*", (route) => route.fulfill({ json: {
+    items: [{ id: "pending", input_item_id: "first", user_text: "What about Product AX?", channel: "voice",
+      epoch: 1, request_revision: 1, status: "running", execution_phase: "awaiting_provider_answer",
+      answer: null, created_at: "2026-10-29T00:00:00Z" }],
+    records, epoch: 1, request_revision: 1, next_before: null,
+  } }));
+  await page.routeWebSocket("**/api/v1/voice-sessions/**/stream?*", (socket) => {
+    emit = (type, payload) => socket.send(JSON.stringify({ type, payload, event_id: crypto.randomUUID(),
+      conversation_id: conversationId, epoch: 1, request_revision: 1, server_seq: 1, turn_id: null }));
+    emit("portal.session.ready", { sample_rate: 24000, format: "pcm16", chunk_ms: 80, is_mock: true });
+  });
+  await page.goto("/");
+  await page.getByRole("button", { name: "Start call", exact: true }).click();
+  await expect(page.getByRole("main").getByText("Voice ready", { exact: true })).toBeVisible();
+  emit!("portal.tool.started", { message: "Sources received. Preparing the spoken reply." });
+  await expect(page.getByText("Preparing reply", { exact: true })).toBeVisible();
+  await expect(page.getByText("Sources received. Preparing the spoken reply.", { exact: true })).toBeVisible();
+  emit!("portal.transcript.done", { item_id: "followup", text: "What is its connection limit?" });
+  emit!("portal.speech_text.done", { response_id: "answer", input_item_id: "first",
+    related_input_item_ids: ["followup"], text: "Product AX supports 10 connections.", answer_kind: "knowledge", phase: "answer" });
+  await expect(page.getByText("Included in the knowledge reply above.", { exact: true })).toBeVisible();
+  await expect(page.getByText("Model general answer", { exact: true })).toHaveCount(0);
+  await expect(page.getByText("Waiting for request", { exact: true })).toHaveCount(0);
+  records = [{ kind: "user_transcript", epoch: 1, source_id: "followup", payload: { text: "What is its connection limit?" } },
+    { kind: "voicechat_transcript", epoch: 1, source_id: "answer", payload: { text: "Product AX supports 10 connections.",
+      input_item_id: "first", related_input_item_ids: ["followup"], answer_kind: "knowledge" } }];
+  // Re-fetching history must retain grouping and the knowledge classification.
+  emit!("portal.tool.started", { message: "Sources received. Preparing the spoken reply." });
+  await expect(page.getByText("Included in the knowledge reply above.", { exact: true })).toBeVisible();
+  await page.getByRole("button", { name: "End call", exact: true }).click();
+});
+
 test("General voice answers stay in the chat without a knowledge turn", async ({ page }) => {
   let conversationId = "";
   let emit: (type: string, payload: Record<string, unknown>) => void;

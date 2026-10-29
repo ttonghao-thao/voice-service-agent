@@ -1,7 +1,33 @@
 """Function-history reuse must not drop new facts or cross an input boundary."""
 
 from app.agent_runtime.direct import EvidenceReady
+from app.agent_runtime.native_cuekb import compact_voice_result
 from app.agent_runtime.native_input import NativeInputSearch
+
+
+def test_wire_compaction_is_lossless_and_preserves_dedup_and_distinct_scopes():
+    import copy
+    import json
+
+    scope = {"status": "resolved", "subjects": [{"display_name": "Product AX", "source_kind": "curated"}],
+             "conditions": [{"text": "Only when refrigerated", "source_kind": "curated"}]}
+    items = [{"text": text, "title": "Product AX", "applicability": scope,
+              "context": [{"text": "Do not freeze.", "applicability": {"status": "unknown"}}]}
+             for text in ("Store for five days.", "Consume within two hours after opening.", "Ships in sealed packaging.")]
+    search = NativeInputSearch(2)
+    full = search.voice_result(ready(*items))
+    untouched = copy.deepcopy(full)
+    wire = compact_voice_result(full)
+    restored = [{**wire.get("source_defaults", {}), **source} for source in wire["sources"]]
+    assert restored == full["sources"] and full == untouched
+    assert len(json.dumps(wire)) < len(json.dumps(full)) * .8
+    search.remember_delivery(full)
+    assert not search.voice_result(ready(*items))["sources"]
+    mixed = copy.deepcopy(full)
+    mixed["sources"][1]["applicability"] = {"status": "ambiguous", "subjects": [], "conditions": []}
+    compact = compact_voice_result(mixed)
+    assert "applicability" not in compact.get("source_defaults", {})
+    assert [{**compact.get("source_defaults", {}), **source} for source in compact["sources"]] == mixed["sources"]
 
 
 def ready(*items):

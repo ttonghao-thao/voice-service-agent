@@ -123,6 +123,7 @@ export interface Turn {
   parent_task_id: string | null;
   cancellation_reason: string | null;
   delivery_status: string;
+  execution_phase?: string | null;
   output_suppressed: boolean;
 }
 export interface RecordItem {
@@ -135,6 +136,8 @@ export interface RecordItem {
     response_id?: string;
     turn_id?: string;
     input_item_id?: string;
+    related_input_item_ids?: string[];
+    answer_kind?: string;
     phase?: string;
     segment_index?: number;
     played_samples?: number;

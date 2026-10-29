@@ -602,6 +602,11 @@ class VoiceGateway:
             async for event in provider.events():
                 if not await current():
                     return
+                # The bridge path keeps its own permission/response ownership.
+                # Native-relay context is consumed only by relay(), never leaked
+                # into legacy portal audio payloads or used as a speech grant.
+                for key in ("input_item_id", "related_input_item_ids", "tool_call_ids"):
+                    event.payload.pop(key, None)
                 if event.kind == "tool":
                     call = event.payload["call_id"]
                     if call in pending:

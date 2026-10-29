@@ -18,6 +18,8 @@ test -n "$VOICECHAT_MODEL_ROOT" && test -d "$VOICECHAT_MODEL_ROOT"
 
 ## 创建容器
 
+2026-10-29 更新必须配套加载 model/data/audio_server：处理 vLLM finished 与失效请求，END 独立清理并保留最终显示转写；回答快照包含输入、原生工具调用和补充输入关联。仍使用下面六个挂载，不新增 GPU 依赖、模型参数或挂载。API 与 Web 同时更新的完整操作以统一验证手册第 2 节为准。
+
 2026-10-28 修复必须配套加载最新 `model.py` 和 `s2s/audio_server.py`：后台注入协程在自己的线程局部 inference_mode 内写历史 tensor，且不跨 await 持有模式；有序输出 writer 按 PCM 样本时钟发送补处理 ACK，避免突发超过门户缓冲。仍用下面已有六个挂载，无新参数或运行依赖；模型/提示词/识别门槛不再调整。须重新创建容器使两处运行代码一起生效。
 
 本次 `model.py` / `data_types.py` 分离真实音频消费与工具 decoder 步数，工具期间保留音频和待处理结果，并有界追赶积压；正文/ASR/函数边界保持原两帧传输，不把 EOS/BOS 拼进任意长度音频。结果注入预先计算函数通道 embedding、使用单一协程顺序 append，跳过未使用的正文采样和重复 CPU 传递。引擎仍逐 token 执行，不能由 CPU 通过宣称 GPU 已提速。`prompt_template.jinja` 同步更换为忠实保留用户问题的格式示例，不能继续加载旧模板。

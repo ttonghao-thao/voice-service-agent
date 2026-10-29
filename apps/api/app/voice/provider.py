@@ -109,6 +109,20 @@ def normalize(event):
         if identifier in event and (not isinstance(event[identifier], str) or not 0 < len(event[identifier]) <= 128):
             raise DomainError("VOICE_PROTOCOL_ERROR", "Voice event has an invalid identifier", 502)
     ids = {k: event[k] for k in ("response_id", "item_id") if isinstance(event.get(k), str)}
+    context = {}
+    if "input_item_id" in event:
+        value = event["input_item_id"]
+        if not isinstance(value, str) or not 0 < len(value) <= 128:
+            raise DomainError("VOICE_PROTOCOL_ERROR", "Invalid response input association", 502)
+        context["input_item_id"] = value
+    for key in ("tool_call_ids", "related_input_item_ids"):
+        if key in event:
+            value = event[key]
+            if (not isinstance(value, list) or len(value) > 128
+                or any(not isinstance(item, str) or not 0 < len(item) <= 128 for item in value)
+                or len(set(value)) != len(value)):
+                raise DomainError("VOICE_PROTOCOL_ERROR", "Invalid response context", 502)
+            context[key] = value
     if kind == "response.function_call_arguments.done":
         if not isinstance(event.get("call_id"), str) or not 0 < len(event["call_id"]) <= 128:
             raise DomainError("VOICE_PROTOCOL_ERROR", "Voice tool request lacks a valid call identifier", 502)
@@ -122,7 +136,7 @@ def normalize(event):
         return VoiceEvent(
             "tool",
             {
-                **ids, **batch,
+                **ids, **batch, **context,
                 "call_id": event["call_id"],
                 "name": event.get("name"),
                 "arguments": event.get("arguments"),
@@ -142,7 +156,7 @@ def normalize(event):
             raise DomainError("VOICE_PROTOCOL_ERROR", "Voice response lacks an identifier", 502)
         if target.startswith("transcript") and not ids.get("item_id"):
             raise DomainError("VOICE_PROTOCOL_ERROR", "Transcript lacks an identifier", 502)
-        payload = {**ids}
+        payload = {**ids, **context}
         if source:
             value = event.get(source)
             if not isinstance(value, str) or len(value) > 100000:
@@ -172,6 +186,8 @@ def normalize(event):
             },
         )
     if kind == "error":
+        if event.get("error", {}).get("code") == "voice_session_rotation_required":
+            raise DomainError("VOICE_SESSION_ROTATION_REQUIRED", "Reconnect to continue the conversation.", 409, True)
         raise DomainError("VOICE_UNAVAILABLE", "Cloud voice processing failed. Restart voice or use text.", 502, True)
     if kind == "session.end":
         return VoiceEvent("session.ended")

@@ -136,6 +136,35 @@ test("Input transcript preview is bounded and never repairs or changes provider 
   await h.client.stop();
 });
 
+test("A file reply finishes only after its answer playback, and late replies do not finish the next file", async () => {
+  const h = harness();
+  const recording = recordingModule.parseRecording(recordingWave(1923), "golden.wav");
+  await h.client.start("cid", { kind: "file", recording });
+  h.socket().emit("portal.session.ready");
+  h.tick(160);
+  assert.equal(h.progress.at(-1).stage, "waiting_answer");
+  h.socket().emit("portal.transcript.done", { item_id: "followup", text: "How should it be stored?" });
+  h.socket().emit("portal.speech_text.done", { input_item_id: "first", related_input_item_ids: ["followup"],
+    response_id: "ack", phase: "status", text: "Let me check." });
+  h.frame({ type: "ack", epoch: 1, response: "ack", samples: 1920, done: true });
+  assert.equal(h.progress.at(-1).stage, "waiting_answer");
+  h.socket().emit("portal.speech_text.done", { input_item_id: "first", related_input_item_ids: ["followup"],
+    response_id: "answer", phase: "answer", text: "Refrigerate it." });
+  h.socket().emit("portal.audio.done", { response_id: "answer", phase: "answer" });
+  assert.equal(h.progress.at(-1).stage, "waiting_answer");
+  h.frame({ type: "ack", epoch: 1, response: "answer", samples: 1920, done: true });
+  assert.equal(h.progress.at(-1).stage, "reply_complete");
+  h.client.sendRecording(recording);
+  h.tick(160);
+  h.socket().emit("portal.transcript.done", { item_id: "followup", text: "How should it be stored?" });
+  h.socket().emit("portal.speech_text.done", { input_item_id: "followup", response_id: "late", phase: "answer", text: "An old reply." });
+  h.frame({ type: "ack", epoch: 1, response: "late", samples: 1920, done: true });
+  h.frame({ type: "ack", epoch: 1, response: "answer", samples: 1920, done: true });
+  assert.equal(h.progress.at(-1).stage, "waiting_answer");
+  assert.equal(h.apiCalls.filter(({path}) => path.endsWith("/voice-sessions")).length, 1);
+  await h.client.stop();
+});
+
 for (const rate of [44100, 48000]) test(`File preserves raw PCM, tail and EOF silence at ${rate} Hz without replay`, async () => {
   const h = harness(rate);
   const recording = recordingModule.parseRecording(

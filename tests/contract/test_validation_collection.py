@@ -63,7 +63,9 @@ async def test_saved_records_exclude_prior_epoch_outside_window(tmp_path, monkey
         db.add(Conversation(id=CHOSEN, owner_id='test', title='Validation', epoch=2))
         for day, text in ((20, 'OLD_PRIVATE_TEXT'), (21, 'current question')):
             db.add(Record(conversation_id=CHOSEN, epoch=day, kind='user_transcript', source_id=str(day),
-                          payload={'item_id': str(day), 'text': text}, created_at=datetime(2026, 10, day, tzinfo=UTC)))
+                          payload={'item_id': str(day), 'text': text,
+                                   'related_input_item_ids': [f'followup-{i}' for i in range(10)]},
+                          created_at=datetime(2026, 10, day, tzinfo=UTC)))
         db.add(Record(conversation_id=CHOSEN, epoch=2, kind='native_tool_arguments', source_id='query',
                       payload={'input_item_id': 'current', 'arguments': {'query': 'Can Product AX be shipped?'}},
                       created_at=datetime(2026, 10, 21, tzinfo=UTC)))
@@ -90,6 +92,8 @@ async def test_saved_records_exclude_prior_epoch_outside_window(tmp_path, monkey
     await collector.saved_answers(CHOSEN, datetime(2026, 10, 21, tzinfo=UTC), datetime(2026, 10, 22, tzinfo=UTC))
     output = capsys.readouterr().out
     assert 'current question' in output and 'OLD_PRIVATE_TEXT' not in output
+    record = json.loads(next(row.split('=', 1)[1] for row in output.splitlines() if row.startswith('record=')))
+    assert len(record['related_input_item_ids']) == 8 and record['related_inputs_omitted'] == 2
     assert 'Can Product AX be shipped?' in output
     assert 'EXCLUDED_CONTEXT_MUST_NOT_APPEAR' not in output
     assert 'PRIVATE_DEBUG_DO_NOT_PRINT' not in output
