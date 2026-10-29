@@ -34,11 +34,13 @@ def test_deployed_template_keeps_policy_schema_and_separate_ack(count, nested, p
     rendered = template.render(system_message=instructions,
                                tools=[{"function": t} for t in tools] if nested else tools)
     assert rendered.startswith(instructions)
+    assert "wait about three seconds" in rendered
+    assert "ask one brief welcoming question" in rendered
     if policy == "knowledge_required":
-        assert "Do not speak greetings" in rendered
+        assert "Do not speak additional greetings" in rendered
     else:
         assert "A tool call is not required for every utterance." in rendered
-        assert "Do not speak greetings" not in rendered
+        assert "Do not speak additional greetings" not in rendered
     if not tools:
         assert rendered == instructions
         return

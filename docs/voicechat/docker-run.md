@@ -18,6 +18,8 @@ test -n "$VOICECHAT_MODEL_ROOT" && test -d "$VOICECHAT_MODEL_ROOT"
 
 ## 创建容器
 
+2026-10-29 转写关联修复必须重新创建容器以加载最新 `s2s/audio_server.py`：只有具有非空匹配 response ID 的助手事件捕获回答关联，回答结束后清理可变上下文，下一轮 ASR 不再继承旧字段。六个挂载、镜像、GPU、模型参数和端口不变；API 也须同步更新以接受一次无用户归属的会话欢迎询问并过滤旧端转写字段。
+
 2026-10-29 更新必须配套加载 model/data/audio_server：处理 vLLM finished 与失效请求，END 独立清理并保留最终显示转写；回答快照包含输入、原生工具调用和补充输入关联。仍使用下面六个挂载，不新增 GPU 依赖、模型参数或挂载。API 与 Web 同时更新的完整操作以统一验证手册第 2 节为准。
 
 2026-10-28 修复必须配套加载最新 `model.py` 和 `s2s/audio_server.py`：后台注入协程在自己的线程局部 inference_mode 内写历史 tensor，且不跨 await 持有模式；有序输出 writer 按 PCM 样本时钟发送补处理 ACK，避免突发超过门户缓冲。仍用下面已有六个挂载，无新参数或运行依赖；模型/提示词/识别门槛不再调整。须重新创建容器使两处运行代码一起生效。

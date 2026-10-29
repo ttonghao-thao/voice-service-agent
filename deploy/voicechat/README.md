@@ -4,6 +4,8 @@
 
 ## 同步运行文件
 
+2026-10-29 转写关联修复更新完整 `s2s/audio_server.py`：助手回答关联只附在非空匹配的 response ID 上，回答完成后清理可变关联，下一轮 ASR 不再继承旧字段。API 同步接受一次无用户归属的启动欢迎询问，并在客户开口时清除余音。运行挂载、模型、GPU 和依赖不变，仍须重新创建 VoiceChat 容器并同步更新 API。
+
 2026-10-28 补充交付 `model.py` 的跨线程 inference tensor 写入修复和 `s2s/audio_server.py` 的 PCM 输出节奏修复。完整文件与 CPU 回归同步收录；`tool-output-recovery.patch` 只供 backend 固定基线逆向检查，不代替两个运行文件。部署仍直接挂载本仓库六文件、重新创建容器，无新依赖/权重；现场注入成功和实际听音仍待复测。
 
 本次配套更新 `model.py` / `data_types.py` 的工具期间音频保留、独立消费游标、原两帧输出边界和函数结果注入热路径；`prompt_template.jinja` 同步保留完整问题与独立首问策略。沿用已生效的 RNNT 显示初始化、原识别/打断门槛、PAD 保护及权重，不新增引擎能力或开关。audio_server.py 的输入/ASR 哈希诊断和显式批次仍保留，必须与 API 配套。CueKB 内容优化按用户提供的新版本已支持、等待真实联调处理，本仓库不修改 CueKB。

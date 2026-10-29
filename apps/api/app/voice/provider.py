@@ -45,9 +45,13 @@ def session_update(summary="", tools=None, answer_policy="knowledge_required"):
     safe_history = "\n".join(line for line in summary.splitlines() if printable_ascii(line))
     prompt = (ROOT / ("config/voice-qa-prompt.txt" if tools is not None else "config/voice-prompt.txt")).read_text()
     policy = (
-        "Speak only from an authorized tool result, apart from the tool's configured fixed acknowledgment. "
+        "At the start of a new call, wait about three seconds for the customer to speak. "
+        "If the customer has not started speaking, ask one brief welcoming question, then wait for their reply. "
+        "Ask it only once and stop speaking if the customer starts. "
+        "This one startup welcome does not require a tool. After it, speak only from an authorized tool result, "
+        "apart from the tool's configured fixed acknowledgment. "
         "Do not answer facts from memory. "
-        "Do not speak greetings, thanks, small talk, clarifying questions or limitations without tool authorization. "
+        "Do not speak additional greetings, thanks, small talk, clarifying questions or limitations without tool authorization. "
         "Use a matching registered tool for every request it covers, including a greeting followed by a product question. "
         "If no matching tool is available, do not speak; "
         "leave errors and clarification without tool authorization to the application's text interface. "
@@ -58,6 +62,9 @@ def session_update(summary="", tools=None, answer_policy="knowledge_required"):
         "This rule also applies to the first question in a new call and to short questions such as 'What about Product AX?'. "
         "General knowledge permission below does not apply to product-specific facts. "
         "A tool call is not required for every utterance. "
+        "At the start of a new call, wait about three seconds for the customer to speak. "
+        "If the customer has not started speaking, ask one brief welcoming question, then wait for their reply. "
+        "Ask it only once and stop speaking if the customer starts. "
         "For greetings, thanks and general concepts that do not need company sources, private facts or live data, "
         "answer from your own knowledge without tools. Never present those answers as verified company information. "
         "If no matching tool is available or a required detail is unclear, explain the limitation or ask for clarification."
@@ -156,7 +163,10 @@ def normalize(event):
             raise DomainError("VOICE_PROTOCOL_ERROR", "Voice response lacks an identifier", 502)
         if target.startswith("transcript") and not ids.get("item_id"):
             raise DomainError("VOICE_PROTOCOL_ERROR", "Transcript lacks an identifier", 502)
-        payload = {**ids, **context}
+        # Ownership metadata belongs to assistant responses. User transcript
+        # events are keyed by their own item_id and must never inherit stale
+        # response context from the provider.
+        payload = {**ids, **(context if target.startswith(("audio", "speech_text")) else {})}
         if source:
             value = event.get(source)
             if not isinstance(value, str) or len(value) > 100000:

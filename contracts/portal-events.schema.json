@@ -1946,7 +1946,8 @@
             {
               "enum": [
                 "knowledge",
-                "general"
+                "general",
+                "greeting"
               ],
               "type": "string"
             },

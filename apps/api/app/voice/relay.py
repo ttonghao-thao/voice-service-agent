@@ -45,6 +45,7 @@ async def relay(gateway, ws, session, provider):
     terminal_sent = set()
     last_results = {}
     latest_input = None
+    greeting_response_id = None
     seq, client_seq, frames = 0, -1, 0
     started = last_input = time.monotonic()
     input_state = "quiet"
@@ -260,6 +261,12 @@ async def relay(gateway, ws, session, provider):
                 if input_state == "speaking":
                     latest_input = body["item_id"]
                     input_future(latest_input)
+                    # A session greeting has no user owner. If the customer
+                    # starts speaking while it is playing, stop the remainder
+                    # without canceling or relabeling the new input.
+                    for response_id, response in responses.items():
+                        if response["answer_kind"] == "greeting":
+                            session.suppressed_responses.add(response_id)
                     logger.info("voice_input_started conversation_id=%s input_item_id=%s", cid, latest_input)
                     # Clear already-buffered playback on native speech start;
                     # continue receiving and forwarding the provider's stream.
@@ -344,11 +351,11 @@ async def relay(gateway, ws, session, provider):
                         await store.record(cid, epoch, "voicechat_transcript", rid, {
                             **body, "input_item_id": response["input"],
                             "related_input_item_ids": response["related_inputs"],
-                            "answer_kind": "knowledge" if operation else "general",
+                            "answer_kind": response["answer_kind"],
                             "_authorized_kb_ids": sorted(session.principal.knowledge_base_ids) if operation else []})
                 body.update(phase="status" if response["ack"] else "answer", segment_index=0,
                     input_item_id=response["input"], related_input_item_ids=response["related_inputs"],
-                    answer_kind="knowledge" if operation else "general")
+                    answer_kind=response["answer_kind"])
             if event.kind == "audio.done":
                 body["phase"] = "status" if response["ack"] else "answer"
                 response["done"] = True
@@ -364,17 +371,24 @@ async def relay(gateway, ws, session, provider):
         raise DomainError("VOICE_UNAVAILABLE", "VoiceChat disconnected. Restart voice.", 503, True)
 
     def response_for(rid, body):
+        nonlocal greeting_response_id
         if rid not in responses:
             if len(responses) >= 1024:
                 raise DomainError("VOICE_SESSION_ROTATION_REQUIRED", "Reconnect to continue the conversation.", 409, True)
             item_id = body.get("input_item_id", latest_input)
             related = body.get("related_input_item_ids", [])
-            if item_id not in inputs or any(item not in inputs or item == item_id for item in related):
+            calls_for_response = body.get("tool_call_ids", [])
+            session_greeting = item_id is None and not inputs and not related and not calls_for_response
+            if session_greeting:
+                if greeting_response_id not in (None, rid):
+                    raise DomainError("VOICE_PROTOCOL_ERROR", "Only one session greeting is allowed.", 502)
+                greeting_response_id = rid
+            elif item_id not in inputs or any(item not in inputs or item == item_id for item in related):
                 raise DomainError("VOICE_PROTOCOL_ERROR", "Response has an unknown input association.", 502)
-            for call in body.get("tool_call_ids", []):
+            for call in calls_for_response:
                 if call not in call_inputs:
                     raise DomainError("VOICE_PROTOCOL_ERROR", "Response refers to an unknown tool call.", 502)
-            if body.get("tool_call_ids") and item_id not in {call_inputs[call] for call in body["tool_call_ids"]}:
+            if calls_for_response and item_id not in {call_inputs[call] for call in calls_for_response}:
                 raise DomainError("VOICE_PROTOCOL_ERROR", "Response does not match its tool context.", 502)
             # A legacy provider cannot safely disambiguate an interleaved answer.
             if "input_item_id" not in body and any(
@@ -383,7 +397,9 @@ async def relay(gateway, ws, session, provider):
             ):
                 raise DomainError("VOICE_PROTOCOL_ERROR", "Upgrade VoiceChat for interleaved answer association.", 502)
             responses[rid] = {"input": item_id, "related_inputs": related,
-                              "tool_call_ids": body.get("tool_call_ids", []), "text": "", "ack": False, "acks": (),
+                              "tool_call_ids": calls_for_response,
+                              "answer_kind": "greeting" if session_greeting else "knowledge" if calls_for_response else "general",
+                              "text": "", "ack": False, "acks": (),
                               "sent": 0, "done": False, "sent_done": False, "streamed_chars": 0, "stream_text": ""}
         elif body.get("input_item_id", responses[rid]["input"]) != responses[rid]["input"]:
             raise DomainError("VOICE_PROTOCOL_ERROR", "A response changed its input association.", 502)

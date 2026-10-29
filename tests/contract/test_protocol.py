@@ -123,6 +123,19 @@ def test_input_state_preserves_native_item_identity():
         normalize({"type": "input_audio_buffer.speech_started"})
 
 
+def test_user_transcript_drops_assistant_response_context():
+    event = normalize({
+        "type": "conversation.item.input_audio_transcription.delta",
+        "item_id": "new-input",
+        "delta": "Can it be shipped?",
+        "input_item_id": "previous-input",
+        "tool_call_ids": [],
+        "related_input_item_ids": [],
+    })
+    assert event.kind == "transcript.delta"
+    assert event.payload == {"item_id": "new-input", "text": "Can it be shipped?"}
+
+
 def test_missing_response_identity_is_protocol_error():
     with pytest.raises(DomainError):
         normalize({"type": "response.output_audio.delta", "delta": "AAAA"})

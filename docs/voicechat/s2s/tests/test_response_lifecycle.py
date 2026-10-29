@@ -329,6 +329,27 @@ async def test_slow_writer_preserves_packet_ownership_done_order_and_short_audio
 
 
 @pytest.mark.asyncio
+async def test_completed_response_context_never_contaminates_the_next_user_transcript():
+    session = server.AudioSession("ownership", Socket())
+    await session._dispatch_model_output(
+        np.zeros(1764, np.float32), "<s>First reply.</s>", "<s>First question</s>", ""
+    )
+    first = pending(session)
+    reply = next(event for event in first if event["type"] == "response.output_audio_transcript.done")
+    first_input = next(event["item_id"] for event in first
+                       if event["type"] == "conversation.item.input_audio_transcription.completed")
+    assert reply["input_item_id"] == first_input
+    assert session._response_input_item_id is None
+
+    await session._dispatch_model_output(np.zeros(1764, np.float32), "", "<s>Second question", "")
+    second = pending(session)
+    transcript = next(event for event in second
+                      if event["type"] == "conversation.item.input_audio_transcription.delta")
+    assert transcript["item_id"] != first_input
+    assert not {"input_item_id", "tool_call_ids", "related_input_item_ids"} & transcript.keys()
+
+
+@pytest.mark.asyncio
 async def test_adjacent_eos_bos_uses_the_exact_80ms_codec_boundary():
     session = server.AudioSession("test", Socket())
     await session._dispatch_model_output(np.full(1764, .4, np.float32), "<s>First", "", "")

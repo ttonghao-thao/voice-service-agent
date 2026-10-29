@@ -289,11 +289,13 @@ async def test_prompt_output_policy_matches_gateway_authorization(app, answer_po
     if answer_policy == "general_qa" and tool_count is not None:
         assert "answer from your own knowledge without tools" in instructions
         assert "explain the limitation or ask for clarification" in instructions
-        assert "Do not speak greetings" not in instructions
+        assert "ask one brief welcoming question" in instructions
+        assert "Do not speak additional greetings" not in instructions
         return
     assert "Do not answer facts from memory" in instructions
     assert "answer from your own knowledge without tools" not in instructions
-    assert "Do not speak greetings, thanks, small talk, clarifying questions or limitations without tool authorization" in instructions
+    assert "This one startup welcome does not require a tool" in instructions
+    assert "Do not speak additional greetings, thanks, small talk, clarifying questions or limitations without tool authorization" in instructions
     assert "If no matching tool is available" in instructions
     assert "leave errors and clarification without tool authorization to the application's text interface" in instructions
     assert "Never call an unrelated tool to obtain permission to speak" in instructions

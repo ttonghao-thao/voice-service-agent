@@ -255,7 +255,7 @@ class SpeechTextPayload(StrictModel):
     text: str = Field(max_length=100000)
     input_item_id: str | None = Field(default=None, max_length=128)
     related_input_item_ids: list[str] = Field(default_factory=list, max_length=128)
-    answer_kind: Literal["knowledge", "general"] | None = None
+    answer_kind: Literal["knowledge", "general", "greeting"] | None = None
 
 
 class AudioDeltaPayload(StrictModel):

@@ -708,8 +708,11 @@ class AudioSession:
 
     def _queue_output_event(self, event: dict) -> None:
         # Snapshot IDs at production time. A later model turn cannot relabel
-        # packets waiting on a slow WebSocket connection.
-        if event.get("response_id") == self._response_id and self._response_input_item_id:
+        # packets waiting on a slow WebSocket connection. Input transcription
+        # events have no response_id; never let None == None attach the previous
+        # assistant response's ownership to the next user turn.
+        response_id = event.get("response_id")
+        if response_id is not None and response_id == self._response_id and self._response_input_item_id:
             event.setdefault("input_item_id", self._response_input_item_id)
             event["tool_call_ids"] = list(self._response_call_ids)
             event["related_input_item_ids"] = list(self._response_related_inputs)
@@ -1679,6 +1682,7 @@ class AudioSession:
     async def _finish_spoken_response(self):
         if not self._response_active:
             return
+        response_call_ids = list(self._response_call_ids)
         self._flush_response_audio()
         transcript = "".join(self.accumulated_agent_transcript)
         await self._emit_audio_transcript_done(transcript)
@@ -1690,10 +1694,15 @@ class AudioSession:
         acknowledgments = {" ".join(ack.split()) for tool in tools
                            for ack in tool.get("ack_messages", [])}
         if transcript.strip() and " ".join(transcript.split()) not in acknowledgments:
-            for call_id in self._response_call_ids:
+            for call_id in response_call_ids:
                 self._awaiting_tool_answers.pop(call_id, None)
             if not self._awaiting_tool_answers:
                 self._answer_inputs.clear()
+        # Every queued response event already carries its immutable ownership
+        # snapshot. Clear the mutable response context before the next ASR turn.
+        self._response_input_item_id = None
+        self._response_call_ids = []
+        self._response_related_inputs = []
 
     async def _process_function_text(self, function_text: str) -> None:
         """Process the function text response from the Triton inference"""

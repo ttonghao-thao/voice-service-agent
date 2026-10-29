@@ -152,6 +152,106 @@ def configuration(tmp_path, **overrides):
         database_url=f"sqlite+aiosqlite:///{tmp_path}/native.db", **overrides)
 
 
+def test_session_greeting_has_no_user_owner_and_connection_accepts_the_first_input(tmp_path):
+    s = configuration(tmp_path)
+    app = create_app(s)
+    pcm = base64.b64encode(b"\x01\x00" * 1920).decode()
+
+    from app.voice.provider import MockVoiceAdapter, VoiceEvent
+
+    class Scripted(MockVoiceAdapter):
+        instance = None
+
+        def __init__(self, settings):
+            super().__init__(settings)
+            Scripted.instance = self
+
+        async def connect(self, summary):
+            for event in (
+                VoiceEvent("speech_text.delta", {"response_id": "welcome", "text": "Hello, how can I help?"}),
+                VoiceEvent("audio.delta", {"response_id": "welcome", "audio": pcm}),
+                VoiceEvent("speech_text.done", {"response_id": "welcome", "text": "Hello, how can I help?"}),
+                VoiceEvent("audio.done", {"response_id": "welcome"}),
+            ):
+                await self.queue.put(event)
+
+    with TestClient(app) as client:
+        app.state.voice.provider_factory = Scripted
+        cid = client.post("/api/v1/conversations", json={}).json()["id"]
+        issued = client.post(f"/api/v1/conversations/{cid}/voice-sessions", json={}).json()
+        with client.websocket_connect(issued["ws_url"], headers={"Origin": s.public_origin}) as ws:
+            assert ws.receive_json()["type"] == "portal.session.ready"
+            greeting = [ws.receive_json() for _ in range(4)]
+            spoken = next(event for event in greeting if event["type"] == "portal.speech_text.done")
+            assert spoken["payload"]["answer_kind"] == "greeting"
+            assert spoken["payload"]["input_item_id"] is None
+            assert any(event["type"] == "portal.audio.delta" for event in greeting)
+
+            async def first_question():
+                for event in (
+                    VoiceEvent("input.state", {"state": "speaking", "item_id": "first"}),
+                    VoiceEvent("transcript.done", {"item_id": "first", "text": "Hello."}),
+                    VoiceEvent("speech_text.done", {
+                        "response_id": "first-answer", "input_item_id": "first", "text": "Hello again."}),
+                    VoiceEvent("audio.delta", {
+                        "response_id": "first-answer", "input_item_id": "first", "audio": pcm}),
+                    VoiceEvent("audio.done", {"response_id": "first-answer", "input_item_id": "first"}),
+                ):
+                    await Scripted.instance.queue.put(event)
+
+            client.portal.call(first_question)
+            events = [ws.receive_json() for _ in range(6)]
+            assert any(event["type"] == "portal.transcript.done" for event in events)
+            answer = next(event for event in events if event["type"] == "portal.speech_text.done")
+            assert answer["payload"]["input_item_id"] == "first"
+            assert answer["payload"]["answer_kind"] == "general"
+            assert not any(event["type"] == "portal.error" for event in events)
+
+
+def test_user_speech_suppresses_the_remaining_session_greeting_without_disconnect(tmp_path):
+    s = configuration(tmp_path)
+    app = create_app(s)
+
+    from app.voice.provider import MockVoiceAdapter, VoiceEvent
+
+    class Scripted(MockVoiceAdapter):
+        instance = None
+
+        def __init__(self, settings):
+            super().__init__(settings)
+            Scripted.instance = self
+
+        async def connect(self, summary):
+            await self.queue.put(VoiceEvent(
+                "speech_text.delta", {"response_id": "welcome", "text": "Hello"}))
+
+    with TestClient(app) as client:
+        app.state.voice.provider_factory = Scripted
+        cid = client.post("/api/v1/conversations", json={}).json()["id"]
+        issued = client.post(f"/api/v1/conversations/{cid}/voice-sessions", json={}).json()
+        with client.websocket_connect(issued["ws_url"], headers={"Origin": s.public_origin}) as ws:
+            assert ws.receive_json()["type"] == "portal.session.ready"
+            first = ws.receive_json()
+            assert first["type"] == "portal.speech_text.delta"
+            assert first["payload"]["answer_kind"] == "greeting"
+
+            async def interrupt_greeting():
+                for event in (
+                    VoiceEvent("input.state", {"state": "speaking", "item_id": "first"}),
+                    VoiceEvent("speech_text.delta", {"response_id": "welcome", "text": ", how can I help?"}),
+                    VoiceEvent("speech_text.done", {"response_id": "welcome", "text": "Hello, how can I help?"}),
+                    VoiceEvent("audio.done", {"response_id": "welcome"}),
+                    VoiceEvent("transcript.done", {"item_id": "first", "text": "I need help."}),
+                ):
+                    await Scripted.instance.queue.put(event)
+
+            client.portal.call(interrupt_greeting)
+            events = [ws.receive_json() for _ in range(4)]
+            assert [event["type"] for event in events] == [
+                "portal.playback.clear", "portal.input.state", "portal.audio.done", "portal.transcript.done"]
+            assert not any(event["type"].startswith("portal.speech_text") for event in events)
+
+
 def evidence(**overrides):
     # Deliberately emit the V2 wire contract. These are synthetic excerpts, not
     # results from a real CueKB/embedding service or proof of model accuracy.
