@@ -13,6 +13,12 @@ from app.contracts import (
     portal_server_event_adapter,
 )
 from app.main import create_app
+from app.tools.evidence_contract import (
+    EvidenceQueryRequest,
+    EvidenceQueryResponse,
+    EvidenceValidateRequest,
+    EvidenceValidateResponse,
+)
 from app.tools.registry import ToolSpec
 from app.tools.schemas import (
     CueKBSearchInput,
@@ -35,6 +41,10 @@ models = {
     "cuekb-tool-query": CueKBSearchInput,
     "cuekb-search-request": CueKBSearchRequest,
     "cuekb-search-response": CueKBSearchResponse,
+    "cuekb-evidence-query-v2.1-consumer-request": EvidenceQueryRequest,
+    "cuekb-evidence-query-v2.1-consumer-response": EvidenceQueryResponse,
+    "cuekb-evidence-validate-v2.1-consumer-request": EvidenceValidateRequest,
+    "cuekb-evidence-validate-v2.1-consumer-response": EvidenceValidateResponse,
     "weather-query": WeatherInput,
     "weather-response": WeatherResponse,
     "places-response": PlacesResponse,

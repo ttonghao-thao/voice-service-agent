@@ -18,6 +18,7 @@ class NativeInputSearch:
     terminal_reason: str | None = None
     duplicate_queries: int = 0
     executions: int = 0
+    post_terminal_calls: int = 0
     result_overhead: int = 0
     delivered_sources: set[str] = field(default_factory=set)
 
@@ -34,6 +35,8 @@ class NativeInputSearch:
         calls can finish before their single aggregate result is submitted.
         """
         result = voice_result(ready)
+        if ready.envelope.get("schema_version") == "cuekb-evidence-v2.1":
+            return result
         seen = set(self.delivered_sources)
         sources = []
         for source in result["sources"]:
@@ -84,6 +87,11 @@ class NativeInputSearch:
         reused_after_empty = False
         self.executions += ctx.retrieval_calls
         self.versions.update({name: ctx.tool_versions[name] for name in ctx.invoked})
+        if isinstance(bundle, EvidenceReady) and bundle.envelope.get("schema_version") == "cuekb-evidence-v2.1":
+            self.terminal_reason = "cuekb_decision"
+            self.ready = bundle
+            ctx.evidence = {citation.citation_id: citation for citation in bundle.citations}
+            return bundle
         if not isinstance(bundle, EvidenceReady):
             self.terminal_reason = self.terminal_reason or "search_unavailable"
             # An empty supplementary search must not erase earlier valid facts.

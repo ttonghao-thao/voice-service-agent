@@ -408,6 +408,38 @@ def test_forced_completion_blocks_silent_reopening_before_tts_history_and_functi
     assert not any(row["event"] == "agent.bos" for row in model.diagnostics)
 
 
+def test_normal_model_eos_waits_for_new_input_and_blocks_silent_second_greeting(patched_backend):
+    model = model_harness(patched_backend)
+    seq = sequence(text=EOS, speaking=True, pads=0, content=4)
+    model._apply_turn_taking_from_rnnt_states(seq.seq_id, seq)
+    assert current_token(seq) == EOS and seq.awaiting_new_input
+    assert model.diagnostics[-1] == {"sequence_id": 42, "event": "agent.eos", "source": "model_native"}
+
+    seq.generated_text_tokens.tokens.append(BOS)
+    seq.generated_function_tokens.tokens.append(PAD)
+    seq.decoder_global_step += 1
+    model._apply_turn_taking_from_rnnt_states(seq.seq_id, seq)
+    assert current_token(seq) == PAD and seq.awaiting_new_input
+
+
+def test_user_speech_interrupts_after_normal_model_eos_without_new_threshold(patched_backend):
+    model = model_harness(patched_backend)
+    seq = sequence(text=EOS, speaking=True, pads=0, content=4)
+    model._apply_turn_taking_from_rnnt_states(seq.seq_id, seq)
+    seq.generated_text_tokens.tokens.append(BOS)
+    seq.generated_function_tokens.tokens.append(PAD)
+    seq.decoder_global_step += 1
+    seq.rnnt_nonblank_total = 1
+    model._apply_turn_taking_from_rnnt_states(seq.seq_id, seq)
+    assert current_token(seq) == BOS and not seq.awaiting_new_input
+    assert model.diagnostics[-2:] == [
+        {"sequence_id": 42, "event": "reply.resumed", "reason": "new_user_speech"},
+        {"sequence_id": 42, "event": "agent.bos", "source": "model_native",
+         "user_speaking_before": False, "agent_speaking_before": False,
+         "silent_frames": 20, "nonblank_total": 1, "effective_bou_min": 3},
+    ]
+
+
 @pytest.mark.parametrize("speech_kind", ["one_frame", "short_followup", "confirmed"])
 def test_next_user_speech_resumes_same_sequence_without_changing_bou_threshold(patched_backend, speech_kind):
     model = model_harness(patched_backend)

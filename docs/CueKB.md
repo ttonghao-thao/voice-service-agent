@@ -1,8 +1,8 @@
 # CueKB 问题级证据优化方案
 
-更新：2026-10-30。本文是提交给 CueKB 项目的实施方案，目标是让一次问题级请求完成召回、证据支持判断和终态决策，消除语音模型自行拆分、泛化和重复检索造成的漏召回与工具循环。本项目的接入待办见[任务板](TASK_BOARD.md)，当前已部署接口仍以[现行 CueKB V2 契约](interfaces/cuekb.md)为准。
+更新：2026-10-30。本文是提交给 CueKB 项目的实施方案。CueKB 已在 `main@30970e9` 实现 `cuekb.evidence/2.1`、`/v2/evidence/query`、`/v2/evidence/validate`、问题级 facet 决策、有界内部补召回、产品实体过滤、voice tokenizer 预算和签名证据包校验。本项目按该基线接入；当前消费边界见[接口契约](interfaces/cuekb.md)，实施状态见[任务板](TASK_BOARD.md)。
 
-方案基于 CueKB `main@8a5aacc` 的公开能力与规划：现有 `/v2/search` 已支持 adaptive 选择、`selection_query`、`query_facets` 和一次内部扩大召回，但 `evidence_status`、`coverage_assessment` 仍为 `unassessed`，不能据此证明问题已经得到完整支持。本文要求新增独立的问题级证据接口，不把相关性命中或字面 facet 观察伪装成答案充分性。
+实现核对基于 CueKB `main@30970e9`：新接口使用独立严格 schema，返回 provider 判定的 facet 支持、全局 decision、最小 `model_view`、`continuation`、revision 和签名 package；语音 profile 要求实际部署 tokenizer。现有 `/v2/search` 继续用于搜索与诊断，不能用其相关性命中或 `unassessed` 替代问题级答案充分性。
 
 ## 1. 目标与边界
 

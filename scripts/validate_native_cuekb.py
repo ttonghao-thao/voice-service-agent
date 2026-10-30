@@ -138,7 +138,10 @@ def assess(case, history, seen_inputs, output_samples):
             "retrieval_limit": search_state.get("retrieval_limit"),
             "duplicate_queries": search_state.get("duplicate_queries", 0),
             "terminal_results_submitted": sum(bool(s.get("terminal_result_submitted")) for s in search_states),
-            "post_terminal_calls": len(limits),
+            "post_terminal_calls": max(
+                (r["payload"].get("post_terminal_calls", 1) for r in limits), default=0),
+            "post_terminal_calls_settled": max(
+                (r["payload"].get("post_terminal_calls", 1) for r in limits), default=0),
             "queued_calls_settled": len(settled),
             "tool_batches_submitted": len(batches),
             "cumulative_sources": search_state.get("cumulative_sources", 0),
@@ -404,7 +407,6 @@ def passed(report):
             or row.get("post_answer_observation", "passed") != "passed"
             or (expected_tool and "answer_status" in row and (
                 row["answer_status"] != "answered" or row.get("answer_citation_count", 0) == 0))
-            or row.get("post_terminal_calls", 0) > 0
             or (row.get("retrieval_limit") is not None
                 and row.get("retrieval_executions", 0) > row["retrieval_limit"])
             or row.get("answer_complete", "passed") != "passed"

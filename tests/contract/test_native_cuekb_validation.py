@@ -187,19 +187,28 @@ def test_condition_diagnostics_remain_hidden_after_knowledge_scope_revocation():
         "condition_failures": [{"value": "private"}]}
 
 
-def test_budget_summary_reports_post_terminal_failure_instead_of_only_result_mismatch():
+def test_budget_summary_accepts_post_terminal_call_when_it_is_settled_without_execution():
     log = "\n".join([
+        "voice_tool_call_received conversation_id=c1 call_id=k1 "
+        "tool=search_knowledge_base input_item_id=i1",
+        "voice_bridge_started conversation_id=c1 call_id=k1",
+        "cuekb_evidence_response_validated conversation_id=c1 turn_id=t1 trace_id=z1 "
+        "decision=answer facets=1 groups=1 tokens=32 duration_ms=20",
+        "voice_tool_result_submitted conversation_id=c1 turn_id=t1 call_id=k1",
         "voice_search_state conversation_id=c1 input_item_id=i1 call_id=k1 retrieval_executions=1 "
-        "retrieval_limit=2 duplicate_queries=0 terminal_result_submitted=0 cumulative_sources=1",
-        "voice_search_state conversation_id=c1 input_item_id=i1 call_id=k2 retrieval_executions=1 "
-        "retrieval_limit=2 duplicate_queries=1 terminal_result_submitted=1 cumulative_sources=1",
-        "voice_search_post_terminal conversation_id=c1 input_item_id=i1 call_id=k3",
+        "retrieval_limit=1 duplicate_queries=0 terminal_result_submitted=1 cumulative_sources=1",
+        "voice_tool_call_received conversation_id=c1 call_id=k2 "
+        "tool=search_knowledge_base input_item_id=i1",
+        "voice_search_post_terminal_settled conversation_id=c1 input_item_id=i1 call_id=k2",
+        "voice_response_completed conversation_id=c1 response_id=r1 "
+        "input_item_id=i1 phase=answer samples=1920",
     ])
     lines, ok = summarize_api_log(read_api_evidence(StringIO(log)))
-    assert not ok
-    assert lines[-2] == ("api_search_budget inputs=1 retrieval_executions=1 duplicate_queries=1 "
-                         "terminal_results_submitted=1 post_terminal_calls=1 queued_calls_settled=0 result_injections=0")
-    assert lines[-1] == "api_diagnostic=failed fault=TOOL_LOOP_AFTER_TERMINAL"
+    assert ok
+    assert lines[-2] == ("api_search_budget inputs=1 retrieval_executions=1 duplicate_queries=0 "
+                         "terminal_results_submitted=1 post_terminal_calls_settled=1 "
+                         "queued_calls_settled=0 result_injections=0")
+    assert lines[-1] == "api_diagnostic=passed fault=NONE"
 
 
 def test_single_entrypoint_classifies_missing_native_tool_with_bounded_evidence():
@@ -571,7 +580,7 @@ def test_api_log_summary_reports_only_lifecycle_counts_and_trace():
         "bridges_finished=1 bridges_failed=0 unbound=0 results_submitted=1 "
         "ack_grants_restored=0 answers_completed=1"
     )
-    assert lines[1] == "api_cuekb responses=1 statuses=ok hits=1 traces=z1 durations_ms=25"
+    assert lines[1] == "api_cuekb responses=1 statuses=ok hits=1 groups=- traces=z1 durations_ms=25"
     assert lines[-1] == "api_diagnostic=passed fault=NONE"
     assert "private" not in evidence
 

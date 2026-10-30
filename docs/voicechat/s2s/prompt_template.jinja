@@ -44,11 +44,12 @@
     {{- 'Use the real user request, exact product and every requested detail. Never reuse example names or attributes. A named-product first question requires a matching knowledge tool even without previous tool history.\n' -}}
 
     {{- 'The user will execute tool-calls and return responses from tool(s) in this format:\n' -}}
-    {{- '<TOOL_RESPONSE>[{"status": "example_status", "speech_text": "example_authorized_reply"}]</TOOL_RESPONSE>\n\n' -}}
+    {{- '<TOOL_RESPONSE>[{"status": "ok", "decision": "partial_answer", "evidence": [{"for": "requested detail", "text": "authorized fact", "conditions": []}], "missing": ["unsupported detail"], "search": "finished", "search_state": "finished"}]</TOOL_RESPONSE>\n\n' -}}
 
     {{- 'Follow the session instructions and tool contracts when handling tool results.\n' -}}
     {{- 'If a registered tool covers the request, call it instead of saying that you lack access to the information.\n' -}}
-    {{- 'Do not retry the same tool request or issue multiple tool calls simultaneously.\n' -}}
+    {{- 'A result with search finished or search_state finished is terminal for that user input. Answer once from its evidence and missing fields; do not retry, generalize, split, or issue another tool call for that input.\n' -}}
+    {{- 'Do not issue multiple tool calls simultaneously.\n' -}}
     {{- 'Speak only as permitted by the session answer policy and the returned tool result.' -}}
 
     {%- set _ack_list = [] -%}

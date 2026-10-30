@@ -44,6 +44,8 @@ class Settings(BaseSettings):
     # V2 API hits include provenance and context parts. This is distinct from
     # the much smaller model-facing evidence budget below the native tool.
     cuekb_max_evidence_bytes: int = Field(default=24000, ge=4096, le=128000)
+    # Exact CueKB model_view budget measured with the deployed VoiceChat tokenizer.
+    cuekb_voice_token_budget: int = Field(default=120, ge=32, le=4096)
     enabled_tools: str = "search_knowledge"
     weather_mode: Literal["mock", "real"] = "mock"
     weather_provider: Literal["http_contract"] = "http_contract"
@@ -55,7 +57,7 @@ class Settings(BaseSettings):
     # Pending optimization: retain the 105s connection limit and relay's fixed
     # 30s active-answer grace. Coverage/streaming changes must not raise these.
     voice_session_max_seconds: int = 105
-    voice_max_retrievals_per_input: int = Field(default=2, ge=1, le=2)
+    voice_max_retrievals_per_input: int = Field(default=1, ge=1, le=1)
     # Native result consumption + spoken answer, separate from retrieval time.
     voice_native_answer_timeout_seconds: float = Field(default=60, ge=1, le=120)
     max_voice_sessions: int = 8

@@ -75,6 +75,7 @@ def test_cloud_environment_template_cannot_enable_development_fallbacks():
         "CUEKB_BASE_URL",
         "CUEKB_API_KEY",
         "CUEKB_MAX_EVIDENCE_BYTES",
+            "CUEKB_VOICE_TOKEN_BUDGET",
         "VOICECHAT_WS_URL",
         "VOICECHAT_API_KEY",
         "QA_EXECUTION_MODE",
@@ -92,8 +93,9 @@ def test_cloud_environment_template_cannot_enable_development_fallbacks():
     assert values["QA_TOOLSET_VERSION"] == "cuekb-native-v1"
     assert values["QA_EXTERNAL_FALLBACK_ENABLED"] == "false"
     assert values["QA_MAX_RETRIEVAL_CALLS"] == "1"
-    assert values["VOICE_MAX_RETRIEVALS_PER_INPUT"] == "2"
+    assert values["VOICE_MAX_RETRIEVALS_PER_INPUT"] == "1"
     assert values["CUEKB_MAX_EVIDENCE_BYTES"] == "24000"
+    assert values["CUEKB_VOICE_TOKEN_BUDGET"] == "120"
     assert not {"AGENT_MODEL", "OPENAI_API_KEY", "AGENT_BASE_URL"} & values.keys()
     assert values["QA_EXECUTION_MODE"] == "dual_tools"
     assert values["QA_ANSWER_POLICY"] == "general_qa"

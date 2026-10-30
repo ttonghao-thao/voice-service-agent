@@ -17,7 +17,7 @@ from app.agent_runtime.cuekb_evidence import (
 )
 from app.agent_runtime.direct import EvidenceReady
 from app.agent_runtime.evidence import presentation_contract
-from app.contracts import AnswerBundle, printable_ascii, uid
+from app.contracts import AnswerBundle, Citation, printable_ascii, uid
 
 VOICE_ASCII_TRANSLATION = str.maketrans({
     "\u2018": "'",
@@ -46,6 +46,12 @@ def normalize_voice_punctuation(value):
 
 def voice_result(ready):
     """Send evidence to the model; keep tracing/presentation metadata in the API."""
+    if ready.envelope.get("schema_version") == "cuekb-evidence-v2.1":
+        result = {"status": "ok", **ready.envelope["model_view"], "search_state": "finished",
+                  "instructions": ready.envelope["instructions"]}
+        if ready.envelope.get("clarification"):
+            result["clarification"] = ready.envelope["clarification"]
+        return result
     sources = [model_source(item) for item in ready.envelope["items"]]
     # Deployed VoiceChat verbalizes JSON booleans (observed false -> "zero").
     # Text flags survive that boundary; internal audit stays bool.
@@ -83,6 +89,11 @@ def spoken_citations(ready):
     Context excluded from the model payload must neither impose additional
     answer conditions nor authorize facts in the spoken answer.
     """
+    if ready.envelope.get("schema_version") == "cuekb-evidence-v2.1":
+        return [citation.model_copy(update={
+            "content": item["text"], "context": item.get("context"),
+            "metadata": {"conditions": item.get("conditions", [])},
+        }) for item, citation in zip(ready.envelope["items"], ready.citations, strict=True)]
     if ready.envelope.get("schema_version") not in ("cuekb-evidence-v1", "cuekb-evidence-v2"):
         return ready.citations
     projected = []
@@ -118,6 +129,8 @@ class NativeCueKBExecutor:
             "query": query, "product_model": ctx.slots.get("product_model"),
             "software_version": ctx.slots.get("software_version"),
         }, ctx)
+        if result.get("contract_revision") == "cuekb.evidence/2.1":
+            return await self._evidence_response(result, request, ctx)
         await self.registry.store.record(ctx.conversation_id, ctx.epoch, "native_cuekb_result", ctx.turn_id, {
             "input_item_id": ctx.task_context.get("input_source", {}).get("input_item_id"),
             "status": result.get("status"), "evidence_status": result.get("evidence_status"),
@@ -260,6 +273,74 @@ class NativeCueKBExecutor:
                 "I could not obtain complete English evidence suitable for a reliable spoken answer.", is_mock=is_mock)
         envelope["partial"] = bool(result.get("scope_limited") or result.get("hits_omitted")
             or result["status"] == "degraded" or len(selected) != len(ctx.evidence))
+        return ready
+
+    async def _evidence_response(self, result, request, ctx):
+        """Project CueKB's assessed model_view without re-ranking or re-assessing it."""
+        trace_id = str(result["trace_id"])
+        groups = {group["id"]: group for group in result["evidence"]}
+        citations = []
+        items = []
+        for model_item in result["model_view"]["evidence"]:
+            group = groups[model_item["id"]]
+            source = result["sources"][group["statement"]["source_refs"][0]]
+            citation_id = f"C{len(citations) + 1}"
+            conditions = list(dict.fromkeys([*group["conditions"], *group["required_context"]]))
+            citation = Citation(
+                citation_id=citation_id,
+                cuekb_schema_version="2.1",
+                document_id=str(source["document_id"]),
+                chunk_id=str(source["chunk_id"]),
+                version_id=str(source["version_id"]),
+                title=group["subject"].get("name") or "Source excerpt",
+                content=group["statement"]["text"],
+                context="\n\n".join(conditions) or None,
+                rank=group["rank"],
+                anchor=source["anchor"],
+                trace_id=trace_id,
+                retrieval_id=trace_id,
+                retrieval_status=result["retrieval"]["status"],
+                evidence_status="sufficient" if result["decision"] == "answer" else "unassessed",
+                content_revisions=result["content_revisions"],
+                metadata={"conditions": conditions, "supports": group["supports"],
+                          "subject": group["subject"]},
+                authorized_kb_ids=tuple(sorted(ctx.principal.knowledge_base_ids)),
+                is_mock=self.settings.cuekb_mode == "mock",
+            )
+            citations.append(citation)
+            items.append({"citation_id": citation_id, "text": group["statement"]["text"],
+                          "context": citation.context, "conditions": conditions})
+        model_view = {
+            "decision": result["model_view"]["decision"],
+            "evidence": [{"id": item["id"], "for": item.get("for", item.get("for_")),
+                          "text": item["text"], "conditions": item["conditions"]}
+                         for item in result["model_view"]["evidence"]],
+            "missing": result["model_view"]["missing"],
+            "search": "finished",
+        }
+        answer_id = uid()
+        envelope = {
+            "schema_version": "cuekb-evidence-v2.1", "answer_id": answer_id,
+            "status": "evidence_ready", "query": request, "decision": result["decision"],
+            "trace_id": trace_id, "model_view": model_view, "items": items,
+            "clarification": result.get("clarification"),
+            "instructions": FINAL_INSTRUCTIONS,
+            "presentation": presentation_contract("grounded", ctx.slots).model_dump(),
+            "is_mock": self.settings.cuekb_mode == "mock",
+        }
+        ready = EvidenceReady(envelope, citations, ctx.deadline or time.monotonic(), answer_id)
+        ctx.evidence = {citation.citation_id: citation for citation in citations}
+        await self.registry.store.record(ctx.conversation_id, ctx.epoch, "native_cuekb_result", ctx.turn_id, {
+            "input_item_id": ctx.task_context.get("input_source", {}).get("input_item_id"),
+            "contract_revision": result["contract_revision"], "status": result["decision"],
+            "trace_id": trace_id, "facet_support": {facet["id"]: facet["support"] for facet in result["facets"]},
+            "missing": result["missing"], "continuation_allowed": result["continuation"]["allowed"],
+            "candidate_groups": result["retrieval"]["candidate_groups"],
+            "selected_groups": result["retrieval"]["selected_groups"],
+            "tokenizer_id": result["delivery"]["tokenizer_id"],
+            "model_view_tokens": result["delivery"]["token_count"],
+            "package_validated": True, "_authorized_kb_ids": sorted(ctx.principal.knowledge_base_ids),
+        }, ctx.turn_id, ctx.request_revision)
         return ready
 
     @staticmethod

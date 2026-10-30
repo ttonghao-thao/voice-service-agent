@@ -11,14 +11,17 @@ import sys
 
 API_EVENTS = (
     "voice_input_started", "voice_input_transcribed", "voice_tool_call_received",
-    "voice_bridge_started", "cuekb_response_validated", "voice_tool_result_submitted",
+    "voice_bridge_started", "cuekb_evidence_response_validated", "cuekb_response_validated",
+    "voice_tool_result_submitted",
     "voice_bridge_finished", "voice_bridge_failed", "voice_batch_result_submitted",
     "voice_batch_call_settled", "voice_audio_first_received",
-    "voice_audio_first_sent", "voice_text_first_sent", "voice_response_completed", "voice_search_post_terminal",
+    "voice_audio_first_sent", "voice_text_first_sent", "voice_response_completed",
+    "voice_search_post_terminal_settled", "voice_unsolicited_response_suppressed",
 )
 FIELDS = (
     "conversation_id", "input_item_id", "call_id", "turn_id", "response_id", "tool",
-    "batch_id", "calls", "injections", "trace_id", "retrieval_status", "hit_count", "duration_ms", "phase", "samples", "status",
+    "batch_id", "calls", "injections", "trace_id", "retrieval_status", "hit_count",
+    "decision", "facets", "groups", "tokens", "duration_ms", "phase", "samples", "status",
 )
 BACKEND = {
     "response_chars=": "backend.result_received",

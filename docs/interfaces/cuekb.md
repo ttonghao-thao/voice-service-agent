@@ -1,75 +1,91 @@
-# CueKB V2 接口契约
+# CueKB 问题级证据接口契约
 
-> 本文描述当前已部署的 `/v2/search` 消费契约。计划中的问题级证据端点、facet 决策和 voice 交付要求见 [CueKB 问题级证据优化方案](../CueKB.md)；方案未部署前不得把未来字段当成现有能力。
+更新：2026-10-30。当前语音接入基线为 CueKB `main@30970e9`，公开契约修订为 `cuekb.evidence/2.1`。本项目的原生语音路径使用 `POST /v2/evidence/query`，注入 VoiceChat 前使用 `POST /v2/evidence/validate` 校验证据包；`/v2/search` 仅保留给非语音兼容路径和检索诊断。Provider 方案与实现范围见 [CueKB 问题级证据方案](../CueKB.md)，操作与现场回传见[验证手册](../validation.md)。
 
-更新：2026-10-23。接入基线为 CueKB `dac382e282f12ae1c1b89366d5c058725d9f13c6`。职责是严格 HTTP 契约、授权证据映射与错误边界；操作及回传只维护在统一验证手册。实现以本项目 `CueKBAdapter`、工具 schema 和 CueKB V2 公开契约为准，不能仅凭路径中的版本号判断兼容。
+## 1. 请求与可信边界
 
-## 1. 请求与部署边界
-
-本项目显式使用 `POST {server-configured-cuekb-base-url}/v2/search`，Bearer Key 与 KB UUID 仅由服务端授权映射提供。原生工具仍只有 `search_knowledge_base(query)`，不让模型选择 KB、凭据、实体 UUID 或扩大权限。
+VoiceChat 仍只看到 `search_knowledge_base(query)`，不能选择 KB、凭据、实体 UUID 或扩大权限。API 使用最终稳定 ASR 作为 `question`；服务器解析后的确认上下文只进入 `search_query`、可信过滤字段或已确认的实体 binding。模型给出的泛化 query 仅用于工具选择和审计，不替换原问题。
 
 ```json
 {
-  "query": "What are the documented storage conditions for the product after opening?",
+  "contract_revision": "cuekb.evidence/2.1",
+  "question": "Can it be shipped? How long is its shelf life, and how should it be stored after opening?",
+  "search_query": "Can it be shipped? How long is its shelf life, and how should it be stored after opening?",
   "kb_ids": ["00000000-0000-4000-8000-000000000001"],
-  "mode": "auto",
-  "top_k": 5,
-  "filters": {},
-  "include_context": true,
-  "include_diagnostics": false,
-  "max_evidence_bytes": 24000
+  "filters": {"product_model": "Golden Yolk"},
+  "context_bindings": [],
+  "requested_facets": [
+    {"id": "f1", "text": "Can it be shipped?", "question_span": [0, 18]},
+    {"id": "f2", "text": "How long is its shelf life", "question_span": [19, 45]},
+    {"id": "f3", "text": "how should it be stored after opening?", "question_span": [51, 89]}
+  ],
+  "delivery_profile": "voice",
+  "max_groups": 5,
+  "token_budget": 120,
+  "request_id": "voice-input-id",
+  "input_revision": 1
 }
 ```
 
-UUID 仅说明类型。`top_k` 是最多返回数量，不要求凑满，也不代表问题已完整覆盖。`CUEKB_MAX_EVIDENCE_BYTES` 控制上游 hits JSON 的字节预算，默认 24000；它不是模型 token 上限。保留 `CUEKB_TOP_K` 默认 5 和查询长度 2000。`product_model/software_version` 过滤只能来自明确、可信的用户条件，不从自然语言猜测。模型 query 负责保留多轮指代和所问属性；CueKB 不读取语音历史，不支持隐含的 `original_question` 字段。
+`kb_ids`、Bearer Key 和可信 filters 只由服务端设置。facet 必须是 `question` 的原始连续跨度；无法可靠拆分时整句作为一个 facet。`CUEKB_VOICE_TOKEN_BUDGET` 默认 120，由 CueKB 已部署的 Voice tokenizer 精确计数。Voice tokenizer 未配置或签名证据包不可用属于配置故障，不能伪装成无证据。
 
-CueKB 必须先具备 V2 数据条件：其 0004 迁移、可用 Embedding 配置、V2 搜索投影及已发布文档。切块或归属变化需要对原件按 `evidence-v2` 重处理、审核映射、发布；generation 只重编码现有块，不能替代重处理。Reranker 可选，未配置不因这一项判为降级。此项目不管理 CueKB 的导入、权限、发布或索引写入。
+## 2. 响应与消费动作
 
-V2 与旧 M3/D23 响应不混用。未知版本、未知字段或损坏响应明确失败，不静默切回 `/v1/search`，不删除未知字段后冒充兼容。旧历史 Citation 默认字段仍可读取，不等于旧在线接口回退。
+响应必须严格符合 `cuekb.evidence/2.1`，并包含：
 
-## 2. 证据与评分映射
+- `decision`：`answer | partial_answer | clarify | insufficient | conflict`；
+- `facets`：逐项 `direct | entailed | absent | ambiguous | conflicting | unassessed` 及证据映射；
+- `evidence`、`sources`、必要条件、缺项和冲突；
+- `model_view`：已经过 provider 选择和 token 预算的唯一模型视图；
+- `delivery`：voice profile、tokenizer ID、token 数和预算；
+- `content_revisions`、`authorization_revisions` 与签名 `package`；
+- `continuation`：当前接入要求 `allowed=false`，补召回在同一次 CueKB 请求内有界完成。
 
-| CueKB V2 | 本项目处理 |
+应用不重新排序、不重新拆问题，也不从完整审计响应自行拼另一份模型证据。它只把 `model_view.decision/evidence/missing/search=finished` 加终态指令后注入 VoiceChat；完整来源保存在 Citation、Turn 和门户来源面板中。条件与 required context 同时进入引用上下文和语音答案核验，不能为了缩短载荷删除。
+
+## 3. 请求—响应绑定与校验
+
+客户端在注入前逐项验证：
+
+1. `request_id`、`input_revision` 与当前输入/Turn 一致；
+2. 返回 facet 的 ID 和原文与请求一致；
+3. delivery 为 `voice`，tokenizer 计数不超过请求预算；
+4. 内容与授权 revision 的 KB 集合恰好等于当前授权范围；
+5. `model_view` 与 decision、evidence、missing 完全一致；
+6. evidence/facet/source 引用闭合，无未知字段或枚举；
+7. `continuation.allowed=false`；
+8. `/v2/evidence/validate` 返回相同 request ID、内容 revision、授权 revision 和 `status=valid`。
+
+任一项不一致都以 `CUEKB_CONTRACT_ERROR`、`CUEKB_EVIDENCE_STALE` 或对应认证/配置错误结束当前工具结果，不把旧包、越权包或不完整包送给模型。
+
+## 4. 单输入控制流程
+
+一个稳定输入只创建一个知识 Turn，并执行一次 `/v2/evidence/query` 和一次 `/v2/evidence/validate`。CueKB 内部可以在同一请求内做一次有界扩大召回；模型不能为缺项自行拆分、泛化或再次查询。
+
+第一个严格结果提交后，该输入立即进入终态。若模型仍生成新的 tool call，API 会：
+
+- 解析并记录 call，返回 `not_executed/search_finished`；
+- 不访问 CueKB，不创建或修订 Turn；
+- 抑制该冗余调用的 checking ACK；
+- 保持 WebSocket，等待模型基于已有 evidence 回答或等待下一次用户输入。
+
+重复调用计数保留在诊断中，但安全结清本身不是 `VOICE_TOOL_LOOP`。显式未知输入、未知工具调用、伪造 tool call ID、权限或目录变化仍严格失败。
+
+## 5. 决策、来源和产品隔离
+
+`answer` 表示所有识别 facet 均有闭合支持；`partial_answer` 必须明确缺项；`clarify` 只提出 provider 给出的有界澄清；`insufficient` 说明当前授权来源无法确认；`conflict` 展示冲突而不任选其一。命中数量、相似度或 `degraded` 本身不能升级为充分答案。
+
+Golden Yolk 与 Black Pig 必须通过 CueKB 的实体/局部来源归属隔离。密封 45 天、最佳 15 天、开封冷藏三天和鲜肉月饼两小时属于不同产品或条件，只有 provider 返回的支持映射和必要条件可以授权口述。模型视图不携带 trace、UUID、分数和未选候选；门户引用仍保留真实文档、版本、chunk、anchor 和 revision。
+
+## 6. HTTP 与部署错误
+
+| 返回 | 本项目处理 |
 | --- | --- |
-| schema_version | 必须是字符串 `2`；保存在引用和有界诊断中 |
-| trace_id、content_revisions | 关联本次检索与授权内容修订，提交/交付继续复核权限与版本 |
-| retrieval_status、evidence_status | 保留原值；`unassessed` 不因有命中或高分升级为充分 |
-| ranking_method、ranking_version、rank、score、score_type | 保存实际排序方法、配置版本及分数；按 rank 消费，不将分数作为事实正确率，不要求模型口述 |
-| document_id、version_id、content_sha256、chunk_id | 保留真实来源身份；内容 hash 不等于模型答案已验证 |
-| applicability | 保存 resolved/unknown/ambiguous、可读主体及条件、出处；文档 metadata 标签不能代替局部事实归属 |
-| source_text、title_path、anchor、source_spans | 保留原文及可信章节/位置；不根据 query 添加产品事实，不伪造缺失标题或位置 |
-| context_parts.required/role | 保留必要归属、表头、条件、例外或续块的完整组；可选邻居独立取舍 |
-| context_state/context_omissions | 必要依赖缺失的 unresolved 不能靠“主块完整”变成可用证据；可选上下文省略不等于必要组缺失 |
-| relations | 保留可追溯关系；supports/refutes 是证据立场，不是真伪裁决 |
-| diagnostics、timings_ms | 用于候选/返回/省略、载荷与阶段诊断；不把所有内部元数据逐 token 注入 VoiceChat |
+| 200 + 合法 evidence package | 严格解析，随后 validate；只有 valid 才注入 |
+| 401/403 | 认证或授权故障，不扩大范围重试 |
+| 409 | tokenizer、索引、内容修订或 evidence package 配置错误，映射明确错误码 |
+| 422 | 请求或契约错误 |
+| 429/503/504 | 容量、依赖或时限故障；不转成正常 `insufficient` |
+| 未知字段/枚举、绑定不一致 | `CUEKB_CONTRACT_ERROR`，不回退旧接口 |
 
-接口保持严格嵌套校验，证据原文不因全局 strip 或预算被截短。公开合成响应仅验证协议，不当作产品知识。评分版本 hash 标识排序配置，不能替代冻结索引、文档版本与外部模型权重来保证逐次浮点值完全相同。
-
-## 3. 完整证据组与语音负载
-
-原生语音选择单位是“主事实＋已确认产品/版本归属＋必要条件上下文”。按 CueKB 最终顺序考虑完整组，省略完全重复的已发送来源；放不下时省略整组并记录预算原因，不能剪掉否定或必要条件后强行保留事实。保留有界的 top_k、API 字节与原生语音证据预算；本轮不引入 MMR、候选重新 Embedding、额外答案模型或属性分类器。
-
-V2 中 `context_state=unresolved` 或已识别必要依赖缺失时拒绝该组。不能沿用 M3 的“context_parts 精确回显主块即可删除全部截断 context”规则。可选上下文被截断时，只使用已证明完整的主块与 required parts，不使用截断 context 字符串。unknown/ambiguous 明确随来源交给模型，不能补成问题中的产品；这不保证模型自动正确使用，仍需内容验收。
-
-VoiceChat 实际结果只包含精简正文、有效标题、必要上下文和可读 applicability；内部实体 ID、完整 spans、评分、trace 及诊断留在 API/引用审计。不能把内部 ID 填进旧 `metadata.product_model` 并要求逐字口述。最终答案检查只以实际交付的事实和条件为依据，不能引用被应用省略的上下文来证明回答。
-
-语音结果的 `partial` 表示主事实组、检索范围或服务结果受限，不表示“完全没有任何省略”或“全部问题已回答”。主动省略可选邻居由独立计数记录；必要条件不能作为可选内容省略。首次选择也预留终态指令与批次结清开销，避免正文先装满预算、提交时才发现无法容纳完整结果。
-
-同输入最多两次实际查询，原生 HTTP 自动重试保持关闭；相同参数只检索一次，终态后新调用明确失败。累计证据、精确来源去重及权限复核不跨输入共享，补充查询正常未命中不抹除先前有效事实。授权失败、冲突及依赖故障不能靠缓存伪装成功。
-
-## 4. 身份、状态与故障
-
-有效范围取客户授权、部署允许和 CueKB Key 的交集，API Key 不发送给浏览器或 VoiceChat。没有检索到某字段不表示全库不存在该字段。
-
-| 返回 | 处理边界 |
-| --- | --- |
-| 200 ok + hits | 使用完整、适用的有据片段；不宣称已充分覆盖问题 |
-| 200 not_found + [] | 本次正常检索未命中，不扩展为事实不存在 |
-| 200 degraded + hits | 保留限制原因并核对仍可用的完整组 |
-| 200 degraded + [] | 区分检索依赖、选择/预算受限，不一律称为“没有文档” |
-| 401/403 | 认证/授权故障，不扩大范围重试 |
-| 409 | V2 模型/索引/配置未就绪，明确配置错误，不自动调用旧接口 |
-| 422 | 请求/接口契约错误 |
-| 429、5xx、超时/断流 | 限流或服务故障，不转换为正常空结果；原生路径不重试 |
-
-HTTP 3xx 不跟随，不接收跳转正文。上游响应总上限 256 KiB，内部工具结果保持小于 32 KiB，模型侧原生完整证据包默认 6000 bytes；这些预算层级不能互相替代。HTTP 结束或本地取消不能证明远端模型计算已停止。真实 Recall、误归属、P95、语音覆盖与听音必须独立验收，CPU fixture 不是生产达标证据。
+HTTP 3xx 不跟随，语音路径不做叠加 HTTP 重试。上游响应有界为 256 KiB，最终模型载荷还必须满足本项目的原生结果字节上限。真实 Recall、产品归属、P95、GPU 注入速度、听音和多轮连接存活仍需部署后验收；代码契约和 CPU fixture 不能替代现场结果。

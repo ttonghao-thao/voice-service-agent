@@ -3,17 +3,17 @@
   "source_branch": "nemotron-labs-voicechat",
   "source_commit": "097dfe9e2f55baf653b83035868bdc89849f1b47",
   "local_source_root": "/Users/snowking/Documents/speech",
-  "snapshot_date": "2026-10-29",
+  "snapshot_date": "2026-10-30",
   "files": {
     "docs/voicechat-api.md": "6e6a6d3137ae954ff2d9ec092f8e3d3ed59f3a76b5c325bdd08de36a59c38862",
     "opt/tritonserver/backends/nemotron-voicechat/data_types.py": "2b11144f2fadd33c4244b22c8d54ffe925e2883bd8f3df0b12446f1b848fbd03",
-    "opt/tritonserver/backends/nemotron-voicechat/model.py": "7272103a78db3efedbcbf01e07b67f51ffba7e30be13077bf388200d077509ba",
+    "opt/tritonserver/backends/nemotron-voicechat/model.py": "5116937c3c038a0b5fac56ca2fd9763775673df6b2e3ab15a847aa32d114fcd4",
     "opt/tritonserver/backends/nemotron-voicechat/runtime_setup.py": "f89b36f66222b3384791b5eecc98d82ae54fe7dd01f086224d4dfc1514fa28cc",
     "s2s/audio_server.py": "e42930ec267c8853f05e52ca41ca95bc4c46c0b8578236643ff54bf8eb5e4305",
     "s2s/tests/requirements.txt": "f82f57cefb76b9a9fb9bc131288bca7930d0a0f0492ec21a1917e206e76e825f",
     "s2s/tests/test_response_lifecycle.py": "7c617b1cf4040dc02b09e62b6fbe95c9d47c731997358187107c33e10ebd2d07",
     "s2s/tests/test_voice_diagnostics.py": "14e6fee41631b760a9e167226a43d6e939c135bb119a980017fdd83df5b590c3",
-    "s2s/prompt_template.jinja": "b2ce74bb14f026ccb999c049095c44d3197b40565cb8f8c5d2b393c3feeb1472",
+    "s2s/prompt_template.jinja": "4f011206b2dfac28f6f2afeea8bc0dc41e4e90331755422150ef7be1cdd0dcaa",
     "opt/tritonserver/backends/nemotron-voicechat/checkpoint_utils/load_utils.py": "0a657d1aef0bf8b1d482ec092ba7682f74731b7bf6ce9a318665f88e404dc13c",
     "s2s/tests/test_rnnt_transcript.py": "8429611edc932e9313b2b74969286bdecf4e7e5b6b0973a6ce9eb9e6b3442a45",
     "s2s/tests/test_tool_consumption.py": "a2da413ff6792977d4be1c472bd756962b60179df724006ab18609f31aef0e8e",
@@ -52,14 +52,15 @@
     "paced-pcm-output-writer",
     "deploy/voicechat/request-lifecycle.patch",
     "native-answer-context-and-followup-grouping",
-    "response-context-reset-before-next-asr"
+    "response-context-reset-before-next-asr",
+    "deploy/voicechat/normal-eos-wait.patch"
   ],
   "file_sources": {
     "s2s/audio_server.py": {
       "source": "Repository adaptation: retain native batch aggregate results; add metadata-only first-four-second PCM16 fingerprints for decoded/resampled/submitted audio, dropped-input count, and cumulative/raw-to-final ASR hashes. Uses existing diagnostic flag; this file does not alter RNNT, prompt, audio or inference parameters. Pace PCM24k output in the existing ordered per-session writer by actual packet sample duration; no burst credit after idle/network delay. Leave inference/input scheduling independent, retain bounded queue and unchanged portal one-second ring. Snapshot response input/native call IDs and follow-up input IDs when the response opens; group pending result continuations until a non-ACK reply ends. Propagate engine-request rotation with bounded metadata; preserve ordered PCM pacing. Require a non-null matching response ID before attaching assistant ownership and clear mutable response context after completion so the next ASR event stays independent."
     },
     "s2s/prompt_template.jinja": {
-      "source": "User-supplied deployed voicechat-prompt-template.jinja; strict session policy and single-call examples updated in this repository; search_knowledge_base(query) example covers consumer and business product facts and forbids lack-of-access responses when a registered tool covers the request Replace fixed multi-attribute catalog example with a format-only faithful user/query pair; require exact real attributes and native first-question product lookup.",
+      "source": "User-supplied deployed voicechat-prompt-template.jinja; strict session policy and single-call examples updated in this repository; search_knowledge_base(query) example covers consumer and business product facts and forbids lack-of-access responses when a registered tool covers the request Replace fixed multi-attribute catalog example with a format-only faithful user/query pair; require exact real attributes and native first-question product lookup. CueKB evidence/2.1 results are terminal question-level decisions: consume decision/evidence/missing once and never split, generalize, or retry the same input.",
       "base_sha256": "e28694b99a2b087ce6b2b9d1abec10878fa54b8c719324c484b1d15a559f6c2b"
     },
     "opt/tritonserver/backends/nemotron-voicechat/checkpoint_utils/load_utils.py": {
@@ -71,7 +72,7 @@
       "source": "Repository CPU regression: real decode/resample/submission fingerprints, unmodified samples, ASR parts and IDs, diagnostics disabled, and no transcript content in logs; retain batch aggregate result tests. Deterministic-clock regression sends more than two seconds of catch-up ACK plus adjacent response PCM through the real ordered writer; verifies packet identity/order, bounded playback lead, idle no-credit and cancellation. CPU server dispatch regression for ACK/result/follow-up/answer boundaries, stable call ownership and a general next question. Verify completed assistant response context is cleared and never attached to the next user ASR event."
     },
     "opt/tritonserver/backends/nemotron-voicechat/model.py": {
-      "source": "Repository RNNT display-only fix: initialize predictor with y=None, add_sos=False (one zero step) to match NeMo GreedyRNNTInfer; preserve EOU/BOU, encoder frames, thresholds, weights and tool/PAD behavior. The upstream VoiceChat wrapper also has the former double-zero pattern; CPU recurrence/counterexample tests do not establish the deployed speech root cause or accuracy. Repository completion follow-up: after the existing PAD-tail forced EOS, suppress unsolicited text/function tokens before TTS, parsing and subsequent model history until new RNNT speech or a result for an outstanding native call. Preserve the display predictor fix, listening, original thresholds, ACK and full-duplex context; no weight or engine speed changes. Tool consumption repair: real audio cursor and ordered buffered catch-up independent of synthetic tool steps; queued results survive busy sequences; vectorized forced function embeddings and one coroutine skip unused sampling/per-token CPU copies; keep the same one-token append/anext engine contract. Fail partial writes explicitly without replay; no trained weights or RNNT thresholds changed. CPU recurrence/buffering checks do not establish native routing or GPU speed. Cross-thread injection recovery: update inference-tensor history inside a narrow inference_mode on the event-loop thread, never across await. Preserve one append per token, no replay on partial failure; report safe error type and remaining token count. Handle finished and exhausted generation without another append; remember terminal failure, report finish reason/token counters, and finalize END independently of decoding with idempotent cleanup and final display ASR.",
+      "source": "Repository RNNT display-only fix: initialize predictor with y=None, add_sos=False (one zero step) to match NeMo GreedyRNNTInfer; preserve EOU/BOU, encoder frames, thresholds, weights and tool/PAD behavior. The upstream VoiceChat wrapper also has the former double-zero pattern; CPU recurrence/counterexample tests do not establish the deployed speech root cause or accuracy. Repository completion follow-up: after the existing PAD-tail forced EOS, suppress unsolicited text/function tokens before TTS, parsing and subsequent model history until new RNNT speech or a result for an outstanding native call. Preserve the display predictor fix, listening, original thresholds, ACK and full-duplex context; no weight or engine speed changes. Tool consumption repair: real audio cursor and ordered buffered catch-up independent of synthetic tool steps; queued results survive busy sequences; vectorized forced function embeddings and one coroutine skip unused sampling/per-token CPU copies; keep the same one-token append/anext engine contract. Fail partial writes explicitly without replay; no trained weights or RNNT thresholds changed. CPU recurrence/buffering checks do not establish native routing or GPU speed. Cross-thread injection recovery: update inference-tensor history inside a narrow inference_mode on the event-loop thread, never across await. Preserve one append per token, no replay on partial failure; report safe error type and remaining token count. Handle finished and exhausted generation without another append; remember terminal failure, report finish reason/token counters, and finalize END independently of decoding with idempotent cleanup and final display ASR. Normal EOS completion now enters the same awaiting-new-input state as PAD-tail completion, so the one session greeting remains interruptible and a silent second greeting/function turn cannot start before new speech or a pending tool result.",
       "reference_commit": "097dfe9e2f55baf653b83035868bdc89849f1b47",
       "reference_symbols": {
         "nemo/collections/asr/modules/rnnt.py": "RNNTDecoder.predict",

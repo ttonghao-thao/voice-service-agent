@@ -13,7 +13,9 @@ from jsonschema import validate
 POLICY = (
     "Follow the session instructions and tool contracts when handling tool results.",
     "If a registered tool covers the request, call it instead of saying that you lack access to the information.",
-    "Do not retry the same tool request or issue multiple tool calls simultaneously.",
+    "A result with search finished or search_state finished is terminal for that user input.",
+    "do not retry, generalize, split, or issue another tool call for that input.",
+    "Do not issue multiple tool calls simultaneously.",
     "Speak only as permitted by the session answer policy and the returned tool result.",
 )
 

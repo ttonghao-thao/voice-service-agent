@@ -1,0 +1,23 @@
+diff --git a/opt/tritonserver/backends/nemotron-voicechat/model.py b/opt/tritonserver/backends/nemotron-voicechat/model.py
+index ca7aaaa..31c774e 100644
+--- a/opt/tritonserver/backends/nemotron-voicechat/model.py
++++ b/opt/tritonserver/backends/nemotron-voicechat/model.py
+@@ -1484,10 +1484,18 @@ class TritonPythonModel:
+         # turn discards already-confirmed user speech and permits a later
+         # model-native BOS to start a duplicate/partial response.
+         if seq_state.rnnt_agent_speaking and current_tok == eos_id:
++            self._voice_diagnostic(seq_state, "agent.eos", source="model_native")
+             seq_state.rnnt_agent_speaking = False
+             seq_state.rnnt_user_speaking = False
+             seq_state.rnnt_nonblank_total = 0
+             seq_state.rnnt_agent_talking_frames = 0
++            seq_state.rnnt_turn_text_tokens = 0
++            # A normal model EOS has the same reply boundary as the optional
++            # PAD-tail completion. Keep the sequence listening, but prevent a
++            # silent model-native BOS/function call from opening another
++            # greeting or answer before new speech (or an outstanding tool
++            # result) explicitly resumes the reply.
++            seq_state.awaiting_new_input = True
+ 
+         # Optional protocol completion on the exact first frame that the existing
+         # TTS PAD-tail policy would replace with codec silence. New user speech or

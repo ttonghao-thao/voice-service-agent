@@ -24,7 +24,7 @@ def response():
 def context():
     return RunContext(Principal(user_id="test", scopes=frozenset({"knowledge:read"}),
                                 knowledge_base_ids=(KB,)), "v2-conversation", "v2-turn", 0,
-                      native_voice_search=True)
+                      native_voice_search=False)
 
 
 async def invoke(app, payload, ctx=None, *, budget=None):

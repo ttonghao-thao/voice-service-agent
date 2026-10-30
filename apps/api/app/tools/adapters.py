@@ -1,6 +1,7 @@
 import asyncio
 import json
 import logging
+import re
 import time
 from datetime import date, datetime, timedelta
 from urllib.parse import urlparse
@@ -9,6 +10,13 @@ from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
 import httpx
 from app.contracts import Citation, DomainError, now, uid
+from app.tools.evidence_contract import (
+    EvidenceFacetInput,
+    EvidenceQueryRequest,
+    EvidenceQueryResponse,
+    EvidenceValidateRequest,
+    EvidenceValidateResponse,
+)
 from app.tools.schemas import (
     CueKBSearchInput,
     CueKBSearchRequest,
@@ -66,7 +74,7 @@ async def bounded_json(client, method, url, *, limit=32768, error_map=None, retr
 
 class CueKBAdapter:
     input_model = CueKBSearchInput
-    output_adapter = TypeAdapter(CueKBToolResult)
+    output_adapter = TypeAdapter(CueKBToolResult | EvidenceQueryResponse)
     # HTTP evidence and the compact native speech packet have separate budgets.
     # Preserve complete evidence groups here; the native consumer chooses which
     # authorized groups fit its smaller function-channel payload.
@@ -74,6 +82,181 @@ class CueKBAdapter:
 
     def __init__(self, settings, client):
         self.settings, self.client = settings, client
+
+    @staticmethod
+    def _question_facets(question):
+        """Preserve exact user spans; CueKB owns semantic assessment."""
+        clauses = []
+        for match in re.finditer(r"[^?;]+[?;]?", question):
+            start, end = match.span()
+            while start < end and question[start].isspace():
+                start += 1
+            while end > start and question[end - 1].isspace():
+                end -= 1
+            if start < end:
+                clauses.append((start, end))
+        spans = []
+        interrogative = re.compile(
+            r",?\s+and\s+(?=(?:how|what|when|where|why|which|who|can|could|should|would|is|are|do|does|will)\b)",
+            re.IGNORECASE,
+        )
+        for start, end in clauses:
+            cursor = start
+            for match in interrogative.finditer(question, start, end):
+                split_end = match.start()
+                while split_end > cursor and question[split_end - 1] in " ,":
+                    split_end -= 1
+                if split_end > cursor:
+                    spans.append((cursor, split_end))
+                cursor = match.end()
+            spans.append((cursor, end))
+        # A list introduced by "about" is a reliable question-item boundary
+        # even when English elides the repeated interrogative for each item.
+        if len(spans) == 1:
+            start, end = spans[0]
+            about = re.search(r"\babout\s+", question[start:end], re.IGNORECASE)
+            tail_start = start + about.end() if about else None
+            separators = list(re.finditer(r",\s*(?:and\s+)?", question[tail_start:end])) if tail_start else []
+            if len(separators) >= 2:
+                listed, cursor = [], start
+                for separator in separators:
+                    split_end = tail_start + separator.start()
+                    if split_end > cursor:
+                        listed.append((cursor, split_end))
+                    cursor = tail_start + separator.end()
+                if cursor < end:
+                    listed.append((cursor, end))
+                spans = listed
+        if not spans or len(spans) > 8:
+            spans = [(0, len(question))]
+        return [EvidenceFacetInput(id=f"f{index}", text=question[start:end], question_span=[start, end])
+                for index, (start, end) in enumerate(spans, 1)]
+
+    def _mock_evidence(self, ctx, question, request_id, input_revision, facets):
+        supported = "integration sample" in question.casefold()
+        text = "This synthetic integration excerpt verifies evidence delivery. It is not a real business rule."
+        facet_ids = [facet.id for facet in facets]
+        group = {
+            "id": "E1", "priority": "primary", "rank": 1, "supports": facet_ids,
+            "subject": {"entity_id": None, "name": "Synthetic integration sample", "resolution": "general"},
+            "statement": {"text": text, "source_refs": ["S1"]}, "required_context": [],
+            "conditions": [], "completeness": "complete", "match_basis": ["general_scope", "explicit_attribute"],
+        }
+        model_item = {"id": "E1", "for": question, "text": text, "conditions": []}
+        return {
+            "contract_revision": "cuekb.evidence/2.1", "trace_id": uid(), "request_id": request_id,
+            "input_revision": input_revision, "decision": "answer" if supported else "insufficient",
+            "assessment": {"method_revision": "structured-support-1", "calibration_id": None,
+                           "scope": "authorized_sources_for_this_question", "limitations": []},
+            "facets": [{"id": facet.id, "text": facet.text,
+                        "support": "direct" if supported else "absent",
+                        "evidence_ids": ["E1"] if supported else []} for facet in facets],
+            "evidence": [group] if supported else [], "missing": [] if supported else facet_ids,
+            "conflicts": [], "clarification": None,
+            "continuation": {"allowed": False, "reason": "answered" if supported else "no_distinct_retrieval_plan",
+                             "token": None},
+            "sources": {"S1": {"chunk_id": "00000000-0000-4000-8000-000000000102",
+                                  "document_id": "00000000-0000-4000-8000-000000000101",
+                                  "version_id": "00000000-0000-4000-8000-000000000103",
+                                  "node_id": "00000000-0000-4000-8000-000000000104",
+                                  "anchor": {}}} if supported else {},
+            "delivery": {"profile": "voice", "serialization": "canonical-json-v1",
+                         "tokenizer_id": "synthetic-voice-tokenizer", "byte_count": 128,
+                         "token_count": 32, "token_budget": self.settings.cuekb_voice_token_budget},
+            "model_view": {"decision": "answer" if supported else "insufficient",
+                           "evidence": [model_item] if supported else [],
+                           "missing": [] if supported else facet_ids, "search": "finished"},
+            "retrieval": {"status": "ok" if supported else "not_found", "resolved_entity_ids": [],
+                          "candidate_groups": int(supported), "selected_groups": int(supported),
+                          "snapshot_id": "sha256:" + "0" * 64},
+            "content_revisions": {kb: 1 for kb in ctx.principal.knowledge_base_ids},
+            "authorization_revisions": {kb: 1 for kb in ctx.principal.knowledge_base_ids},
+            "timings_ms": {"total": 0.1},
+            "package": {"id": "synthetic-evidence-package", "expires_at": now() + timedelta(seconds=30)},
+        }
+
+    async def _invoke_evidence(self, args, ctx, started):
+        original = ctx.task_context.get("original_request") or args.query
+        search_query = ctx.task_context.get("resolved_request") or original
+        if not search_query.startswith(original):
+            search_query = original
+        request_id = ctx.task_context.get("input_source", {}).get("input_item_id")
+        input_revision = max(1, int(ctx.task_context.get("request_revision") or ctx.request_revision or 1))
+        facets = self._question_facets(original)
+        request = EvidenceQueryRequest(
+            question=original, search_query=search_query, kb_ids=list(ctx.principal.knowledge_base_ids),
+            filters={"product_model": args.product_model, "software_version": args.software_version},
+            requested_facets=facets, delivery_profile="voice", max_groups=min(5, self.settings.cuekb_top_k),
+            token_budget=self.settings.cuekb_voice_token_budget, request_id=request_id,
+            input_revision=input_revision,
+        )
+        if self.settings.cuekb_mode == "mock":
+            data = self._mock_evidence(ctx, original, request_id, input_revision, facets)
+            return EvidenceQueryResponse.model_validate(data).model_dump(mode="json", by_alias=True)
+        endpoint = self.settings.cuekb_base_url.rstrip("/") + "/v2/evidence/query"
+        parsed = urlparse(endpoint)
+        logger.info("cuekb_evidence_request_started conversation_id=%s turn_id=%s endpoint=%s://%s%s kb_count=%s facets=%s",
+                    ctx.conversation_id, ctx.turn_id, parsed.scheme, parsed.hostname or "unknown", parsed.path,
+                    len(ctx.principal.knowledge_base_ids), len(facets))
+        headers = {"Authorization": "Bearer " + self.settings.cuekb_api_key.get_secret_value()}
+        data = await bounded_json(
+            self.client, "POST", endpoint, headers=headers, json=request.model_dump(mode="json", by_alias=True),
+            limit=262144, retry=False, on_error=lambda response: self._log_http_error(response, ctx),
+            error_map={
+                401: ("CUEKB_AUTH_FAILED", "Knowledge service authentication failed", 502, False),
+                403: ("CUEKB_FORBIDDEN", "Knowledge service cannot access the authorized scope", 502, False),
+                409: self._configuration_error,
+                422: ("CUEKB_CONTRACT_ERROR", "Knowledge evidence request violates the service contract", 502, False),
+                429: ("CUEKB_RATE_LIMITED", "Knowledge service is busy. Please try again later.", 503, True),
+                503: ("CUEKB_UNAVAILABLE", "Knowledge evidence service is unavailable", 503, True),
+                504: ("CUEKB_TIMEOUT", "Knowledge service exceeded its evidence time budget.", 502, True),
+            },
+        )
+        result = EvidenceQueryResponse.model_validate(data)
+        expected_facets = [(facet.id, facet.text) for facet in facets]
+        actual_facets = [(facet.id, facet.text) for facet in result.facets]
+        authorized = set(ctx.principal.knowledge_base_ids)
+        if (
+            result.request_id != request_id
+            or result.input_revision != input_revision
+            or actual_facets != expected_facets
+            or result.delivery.profile != "voice"
+            or result.delivery.token_budget != self.settings.cuekb_voice_token_budget
+            or result.delivery.token_count > result.delivery.token_budget
+            or set(result.content_revisions) != authorized
+            or set(result.authorization_revisions) != authorized
+            or result.continuation.allowed
+        ):
+            raise DomainError("CUEKB_CONTRACT_ERROR", "Knowledge evidence response does not match the request", 502)
+        validation = EvidenceValidateRequest(package_id=result.package.id, request_id=result.request_id)
+        validate_data = await bounded_json(
+            self.client, "POST", self.settings.cuekb_base_url.rstrip("/") + "/v2/evidence/validate",
+            headers=headers, json=validation.model_dump(mode="json"), limit=32768, retry=False,
+            on_error=lambda response: self._log_http_error(response, ctx),
+            error_map={
+                401: ("CUEKB_AUTH_FAILED", "Knowledge service authentication failed", 502, False),
+                403: ("CUEKB_FORBIDDEN", "Knowledge evidence authorization changed", 502, False),
+                409: ("CUEKB_EVIDENCE_INVALID", "Knowledge evidence package is invalid", 502, False),
+                422: ("CUEKB_CONTRACT_ERROR", "Knowledge evidence validation violates the service contract", 502, False),
+                429: ("CUEKB_RATE_LIMITED", "Knowledge service is busy. Please try again later.", 503, True),
+                503: ("CUEKB_UNAVAILABLE", "Knowledge evidence service is unavailable", 503, True),
+                504: ("CUEKB_TIMEOUT", "Knowledge evidence validation timed out", 502, True),
+            },
+        )
+        validated = EvidenceValidateResponse.model_validate(validate_data)
+        if validated.request_id != result.request_id:
+            raise DomainError("CUEKB_CONTRACT_ERROR", "Knowledge evidence validation does not match the package", 502)
+        if validated.status != "valid":
+            raise DomainError("CUEKB_EVIDENCE_STALE", "Knowledge changed before evidence delivery", 409, True)
+        if (
+            validated.content_revisions != result.content_revisions
+            or validated.authorization_revisions != result.authorization_revisions
+        ):
+            raise DomainError("CUEKB_CONTRACT_ERROR", "Knowledge evidence validation does not match the package", 502)
+        logger.info("cuekb_evidence_response_validated conversation_id=%s turn_id=%s trace_id=%s decision=%s facets=%s groups=%s tokens=%s duration_ms=%s",
+                    ctx.conversation_id, ctx.turn_id, result.trace_id, result.decision, len(result.facets),
+                    len(result.evidence), result.delivery.token_count, round((time.monotonic() - started) * 1000))
+        return result.model_dump(mode="json", by_alias=True)
 
     @staticmethod
     def _mock_response(ctx, query):
@@ -126,6 +309,10 @@ class CueKBAdapter:
             "INDEX_UPGRADE_REQUIRED": ("CUEKB_INDEX_UPGRADE_REQUIRED", "Knowledge search index must be upgraded for V2."),
             "SEARCH_CONFIGURATION_CHANGED": ("CUEKB_CONFIGURATION_CHANGED", "Knowledge search configuration changed. Start a new request."),
             "INDEX_MAINTENANCE_IN_PROGRESS": ("CUEKB_INDEX_MAINTENANCE", "Knowledge search index maintenance is in progress."),
+            "VOICE_TOKENIZER_NOT_CONFIGURED": ("CUEKB_VOICE_TOKENIZER_NOT_CONFIGURED", "Knowledge service voice tokenizer is not configured."),
+            "VOICE_TOKENIZER_INVALID": ("CUEKB_VOICE_TOKENIZER_INVALID", "Knowledge service voice tokenizer is invalid."),
+            "VOICE_TOKENIZER_UNAVAILABLE": ("CUEKB_VOICE_TOKENIZER_UNAVAILABLE", "Knowledge service voice tokenizer is unavailable."),
+            "EVIDENCE_PACKAGE_INVALID": ("CUEKB_EVIDENCE_INVALID", "Knowledge evidence package is invalid."),
         }
         try:
             payload = json.loads(body)
@@ -153,6 +340,8 @@ class CueKBAdapter:
         started = time.monotonic()
         if not ctx.principal.knowledge_base_ids:
             raise DomainError("FORBIDDEN", "No authorized knowledge base is available", 403)
+        if ctx.native_voice_search:
+            return await self._invoke_evidence(args, ctx, started)
         if self.settings.cuekb_mode == "mock":
             data = self._mock_response(ctx, args.query)
         else:

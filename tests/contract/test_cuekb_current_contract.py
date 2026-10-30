@@ -58,7 +58,7 @@ def latest_response():
 async def consume(payload):
     ctx = RunContext(Principal(user_id='test', scopes=frozenset({'knowledge:read'}),
         knowledge_base_ids=tuple(payload['content_revisions'])), 'cid', 'tid', 0,
-        native_voice_search=True, tool_arguments={'query': 'Compare Product A usage conditions'})
+        native_voice_search=False, tool_arguments={'query': 'Compare Product A usage conditions'})
     settings = Settings(_env_file=None, cuekb_mode='real', cuekb_base_url='https://cuekb.fixture',
                         cuekb_api_key='synthetic-key')
     calls = []

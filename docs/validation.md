@@ -1,6 +1,6 @@
 # 当前问题验证：工具等待、首问触发与回答完整性
 
-更新：2026-10-29。当前唯一执行入口；历史验证方法已归档。**第 14 节记录 566e414 现场发现的转写关联回归、会话欢迎语处理及本轮修复。** 第 13 节的引擎结束、多轮回答和负载修复仍需在本轮修复后一起执行同一 A/B；首问工具选择及真实 GPU 提速仍待验收。所有命令在**部署主机的本项目根目录**执行，操作者只操作、观察和回传，不需要挑日志、找会话 ID 或判断根因。
+更新：2026-10-30。当前唯一执行入口；历史验证方法已归档。**第 15 节记录 CueKB `30970e9` 问题级证据接入、单查询终态和欢迎语 EOS 修复的最新验收标准。** 第 8—14 节保留已有现场事实用于对照；部署后以第 15 节的新契约判据为准，首问工具选择、真实内容和 GPU 时延仍待验收。所有命令在**部署主机的本项目根目录**执行，操作者只操作、观察和回传，不需要挑日志、找会话 ID 或判断根因。
 
 ## 1. 本轮要回答什么
 
@@ -11,7 +11,7 @@
 | 请求消失后仍向旧 ID append，END 再次异常 | 99.673 秒连接时长时出现 request not found；旧封装忽略 output.finished | 不再追加终止请求；摘要给出 backend.request_finished 的 reason/prompt/appended/output 计数；END 独立清理，不复现 500 清理异常 |
 | 第一段一直 Searching，补充输入显示一般回答 | 工具属于第一段，注入后回答关联第二段；原回答 future 没结清 | 保留工具所属输入和补充输入关联；原知识任务结清，补充段显示 Included in the knowledge reply above，同连接下一问正常 |
 | 查询时 ACK 中断，播放积压或 VOICE_UNAVAILABLE | 两次注入均开始后约 39 ms 退出、未回 idle；本地已复现跨线程写 inference tensor 的 RuntimeError，补处理 ACK 存在突发输出 | 完整听到 ACK；无连接异常，backend_injection=complete 且 returned_idle/done_idle 各一次，随后出现正式回答；核对播放与服务器完成时间 |
-| Checking knowledge 长、常见两次调用 | 用户报告检索不到 1 秒，但调用间隔超过 10 秒；代码确认 VoiceChat 逐 token 注入结果，并可能先等待 ACK 结束 | 分开检索、应用交付、ACK/调度、结果注入，以及下一次工具生成或回答的时间；确认第二次是否属于同一输入、查询了什么 |
+| Checking knowledge 长、模型可能继续调用 | 旧样本中 CueKB 约 0.1—0.2 秒，主要耗时在 VoiceChat 逐 token 注入；新契约每输入只允许一次问题级查询 | 分开 query、validate、应用交付、ACK/调度和结果注入；若模型继续调用，应记录 settled 且 CueKB query 数不增加、连接不关闭 |
 | Golden Yolk 独立不触发，Black Pig 后触发 | 用户观察；工具描述已覆盖两种产品，Golden WAV 有追问式开头和中间停顿 | 对照全新连接的 Golden 与同连接 Black Pig 后的 Golden，核对实际输入、分轮、模型调用和 query，而不只看界面状态 |
 | 回答漏项、数值及条件表达不稳 | Black Pig 一段称未找到重量，另一段报 65 克，尚不知是否同次提问；Golden 漏答运输 | 明确每段答案属于哪次输入，核对价格/重量/层数/最佳食用时间，以及运输/保质期/开封储存；保留真实来源 |
 
@@ -281,7 +281,7 @@ portal_answers=按显示顺序保留全部答案；每段标注 A、B-Black 或 
 | --- | --- |
 | Golden 首问 | A 中完整两段实际输入可见、工具目录正确、模型发出真实知识调用；若未触发，使用 `model_boundary` 的 input.bou / agent.bos source 与 query 定位，不宣称 CueKB 没数据 |
 | 同连接对照 | B 中两个 file.start 的 conversation/session/epoch 一致，顺序为 Black → Golden；Golden 未发送、未发完或到期时结论是对照不足。A 失败/B 成功只支持上下文或轮次相关，不直接证明冷启动或唯一根因 |
-| 两次检索 | 默认每输入最多两次实际查询，无自动 HTTP 重试；第一/第二次 query 与缺失属性对应，不要求为了通过而凑满或强制只查一次 |
+| 问题级检索 | 每个稳定输入恰好一次 `/v2/evidence/query` 和一次 `/v2/evidence/validate`，无自动 HTTP 重试；完整 ASR/facets 保留，内部补召回不产生第二个模型工具查询 |
 | Black Pig 内容 | 价格、重量、层数、最佳食用时间逐项作答，缺证据的项明确合并说明；不以肉源或好评介绍代替所问属性。65 g、比例、冷藏/密封期限必须有实际来源与适用条件 |
 | 比例与期限 | 若实际原文为 3:7，不得说成 3.7%；肌内脂肪百分比与肥瘦比例分别核对。“最佳食用”不能改成硬保质期，储存条件不能跨产品借用 |
 | Golden 内容 | 运输、密封保质期、开封后储存分别回答或明确无法确认；若来源写 15 天最佳食用，保留“最佳”限定，不只罗列 45/15/3 三个数字 |
@@ -494,11 +494,51 @@ Black → Golden 的 sequence 2420721760 中：CueKB 04:46:48.500 返回 5 条�
 
 ### 14.2 本次实现与验证目标
 
-VoiceChat 只在事件具有非空且匹配当前 response ID 时捕获回答关联，回答完成后清理可变关联；用户转写始终只保留自己的 `item_id`。Provider 再按事件类型过滤，ASR 即使收到旧端错误附带的回答字段也不向门户传播。API 允许连接开始、尚无用户输入和工具上下文时出现一次会话级 `greeting`；它不创建 Turn、不调用 CueKB。客户开始发声时清除欢迎语剩余播放，继续同一连接；显式未知输入、未知工具调用和第二次无归属回答仍按协议错误拒绝。会话提示要求先等待约三秒，只在客户未开始发声时询问一次。
+VoiceChat 只在事件具有非空且匹配当前 response ID 时捕获回答关联，回答完成后清理可变关联；用户转写始终只保留自己的 `item_id`。Provider 再按事件类型过滤，ASR 即使收到旧端错误附带的回答字段也不向门户传播。API 允许连接开始、尚无用户输入和工具上下文时出现一次会话级 `greeting`；它不创建 Turn、不调用 CueKB。客户开始发声时清除欢迎语剩余播放，继续同一连接；正常模型 EOS 和 PAD-tail 完成都进入等待新输入状态。首次欢迎语之后若仍出现无用户归属的主动输出，API 有界消费并抑制，不创建 Turn、不断开连接；显式未知输入、未知工具调用和中途改变归属仍严格拒绝。会话提示要求先等待约三秒，只在客户未开始发声时询问一次。
 
 本轮开发验证：API 全量 **714 passed**；其中真实 FastAPI/WebSocket 受控 Provider 覆盖欢迎询问、随后首个输入和欢迎语中途开口，门户未收到协议错误。VoiceChat 独立 CPU 全套 **57 passed**，包含完整回答后下一 ASR 不携带旧关联。Web 音频/文件回归 **39 passed**且 TypeScript/生产构建通过；契约重新生成，Ruff、快照 hash、外部 Speech 三个修改文件逐字节同步及 `git diff --check` 通过。存在既有 Starlette 弃用警告。本环境没有生产 GPU、真实麦克风、CueKB 或原始 WAV 听音结果。
 
 部署后先执行一次麦克风静默场景：连接后约三秒应听到一次简短询问，页面不报错；询问期间开口应停止余音并保留连接。随后按第 3–5 节执行原 Golden 与 Black→Golden，不改变 WAV 或停顿。转写事件不得再含上一回答的关联字段，且只有实际工具调用后才评估 CueKB、注入、正式回答和首问路由。开发环境没有生产 GPU、真实麦克风或原始 WAV 听音，这些仍以现场结果为准。
+
+## 15. CueKB 2.1 单查询终态与正常 EOS 验收（2026-10-30）
+
+### 15.1 部署身份
+
+本轮必须同时部署本仓库最新 `main`、CueKB `main@30970e9` 和按 `docs/voicechat/snapshot-manifest.json` 重建的 VoiceChat。API 环境至少确认：
+
+```text
+VOICE_MAX_RETRIEVALS_PER_INPUT=1
+CUEKB_VOICE_TOKEN_BUDGET=120
+CUEKB_BASE_URL=<CueKB base URL，不带接口路径>
+```
+
+`preparation=passed` 后，API 日志应出现 `cuekb_evidence_request_started` 和 `cuekb_evidence_response_validated`；出现旧语音 `/v2/search`、旧 `cuekb_response_validated` 或 manifest hash 不一致，均表示版本未配套，不进入业务验收。
+
+### 15.2 固定场景
+
+1. 麦克风连接后保持静默约三秒：只能出现一次欢迎询问，欢迎语正常结束后连接继续等待。
+2. 在欢迎语播放期间开口：页面应收到 playback clear，余音停止，当前用户转写和随后回答保留；不得出现第二欢迎语或协议错误。
+3. 新通话执行 Golden 独立文件；另起新通话执行 Black 后同连接 Golden，文件、停顿和顺序仍按第 3—5 节。
+4. 受控回归中强制模型在第一个终态结果后再发一个或两个新 call，用于验证结清边界；生产 A/B 不人为修改 prompt 或 WAV 来制造调用。
+
+### 15.3 必须同时满足的控制流判据
+
+- 每个 `input_item_id` 最多一个 `voice_bridge_started`、一个 CueKB evidence query、一个 validate、一个 `voice_tool_result_submitted` 和一个业务 Turn；`retrieval_executions=1`、`retrieval_limit=1`。
+- 请求 `question` 是完整最终 ASR，`requested_facets` 是其精确跨度；`search_query/filters` 只能增加服务器确认上下文，不能把组合问题缩成产品名或模型泛化词。
+- `cuekb_evidence_response_validated` 记录 decision、facet/group/token 数；注入载荷只含 provider `model_view` 与 `search=finished`，完整来源留在 Citation/门户。
+- 模型终态后新 call 记录 `voice_search_post_terminal_settled` 和 `post_terminal_calls_settled`；不得新增 CueKB query、Turn 或 result injection，不得出现 `VOICE_TOOL_LOOP`，原 Turn 最终为 answered/明确业务失败而非 superseded/canceled。
+- 欢迎语或完成回答后的无归属自说记录 `voice_unsolicited_response_suppressed`，不进入门户答案、不创建 Turn、不断开；真实下一次用户输入仍可正常回答。
+- 显式伪造/未知 input、call 或工具关联仍应得到 `VOICE_PROTOCOL_ERROR`，不能因抑制自说而放宽。
+
+### 15.4 内容和时延判据
+
+Golden 的 shipping、密封保质期、最佳食用期和开封储存逐 facet 对照 CueKB decision/evidence/missing；Black 的价格、重量、层数和最佳食用时间同样核对。`partial_answer/clarify/insufficient/conflict` 必须保留 provider 语义；禁止用 Black 的鲜肉期限支持 Golden。
+
+时间线新增区分 CueKB query+validate 与 VoiceChat 注入。`cuekb_evidence_response_validated.duration_ms` 不是最终回答时延；继续使用 `backend.inject_profile.append_wait_ms` 和 result→answer 时间定位 GPU 消费。通过控制流不等于内容准确、实际扬声器播放或 P95 达标。
+
+### 15.5 开发侧已完成的证据边界
+
+CueKB `30970e9` 源码、公开 schema/fixture 和四个端点契约已核对；其源码与测试可编译，完整依赖安装因固定 `torch==2.14.0+cpu` 在当前索引不可用而未在本环境重跑全套。本项目 API 契约 **399 passed**、集成 **314 passed**，其中严格 consumer、FastAPI/WebSocket 受控 Provider、正常 EOS/PAD-tail 和 post-terminal 结清测试用于证明控制流及契约；VoiceChat/部署受影响契约 **70 passed**。这些结果不证明生产 GPU、真实 CueKB 内容或麦克风听音。
 
 ## 企业RAG重构P0契约同步（进行中）
 

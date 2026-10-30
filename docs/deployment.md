@@ -17,14 +17,14 @@ QA_ANSWER_POLICY=general_qa
 QA_TOOLSET_VERSION=cuekb-native-v1
 QA_EXTERNAL_FALLBACK_ENABLED=false
 QA_MAX_RETRIEVAL_CALLS=1
-VOICE_MAX_RETRIEVALS_PER_INPUT=2
+VOICE_MAX_RETRIEVALS_PER_INPUT=1
 AGENT_DEADLINE_MS=60000
 QA_PROVIDER_ANSWER_TIMEOUT_MS=30000
 ```
 
 不需要 AGENT_MODEL、OPENAI_API_KEY 或 AGENT_BASE_URL。disabled 表示关闭独立文本答案模型，不能用 mock 代替。`/health/ready` 允许 text_configured=false；页面关闭文字提交，但仍提供麦克风和 WAV 语音通话。
 
-`dual_tools` 为兼容模式名称；一期实际只注册 `search_knowledge_base(query)`，目录和可信 implementation 使用同一个名称。后台仍通过 Registry 的内部 `search_knowledge` 调用 CueKB `/v2/search`，不要把原生名称填进 ENABLED_TOOLS。KB UUID、凭据、访问范围和可信过滤条件只在服务端设置。VoiceChat 原生调用决定是否执行业务，最终转写用于关联和审计，不自动触发查询。
+`dual_tools` 为兼容模式名称；实际只注册 `search_knowledge_base(query)`，目录和可信 implementation 使用同一个名称。后台通过 Registry 的内部 `search_knowledge` 为每个稳定语音输入调用一次 CueKB `/v2/evidence/query`，并在注入模型前调用 `/v2/evidence/validate`；`/v2/search`只保留给非语音旧路径和检索诊断。KB UUID、凭据、访问范围和可信过滤条件只在服务端设置。工具参数用于选择和审计，问题级请求以最终完整 ASR 及受控会话上下文为准。
 
 | 配置 | 一期值 / 用途 |
 | --- | --- |
@@ -32,9 +32,10 @@ QA_PROVIDER_ANSWER_TIMEOUT_MS=30000
 | CUEKB_BASE_URL / CUEKB_API_KEY | 独立 CueKB 基地址和授权检索凭据 |
 | KNOWLEDGE_BASE_IDS | 服务端允许的真实 KB UUID；不下放给模型 |
 | CUEKB_TOP_K | 默认 5；原生语音检索数量及证据项上限，仍受字节预算限制 |
+| CUEKB_VOICE_TOKEN_BUDGET | 默认 120；CueKB 以部署登记的 VoiceChat tokenizer 精确限制 `model_view` |
 | QA_DIRECT_MAX_HITS | 默认 3；仅旧 direct 执行器使用，一期 native CueKB 不使用 |
 | QA_DIRECT_EVIDENCE_MAX_BYTES | 默认 6000；完整 ASCII 证据包上限 |
-| VOICE_MAX_RETRIEVALS_PER_INPUT | 默认 2，可设 1；一期 native relay 同一输入的检索上限，关闭该路径 HTTP 自动重试。相同参数不重复查询，终态提交后收到新批次关闭异常连接；提交前排队的同批次超额成员只结清；不是回答成功标志 |
+| VOICE_MAX_RETRIEVALS_PER_INPUT | 固定 1；同一输入只有一个问题级 evidence query。CueKB 在请求内有界补召回；终态后的模型调用只返回 `not_executed/search_finished`，不访问 CueKB、不创建 Turn、不断开会话 |
 | AGENT_DEADLINE_MS | 示例 60000；检索执行期限，一期 relay 的模型续答不共用该期限 |
 | QA_PROVIDER_ANSWER_TIMEOUT_MS | 示例 30000；仅旧工作流使用，一期 relay 按连接生命周期观察回答 |
 
@@ -104,7 +105,7 @@ chmod 600 .env
 
 Web 的容器内健康探针用 wget -Y off 直接访问 127.0.0.1，避免继承代理导致误报不健康。探针对本机 IP 不核对证书；正式 HTTPS 客户端仍须验证证书链与域名，不能沿用该探针作为 TLS 验收证据。
 
-`AGENT_MODEL` 是 BusinessRuntime 后台文本 Agent 调用的模型标识，用于理解任务、选择 `search_knowledge` 并组织有依据的答案；它不是 VoiceChat 的实时语音模型。`AGENT_PROVIDER=openai` 时使用官方端点，无需 `AGENT_BASE_URL`；只有接 OpenAI-compatible 服务时才改为 `compatible` 并填写该 HTTP/HTTPS 基地址，两者不需要同时独立部署。`CUEKB_BASE_URL` 是独立 CueKB HTTP/HTTPS 基地址，应用附加 `/v2/search`；HTTP 仅用于已隔离、受控的内部网络。`VOICECHAT_WS_URL` 是 API 到独立语音服务的 WS/WSS endpoint，不由门户域名推断；WS 仅用于同主机或受控隔离内网，且对应端口不得公网暴露。浏览器公网入口仍强制 HTTPS/WSS。本期固定只开放 `search_knowledge`，无需天气配置。数据库/Redis 凭据使用 URL 安全字符，容器内连接串由 Compose 构造。
+`AGENT_MODEL` 是 BusinessRuntime 后台文本 Agent 调用的模型标识，用于理解任务、选择 `search_knowledge` 并组织有依据的答案；它不是 VoiceChat 的实时语音模型。`AGENT_PROVIDER=openai` 时使用官方端点，无需 `AGENT_BASE_URL`；只有接 OpenAI-compatible 服务时才改为 `compatible` 并填写该 HTTP/HTTPS 基地址，两者不需要同时独立部署。`CUEKB_BASE_URL` 是独立 CueKB HTTP/HTTPS 基地址，语音链路附加 `/v2/evidence/query` 和 `/v2/evidence/validate`；HTTP 仅用于已隔离、受控的内部网络。`VOICECHAT_WS_URL` 是 API 到独立语音服务的 WS/WSS endpoint，不由门户域名推断；WS 仅用于同主机或受控隔离内网，且对应端口不得公网暴露。浏览器公网入口仍强制 HTTPS/WSS。本期固定只开放 `search_knowledge`，无需天气配置。数据库/Redis 凭据使用 URL 安全字符，容器内连接串由 Compose 构造。
 
 本期部署直接开放已配置的英文全双工链路，不再用人工填写的“已验证”布尔值阻止启动。部署后只按 [统一验证手册](validation.md) 执行和采集；运行配置只负责连接服务，真实失败不回退 mock。Web Nginx 直接终止 HTTPS，并处理 SSE buffering、WS upgrade、请求大小和安全头；不得记录凭据或语音票据。
 

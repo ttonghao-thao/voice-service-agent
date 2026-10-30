@@ -93,7 +93,7 @@ async def test_native_cuekb_disables_transport_retries_only_for_native_voice(app
     async with httpx.AsyncClient(transport=httpx.MockTransport(handle)) as client:
         with pytest.raises(DomainError) as error:
             await CueKBAdapter(settings, client).invoke(CueKBSearchInput(query="Product AX price"), ctx)
-    assert error.value.code == "TOOL_UNAVAILABLE"
+    assert error.value.code == ("CUEKB_UNAVAILABLE" if native_voice and fault == "503" else "TOOL_UNAVAILABLE")
     assert len(requests) == (1 if native_voice else 2)
 
 

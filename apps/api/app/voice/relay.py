@@ -86,7 +86,7 @@ async def relay(gateway, ws, session, provider):
             rid = body.get("response_id")
             response = responses.get(rid)
             if rid in session.suppressed_responses and kind in (
-                "portal.audio.delta", "portal.speech_text.delta", "portal.speech_text.done"):
+                "portal.audio.delta", "portal.audio.done", "portal.speech_text.delta", "portal.speech_text.done"):
                 continue
             async with asyncio.timeout(2):
                 await ws.send_json(event)
@@ -134,12 +134,35 @@ async def relay(gateway, ws, session, provider):
             await current()
             search = searches.setdefault(item_id, NativeInputSearch(gateway.settings.voice_max_retrievals_per_input))
             if batch.after_terminal:
-                call_id = batch.calls[0]["call_id"]
-                await store.record(cid, epoch, "native_search_limit", call_id, {
-                    "input_item_id": item_id, "reason_code": "VOICE_TOOL_LOOP"})
-                logger.warning("voice_search_post_terminal conversation_id=%s input_item_id=%s call_id=%s",
-                               cid, item_id, call_id)
-                raise DomainError("VOICE_TOOL_LOOP", "A new tool batch arrived after the final result.", 502, True)
+                call_ids = [payload["call_id"] for payload in batch.calls]
+                search.post_terminal_calls += len(call_ids)
+                outcomes = []
+                for index, (payload, decision) in enumerate(zip(batch.calls, decisions, strict=True)):
+                    await store.record(cid, epoch, "native_tool_arguments", payload["call_id"], {
+                        "name": payload["name"], "arguments": decision.arguments.model_dump(),
+                        "input_item_id": item_id, "matches_final_transcript": request == decision.arguments.query})
+                    await store.record(cid, epoch, "native_batch_call_settled", payload["call_id"], {
+                        "input_item_id": item_id, "batch_id": batch.id, "status": "not_executed",
+                        "reason": "search_finished"})
+                    outcomes.append({"index": str(index), "status": "not_executed", "reason": "search_finished"})
+                settlement = {"status": "not_executed", "reason": "search_finished",
+                              "search_state": "finished", "instructions": FINAL_INSTRUCTIONS}
+                if batch.size > 1:
+                    settlement["call_results"] = outcomes
+                text = json.dumps(settlement, ensure_ascii=True, separators=(",", ":"))
+                async with upstream_lock:
+                    async with asyncio.timeout(2):
+                        if batch.id:
+                            await provider.submit_tool_result(call_ids[0], text, batch_id=batch.id, call_ids=call_ids)
+                        else:
+                            await provider.submit_tool_result(call_ids[0], text)
+                await store.record(cid, epoch, "native_search_limit", call_ids[0], {
+                    "input_item_id": item_id, "reason_code": "search_finished",
+                    "post_terminal_calls": search.post_terminal_calls})
+                logger.warning("voice_search_post_terminal_settled conversation_id=%s input_item_id=%s call_id=%s count=%s",
+                               cid, item_id, call_ids[0], search.post_terminal_calls)
+                executing = False
+                continue
             # Reserve bounded space for per-call dispositions before admitting
             # evidence. The model sees one result per batch; exact excerpts
             # already delivered in this input remain in its native history.
@@ -318,6 +341,11 @@ async def relay(gateway, ws, session, provider):
                     response = response_for(rid, body)
                     tool = session.tool_catalog.get(body["name"])
                     response["acks"] = tool.ack_messages if tool else ()
+                    if item_id in terminal_sent:
+                        # This response is only the model's redundant checking
+                        # acknowledgement. Drain it while the settlement result
+                        # instructs the provider to answer or wait for new input.
+                        session.suppressed_responses.add(rid)
                 continue
             if not event.kind.startswith(("audio.", "speech_text.")):
                 continue
@@ -347,7 +375,7 @@ async def relay(gateway, ws, session, provider):
                 else:
                     response["text"] = body["text"]
                     response["ack"] = " ".join(body["text"].split()) in acks
-                    if not response["ack"]:
+                    if not response["ack"] and not response.get("unsolicited"):
                         await store.record(cid, epoch, "voicechat_transcript", rid, {
                             **body, "input_item_id": response["input"],
                             "related_input_item_ids": response["related_inputs"],
@@ -375,14 +403,17 @@ async def relay(gateway, ws, session, provider):
         if rid not in responses:
             if len(responses) >= 1024:
                 raise DomainError("VOICE_SESSION_ROTATION_REQUIRED", "Reconnect to continue the conversation.", 409, True)
-            item_id = body.get("input_item_id", latest_input)
+            item_id = body.get("input_item_id")
             related = body.get("related_input_item_ids", [])
             calls_for_response = body.get("tool_call_ids", [])
-            session_greeting = item_id is None and not inputs and not related and not calls_for_response
+            unowned = item_id is None and not related and not calls_for_response
+            session_greeting = unowned and not inputs and greeting_response_id is None
+            unsolicited = unowned and not session_greeting
             if session_greeting:
-                if greeting_response_id not in (None, rid):
-                    raise DomainError("VOICE_PROTOCOL_ERROR", "Only one session greeting is allowed.", 502)
                 greeting_response_id = rid
+            elif unsolicited:
+                session.suppressed_responses.add(rid)
+                logger.warning("voice_unsolicited_response_suppressed conversation_id=%s response_id=%s", cid, rid)
             elif item_id not in inputs or any(item not in inputs or item == item_id for item in related):
                 raise DomainError("VOICE_PROTOCOL_ERROR", "Response has an unknown input association.", 502)
             for call in calls_for_response:
@@ -399,6 +430,7 @@ async def relay(gateway, ws, session, provider):
             responses[rid] = {"input": item_id, "related_inputs": related,
                               "tool_call_ids": calls_for_response,
                               "answer_kind": "greeting" if session_greeting else "knowledge" if calls_for_response else "general",
+                              "unsolicited": unsolicited,
                               "text": "", "ack": False, "acks": (),
                               "sent": 0, "done": False, "sent_done": False, "streamed_chars": 0, "stream_text": ""}
         elif body.get("input_item_id", responses[rid]["input"]) != responses[rid]["input"]:

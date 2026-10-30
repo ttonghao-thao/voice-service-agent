@@ -26,6 +26,7 @@ tools:
     examples:
       - query: Can Product AX be shipped, and how should it be stored after opening?
     output_description: >-
-      Returns short, traceable evidence excerpts for VoiceChat to answer from, or an explicit
-      search failure, insufficient-evidence result or clarification. A failed or limited
-      search does not prove that a product feature or document does not exist.
+      Returns one terminal question-level decision with compact traceable evidence, explicit
+      missing facets, conflict or clarification. The search is finished when this result is
+      returned: answer from it once and do not call this tool again for the same user input.
+      A failed or limited search does not prove that a product feature or document does not exist.

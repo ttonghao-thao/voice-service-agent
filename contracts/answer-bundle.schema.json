@@ -51,7 +51,8 @@
           "default": "1",
           "enum": [
             "1",
-            "2"
+            "2",
+            "2.1"
           ],
           "title": "Cuekb Schema Version",
           "type": "string"

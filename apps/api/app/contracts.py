@@ -145,7 +145,7 @@ class Citation(StrictModel):
     source_uri: str | None = None
     version_id: str
     business_version: str | None = None
-    cuekb_schema_version: Literal["1", "2"] = "1"
+    cuekb_schema_version: Literal["1", "2", "2.1"] = "1"
     document_name: str | None = None
     content_sha256: str | None = None
     score: FiniteFloat | None = None

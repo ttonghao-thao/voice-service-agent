@@ -54,6 +54,10 @@ API_CUEKB_RE = re.compile(
     r"cuekb_response_validated conversation_id=(\S+) turn_id=(\S+) trace_id=(\S+) "
     r"retrieval_status=(\S+) hit_count=(\d+) duration_ms=(\d+)"
 )
+API_CUEKB_EVIDENCE_RE = re.compile(
+    r"cuekb_evidence_response_validated conversation_id=(\S+) turn_id=(\S+) trace_id=(\S+) "
+    r"decision=(\S+) facets=(\d+) groups=(\d+) tokens=(\d+) duration_ms=(\d+)"
+)
 API_CUEKB_V2_RE = re.compile(r"cuekb_v2_diagnostic conversation_id=(\S+) data=(\{.*\})\s*$")
 API_CUEKB_HTTP_ERROR_RE = re.compile(
     r"cuekb_http_error conversation_id=\S+ turn_id=\S+ status=(\d{3}) trace_id=([0-9a-f-]{36}|-)(?=\s|$)"
@@ -67,7 +71,7 @@ API_SEARCH_STATE_RE = re.compile(
     r"terminal_result_submitted=(\d+) cumulative_sources=(\d+)"
 )
 API_POST_TERMINAL_RE = re.compile(
-    r"voice_search_post_terminal conversation_id=(\S+) input_item_id=(\S+) call_id=(\S+)"
+    r"voice_search_post_terminal_settled conversation_id=(\S+) input_item_id=(\S+) call_id=(\S+)"
 )
 API_BATCH_RESULT_RE = re.compile(
     r"voice_batch_result_submitted conversation_id=(\S+) input_item_id=(\S+) batch_id=(\S+) calls=(\d+) injections=1"
@@ -113,6 +117,7 @@ API_LOG_MARKERS = (
     "voice_unbound_tool_settled",
     "voice_tool_ack_continuation_restored",
     "cuekb_response_validated",
+    "cuekb_evidence_response_validated",
     "cuekb_v2_diagnostic",
     "cuekb_http_error",
     "voice_response_completed",
@@ -157,7 +162,7 @@ def classify(report):
         return "REPEATED_ANSWER", "voicechat_completion_then_wait_for_new_input"
     if any(row.get("unclassified_post_answer_audio", 0) for row in cases):
         return "UNCLASSIFIED_AUDIO_AFTER_ANSWER", "voicechat_extra_audio_or_missing_text"
-    if any(row.get("portal_error") == "VOICE_TOOL_LOOP" or row.get("post_terminal_calls", 0) for row in cases):
+    if any(row.get("portal_error") == "VOICE_TOOL_LOOP" for row in cases):
         return "TOOL_LOOP_AFTER_TERMINAL", "provider_answer_after_search_finished"
     if any(row.get("portal_error") in ("VOICE_SESSION_ROTATION_REQUIRED", "VOICE_SESSION_EXPIRED") for row in cases):
         return "VOICE_SESSION_LIMIT", "api_voice_session_lifetime"
@@ -472,6 +477,7 @@ def summarize_api_log(text):
     unbound = API_UNBOUND_RE.findall(text)
     ack_restored = API_ACK_RESTORED_RE.findall(text)
     cuekb = API_CUEKB_RE.findall(text)
+    cuekb_evidence = API_CUEKB_EVIDENCE_RE.findall(text)
     completed = API_RESPONSE_COMPLETED_RE.findall(text)
     search_states = API_SEARCH_STATE_RE.findall(text)
     post_terminal = API_POST_TERMINAL_RE.findall(text)
@@ -479,7 +485,7 @@ def summarize_api_log(text):
     answer_inputs = {(row[0], row[2]) for row in completed if row[3] == "answer" and int(row[4]) > 0}
     conversation_ids = dict.fromkeys(
         row[0]
-        for rows in (received, started, finished, failed, submitted, unbound, ack_restored, cuekb)
+        for rows in (received, started, finished, failed, submitted, unbound, ack_restored, cuekb, cuekb_evidence)
         for row in rows
     )
     unique_calls = dict.fromkeys(
@@ -504,9 +510,11 @@ def summarize_api_log(text):
             f" answers_completed={len(answer_inputs)}"
         ),
         (
-            f"api_cuekb responses={len(cuekb)} statuses={csv(dict.fromkeys(row[3] for row in cuekb))} "
-            f"hits={csv(row[4] for row in cuekb)} traces={csv(row[2] for row in cuekb)} "
-            f"durations_ms={csv(row[5] for row in cuekb)}"
+            f"api_cuekb responses={len(cuekb) + len(cuekb_evidence)} "
+            f"statuses={csv(dict.fromkeys([row[3] for row in cuekb] + [row[3] for row in cuekb_evidence]))} "
+            f"hits={csv([row[4] for row in cuekb])} groups={csv([row[5] for row in cuekb_evidence])} "
+            f"traces={csv(dict.fromkeys([row[2] for row in cuekb] + [row[2] for row in cuekb_evidence]))} "
+            f"durations_ms={csv([row[5] for row in cuekb] + [row[7] for row in cuekb_evidence])}"
         ),
     ]
     lines.append(
@@ -514,12 +522,11 @@ def summarize_api_log(text):
         f"retrieval_executions={sum(int(row[3]) for row in last_search.values())} "
         f"duplicate_queries={sum(int(row[5]) for row in last_search.values())} "
         f"terminal_results_submitted={sum(int(row[6]) for row in search_states)} "
-        f"post_terminal_calls={len(post_terminal)} "
+        f"post_terminal_calls_settled={len(post_terminal)} "
         f"queued_calls_settled={len(batch_settled)} result_injections={len(batch_results)}"
     )
-    if post_terminal:
-        result = ("failed", "TOOL_LOOP_AFTER_TERMINAL")
-    elif any(int(row[3]) > int(row[4]) for row in search_states):
+    settled_results = {(row[0], row[2]) for row in post_terminal}
+    if any(int(row[3]) > int(row[4]) for row in search_states):
         result = ("failed", "SEARCH_BUDGET_EXCEEDED")
     elif not received:
         result = ("failed", "TOOL_EVENT_ABSENT")
@@ -527,11 +534,13 @@ def summarize_api_log(text):
         result = ("failed", "BRIDGE_NOT_STARTED")
     elif failed:
         result = ("failed", "BRIDGE_FAILED")
-    elif not cuekb:
+    elif not cuekb and not cuekb_evidence:
         result = ("failed", "CUEKB_RESPONSE_ABSENT")
     elif not submitted:
         result = ("failed", "TOOL_RESULT_NOT_SUBMITTED")
-    elif {(row[0], row[1]) for row in received} != {(row[0], row[2]) for row in submitted}:
+    elif {(row[0], row[1]) for row in received} != (
+        {(row[0], row[2]) for row in submitted} | settled_results
+    ):
         result = ("failed", "TOOL_RESULT_COUNT_MISMATCH")
     elif len(ack_restored) > len(received) or len({row[1] for row in ack_restored}) != len(ack_restored):
         result = ("failed", "ACK_GRANT_INVARIANT")
