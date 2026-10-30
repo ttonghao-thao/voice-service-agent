@@ -526,7 +526,7 @@ CUEKB_BASE_URL=<CueKB base URL，不带接口路径>
 - 每个 `input_item_id` 最多一个 `voice_bridge_started`、一个 CueKB evidence query、一个 validate、一个 `voice_tool_result_submitted` 和一个业务 Turn；`retrieval_executions=1`、`retrieval_limit=1`。
 - 请求 `question` 是完整最终 ASR，`requested_facets` 是其精确跨度；`search_query/filters` 只能增加服务器确认上下文，不能把组合问题缩成产品名或模型泛化词。
 - `cuekb_evidence_response_validated` 记录 decision、facet/group/token 数；注入载荷只含 provider `model_view` 与 `search=finished`，完整来源留在 Citation/门户。
-- 模型终态后新 call 记录 `voice_search_post_terminal_settled` 和 `post_terminal_calls_settled`；不得新增 CueKB query、Turn 或 result injection，不得出现 `VOICE_TOOL_LOOP`，原 Turn 最终为 answered/明确业务失败而非 superseded/canceled。
+- 模型终态后新 call 记录 `voice_search_post_terminal_settled` 和 `post_terminal_calls_settled`；只注入有界 `not_executed/search_finished` 结清结果，不得新增 CueKB query、Turn 或业务 evidence result，不得出现 `VOICE_TOOL_LOOP`，原 Turn 最终为 answered/明确业务失败而非 superseded/canceled。
 - 欢迎语或完成回答后的无归属自说记录 `voice_unsolicited_response_suppressed`，不进入门户答案、不创建 Turn、不断开；真实下一次用户输入仍可正常回答。
 - 显式伪造/未知 input、call 或工具关联仍应得到 `VOICE_PROTOCOL_ERROR`，不能因抑制自说而放宽。
 
