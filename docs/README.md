@@ -12,6 +12,7 @@
 | 应用镜像、配置、迁移、启动与回滚 | [部署](deployment.md) |
 | VoiceChat 完整文件/hash/启动 | [快照说明](voicechat/README.md)、[启动命令](voicechat/docker-run.md) |
 | 工具执行、证据和预算 | [知识执行](qa-routing-design.md)、[CueKB 契约](interfaces/cuekb.md) |
+| 提交给 CueKB 的问题级证据优化方案 | [CueKB 优化方案](CueKB.md) |
 | 工具注册、后台目录和批次协议 | [工具契约](interfaces/voice-tools.md) |
 | 语音/答案交付及上下文 | [交付行为](live-agent-implementation.md)、[上下文](task-context-evaluation.md) |
 | HTTP/SSE/WS 与浏览器 | [门户协议](portal-protocol.md) |
