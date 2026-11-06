@@ -1,6 +1,6 @@
 # 全局 VoiceChat 工具目录
 
-2026-10-13 实现。入口：`agent_runtime/tool_catalog.py`、`dispatch.py`、`api/routes.py`、`voice/provider.py`/`gateway.py`。一期默认目录的公开名称和可信 implementation 都是 search_knowledge_base；旧 lookup/reason 实现仅保留兼容覆盖。`dual_tools` 保留为兼容模式名称，含义是原生可配置多工具；`legacy` 仍是显式单 bridge 兼容路径。配置与迁移命令见 [部署](../deployment.md)，执行规则见 [知识执行](../qa-routing-design.md)。
+2026-11-06 按 `2a8ba8b` 核对。入口：`agent_runtime/tool_catalog.py`、`dispatch.py`、`api/routes.py`、`voice/provider.py`/`gateway.py`。一期默认目录的公开名称和可信 implementation 都是 search_knowledge_base；旧 lookup/reason 实现仅保留兼容覆盖。`dual_tools` 保留为兼容模式名称，含义是原生可配置多工具；`legacy` 仍是显式单 bridge 兼容路径。配置与迁移命令见 [部署](../deployment.md)，执行规则见 [知识执行](../architecture.md#3-知识执行)。
 
 ## 1. 信息归属与注册契约
 
@@ -53,18 +53,18 @@ Adapter 接受 session.updated.tools 的 JSON 数组回显或官方文档中的 
 
 ## 3. 验证与故障分界
 
-先执行 Alembic 0010，再按 GET → 修改 items → 带当前 expected_revision PUT → GET capabilities 确认名称/revision。使用两个独立 call 确认可见目录一致；活动麦克风应重新注册，文件应结束且不重播；旧 revision 保存必须为 409。重启 API 后目录仍应保留。
+目录 CAS、持久化、权限、刷新及原生批次的实现回归入口为 `tests/integration/test_native_tool_catalog.py`；实际验证只执行[统一验证手册](../validation.md)，不在本页维护第二套操作步骤。
 
-针对性回归：`tests/integration/test_native_tool_catalog.py` 验证三工具注册/执行、原始 call_id、全局可见与执行权限、持久化/跨目录实例、CAS、启停/reload、活动连接刷新、无效候选保留旧配置及注册回显失败；迁移回归见 `test_qa_migration.py`。浏览器刷新/文件不重播见 `voice-audio.spec.ts`/`voice-file.spec.ts`。
-
-没有 function_call_arguments.done：检查实际注册、最终模板和模型 function channel；已有调用但失败：检查参数/权限/执行；结果已回填但没有回答：检查原始 call_id、结果内容、续答边界/超时。描述不全主要影响选择和参数，不能直接据此断定 CueKB 响应或 function head 有故障。真实 GPU、ASR/工具质量和听音仍归 D07。
+没有 function_call_arguments.done：检查实际注册、最终模板和模型 function channel；已有调用但失败：检查参数/权限/执行；结果已回填但没有回答：检查原始 call_id、结果内容、续答边界/超时。描述不全主要影响选择和参数，不能直接据此断定 CueKB 响应或 function head 有故障。真实 GPU、ASR/工具质量和听音仍需现场验收。
 
 ## 4. 原生函数批次传输
 
 2026-10-21：VoiceChat 一个解码后的 function 输出可包含多个调用。audio_server 为每份输出分配 `native_batch_id`，每个 `response.function_call_arguments.done` 附带 `native_batch_size`（1–16）和从零开始的 `output_index`，各成员仍有独立 call_id。同 ID 相同事件幂等；字段冲突、乱序、混入其他输入或 5 秒未收齐明确失败。最多 16 个未收齐批次，连接原有 128 调用资源上限保留。不用到达时间接近猜测批次。
 
-API 在接收首成员时记录该 input 是否已经提交终态；不是等工具 worker 出队后才判断。完整批次按成员顺序处理，同一 input 累计最多两次实际 CueKB 查询。超额且提前收到的成员仅结清为 not_executed，不新建查询；精确重复可复用并结束检索。终态提交后到达的新批次仍报 VOICE_TOOL_LOOP。累计来源和授权/版本校验不因聚合而省略。
+API 在接收时记录终态，并在 worker 出队时重查，防止已排队批次重开任务。当前 CueKB 路径每 input 最多一次问题级 query，成功包再 validate；同批次其他成员和终态后新批次均结清为 not_executed/search_finished，不重新检索或新建 Turn。未知身份、权限或目录变化仍严格失败。
 
-回填仍是 `conversation.item.create` 的 `function_call_output`：`call_id` 为首成员，另附同一 `native_batch_id` 与完整、有序的 `native_call_ids`。`output` 是本批结果 JSON；同一 input 内已成功交付的完全相同来源不重复注入，新增正文/上下文/条件完整补充，模型沿用本问题先前工具历史。status=ok 的空 sources 更新不撤销先前来源；API 校验/引用仍用完整累计证据。多成员时增加 `call_results`，仅包含字符串 index/status（executed/reused/not_executed）及必要的 reason。调用 ID 留在传输元数据，不作为知识正文交给模型。VoiceChat 校验完整成员后只向原函数通道注入一次，继续使用既有训练格式转换，不重复包裹 TOOL_RESPONSE。
+回填仍为 `conversation.item.create/function_call_output`：call_id 是首成员，附 native_batch_id 和完整有序 native_call_ids。每批只注入一份结果；多成员的 call_results 保留 index/status/reason，调用 ID 不进入知识正文。第一批注入实际准入证据，之后只有小型 settlement。模型能否因此结束调用仍受 F8 限制，不能将发送结果当成已回答。
 
-兼容边界：未声明批次的旧事件仅按单调用处理，不能靠缓存重放兼容旧版的排队超额调用；此情况明确报 VOICE_TOOL_BATCH_REQUIRED。新版 VoiceChat 可接收旧客户端的单成员结果，但多成员只接受完整聚合结果。部署必须协同更新 API 和 audio_server。`results_submitted` 按 call_id 结清计数；`result_injections`/VoiceChat `function_result` 按批次计数，两者不必相等。步骤和判据见 [统一验证手册](../validation.md)。
+完整 JSON 与既有 NeMo 格式封装先用运行 VoiceChat tokenizer 精确预检；能力/字段见[CueKB 消费边界](cuekb.md)。API、model/data/audio_server 必须配套部署。
+
+兼容边界：未声明批次的旧事件仅按单调用处理，不能靠缓存重放兼容旧版的排队超额调用；某些旧多成员路径会报 VOICE_TOOL_BATCH_REQUIRED，不属于当前配套部署承诺。新版 VoiceChat 可接收旧客户端的单成员结果，但多成员只接受完整聚合结果。部署必须协同更新 API 和 audio_server。`results_submitted` 按 call_id 结清计数；`result_injections`/VoiceChat `function_result` 按批次计数，两者不必相等。步骤和判据见 [统一验证手册](../validation.md)。

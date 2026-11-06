@@ -1,6 +1,6 @@
 # 后端服务与工具接入
 
-2026-10-21 按一期原生路径整理。本页维护 VoiceChat/CueKB 接入与授权边界；CueKB 请求映射单列，配置只在部署维护。原因见 [关键决策](decisions/architecture-decisions.md)，状态归 [任务板](TASK_BOARD.md)。
+2026-11-06 核对当前原生路径。本页维护 VoiceChat/CueKB 接入与授权边界；CueKB 请求映射单列，配置只在部署维护。原因见 [关键决策](decisions/architecture-decisions.md)，状态归 [任务板](TASK_BOARD.md)。
 
 ## 1. 运行依赖与配置状态
 
@@ -12,13 +12,13 @@
 | 第三方工具 | 本期不启用 | 天气代理代码仍保留，生产默认无需天气配置 |
 | 通话 capability | 每次测试通话的独立 owner/token 与服务端 KB 范围 | 标签页内存 token 已实现；正式客户身份服务暂缓 |
 
-当前环境变量名和启动校验以 `apps/api/app/config.py`、`.env.example` 为准。本期 Compose 固定真实 CueKB 与 `search_knowledge`；运行配置只需 `CUEKB_BASE_URL` 和 `CUEKB_API_KEY`，检索模式与条数使用代码默认值。OpenAI-compatible 文本模型和 CueKB 基地址均接受 HTTP/HTTPS；VoiceChat endpoint 接受 WS/WSS。HTTP/WS 只用于同主机或已隔离、受控的内部网络，对外门户仍必须使用 HTTPS/WSS。旧 `RAG_*` 配置和 `/v1/retrieve` 契约已退出活动实现。
+当前环境变量名和启动校验以 `apps/api/app/config.py`、`.env.example` 为准。本期 Compose 固定真实 CueKB 与 `search_knowledge`；本项目需 `CUEKB_BASE_URL` 和 `CUEKB_API_KEY`，问题级证据与完整包预算另有默认值；CueKB 端必须配置实际 voice tokenizer，详情见消费契约。OpenAI-compatible 文本模型和 CueKB 基地址均接受 HTTP/HTTPS；VoiceChat endpoint 接受 WS/WSS。HTTP/WS 只用于同主机或已隔离、受控的内部网络，对外门户仍必须使用 HTTPS/WSS。旧 `RAG_*` 配置和 `/v1/retrieve` 契约已退出活动实现。
 
 部署只使用一套功能验证配置；正常 API 启动拒绝 fixture 身份、mock、自动建表和未配置的 VoiceChat。自动化测试显式注入 fixture 设置，不代表另一个部署环境。VoiceChat API 版本、镜像 digest、事件和人工听音结论由协议探针参数及报告记录，不再复制为运行时开关。
 
 ## 2. CueKB 当前接入契约（D03、E01–E02）
 
-请求、证据映射、错误与预算只在 [CueKB 契约](interfaces/cuekb.md) 维护；改 CueKBAdapter/工具 schema 时读取该页。路由判定见 [知识执行](qa-routing-design.md)。
+请求、证据映射、错误与预算只在 [CueKB 契约](interfaces/cuekb.md) 维护；改 CueKBAdapter/工具 schema 时读取该页。路由判定见 [知识执行](architecture.md#3-知识执行)。
 
 ## 3. VoiceChat 接入与能力门槛
 
@@ -45,9 +45,9 @@ API 通过 `VOICECHAT_WS_URL` 连接独立服务的 `/v1/realtime`。受控同�
 
 分析对象是 VoiceChat-11B 模型、nemotron-labs-voicechat 推理框架及实时 WebSocket 的完整栈。模型通过 AVAILABLE_TOOLS 与最终提示词选择工具/直接回答；运行层解析 TOOLCALL，并通过原生事件交给本项目执行，不需要 WS tool_choice 参数。
 
-Provider 根据会话快照选择 `config/voice-prompt.txt`（legacy）或 `config/voice-qa-prompt.txt`（双工具），严格策略追加知识要求。模型可见参数及三种执行规则只在 [知识执行 §1–2](qa-routing-design.md#1-模式与工具边界) 维护。
+Provider 根据会话快照选择 `config/voice-prompt.txt`（legacy）或 `config/voice-qa-prompt.txt`（双工具），严格策略追加知识要求。当前原生工具执行规则只在 [知识执行](architecture.md#3-知识执行) 维护。
 
-Gateway 按 input item 绑定 native call，并最多等待 5 秒最终 ASR；最终 ASR 是业务输入归属和用户气泡依据，原生模型 query 不被覆盖。无输入不建 Turn，ASR 完成不重复启动查询。ToolDispatcher 按会话快照里的名称和 schema 分派，不进行第二次语义分类。
+Gateway 按 input item 绑定 native call，并最多等待 5 秒最终 ASR；最终 ASR 是业务问题和用户气泡依据；模型 query 原样保留在调用审计，但 CueKB question 不采用它替换 ASR。无输入不建 Turn，ASR 完成不重复启动查询。ToolDispatcher 按会话快照里的名称和 schema 分派，不进行第二次语义分类。
 
 同一推理批次需按 ASR → 工具 → ACK/回答输出。原生 response.function_call_arguments.done 的 call_id 用于 conversation.item.create / function_call_output 回填；解析 arguments 对象再编码一次，避免双重编码。客户端应用负责工具执行；VoiceChat runtime 负责原生脚本解析和结果上下文注入。
 
@@ -61,7 +61,7 @@ speech 输出 FIFO 中每条事件在生成时固定 response/item，单发送�
 
 一期 relay 持续转发当前 input/response 的普通回答、ACK 与知识回答，不采用一次性发声许可。工具批次结清后，等待对应非 ACK 回答文本/音频结束，由 Coordinator 按实际交付证据检查并提交。ACK 不能当作答案；一般回答不能伪造企业来源。旧 legacy/knowledge_required 规则只保留兼容，不进入一期路径。
 
-音频和工具结果写入串行化，台账区分发送与未知状态，不因断线自动重放。查询任务有执行期限，模型续答观察与连接同寿命；QA_PROVIDER_ANSWER_TIMEOUT_MS 属于旧工作流，不控制本期原生续答。连接轮换、取消及权限失效仍是明确边界。
+音频和工具结果写入串行化，台账区分发送与未知状态，不因断线自动重放。查询任务有执行期限，原生续答默认受 VOICE_NATIVE_ANSWER_TIMEOUT_SECONDS=60 约束；QA_PROVIDER_ANSWER_TIMEOUT_MS 属于旧工作流，不控制本期原生续答。连接轮换、取消及权限失效仍是明确边界。
 
 ### 3.4 语言、版本和能力验证
 
@@ -79,7 +79,7 @@ speech 输出 FIFO 中每条事件在生成时固定 response/item，单发送�
 
 公开参考：[API](https://github.com/NVIDIA-NeMo/Speech/blob/nemotron-labs-voicechat/voicechat_realtime_instructions/api-reference.md)、[部署](https://github.com/NVIDIA-NeMo/Speech/blob/nemotron-labs-voicechat/voicechat_realtime_instructions/deploy.md)。原 adapter 文档基线为 NVIDIA revision `097dfe9e2f55baf653b83035868bdc89849f1b47`；实际服务以用户 speech 源码与发布 hash 为准，不能仅由公开文档推断私有镜像行为。
 
-当前应用已有 ProviderCapabilities 门槛与进度/修订处理；**生产 NVIDIA 仍全部 false**，知识实现不暴露 operation，不发送 tool_choice/任意播报命令；工具数量独立由后台目录决定。只有明确验证等待进度、修订、call 关联与旧调用安全结清的可信 Adapter 才使用 operation 扩展；没有 env/browser 绕过。SimulatedWaitAdapter 的 parent_call_id 是独立测试协议扩展，不是 NVIDIA 已公开字段。详细调用状态及真实启用条件见 [Live §3](live-agent-implementation.md#3-等待进度与自然修订)。基础关闭只依据 output_audio.done 与 WS 正常 close handshake；异常关闭仍是 unknown，不等于已播放。
+当前应用已有 ProviderCapabilities 门槛与进度/修订处理；**生产 NVIDIA 仍全部 false**，知识实现不暴露 operation，不发送 tool_choice/任意播报命令；工具数量独立由后台目录决定。只有明确验证等待进度、修订、call 关联与旧调用安全结清的可信 Adapter 才使用 operation 扩展；没有 env/browser 绕过。SimulatedWaitAdapter 的 parent_call_id 是独立测试协议扩展，不是 NVIDIA 已公开字段。详细调用状态及真实启用条件见 [全双工边界](architecture.md#4-全双工与生命周期)。基础关闭只依据 output_audio.done 与 WS 正常 close handshake；异常关闭仍是 unknown，不等于已播放。
 
 ## 4. 文本模型与业务 Agent
 
@@ -104,7 +104,7 @@ Runtime、ToolRegistry、CueKB adapter 与 VoiceGateway 记录脱敏阶段日志
 | VoiceChat 可见业务工具 | NativeTool 可信 schema/执行器 + tool_catalog.py 全局后台元数据；版本化会话快照 | dual_tools 数量由后台配置，对所有客户可见；执行单独授权；legacy 单 bridge |
 | 后台工具能力 | tools/registry.py 的 ToolSpec/adapter；部署白名单、管理员启停、身份范围和版本校验 | 默认 search_knowledge，通过 CueKB /v2/search 执行 |
 
-新增原生工具的注册/schema/executor/scope/依赖规则只在 [知识执行 §2](qa-routing-design.md#2-注册输入与扩展) 维护；本节维护后台 ToolSpec/Registry 的服务接入与启停授权。
+新增原生工具的注册/schema/executor/scope/依赖规则只在 [工具契约](interfaces/voice-tools.md) 维护；本节维护后台 ToolSpec/Registry 的服务接入与启停授权。
 
 沿用 ToolSpec + trusted adapter + ToolRegistry：受信任代码定义参数/返回类型、调用实现、固定 endpoint/凭据引用、权限、预算、版本及错误映射。工具启停/修订后旧 run 不得继续使用失效工具。
 

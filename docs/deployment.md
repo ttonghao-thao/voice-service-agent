@@ -127,6 +127,6 @@ Redis 持有每个 conversation 的独占租约，15 秒 TTL、4 秒续约。未
 4. 单独执行 `alembic upgrade head`，再启动新副本。标准 `./scripts/deploy-cloud.sh .env` 在 PG/Redis 就绪后运行 Compose 的 migrate 服务，再启动 API/Web；仅推送 Git 代码不会修改部署数据库。0010 是本项目数据库表结构迁移版本，新增全局工具目录表并保留现有业务记录。
 5. 回滚按已记录的 API/Web/VoiceChat 组合执行；恢复已知整场 response 缺陷的旧 VoiceChat 时语音仍不能放行。数据库回滚与镜像回滚分开；当前迁移到 **0010**：0005 为每通话 capability，0006 为输入关联，0007 为问答策略/执行字段、Utterance 和 DeliveryAttempt，0008 为来源上下文/任务快照，0009 为交付/口述/播放审计，0010 为全局工具目录。旧数据迁移默认 legacy/knowledge_required，nullable 字段不伪造已验证关联或已播放，旧 slots 不伪造确认来源。0010 downgrade 删除工具目录配置，0009 downgrade 删除新增审计字段，均不是无损回滚；需要破坏式回滚时用已验证备份恢复。
 
-当前没有等待期语音的部署开关：NVIDIA ProviderCapabilities 全部保持 false。门户进度可用；未来只有可信 Adapter 对四项真实能力完成验证后才启用工具的 operation 扩展，见 [Live §3](live-agent-implementation.md#3-等待进度与自然修订)。正常上游关闭、发送完成和播放排空估计分开记录；真实 PG/Redis、长会话轮换/断线仍须按 [验收要求](validation.md) 单独验证。
+当前没有等待期语音的部署开关：NVIDIA ProviderCapabilities 全部保持 false。门户进度可用；未来只有可信 Adapter 对四项真实能力完成验证后才启用工具的 operation 扩展，见 [全双工边界](architecture.md#4-全双工与生命周期)。正常上游关闭、发送完成和播放排空估计分开记录；真实 PG/Redis、长会话轮换/断线仍须按 [验收要求](validation.md) 单独验证。
 
 健康接口：`/health/live` 为应用存活；`/health/ready` 检查数据库、归属协调和 drain，分别返回文字配置、语音配置和本地容量。管理页健康端点探测只说明可达，不冒充真实推理/工具调用成功。

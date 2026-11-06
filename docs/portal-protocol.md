@@ -1,10 +1,10 @@
 # 门户与 HTTP/SSE/WS 契约
 
-2026-10-21 按一期持续 relay 与原始 PCM 文件输入整理。定义源为 [contracts.py](../apps/api/app/contracts.py)、[routes.py](../apps/api/app/api/routes.py)；完整 [OpenAPI](../contracts/openapi.json)、[上行](../contracts/portal-client-events.schema.json)/[下行](../contracts/portal-events.schema.json) 由脚本生成，按对象查阅，不整读 JSON。本文维护消息含义和 UI 关联，配置归部署，Provider 原始事件归接入。
+2026-11-06 核对持续 relay 与原始 PCM 文件输入。定义源为 [contracts.py](../apps/api/app/contracts.py)、[routes.py](../apps/api/app/api/routes.py)；完整 [OpenAPI](../contracts/openapi.json)、[上行](../contracts/portal-client-events.schema.json)/[下行](../contracts/portal-events.schema.json) 由脚本生成，按对象查阅，不整读 JSON。本文维护消息含义和 UI 关联，配置归部署，Provider 原始事件归接入。
 
 ## 1. 通话与界面
 
-点击 Start call 才创建新的 conversation/owner/token，再申请语音 session；token 只在当前标签页内存中，刷新不能恢复历史。Voice ready 表示握手/格式就绪，不承诺自动问候。门户申请麦克风，ready 后持续发送含静音的音频；设备 capture Hz 与 sent Hz 分开显示。
+点击 Start call 才创建新的 conversation/owner/token，再申请语音 session；token 只在当前标签页内存中，刷新不能恢复历史。Voice ready 表示握手/格式就绪；静默时允许模型主动欢迎语，首次无输入回复之后的自说话被抑制，具体三秒时机依赖真实模型。门户申请麦克风，ready 后持续发送含静音的音频；设备 capture Hz 与 sent Hz 分开显示。
 
 用户转写以 `(epoch,item_id)` 更新右侧气泡，持久 Turn 用 input_item_id 原位接管；不凭文本相同合并。答案阶段实际口述按 response/segment 进入左侧正文，结束后保留；固定 ACK 只显示状态。完整业务答案和引用展开显示，文字输入直接显示业务答案。一般无工具回答按 input_item_id 关联，标明 Model general answer / No company sources were checked，不创建假知识 Turn。
 
@@ -81,7 +81,7 @@ finished=true 只在该 response 收到 audio.done 且 Worklet 对应队列排�
 | `portal.session.ended` | SSE/连接生命周期 | 显示结束并释放设备；也须处理 WS close，不能只依赖单个消息 |
 | `portal.error` | WS；HTTP 使用错误响应 | code、message、retryable、trace_id；按错误恢复，不无限重试 |
 
-下行 delta 长度可不同于上行固定帧长，按真实字节计算 samples。并非所有事件都在 SSE 与 WS 重复发送。实际呈现检查与 answer/input/Turn/call/response 关联规则归 [口述与交付](live-agent-implementation.md)。
+下行 delta 长度可不同于上行固定帧长，按真实字节计算 samples。并非所有事件都在 SSE 与 WS 重复发送。实际呈现检查与 answer/input/Turn/call/response 关联规则归 [口述与交付](architecture.md#4-全双工与生命周期)。
 
 ### 3.3 播放、时序与背压
 
@@ -95,7 +95,7 @@ finished=true 只在该 response 收到 audio.done 且 Worklet 对应队列排�
 
 页面静音只影响上行麦克风，音量只影响本地播放。播放环有界、短尾帧须可排空；积压显式报错，不以无限缓冲掩盖延迟。Worklet 的内部 done 转为公开 finished ACK，按响应独立处理；不能因 ACK 提示播完而让业务答案提前完成。
 
-普通 speech_started/quiet 不取消查询。工具只有绑定最终 ASR 后才执行；一期输出按当前 input/response 关联，ACK 不作为最终答案完成。精确上游时序归 [接入 §3](integration.md#3-voicechat-接入与能力门槛)。轮换/重连和无确认状态归 [交付 §2](live-agent-implementation.md#2-结束确认台账与恢复)，不能把 audio.done 当作设备已经播放完。
+普通 speech_started/quiet 不取消查询。工具只有绑定最终 ASR 后才执行；一期输出按当前 input/response 关联，ACK 不作为最终答案完成。精确上游时序归 [接入 §3](integration.md#3-voicechat-接入与能力门槛)。轮换/重连和无确认状态归 [生命周期](architecture.md#4-全双工与生命周期)，不能把 audio.done 当作设备已经播放完。
 
 ## 4. 兼容与错误
 

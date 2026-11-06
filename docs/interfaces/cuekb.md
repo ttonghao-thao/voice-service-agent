@@ -1,6 +1,6 @@
 # CueKB 问题级证据接口契约
 
-更新：2026-10-30。当前语音接入基线为 CueKB `main@30970e9`，公开契约修订为 `cuekb.evidence/2.1`。本项目的原生语音路径使用 `POST /v2/evidence/query`，注入 VoiceChat 前使用 `POST /v2/evidence/validate` 校验证据包；`/v2/search` 仅保留给非语音兼容路径和检索诊断。Provider 方案与实现范围见 [CueKB 问题级证据方案](../CueKB.md)，操作与现场回传见[验证手册](../validation.md)。
+更新：2026-11-06。当前语音接入基线为 CueKB `main@30970e9`，公开契约修订为 `cuekb.evidence/2.1`。本项目的原生语音路径使用 `POST /v2/evidence/query`，注入 VoiceChat 前使用 `POST /v2/evidence/validate` 校验证据包；`/v2/search` 仅保留给非语音兼容路径和检索诊断。已实现接口取代旧提案；当前缺口见[任务板](../TASK_BOARD.md)，操作与现场回传见[验证手册](../validation.md)。
 
 ## 1. 请求与可信边界
 
@@ -41,11 +41,11 @@ VoiceChat 仍只看到 `search_knowledge_base(query)`，不能选择 KB、凭据
 - `content_revisions`、`authorization_revisions` 与签名 `package`；
 - `continuation`：当前接入要求 `allowed=false`，补召回在同一次 CueKB 请求内有界完成。
 
-应用不重新排序、不重新拆问题，也不从完整审计响应自行拼另一份模型证据。它只把 `model_view.decision/evidence/missing/search=finished` 加终态指令后注入 VoiceChat；完整来源保存在 Citation、Turn 和门户来源面板中。条件与 required context 同时进入引用上下文和语音答案核验，不能为了缩短载荷删除。
+应用不重新排序、不从完整审计响应补选证据；请求 facets 的拆分由 Adapter 进行，当前存在 F4 组合问题缺口。最终包准入可能整组省略并降级 decision，详见本文完整语音包准入。它只把 `model_view.decision/evidence/missing/search=finished` 加终态指令后注入 VoiceChat；完整来源保存在 Citation、Turn 和门户来源面板中。条件与 required context 同时进入引用上下文和语音答案核验，不能为了缩短载荷删除。
 
 ## 3. 请求—响应绑定与校验
 
-客户端在注入前逐项验证：
+客户端在 Adapter 获取结果阶段逐项验证（至实际注入仍有 F7 时序窗口）：
 
 1. `request_id`、`input_revision` 与当前输入/Turn 一致；
 2. 返回 facet 的 ID 和原文与请求一致；
@@ -60,7 +60,7 @@ VoiceChat 仍只看到 `search_knowledge_base(query)`，不能选择 KB、凭据
 
 ## 4. 单输入控制流程
 
-一个稳定输入只创建一个知识 Turn，并执行一次 `/v2/evidence/query` 和一次 `/v2/evidence/validate`。CueKB 内部可以在同一请求内做一次有界扩大召回；模型不能为缺项自行拆分、泛化或再次查询。
+一个稳定输入只创建一个知识 Turn，并执行一次 `/v2/evidence/query` 和一次 `/v2/evidence/validate`。CueKB 内部可以在同一请求内做一次有界扩大召回；模型仍可能生成再次调用，但应用不执行第二次问题级查询。
 
 第一个严格结果提交后，该输入立即进入终态。若模型仍生成新的 tool call，API 会：
 
@@ -81,7 +81,7 @@ Golden Yolk 与 Black Pig 必须通过 CueKB 的实体/局部来源归属隔离�
 
 | 返回 | 本项目处理 |
 | --- | --- |
-| 200 + 合法 evidence package | 严格解析，随后 validate；只有 valid 才注入 |
+| 200 + 合法 evidence package | 严格解析，随后 validate；valid 是准入必要条件，仍须最终包预算 |
 | 401/403 | 认证或授权故障，不扩大范围重试 |
 | 409 | tokenizer、索引、内容修订或 evidence package 配置错误，映射明确错误码 |
 | 422 | 请求或契约错误 |
@@ -94,7 +94,7 @@ HTTP 3xx 不跟随，语音路径不做叠加 HTTP 重试。上游响应有界�
 
 原始问题和来源、签名包保持原样。消费投影只规范化英文弯引号/破折号等同义标点，将 `missing` 的 facet ID 展开为用户原始问题项，并去除重复的 search 标志；不会合并或截断事实。审计记录保留原始来源和 CueKB 的 decision。部分支持映射为 `insufficient_evidence/CUEKB_PARTIAL_ANSWER`；冲突与无证据分别保留原因；clarify 为 needs_clarification。门户分别显示 Partial answer、Conflicting sources、Insufficient evidence 或 Clarification needed。
 
-带代词的追问从服务端保存的用户输入中解析唯一的精确实体名/别名；只读取当前 principal 的 KB 的 `GET /knowledge-bases/{kb_id}/entities`，以 `context_bindings` 传给 CueKB。模型 query、助手回答和未来输入不参与授权。歧义、否定、换题或目录未完整读取时不推定绑定；ASR 的 yoke 等别名需由 CueKB 目录明确登记。每 KB 最多读取 1000 个实体，达到分页上限时保守不绑定。此 API 为只读目录读取，不计作第二次证据 query；权限/证据包验证仍由 CueKB 执行。
+带代词的追问从服务端保存的用户输入中解析唯一的精确实体名/别名；只读取当前 principal 的 KB 的 `GET /knowledge-bases/{kb_id}/entities`，以 `context_bindings` 传给 CueKB。模型 query、助手回答和未来输入不参与授权。歧义、换题或目录未完整读取时保守不绑定；英文缩写否定仍有 F2 缺陷，不能宣称所有撤回已正确处理；ASR 的 yoke 等别名需由 CueKB 目录明确登记。每 KB 最多读取 1000 个实体，达到分页上限时保守不绑定。此 API 为只读目录读取，不计作第二次证据 query；权限/证据包验证仍由 CueKB 执行。
 
 `CUEKB_VOICE_TOKEN_BUDGET` 只约束服务端 canonical model_view，不能声称是最终函数通道的 token 上限。可设置 `CUEKB_VOICE_TOKENIZER_ID` 固定已登记 tokenizer 标识，不匹配即拒绝该响应。应用输出 model_view token/byte 与最终 wire byte；VoiceChat 的实际 tokenizer 对完整通道封装计数，由时间线 `backend.result_received.wire_tokens` 和 `backend.inject_profile` 对照。英文标点规范化、missing 展开与通道封装后的完整预算由下节 VoiceChat 精确预检独立实现，不改变 CueKB 原始包；不以估算的字符/token 比冒充精确计数。
 

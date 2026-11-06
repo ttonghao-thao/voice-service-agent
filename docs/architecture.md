@@ -1,89 +1,52 @@
 # 当前系统架构
 
-2026-10-22 核对一期原生 relay、批次协议、Provider、Coordinator 与 Runtime。本页维护已实现架构；需求和交付边界见 [交付说明](delivery.md)，工作状态见 [任务板](TASK_BOARD.md)。
-
-当前一期部署为 VoiceChat 原生单工具验证：只向模型注册 search_knowledge_base(query)，通过内部 NativeCueKBExecutor→Registry→CueKBAdapter 检索，直接回填精简证据，由 VoiceChat 生成语音。AGENT_PROVIDER=disabled，不运行额外答案模型；外置 SDK/文本模型路径仅保留兼容实现，不在下图的一期数据流中。原生工具选择、连续追问与实际口述验收见 [验证步骤](validation.md)。
-
-原生 relay 按连接/input_item_id 保存有界检索状态，默认最多两次实际查询、相同参数不重复执行；该路径关闭 HTTP 自动重试。重复查询或预算耗尽的结果标为 finished，终态提交后到达的新批次报 VOICE_TOOL_LOOP 并关闭异常连接；提交前已收到的批次成员在预算内执行，超额仅结清。Coordinator 将同一输入的累计有效证据用于答案校验和引用提交；模型从本问题原生工具历史与新增完整来源共同获得累计事实，已成功交付的完全相同正文/上下文/条件不重复注入；空的补充检索不丢失既有事实。缓存复用仍复核权限和后端版本，不跨输入共享。硬性查询上限不等于模型已成功回答，实际语音闭环仍须验收。
-
-
-CueKB 在线契约显式选择 `/v2/search`（基线 dac382e），不回退旧 M3/V1。严格 DTO、Citation 和审计保留 ranking、applicability、source_spans、required context 与 context_state。模型证据投影只包含可读产品归属、完整主事实和必要条件；未知/歧义不猜成当前产品，缺必要依赖的组拒绝，完整组超预算整体省略并记录原因。上游 API hits 字节预算与原生模型包预算分别控制，不能将完整 V2 JSON 直接灌入 function 通道。排名评分不当作事实正确率，Reranker 可选；本轮不新增 MMR 或答案模型。
+基线：本项目 `2a8ba8b` / CueKB `30970e9`。本文描述代码行为；故障及未验证边界见[任务板](TASK_BOARD.md)，不将目标当作已实现保证。
 
 ## 1. 产品与部署边界
 
-当前系统仅支持英文全双工知识客服及连接内多轮对话，支持并行收音与播放；工具等待阶段的语音交互能力单独验证。当前为单组织、只读知识与每通话临时 capability。VoiceChat-11B + nemotron-labs-voicechat + WS 是独立语音系统，CueKB 是独立知识系统。本项目控制授权、任务、知识执行与交付，不训练模型、管理 GPU 或直连 CueKB 索引。语音输入、回答及门户交互仅支持英文；中文不属于本期产品能力。
+仅英文（en-US）；Python 3.12/FastAPI、React/TypeScript/AudioWorklet、PostgreSQL/Redis。VoiceChat 和 CueKB 独立部署；本项目不直连 CueKB 索引、不训练模型。产品语言以 contracts/config 和英文提示词为准。
 
-语言约束有实际实现依据：[Settings](../apps/api/app/config.py) 的默认语言及要求语言、[ConversationInput](../apps/api/app/contracts.py) 的 locale 均限定为 `en-US`；VoiceGateway 拒绝其他语言会话；VoiceChat 注册提示和工具描述为英文；门户 HTML、组件库和新会话请求使用 `en-US`。中文协作文档、存储原文、旧日期别名和 Unicode 测试不改变该范围。当前 CueKB-only 路径不启用天气工具；保留的天气适配器也使用英文用户文案。配置和协议限制不等于模型已完成真实英文语音验收。
+当前知识语音使用 `dual_tools/general_qa`、`AGENT_PROVIDER=disabled`。原生工具目录可配置，执行由静态可信实现和权限复核决定；不是固定只能注册两个工具。不启用分类模型、独立 ASR/TTS 服务或子 Agent 调度。模型可直接回答一般问题；企业问题漏调用仍是待优化项，不能冒充已查询。
 
-Python/FastAPI/Agents SDK 与 React/TypeScript/AudioWorklet；生产状态为 PostgreSQL，租约为 Redis。Web 镜像内 Nginx 提供 HTTPS，同源代理到 API。端口、参数、镜像和迁移只看 [部署](deployment.md)，字段与客户端行为只看 [门户协议](portal-protocol.md)。
+## 2. 数据流与代码入口
 
-## 2. 模块与数据流
-
-```mermaid
-flowchart LR
-    UI[浏览器 / AudioWorklet] <--> Web[Web Nginx]
-    Web <--> API[HTTP / SSE / VoiceGateway]
-    API <--> Adapter[VoiceChat Adapter]
-    Adapter <--> Voice[独立 VoiceChat]
-    API --> C[SessionCoordinator]
-    C --> R[BusinessRuntime / ToolDispatcher]
-    R --> D[NativeCueKBExecutor]
-    D --> T[ToolRegistry]
-    R --> T
-    T --> K[CueKBAdapter / 独立 CueKB]
-    C <--> DB[(Store / PostgreSQL)]
-    API <--> DB
-    C <--> Lease[(Redis 租约)]
-```
-
-图中 Runtime/Registry 表示代码调用边界，不是新增独立服务。无工具一般回答经过 Gateway/Store，不创建知识 Turn，也不调用 CueKB/外置模型。
-
-VoiceChat 内部并非 ASR 文本驱动 LLM：16 kHz 音频经共享 encoder 分别进入辅助 RNNT 和语音语言主干；后者产生文本与 function 通道，文本再进入持续式 TTS。应用收到原生调用后绑定 final ASR 确定输入归属；一期以模型 query 结合可信上下文检索，不用转写替换 query。这解释了 ASR 错误会影响应用查询，却不能单凭丢字推出模型漏调用的原因。
-
-| 代码模块 | 职责 | 修改时读 |
+| 环节 | 当前职责 | 代码入口（相对仓库根） |
 | --- | --- | --- |
-| `api/auth.py`、`routes.py` | 通话归属/范围、HTTP/SSE/WS、受权历史、管理隔离 | 门户协议 / 接入 §6 |
-| `voice/provider.py`、`gateway.py`、`relay.py`、`batches.py` | 供应商事件归一化、连续收发、原生调用/批次结清/结果回填、输入审计、背压 | 接入 §3 / 口述与交付 |
-| `sessions/coordinator.py`、`coordination.py` | 唯一业务提交、幂等、epoch/revision、任务/租约、共享期限 | 本页 §3 / 上下文 / 交付 |
-| `agent_runtime/` | 原生工具静态分派、直查或 SDK 推理、证据/呈现检查 | 知识执行 / 交付 §1 |
-| `agent_runtime/tool_catalog.py` | 全局后台目录、可信实现映射、revision；语音连接冻结注册快照 | 工具目录 |
-| `tools/registry.py`、`adapters.py`、`schemas.py` | 后台工具权限、版本、限时、上游契约与证据映射 | CueKB 契约 / 接入 §5 |
-| `task_context.py`、`storage/`、`migrations/` | 来源条件、业务/交付/审计持久化、授权裁剪、迁移/留存 | 上下文 / 交付 §2 / 部署 |
-| `apps/web/src/`、`public/` | 收音/重采样、消息合并、证据显示、独立响应播放/排空估计 | 门户协议 |
+| 浏览器 | 24 kHz PCM16/80 ms 持续上传，response 队列、字幕、播放清理 | apps/web/src/audio/VoiceClient.ts、apps/web/src/App.tsx |
+| Gateway / Relay | 票据与 epoch、持续收发、input/call/batch/response 关联、单输入预算 | apps/api/app/voice/gateway.py、relay.py、batches.py |
+| Coordinator | 唯一业务提交；revision、租约、等待口述和取消 | apps/api/app/sessions/coordinator.py |
+| Runtime / Registry | 可信工具分派、权限、执行审计、问题/证据投影 | apps/api/app/agent_runtime/native_cuekb.py、native_input.py；app/tools/registry.py |
+| CueKB Adapter | 最终 ASR、facets、授权实体目录；query 后 validate | apps/api/app/tools/adapters.py、entity_context.py |
+| 最终语音预算 | 实际 tokenizer 对整个 NeMo 包计数；整组准入、记录省略 | apps/api/app/agent_runtime/voice_budget.py |
+| VoiceChat 快照 | 原生工具提取/注入，显示 ASR、音频位置、响应结束 | docs/voicechat/s2s/audio_server.py；快照 backend/model.py、data_types.py |
 
-供应商原始事件仅在 voice 边界解释，Agents SDK 仅在 agent_runtime 使用。浏览器不持有供应商密钥、私有地址或执行工具的权限。
+调用方向保持 Gateway → Coordinator → Runtime → Registry → CueKB。音频保持单条 VoiceChat 连接；供应商结构仅在 voice 边界解释，业务不能凭模型参数扩大 KB/权限。
 
-## 3. 一轮请求与状态边界
+## 3. 知识执行
 
-一期原生 CueKB/general_qa 会话使用 relay。其它目录和 knowledge_required/legacy 保留旧兼容路径；其发声许可和补偿机制不进入一期流程。
+1. 模型原生 call 触发；相同 call_id 幂等，冲突身份严格拒绝；不同 input 不凭文字相似合并。
+2. 等最终 ASR，创建业务 Turn。原始 ASR 作为 `question`；受控上下文进入 `search_query/filters/context_bindings`。模型 query 保留审计，不覆盖原问题。
+3. 每 input 最多一次 `/v2/evidence/query`，合法成功包再一次 `/v2/evidence/validate`；服务内部补召回归 CueKB。目录 GET 和 tokenizer 预检不属于第二次证据查询。失败不自动重试或回退旧 search。
+4. 严格消费 facets/decision/完整来源。CueKB canonical model_view 默认 120 tokens；最终 NeMo 包另由运行 VoiceChat 精确计数，默认上限 256。超过预算仅整组省略并降级决策，不能截断条件。
+5. 每原生批次一份回填，未执行成员显式结清。结果终态后新 call 不查库、不新建 Turn，返回小型 settlement 并抑制冗余 ACK；仍不能保证模型一定遵从停止指令。
+6. 正式文本和 audio.done 触发播后检查及 Coordinator 提交。ACK 不结清知识答案。实际已准入证据用于核验，原始包另存审计。当前检查不证明逐 facet 完整性/语义真值，见待优化 F1。
 
-1. Start call 创建绑定 conversation/epoch/Origin 的一次性票据，建立一条 VoiceChat 连接并确认工具目录。
-2. 持续转发输入音频与模型输出；普通问答、ACK、知识回复不消耗一次性发声许可。保留同一连接供多轮与指代追问。
-3. 模型原生调用才触发业务。按原 call_id 幂等，校验工具/参数与权限，使用模型 query 查询 CueKB。VoiceChat 显式声明一次解码的调用批次，API 收齐后按预算处理，保留所有 call_id、每批回填一份结果，已发送来源精确去重、新增来源完整补充；详见 [批次契约](interfaces/voice-tools.md#4-原生函数批次传输)。
-4. Coordinator 唯一提交业务记录。检索有期限，模型续答不共用检索期限；连接结束或明确取消会结清等待观察的任务。
-5. 回答文本/音频完成用于审计，来源检查不伪装为播前事实保证，也不阻断后续普通问答。Web 同时收音与播放；原生 speech_started 清除已排队播放，查询不中止。
+字段及错误只维护在[CueKB 契约](interfaces/cuekb.md)；注册与批次在[工具契约](interfaces/voice-tools.md)。
 
-| 状态层 | 权威对象 | 不能推导的结论 |
-| --- | --- | --- |
-| 用户输入/上下文 | Utterance、最终 ASR、带来源条件 | 一般回复不是企业证据；转写相似不代表同一轮 |
-| 业务 | Turn、revision、epoch、当前租约 | accepted 不意味着网络成功或已听到 |
-| 结果/音频交付 | DeliveryAttempt、response/call 关联、呈现检查 | 写入和数据库无共同事务；unknown 不重发 |
-| 浏览器播放 | response 队列、samples、finished 估计 | audio.done 不等于队列排空；排空不等于用户听到 |
+## 4. 全双工与生命周期
 
-`parent_task_id` 表示前一轮任务，不是子 Agent。提交文字会结束当前语音，不定义文字与语音并行竞争。新 revision 替换旧业务；普通发声、附和、固定 ACK 或停止播放不能自行取消业务。支持等待修订的 Adapter 还必须安全结清旧 pending call，不能只丢弃本地结果；具体控制矩阵归门户/交付文档。
+收音、转写、模型理解、播放与业务任务是不同状态。欢迎语允许无用户 input；后续无归属输出抑制但不断连。用户开口清理并抑制已有 response 的迟到播放；Stop playback 不取消检索。明确业务取消/End call/失效 epoch 或权限按规则结清。
 
-## 4. 权限、并发与故障
+注入期间 display RNNT 以独立音频游标运行，原始 PCM 留给 LLM 后续一次消费；不把显示 ASR 的推进说成 LLM 同时理解。工具提取期仍缓冲，结果仍逐 token append/anext。新显示输入与旧工具所属输入按音频位置区分；当前 related-input 判定仅覆盖到起点，不能证明整个补充问题已经回答（F3）。
 
-- 有效 KB 范围取服务端授权/部署范围/受限 CueKB Key 的交集。知识与历史均作为数据，不能执行其中指令或扩大权限；历史、SSE、后续模型上下文也复核撤权。细节归 [接入 §6](integration.md#6-独立通话与知识范围d02d13)。
-- 所有网络方向保持有界队列，背压/失败显式终止；上游只有一个写入器。供应商须提供有序逐轮 response/结束边界，不能凭音量、字幕相似或任意延迟猜音频归属。匹配版本见 [补丁交付](../deploy/voicechat/README.md)。
-- 丢弃过期业务结果后仍须结清原生调用或关旧连接。重连只恢复授权业务摘要，不恢复录音、播放队列或模型隐藏状态。轮换等待 quiet、无待写回工具及排空/抑制，仍受有限宽限期约束。
-- Redis 租约与数据库版本共同隔离多副本，粘性路由和故障恢复要求归部署；取消本地 coroutine 不证明远端 HTTP/GPU 已停止。
-- VoiceChat 失败可显式使用文字入口；CueKB/文本模型错误不得伪造事实或静默回退 mock。日志不记问题/音频/凭据正文。
+VoiceChat 普通回答 EOS 等待新输入；ACK EOS 允许待答结果继续。API 按 response 抑制旧音频/重复输出并处理 drained。工具正文提交后等待答案默认 60 秒；连接默认 105 秒、活动宽限 30 秒。到期/背压/协议错误仍可能结束连接，不是无限会话。
 
-## 5. 演进与验收入口
+网络写入与数据库无共同事务；DeliveryAttempt 的 unknown 不重发。音频 done 是发送边界，Worklet finished 是排空估计，均不证明设备发声或用户听到。重连只恢复经授权业务摘要，不恢复隐状态/PCM/旧播放。
 
-Black Pig 单 case 已有现场 answered/引用提交成功；Golden Yolk 批次修复已有自动/Web 第二段闭环现场证据，当前改进范围是 V2 完整证据组交接、逐项回答和结果注入负载；流式正文与同连接下一问沿用既有实现。按 [统一验证手册](validation.md) 先完成当前闭环，再验证连续多轮、知识追问、内容和听音。Hello/TCP 增加边界诊断并修正 RNNT 显示转写的重复零输入初始化，使其符合 NeMo 标准贪心解码契约；正常分轮/打断的 RNNT 门槛及权重不变。已有 PAD 强制结束后的等待新输入边界继续保留，静音时在播报/解析/下一步文本历史前抑制额外正文和 function token，新语音或待处理调用的有效回填可恢复；不清空连接历史。VoiceChat 只保存首 4 秒音频的 PCM16 哈希和累计转写哈希，不记录原始音频或 ASR 正文；API 与保存的转写按同一输入核对，门户仅给出有界预览。Hello/TCP 按用户多次正常的现场反馈收敛；CPU 回归不代表所有麦克风环境准确率通过。
+## 5. 多轮与权限
 
-原生正文字幕以 epoch/input_item_id/response_id 关联，业务 Turn 更替不改变输入归属；历史恢复沿用实时的响应键。固定 ACK 前缀仅作为状态，正文前缀若与 ACK 分歧则一次释放，不丢字符。字幕流不触发正式答案提交，提交仍要求最终正文和音频结束并由 Coordinator 校验。内容检查失败保留 failed 和原因，权限有效的检索引用可供复核；前端明确标记 Answer not verified，不等同 Search failed。Reply complete 仅表示回复提交，不能证明所有字段或口述事实已被证实。
+最终 ASR/Utterance 是可信用户输入来源；助手文字和模型 query 不授权产品实体。代词追问读取授权实体目录，以唯一名字/已审核别名建立 binding；目前英文缩写撤回有缺陷（F2）。自然停顿可生成多个 input，不把 WAV 文件边界强制当一轮。
 
-单连接时长保留 Settings 默认 105 秒及 Relay 固定额外 30 秒活动宽限。该机制标为待优化，本轮不改变 watchdog、到期文件会话结束或麦克风自动重连行为。门户隐藏只记录状态，回前台尝试恢复音频，不直接关闭 session。文件以 Worklet 时钟按原始 PCM 分帧发送，EOF 后可沿用连接手动发送下一份；不清除对话历史，不自动重放。
+一个 conversation 的新业务 revision 会替代旧任务；普通发声不等同新业务提交。关联到同一回答的输入当前会一起标完成，这一策略需 F3 收紧。历史、来源、后续摘要、执行和提交均需检查授权；CueKB validate 与实际写入间仍有窗口（F7）。
+
+未知 input/tool、归属中途变化、权限撤销不能以“不断连”为由忽略。增强等待 operation 的 ProviderCapabilities 仍未获生产验证；实时显示 ASR 不自动使这些能力变 true。

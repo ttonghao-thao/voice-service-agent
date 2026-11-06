@@ -1,41 +1,36 @@
-# Voice Service Agent — Codex 工作入口
+# Codex 工作入口
 
-仅支持英文的全双工知识客服，支持连接内多轮对话。Python 3.12/FastAPI/Agents SDK；React/TypeScript/AudioWorklet；PostgreSQL/Redis。开发协作和文档可以使用中文；产品的语音输入、回答及门户交互仅支持英文。
+仅支持英文（en-US）的全双工知识客服；开发沟通/文档可用中文，产品语音、UI、工具描述必须英文。Python 3.12/FastAPI，React/TypeScript/AudioWorklet，PostgreSQL/Redis。
 
-后续开发主线和代码交付目标为 `origin/main`，基线来自 `codex/q1003`；历史分支保留用于追溯。完成并验证后直接推送 main，不以新建任务分支代替交付。涉及 VoiceChat 的完整文件仍按下文同步到 `docs/voicechat/`，与本项目修改一同交付到 main。
-
-产品语言以 `en-US` 契约和英文提示词为准；不得从中文开发文档、历史记录或 Unicode 测试夹具推导出中文产品要求。修改用户可见文案或模型工具描述时使用英文。
+交付目标是 `origin/main`，完成验证后直接推送，不以任务分支替代。当前状态查[任务板](docs/TASK_BOARD.md)，不要把旧提交的通过记录当作本版本验收。
 
 ## 按需读取
 
-1. 先 `git status --short`。范围明确就用 `rg` 找代码/调用方和对应主题；不明确再查 [文档索引](docs/README.md)。
-2. 长文先 `rg -n '^##|关键词' 文件`，再 `sed -n '起始,结束p' 文件`。链接是入口，不是递归加载指令。
-3. 不默认整读架构、任务板、历史、生成 JSON、锁文件或产物；同任务中仍有效的信息不重复读。
-4. 跨模块时按实际调用/数据依赖逐步扩读。文档不足或冲突先核代码，正确性优先，不以节省上下文为由跳过必要检查。
-5. 需求与交付范围查 `docs/delivery.md`，实际架构查 `docs/architecture.md`，工作状态查 `docs/TASK_BOARD.md`；按任务选择，不默认全部读。所有验证与当前证据只维护在 `docs/validation.md`。旧设计与排障流水由 Git 追溯，不重新复制进交付文档。
+1. 先 `git status --short`，用 `rg` 定位代码/调用方。只有范围不清楚时读[短索引](docs/README.md)。
+2. 长文先查标题/关键词，再读相关行；链接不是递归加载指令。同任务不重复读取有效信息。
+3. 不默认整读 docs、任务板、Git 历史、生成 JSON、锁文件、测试夹具或 VoiceChat 快照。跨模块按实际依赖扩读；文档冲突以代码核对，不能为节省上下文跳过必要检查。
+4. 需求归 delivery.md，实际行为归 architecture.md，待办归 TASK_BOARD.md；按任务选择。当前所有验证操作/证据只维护在 docs/validation.md，必须自包含。旧方案和验收方法已删除，历史仅由 Git 追溯，不重建归档副本。
 
-## 核心边界
+## 不变边界
 
-- VoiceChat、CueKB 独立部署/API 对接；保留 Gateway → Coordinator → Runtime → Registry。供应商语音结构归 `app/voice`，Agents SDK 归 `app/agent_runtime`。
-- VoiceChat 用 tools/instructions 原生选工具；不加 WS tool_choice、分类模型、独立 Nano 服务或子 Agent 调度。一般问答不是企业证据；真实 Provider 能力不能由模拟推定。
-- 原生工具数量/描述由全局后台目录配置，客户可见目录一致；执行权限另行复核。修改注册/刷新时查 [工具目录](docs/interfaces/voice-tools.md)，不把初始两工具当作固定上限。
-- Coordinator 唯一提交；epoch/revision/Turn/租约与权限在提交和交付时复核。普通发声不取消查询，停止播放与业务取消分开；旧调用结清或关连接，unknown 不重发。
-- 身份/KB/凭据由服务端控制；模型/浏览器不能扩大权限。real 失败不回退 mock；模拟、转写检查、网络发送和实际听音分开记录。
+- VoiceChat/CueKB 独立部署；保持 Gateway → Coordinator → Runtime → Registry。供应商结构归 app/voice，Agents SDK 归 app/agent_runtime。
+- tools/instructions 原生选工具，不加 WS tool_choice、分类模型、独立 Nano 或子 Agent 调度。一般回答不是企业证据；mock 不证明真实能力，real 失败不回退 mock。
+- 全局后台目录决定原生工具数量/描述，不能把初始工具数当上限；执行另验权限。涉及注册/刷新时读[工具契约](docs/interfaces/voice-tools.md)。
+- Coordinator 唯一提交；提交/交付复核 epoch/revision/Turn/租约/权限。普通发声和停止播放不取消查询；旧调用结清或关闭连接，unknown 不自动重发。
+- 身份、KB、凭据由服务端控制；模型/浏览器不得扩大权限。依赖沿用固定 requirements/package-lock，数据库用 Alembic；不提交密钥、票据、录音、数据库或产物。
 
 ## 修改与验证
 
-以英文全双工、多轮对话及有据回答的原始验收为准，局部测试通过不等于真实验收。每轮定位写明假设、方法和预期；同一思路连续两次无新增证据即停止，三种假设仍未解决则暂停深入调试并评估设计、环境和技术路径。每三轮回顾目标、进展和更简单方案。非阻塞问题记录后退出，不降低验收标准；区分已知事实、合理推断和设计建议。
+以英文全双工、多轮、有据回答为准。区分实现、模拟/CPU、真实 GPU、网络发送和听音。定位记录假设/方法/预期；同思路两次无新证据即停，三种假设仍失败则评估设计/环境，每三轮回顾目标与更简单方案。非阻塞项记待办，不降低验收标准。
 
-依赖沿用固定 requirements/package-lock；数据库用 Alembic。契约变更运行 `scripts/export_contracts.py`，同步对应客户端并做相关回归；命令见 [统一验证手册](docs/validation.md)。不提交密钥、票据、录音、数据库或产物。
+只更新受影响主题；契约变更执行 scripts/export_contracts.py，同步客户端并回归。纯文档只改 Markdown，检查链接/锚点/命令语法/diff，无需跑应用测试。状态变化更新任务板，新验证才更新证据，勿追加全仓流水。维护规则按需读 [documentation.md](docs/development/documentation.md)。
 
-只更新受影响的主题；接口字段以代码/生成契约为准。纯文档任务只改 Markdown，检查链接/锚点和差异，无需重跑应用测试。任务状态变化才更新任务板，实际新验证才记验收，不要求每次生成全仓总结。文档职责及维护例子见 [维护规则](docs/development/documentation.md)。
+## VoiceChat 修改必须配套交付
 
-## VoiceChat 外部项目同步与启动
+上游是 [NVIDIA-NeMo/Speech nemotron-labs-voicechat](https://github.com/NVIDIA-NeMo/Speech/tree/nemotron-labs-voicechat)，实际基线以 manifest 为准，不自动升级 HEAD。
 
-- 外部源码以 [NVIDIA-NeMo/Speech 的 nemotron-labs-voicechat 分支](https://github.com/NVIDIA-NeMo/Speech/tree/nemotron-labs-voicechat) 为来源；实际修改基线记录在 manifest，不自动跟随分支 HEAD 升级。
-- 修改独立 VoiceChat/NVIDIA Speech 项目的源码或测试时，必须在同一提交中把修改后的完整文件按 Speech 根目录相对路径同步到 `docs/voicechat/`；不能只提交补丁文件或部署说明。同步更新 `docs/voicechat/snapshot-manifest.json` 的日期、文件 SHA-256、修改来源和已应用补丁；未修改的外部文件不得为凑快照而重写。
-- 重建 VoiceChat 容器时，受维护的运行文件直接从本仓库 `docs/voicechat/` 的绝对路径只读 bind mount 到容器实际加载路径，不依赖另一个宿主目录中的手工副本。新增运行文件必须同时补齐挂载与部署身份检查；测试文件只收录，不作为推理文件挂载。
-- `docs/voicechat/docker-run.md` 是本项目维护的 VoiceChat 验证容器启动命令。涉及 VoiceChat 运行文件、环境变量、GPU、卷挂载、端口、镜像或 entrypoint 的修改，必须在同一提交中更新该命令，并核对宿主文件与容器实际加载路径。新增环境变量或挂载必须通过重新创建容器生效，不能用重启旧容器代替。
-- 推送前核对外部修改文件与 `docs/voicechat/` 完整文件一致，运行受影响的编译/契约测试并检查 manifest hash。GPU、真实音频、原生工具或 CueKB 未实际验证时必须如实标注，不能用 CPU 夹具或容器成功启动替代现场验收。
+修改外部源码/测试必须在同一提交按 Speech 相对路径同步**完整文件**到 docs/voicechat，更新 snapshot-manifest.json 的日期、hash、来源和补丁；不能只交补丁，不重写未改文件凑快照。推送前核对外部文件与快照、相关编译/契约及 hash。
 
-当前验证执行入口只有 `docs/validation.md` 一份，不并行维护专题验证手册；该文档必须自包含，不能要求操作者转读其他文档。按用户明确要求归档的历史方法存放在 `docs/archive/`，标明停用及当前入口，不作为最新版本通过证据。生产验证在容器执行，宿主机入口自动提取会话/窗口并输出有界摘要，操作者只执行和回传，不承担诊断选择。
+受维护运行文件从本仓库绝对路径只读 bind mount 到容器实际路径。新增运行文件须补挂载与身份检查，测试文件不挂推理容器。运行文件、env、GPU、卷、端口、镜像或 entrypoint 变化，必须同提交更新 docs/voicechat/docker-run.md；新增 env/挂载需重建容器，不能只 restart。未实际验证 GPU/原生工具/CueKB/听音就明确标未验证。
+
+生产验证在容器执行，宿主单入口自动提取窗口/会话并输出有界摘要；操作者只执行回传，不承担诊断选择。
