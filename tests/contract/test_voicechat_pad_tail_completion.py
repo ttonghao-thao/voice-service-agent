@@ -422,6 +422,29 @@ def test_normal_model_eos_waits_for_new_input_and_blocks_silent_second_greeting(
     assert current_token(seq) == PAD and seq.awaiting_new_input
 
 
+@pytest.mark.parametrize("arrival", ["before_ack_eos", "after_ack_eos"])
+def test_ack_eos_then_result_consumption_allows_answer_without_new_user_speech(patched_backend, arrival):
+    model = model_harness(patched_backend)
+    seq = sequence(text=EOS, speaking=True, function_state="speaking_ack")
+    seq.voice_diagnostics = {}
+    if arrival == "before_ack_eos":
+        model._resume_reply_for_tool_result(seq)
+        seq.fn_call["response_tokens"] = deque([101])
+    # The last ACK token advances this state before turn taking is applied.
+    seq.fn_call["state"] = "process_response" if arrival == "before_ack_eos" else "waiting_for_response"
+    model._apply_turn_taking_from_rnnt_states(seq.seq_id, seq)
+    assert not seq.awaiting_new_input
+    if arrival == "after_ack_eos":
+        model._resume_reply_for_tool_result(seq)
+        seq.fn_call["state"] = "process_response"
+    model._reset_fn_call_state(seq.fn_call, seq)
+    seq.generated_text_tokens.tokens.append(BOS)
+    seq.generated_function_tokens.tokens.append(PAD)
+    seq.decoder_global_step += 1
+    model._apply_turn_taking_from_rnnt_states(seq.seq_id, seq)
+    assert current_token(seq) == BOS and not seq.awaiting_new_input
+
+
 def test_user_speech_interrupts_after_normal_model_eos_without_new_threshold(patched_backend):
     model = model_harness(patched_backend)
     seq = sequence(text=EOS, speaking=True, pads=0, content=4)

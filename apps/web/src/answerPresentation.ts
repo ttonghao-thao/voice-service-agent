@@ -1,6 +1,10 @@
 import type { Answer } from "./api";
 
 export function answerLabel(answer: Answer): string {
+  if (answer.reason_code === "CUEKB_PARTIAL_ANSWER") return "Partial answer";
+  if (answer.reason_code === "CUEKB_CONFLICT") return "Conflicting sources";
+  if (answer.status === "insufficient_evidence") return "Insufficient evidence";
+  if (answer.status === "needs_clarification") return "Clarification needed";
   if (answer.status === "answered") return "Reply complete";
   if (answer.status !== "failed") return "";
   if (answer.verification_timing === "after_audio") {

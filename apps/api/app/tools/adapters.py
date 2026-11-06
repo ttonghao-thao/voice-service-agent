@@ -10,6 +10,8 @@ from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
 import httpx
 from app.contracts import Citation, DomainError, now, uid
+from app.task_context import REFERENCE
+from app.tools.entity_context import context_binding
 from app.tools.evidence_contract import (
     EvidenceFacetInput,
     EvidenceQueryRequest,
@@ -118,7 +120,7 @@ class CueKBAdapter:
             tail_start = start + about.end() if about else None
             separators = list(re.finditer(r",\s*(?:and\s+)?", question[tail_start:end])) if tail_start else []
             if len(separators) >= 2:
-                listed, cursor = [], start
+                listed, cursor = [], tail_start
                 for separator in separators:
                     split_end = tail_start + separator.start()
                     if split_end > cursor:
@@ -175,6 +177,37 @@ class CueKBAdapter:
             "package": {"id": "synthetic-evidence-package", "expires_at": now() + timedelta(seconds=30)},
         }
 
+    async def _context_bindings(self, ctx, question):
+        recent = ctx.task_context.get("recent_inputs", [])
+        sequence = ctx.task_context.get("input_source", {}).get("sequence")
+        if sequence is not None:
+            recent = [row for row in recent if row.get("source", {}).get("sequence", sequence) <= sequence]
+        if self.settings.cuekb_mode != "real" or not recent or not REFERENCE.search(question):
+            return []
+        # Read only the principal's current authorized scope. Do not cache IDs
+        # across permission changes or trust UUIDs proposed by the model.
+        entities = []
+        headers = {"Authorization": "Bearer " + self.settings.cuekb_api_key.get_secret_value()}
+        for kb_id in ctx.principal.knowledge_base_ids:
+            for offset in range(0, 1000, 200):
+                rows = await bounded_json(self.client, "GET",
+                    self.settings.cuekb_base_url.rstrip("/") + f"/knowledge-bases/{kb_id}/entities",
+                    headers=headers, params={"limit": 200, "offset": offset}, limit=262144, retry=False)
+                if (not isinstance(rows, list) or len(rows) > 200 or any(
+                    not isinstance(row, dict) or str(row.get("kb_id")) != kb_id
+                    or not isinstance(row.get("name"), str) or not isinstance(row.get("aliases", []), list)
+                    for row in rows)):
+                    raise DomainError("CUEKB_CONTRACT_ERROR", "Invalid authorized entity catalog", 502)
+                entities.extend(rows)
+                if len(rows) < 200:
+                    break
+            else:
+                # A truncated catalog cannot establish uniqueness.
+                return []
+        bindings = context_binding(question, recent, entities)
+        ctx.task_context["context_bindings"] = bindings
+        return bindings
+
     async def _invoke_evidence(self, args, ctx, started):
         original = ctx.task_context.get("original_request") or args.query
         search_query = ctx.task_context.get("resolved_request") or original
@@ -188,7 +221,7 @@ class CueKBAdapter:
             filters={"product_model": args.product_model, "software_version": args.software_version},
             requested_facets=facets, delivery_profile="voice", max_groups=min(5, self.settings.cuekb_top_k),
             token_budget=self.settings.cuekb_voice_token_budget, request_id=request_id,
-            input_revision=input_revision,
+            input_revision=input_revision, context_bindings=await self._context_bindings(ctx, original),
         )
         if self.settings.cuekb_mode == "mock":
             data = self._mock_evidence(ctx, original, request_id, input_revision, facets)
@@ -223,6 +256,8 @@ class CueKBAdapter:
             or result.delivery.profile != "voice"
             or result.delivery.token_budget != self.settings.cuekb_voice_token_budget
             or result.delivery.token_count > result.delivery.token_budget
+            or (self.settings.cuekb_voice_tokenizer_id
+                and result.delivery.tokenizer_id != self.settings.cuekb_voice_tokenizer_id)
             or set(result.content_revisions) != authorized
             or set(result.authorization_revisions) != authorized
             or result.continuation.allowed

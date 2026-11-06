@@ -225,6 +225,10 @@ class EvidenceQueryResponse(StrictModel):
     @model_validator(mode="after")
     def consistent_evidence(self):
         facets = {facet.id: facet for facet in self.facets}
+        if len(facets) != len(self.facets) or len(set(self.missing)) != len(self.missing):
+            raise ValueError("facet_and_missing_ids_must_be_unique")
+        if any(facet_id not in facets for facet_id in self.missing):
+            raise ValueError("missing_facet_reference_missing")
         groups = {group.id: group for group in self.evidence}
         if len(groups) != len(self.evidence):
             raise ValueError("evidence_group_ids_must_be_unique")

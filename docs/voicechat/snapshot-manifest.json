@@ -3,11 +3,11 @@
   "source_branch": "nemotron-labs-voicechat",
   "source_commit": "097dfe9e2f55baf653b83035868bdc89849f1b47",
   "local_source_root": "/Users/snowking/Documents/speech",
-  "snapshot_date": "2026-10-30",
+  "snapshot_date": "2026-11-06",
   "files": {
     "docs/voicechat-api.md": "6e6a6d3137ae954ff2d9ec092f8e3d3ed59f3a76b5c325bdd08de36a59c38862",
     "opt/tritonserver/backends/nemotron-voicechat/data_types.py": "2b11144f2fadd33c4244b22c8d54ffe925e2883bd8f3df0b12446f1b848fbd03",
-    "opt/tritonserver/backends/nemotron-voicechat/model.py": "5116937c3c038a0b5fac56ca2fd9763775673df6b2e3ab15a847aa32d114fcd4",
+    "opt/tritonserver/backends/nemotron-voicechat/model.py": "e19f9fc464a80aa376ff2e0f75bd14ffc97b4fb88c22d0a1f09480f74864e80b",
     "opt/tritonserver/backends/nemotron-voicechat/runtime_setup.py": "f89b36f66222b3384791b5eecc98d82ae54fe7dd01f086224d4dfc1514fa28cc",
     "s2s/audio_server.py": "e42930ec267c8853f05e52ca41ca95bc4c46c0b8578236643ff54bf8eb5e4305",
     "s2s/tests/requirements.txt": "f82f57cefb76b9a9fb9bc131288bca7930d0a0f0492ec21a1917e206e76e825f",
@@ -53,7 +53,8 @@
     "deploy/voicechat/request-lifecycle.patch",
     "native-answer-context-and-followup-grouping",
     "response-context-reset-before-next-asr",
-    "deploy/voicechat/normal-eos-wait.patch"
+    "deploy/voicechat/normal-eos-wait.patch",
+    "deploy/voicechat/ack-eos-reply-continuation.patch"
   ],
   "file_sources": {
     "s2s/audio_server.py": {
@@ -72,7 +73,7 @@
       "source": "Repository CPU regression: real decode/resample/submission fingerprints, unmodified samples, ASR parts and IDs, diagnostics disabled, and no transcript content in logs; retain batch aggregate result tests. Deterministic-clock regression sends more than two seconds of catch-up ACK plus adjacent response PCM through the real ordered writer; verifies packet identity/order, bounded playback lead, idle no-credit and cancellation. CPU server dispatch regression for ACK/result/follow-up/answer boundaries, stable call ownership and a general next question. Verify completed assistant response context is cleared and never attached to the next user ASR event."
     },
     "opt/tritonserver/backends/nemotron-voicechat/model.py": {
-      "source": "Repository RNNT display-only fix: initialize predictor with y=None, add_sos=False (one zero step) to match NeMo GreedyRNNTInfer; preserve EOU/BOU, encoder frames, thresholds, weights and tool/PAD behavior. The upstream VoiceChat wrapper also has the former double-zero pattern; CPU recurrence/counterexample tests do not establish the deployed speech root cause or accuracy. Repository completion follow-up: after the existing PAD-tail forced EOS, suppress unsolicited text/function tokens before TTS, parsing and subsequent model history until new RNNT speech or a result for an outstanding native call. Preserve the display predictor fix, listening, original thresholds, ACK and full-duplex context; no weight or engine speed changes. Tool consumption repair: real audio cursor and ordered buffered catch-up independent of synthetic tool steps; queued results survive busy sequences; vectorized forced function embeddings and one coroutine skip unused sampling/per-token CPU copies; keep the same one-token append/anext engine contract. Fail partial writes explicitly without replay; no trained weights or RNNT thresholds changed. CPU recurrence/buffering checks do not establish native routing or GPU speed. Cross-thread injection recovery: update inference-tensor history inside a narrow inference_mode on the event-loop thread, never across await. Preserve one append per token, no replay on partial failure; report safe error type and remaining token count. Handle finished and exhausted generation without another append; remember terminal failure, report finish reason/token counters, and finalize END independently of decoding with idempotent cleanup and final display ASR. Normal EOS completion now enters the same awaiting-new-input state as PAD-tail completion, so the one session greeting remains interruptible and a silent second greeting/function turn cannot start before new speech or a pending tool result.",
+      "source": "Repository RNNT display-only fix: initialize predictor with y=None, add_sos=False (one zero step) to match NeMo GreedyRNNTInfer; preserve EOU/BOU, encoder frames, thresholds, weights and tool/PAD behavior. The upstream VoiceChat wrapper also has the former double-zero pattern; CPU recurrence/counterexample tests do not establish the deployed speech root cause or accuracy. Repository completion follow-up: after the existing PAD-tail forced EOS, suppress unsolicited text/function tokens before TTS, parsing and subsequent model history until new RNNT speech or a result for an outstanding native call. Preserve the display predictor fix, listening, original thresholds, ACK and full-duplex context; no weight or engine speed changes. Tool consumption repair: real audio cursor and ordered buffered catch-up independent of synthetic tool steps; queued results survive busy sequences; vectorized forced function embeddings and one coroutine skip unused sampling/per-token CPU copies; keep the same one-token append/anext engine contract. Fail partial writes explicitly without replay; no trained weights or RNNT thresholds changed. CPU recurrence/buffering checks do not establish native routing or GPU speed. Cross-thread injection recovery: update inference-tensor history inside a narrow inference_mode on the event-loop thread, never across await. Preserve one append per token, no replay on partial failure; report safe error type and remaining token count. Handle finished and exhausted generation without another append; remember terminal failure, report finish reason/token counters, and finalize END independently of decoding with idempotent cleanup and final display ASR. Normal EOS completion now enters the same awaiting-new-input state as PAD-tail completion, so the one session greeting remains interruptible and a silent second greeting/function turn cannot start before new speech or a pending tool result. ACK EOS preserves the outstanding tool continuation for results received before or after ACK completion.",
       "reference_commit": "097dfe9e2f55baf653b83035868bdc89849f1b47",
       "reference_symbols": {
         "nemo/collections/asr/modules/rnnt.py": "RNNTDecoder.predict",

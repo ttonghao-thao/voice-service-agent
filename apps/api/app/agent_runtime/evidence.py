@@ -7,6 +7,42 @@ from app.contracts import PresentationContract, printable_ascii
 PORTAL_SPEECH = "Please read the written answer in the portal for the complete conditions."
 
 
+_NUMBER_WORDS = dict(zip(
+    "zero one two three four five six seven eight nine ten eleven twelve thirteen fourteen fifteen sixteen seventeen eighteen nineteen".split(),
+    range(20), strict=True))
+_NUMBER_WORDS.update(dict(zip("twenty thirty forty fifty sixty seventy eighty ninety".split(), range(20, 100, 10), strict=True)))
+_NUMBER_WORDS.update(hundred=100, thousand=1000, million=1000000)
+_NUMBER_PATTERN = re.compile(r"\b(?:" + "|".join(_NUMBER_WORDS) + r")(?:[ -]+(?:and[ -]+)?(?:" + "|".join(_NUMBER_WORDS) + r"))*\b", re.I)
+
+
+def normalize_numbers(text):
+    """English integer words used by speech must receive the same numeric check."""
+    def convert(match):
+        total = current = 0
+        for word in re.split(r"[ -]+", match.group().lower()):
+            if word == "and":
+                continue
+            value = _NUMBER_WORDS[word]
+            if value == 100:
+                current = max(1, current) * value
+            elif value >= 1000:
+                total += max(1, current) * value
+                current = 0
+            else:
+                current += value
+        return str(total + current)
+    digits = "|".join(list(_NUMBER_WORDS)[:10])
+    # Consume fractional digits before cardinal grouping (seven five is .75,
+    # not the cardinal sum twelve).
+    text = re.sub(r"\bpoint ((?:" + digits + r")(?:[ -]+(?:" + digits + r"))*)\b",
+                  lambda match: "point " + "".join(str(_NUMBER_WORDS[word])
+                      for word in re.split(r"[ -]+", match[1].lower())), text, flags=re.I)
+    text = _NUMBER_PATTERN.sub(convert, text)
+    text = re.sub(r"\b(\d+) point (\d+)\b", r"\1.\2", text, flags=re.I)
+    return re.sub(r"(\d)\s+percent\b", r"\1%", text, flags=re.I)
+
+
+
 def contains_condition(text, value):
     return bool(re.search(r"(?<![A-Za-z0-9_.-])" + re.escape(value) + r"(?![A-Za-z0-9_-]|\.[A-Za-z0-9])", text, re.I))
 
@@ -82,6 +118,7 @@ class EvidenceGate:
         source = " ".join(item.content + " " + (item.context or "") + " " + " ".join(
             str(item.metadata.get(key, "")) for key in ("product_model", "software_version"))
             for item in evidence)
+        text, source = normalize_numbers(text), normalize_numbers(source)
         # Reject new numeric facts; this deliberately does not certify paraphrases.
         def numbers(value):
             return set(re.findall(r"(?<![A-Za-z0-9])\d+(?:\.\d+)*(?:%|[A-Za-z]+)?", value))
@@ -92,6 +129,21 @@ class EvidenceGate:
                                   r"mbps|gbps|mhz|ghz|volts?|watts?|meters?|metres?|degrees?)\b", value, re.I))
         if {q.casefold() for q in quantities(text)} - {q.casefold() for q in quantities(source)}:
             return "VOICE_UNSUPPORTED_UNIT"
+        # Do not allow a number present elsewhere in the source to migrate
+        # into a different explicit condition (e.g. sealed vs after opening).
+        for condition in (r"after opening|once opened", r"sealed|unopened"):
+            claimed = [part for part in re.split(r"[.;!?]", text)
+                       if re.search(condition, part, re.I)]
+            supported = [part for part in re.split(r"[.;!?]", source)
+                         if re.search(condition, part, re.I)]
+            if claimed and supported:
+                scoped_source = " ".join(supported)
+                for claim in claimed:
+                    if numbers(claim) - numbers(scoped_source):
+                        return "VOICE_MISSING_CONDITION"
+                    if (re.search(r"refrigerat", scoped_source, re.I)
+                        and re.search(r"room temperature|unrefrigerated", claim, re.I)):
+                        return "VOICE_MISSING_CONDITION"
         if EvidenceGate.missing_conditions(text, evidence):
             return "VOICE_MISSING_CONDITION"
         return None

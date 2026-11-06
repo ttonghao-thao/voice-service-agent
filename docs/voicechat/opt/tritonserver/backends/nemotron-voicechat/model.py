@@ -1495,7 +1495,11 @@ class TritonPythonModel:
             # silent model-native BOS/function call from opening another
             # greeting or answer before new speech (or an outstanding tool
             # result) explicitly resumes the reply.
-            seq_state.awaiting_new_input = True
+            # ACK EOS is not the end of the business reply. The last ACK
+            # token has already advanced fn_call to waiting_for_response or
+            # process_response here. An early result must survive this EOS;
+            # otherwise injection finishes into a permanently gated decoder.
+            seq_state.awaiting_new_input = seq_state.fn_call["state"] == "idle"
 
         # Optional protocol completion on the exact first frame that the existing
         # TTS PAD-tail policy would replace with codec silence. New user speech or

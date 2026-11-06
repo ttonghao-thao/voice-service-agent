@@ -362,12 +362,18 @@ class SessionCoordinator:
                 "VOICE_ANSWER_INVALID", "RAG_INVALID_CITATION", "VOICE_UNSUPPORTED_NUMBER",
                 "VOICE_UNSUPPORTED_UNIT", "VOICE_MISSING_CONDITION",
             }
+            evidence_decision = ready.envelope.get("decision")
+            result_status = {"clarify": "needs_clarification", "insufficient": "insufficient_evidence",
+                             "conflict": "insufficient_evidence", "partial_answer": "insufficient_evidence"}.get(
+                                 evidence_decision, "answered")
+            decision_reason = {"partial_answer": "CUEKB_PARTIAL_ANSWER", "conflict": "CUEKB_CONFLICT",
+                               "insufficient": "CUEKB_INSUFFICIENT", "clarify": "CUEKB_NEEDS_CLARIFICATION"}.get(evidence_decision)
             bundle = AnswerBundle(
-                answer_id=ready.answer_id, status="failed" if code else "answered",
+                answer_id=ready.answer_id, status="failed" if code else result_status,
                 display_text="The spoken response could not be verified. Please try again." if code else text,
                 speech_text="" if code else text if len(text) <= 160 else "Please read the written answer in the portal.",
-                citations=ready.citations if not code or reviewable else [], reason_code=code,
-                answer_kind="knowledge", composition="nano_grounded",
+                citations=ready.citations if not code or reviewable else [], reason_code=code or decision_reason,
+                answer_kind="clarification" if evidence_decision == "clarify" else "knowledge", composition="nano_grounded",
                 validation_level="source_checked", verification_timing="after_audio",
                 is_mock=any(c.is_mock for c in ready.citations),
                 presentation=contract,

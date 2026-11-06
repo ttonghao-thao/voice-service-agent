@@ -44,6 +44,7 @@ async def relay(gateway, ws, session, provider):
     batches = ToolBatches()
     terminal_sent = set()
     last_results = {}
+    completed_inputs = {}
     latest_input = None
     greeting_response_id = None
     seq, client_seq, frames = 0, -1, 0
@@ -87,6 +88,10 @@ async def relay(gateway, ws, session, provider):
             response = responses.get(rid)
             if rid in session.suppressed_responses and kind in (
                 "portal.audio.delta", "portal.audio.done", "portal.speech_text.delta", "portal.speech_text.done"):
+                if kind == "portal.audio.done" and response:
+                    response["drained"] = True
+                    logger.info("voice_response_drained conversation_id=%s response_id=%s input_item_id=%s status=suppressed",
+                                cid, rid, response["input"])
                 continue
             async with asyncio.timeout(2):
                 await ws.send_json(event)
@@ -102,6 +107,7 @@ async def relay(gateway, ws, session, provider):
                         cid, rid, response["input"])
             elif kind == "portal.audio.done":
                 response["sent_done"] = True
+                response["drained"] = True
                 logger.info("voice_response_completed conversation_id=%s response_id=%s input_item_id=%s phase=%s samples=%s",
                     cid, rid, response["input"], body["phase"], response["sent"])
 
@@ -146,7 +152,9 @@ async def relay(gateway, ws, session, provider):
                         "reason": "search_finished"})
                     outcomes.append({"index": str(index), "status": "not_executed", "reason": "search_finished"})
                 settlement = {"status": "not_executed", "reason": "search_finished",
-                              "search_state": "finished", "instructions": FINAL_INSTRUCTIONS}
+                              "search_state": "finished", "instructions": (
+                                  "This input was answered. Wait for new user input. Do not speak or call tools."
+                                  if item_id in completed_inputs else FINAL_INSTRUCTIONS)}
                 if batch.size > 1:
                     settlement["call_results"] = outcomes
                 text = json.dumps(settlement, ensure_ascii=True, separators=(",", ":"))
@@ -212,6 +220,13 @@ async def relay(gateway, ws, session, provider):
             if batch.size > 1:
                 result["call_results"] = outcomes
             text = json.dumps(compact_voice_result(result), ensure_ascii=True, separators=(",", ":"))
+            if isinstance(bundle, EvidenceReady) and bundle.envelope.get("delivery"):
+                delivery = bundle.envelope["delivery"]
+                logger.info("voice_evidence_wire_budget conversation_id=%s input_item_id=%s "
+                            "model_view_tokens=%s model_view_bytes=%s wire_bytes=%s tokenizer_id=%s "
+                            "token_basis=model_view_only",
+                            cid, item_id, delivery["token_count"], delivery["byte_count"],
+                            len(text.encode()), delivery["tokenizer_id"])
             if len(text.encode()) > gateway.settings.qa_direct_evidence_max_bytes:
                 raise DomainError("VOICE_EVIDENCE_BUDGET", "The aggregate tool result exceeds its byte limit.", 502, True)
             call_ids = [p["call_id"] for p in batch.calls]
@@ -284,16 +299,19 @@ async def relay(gateway, ws, session, provider):
                 if input_state == "speaking":
                     latest_input = body["item_id"]
                     input_future(latest_input)
-                    # A session greeting has no user owner. If the customer
-                    # starts speaking while it is playing, stop the remainder
-                    # without canceling or relabeling the new input.
+                    # Barge-in stops playback for the existing response IDs,
+                    # including frames still in flight. It does not cancel the
+                    # evidence task or reassign its answer to the new input.
+                    interrupted = []
                     for response_id, response in responses.items():
-                        if response["answer_kind"] == "greeting":
+                        if not response["done"] and response["input"] != latest_input:
                             session.suppressed_responses.add(response_id)
+                            interrupted.append(response_id)
                     logger.info("voice_input_started conversation_id=%s input_item_id=%s", cid, latest_input)
-                    # Clear already-buffered playback on native speech start;
-                    # continue receiving and forwarding the provider's stream.
-                    emit("playback.clear", {"message": "Customer speaking"})
+                    for response_id in interrupted:
+                        emit("playback.clear", {"message": "Customer speaking", "response_id": response_id})
+                    if not interrupted:
+                        emit("playback.clear", {"message": "Customer speaking"})
                 emit("input.state", {"state": input_state})
                 continue
             if event.kind.startswith("transcript"):
@@ -351,6 +369,12 @@ async def relay(gateway, ws, session, provider):
                 continue
             rid = body["response_id"]
             response = response_for(rid, body)
+            # A response may have opened while the winning answer was still
+            # streaming. Recheck on every frame, not only response creation.
+            winner = completed_inputs.get(response["input"])
+            if winner is not None and winner != rid:
+                response["duplicate_answer"] = True
+                session.suppressed_responses.add(rid)
             for key in ("input_item_id", "tool_call_ids", "related_input_item_ids"):
                 body.pop(key, None)
             if event.kind == "audio.delta" and not response.get("audio_received"):
@@ -375,7 +399,7 @@ async def relay(gateway, ws, session, provider):
                 else:
                     response["text"] = body["text"]
                     response["ack"] = " ".join(body["text"].split()) in acks
-                    if not response["ack"] and not response.get("unsolicited"):
+                    if not response["ack"] and not response.get("unsolicited") and not response.get("duplicate_answer"):
                         await store.record(cid, epoch, "voicechat_transcript", rid, {
                             **body, "input_item_id": response["input"],
                             "related_input_item_ids": response["related_inputs"],
@@ -387,7 +411,9 @@ async def relay(gateway, ws, session, provider):
             if event.kind == "audio.done":
                 body["phase"] = "status" if response["ack"] else "answer"
                 response["done"] = True
-                if response["text"] and not response["ack"]:
+                if response["text"] and not response["ack"] and not response.get("duplicate_answer"):
+                    if response["input"]:
+                        completed_inputs[response["input"]] = rid
                     if operation and operation["sent"] and operation["evidence"]:
                         coordinator.provider_answer(operation["turn"], response["text"], response_id=rid)
                     elif not operation and response["input"]:
@@ -427,12 +453,17 @@ async def relay(gateway, ws, session, provider):
                 for key, operation in tool_inputs.items()
             ):
                 raise DomainError("VOICE_PROTOCOL_ERROR", "Upgrade VoiceChat for interleaved answer association.", 502)
+            duplicate_answer = item_id is not None and item_id in completed_inputs
+            if duplicate_answer:
+                session.suppressed_responses.add(rid)
+                logger.info("voice_completed_input_output_suppressed conversation_id=%s input_item_id=%s response_id=%s",
+                            cid, item_id, rid)
             responses[rid] = {"input": item_id, "related_inputs": related,
                               "tool_call_ids": calls_for_response,
                               "answer_kind": "greeting" if session_greeting else "knowledge" if calls_for_response else "general",
-                              "unsolicited": unsolicited,
+                              "unsolicited": unsolicited, "duplicate_answer": duplicate_answer,
                               "text": "", "ack": False, "acks": (),
-                              "sent": 0, "done": False, "sent_done": False, "streamed_chars": 0, "stream_text": ""}
+                              "sent": 0, "done": False, "sent_done": False, "drained": False, "streamed_chars": 0, "stream_text": ""}
         elif body.get("input_item_id", responses[rid]["input"]) != responses[rid]["input"]:
             raise DomainError("VOICE_PROTOCOL_ERROR", "A response changed its input association.", 502)
         elif any(key in body and body[key] != responses[rid][stored]
@@ -501,7 +532,7 @@ async def relay(gateway, ws, session, provider):
                     for operation in tool_inputs.values()
                 )
                 if (input_state == "quiet" and not executing and calls.empty() and not batches.pending and not awaiting_answer
-                    and outgoing.empty() and all(r["sent_done"] for r in responses.values())):
+                    and outgoing.empty() and all(r["drained"] for r in responses.values())):
                     raise DomainError("VOICE_SESSION_ROTATION_REQUIRED", "Reconnect to continue the conversation.", 409, True)
                 if elapsed > gateway.settings.voice_session_max_seconds + 30:
                     raise DomainError("VOICE_SESSION_EXPIRED", "Voice connection reached its time limit. Restart voice.", 409, True)

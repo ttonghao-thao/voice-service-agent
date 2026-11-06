@@ -108,7 +108,7 @@ def test_provider_fixture_is_strict_and_unknown_fields_fail():
     ),
     (
         "What does the documentation say about price, weight, pastry layers, and best consumption time?",
-        ["What does the documentation say about price", "weight", "pastry layers", "best consumption time?"],
+        ["price", "weight", "pastry layers", "best consumption time?"],
     ),
 ])
 def test_question_facets_preserve_exact_spans_for_compound_voice_questions(question, texts):
@@ -116,3 +116,100 @@ def test_question_facets_preserve_exact_spans_for_compound_voice_questions(quest
     assert [facet.text for facet in facets] == texts
     assert all(question[start:end] == facet.text
                for facet, (start, end) in ((facet, facet.question_span) for facet in facets))
+
+
+async def test_english_typography_is_projected_without_mutating_signed_evidence():
+    from app.voice.provider import NvidiaVoiceChatAdapter
+    original = {'decision': 'answer', 'evidence': [{'id': 'E1', 'for': 'Shelf life',
+                'text': 'Monkey “Golden Yolk” — sealed: 45 days.', 'conditions': []}],
+                'missing': [], 'search': 'finished'}
+    ready = EvidenceReady({'schema_version': 'cuekb-evidence-v2.1', 'model_view': original,
+                           'instructions': 'Answer now.'}, [], 0, 'answer')
+    result = voice_result(ready)
+    sent = []
+    async def send(packet):
+        sent.append(packet)
+    adapter = NvidiaVoiceChatAdapter(Settings(_env_file=None))
+    adapter.ws = SimpleNamespace(send=send)
+    await adapter.submit_tool_result('call', json.dumps(result, ensure_ascii=True))
+    assert len(sent) == 1
+    assert '“Golden Yolk”' in original['evidence'][0]['text']
+    assert result['evidence'][0]['text'] == 'Monkey "Golden Yolk" - sealed: 45 days.'
+
+
+def test_context_bindings_require_unique_authorized_user_mentions():
+    from app.tools.entity_context import context_binding
+    entity = {'id': '11111111-1111-4111-8111-111111111112', 'name': 'Monkey Golden Yolk Mooncake',
+              'aliases': ['Golden Yolk', 'golden yoke']}
+    question = 'How long is its shelf life?'
+    assert context_binding(question, [{'text': 'What about golden yoke mooncake?'}], [entity]) == [
+        {'entity_id': entity['id'], 'source': 'confirmed_conversation_context'}]
+    for prior in ['Not Golden Yolk.', 'Compare Golden Yolk and Black Pig.', 'What about another product?']:
+        assert not context_binding(question, [{'text': prior}], [entity])
+    duplicate = {**entity, 'id': '11111111-1111-4111-8111-111111111113'}
+    assert not context_binding(question, [{'text': 'Golden Yolk'}], [entity, duplicate])
+    assert not context_binding(question, [{'text': 'Golden Yolk'}], [])
+
+
+@pytest.mark.parametrize('claim,code', [
+    ('The sealed shelf life is ninety days.', 'VOICE_UNSUPPORTED_NUMBER'),
+    ('The sealed shelf life is forty-five days.', None),
+    ('After opening, eat within forty five days.', 'VOICE_MISSING_CONDITION'),
+    ('After opening, store at room temperature and eat within three days.', 'VOICE_MISSING_CONDITION'),
+    ('After opening, refrigerate and eat within three days.', None),
+])
+def test_spoken_numbers_and_conditions_are_checked_against_their_source(claim, code):
+    from app.agent_runtime.evidence import EvidenceGate
+    from app.contracts import Citation
+    citation = Citation(citation_id='C1', document_id='d', chunk_id='c', title='Shelf life', version_id='v', trace_id='t', retrieval_id='r', rank=1,
+                        content='Sealed shelf life: 45 days. After opening, refrigerate and consume within 3 days.')
+    assert EvidenceGate.check_spoken(claim, [citation]) == code
+
+
+async def test_pronoun_uses_authorized_catalog_and_user_history_not_model_query():
+    ctx = context('How long is its shelf life?')
+    ctx.task_context['recent_inputs'] = [{'text': 'What about golden yoke mooncake?'}]
+    seen = []
+    def handle(request):
+        seen.append(request)
+        assert request.url.path == f'/knowledge-bases/{KB}/entities'
+        assert request.headers['authorization'] == 'Bearer private'
+        return httpx.Response(200, json=[{'id': '11111111-1111-4111-8111-111111111112',
+            'kb_id': KB, 'name': 'Monkey Golden Yolk Mooncake', 'aliases': ['golden yoke']}])
+    settings = Settings(_env_file=None, cuekb_mode='real', cuekb_base_url='https://cuekb.fixture', cuekb_api_key='private')
+    async with httpx.AsyncClient(transport=httpx.MockTransport(handle)) as client:
+        adapter = CueKBAdapter(settings, client)
+        binding = await adapter._context_bindings(ctx, ctx.task_context['original_request'])
+    assert len(seen) == 1
+    assert binding == [{'entity_id': '11111111-1111-4111-8111-111111111112', 'source': 'confirmed_conversation_context'}]
+
+
+@pytest.mark.parametrize("spoken,normalized", [
+    ("three point seven five percent", "3.75%"),
+    ("forty-five days", "45 days"),
+    ("one hundred and five", "105"),
+])
+def test_numeric_word_normalization_preserves_values(spoken, normalized):
+    from app.agent_runtime.evidence import normalize_numbers
+    assert normalize_numbers(spoken) == normalized
+
+
+async def test_tokenizer_identity_mismatch_is_rejected_before_package_delivery():
+    from app.contracts import DomainError
+    question = 'What is Product A input voltage?'
+    payload = provider_response()
+    payload.update(request_id='input-1', input_revision=3)
+    payload['delivery'].update(profile='voice', token_budget=300)
+    payload['facets'][0].update(id='f1', text=question)
+    payload['evidence'][0]['supports'] = ['f1']
+    seen = []
+    def handle(request):
+        seen.append(request.url.path)
+        return httpx.Response(200, json=payload)
+    settings = Settings(_env_file=None, cuekb_mode='real', cuekb_base_url='https://cuekb.fixture',
+                        cuekb_voice_token_budget=300, cuekb_voice_tokenizer_id='different-tokenizer')
+    async with httpx.AsyncClient(transport=httpx.MockTransport(handle)) as client:
+        with pytest.raises(DomainError) as caught:
+            await CueKBAdapter(settings, client).invoke(CueKBSearchInput(query=question), context(question))
+    assert caught.value.code == 'CUEKB_CONTRACT_ERROR'
+    assert seen == ['/v2/evidence/query']

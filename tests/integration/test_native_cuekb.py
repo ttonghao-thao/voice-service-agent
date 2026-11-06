@@ -347,6 +347,8 @@ def evidence_transport(searches, *, statement="Product AX supports 10 connection
     state = {"kb_ids": []}
 
     def handle(request):
+        if request.method == "GET" and request.url.path.endswith("/entities"):
+            return httpx.Response(200, json=[])
         body = json.loads(request.content)
         if request.url.path == "/v2/evidence/query":
             searches.append(body)
@@ -362,6 +364,10 @@ def evidence_transport(searches, *, statement="Product AX supports 10 connection
 
 def mount_evidence_api(app, searches, *, statement="Product AX supports 10 connections.", conditions=None):
     state = {"kb_ids": []}
+
+    @app.get("/knowledge-bases/{kb_id}/entities")
+    async def entities(kb_id: str):
+        return []
 
     @app.post("/v2/evidence/query")
     async def query(request: Request):

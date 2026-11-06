@@ -51,7 +51,9 @@ def voice_result(ready):
                   "instructions": ready.envelope["instructions"]}
         if ready.envelope.get("clarification"):
             result["clarification"] = ready.envelope["clarification"]
-        return result
+        # Normalize English typography only at the speech boundary. Signed
+        # model_view, source citations and package validation stay unchanged.
+        return normalize_voice_punctuation(result)
     sources = [model_source(item) for item in ready.envelope["items"]]
     # Deployed VoiceChat verbalizes JSON booleans (observed false -> "zero").
     # Text flags survive that boundary; internal audit stays bool.
@@ -67,6 +69,10 @@ def compact_voice_result(result):
     This is a wire projection, not admission or ranking. The original sources
     remain authoritative for deduplication, citations and presentation checks.
     """
+    if "decision" in result and "evidence" in result:
+        # search_state already carries this flag. Keep status for existing
+        # consumers; omit only duplicate metadata, never fact text/conditions.
+        return {key: value for key, value in result.items() if key != "search"}
     sources = result.get("sources", [])
     if len(sources) < 2:
         return result
@@ -315,7 +321,10 @@ class NativeCueKBExecutor:
             "evidence": [{"id": item["id"], "for": item.get("for", item.get("for_")),
                           "text": item["text"], "conditions": item["conditions"]}
                          for item in result["model_view"]["evidence"]],
-            "missing": result["model_view"]["missing"],
+            # Keep the signed provider packet unchanged in audit. The speech
+            # projection expands opaque facet IDs into the user's exact spans.
+            "missing": [next(facet["text"] for facet in result["facets"] if facet["id"] == item)
+                        for item in result["model_view"]["missing"]],
             "search": "finished",
         }
         answer_id = uid()
@@ -323,6 +332,7 @@ class NativeCueKBExecutor:
             "schema_version": "cuekb-evidence-v2.1", "answer_id": answer_id,
             "status": "evidence_ready", "query": request, "decision": result["decision"],
             "trace_id": trace_id, "model_view": model_view, "items": items,
+            "delivery": result["delivery"],
             "clarification": result.get("clarification"),
             "instructions": FINAL_INSTRUCTIONS,
             "presentation": presentation_contract("grounded", ctx.slots).model_dump(),

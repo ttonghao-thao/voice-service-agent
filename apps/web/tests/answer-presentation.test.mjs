@@ -26,3 +26,11 @@ test("completed reply does not claim requested facts were found", () => {
   assert.equal(answerLabel({ status: "failed", reason_code: "CUEKB_AUTH_FAILED" }), "Search failed");
   assert.equal(answerLabel({ status: "failed", reason_code: "AGENT_FAILED" }), "Request failed");
 });
+
+
+test("incomplete or conflicting evidence does not claim a complete reply", () => {
+  assert.equal(answerLabel({ status: "insufficient_evidence", reason_code: "CUEKB_PARTIAL_ANSWER" }), "Partial answer");
+  assert.equal(answerLabel({ status: "insufficient_evidence", reason_code: "CUEKB_CONFLICT" }), "Conflicting sources");
+  assert.equal(answerLabel({ status: "insufficient_evidence" }), "Insufficient evidence");
+  assert.equal(answerLabel({ status: "needs_clarification" }), "Clarification needed");
+});

@@ -89,3 +89,11 @@ Golden Yolk 与 Black Pig 必须通过 CueKB 的实体/局部来源归属隔离�
 | 未知字段/枚举、绑定不一致 | `CUEKB_CONTRACT_ERROR`，不回退旧接口 |
 
 HTTP 3xx 不跟随，语音路径不做叠加 HTTP 重试。上游响应有界为 256 KiB，最终模型载荷还必须满足本项目的原生结果字节上限。真实 Recall、产品归属、P95、GPU 注入速度、听音和多轮连接存活仍需部署后验收；代码契约和 CPU fixture 不能替代现场结果。
+
+## 语音消费修订（2026-11-06）
+
+原始问题和来源、签名包保持原样。消费投影只规范化英文弯引号/破折号等同义标点，将 `missing` 的 facet ID 展开为用户原始问题项，并去除重复的 search 标志；不会合并或截断事实。审计记录保留原始来源和 CueKB 的 decision。部分支持映射为 `insufficient_evidence/CUEKB_PARTIAL_ANSWER`；冲突与无证据分别保留原因；clarify 为 needs_clarification。门户分别显示 Partial answer、Conflicting sources、Insufficient evidence 或 Clarification needed。
+
+带代词的追问从服务端保存的用户输入中解析唯一的精确实体名/别名；只读取当前 principal 的 KB 的 `GET /knowledge-bases/{kb_id}/entities`，以 `context_bindings` 传给 CueKB。模型 query、助手回答和未来输入不参与授权。歧义、否定、换题或目录未完整读取时不推定绑定；ASR 的 yoke 等别名需由 CueKB 目录明确登记。每 KB 最多读取 1000 个实体，达到分页上限时保守不绑定。此 API 为只读目录读取，不计作第二次证据 query；权限/证据包验证仍由 CueKB 执行。
+
+`CUEKB_VOICE_TOKEN_BUDGET` 只约束服务端 canonical model_view，不能声称是最终函数通道的 token 上限。可设置 `CUEKB_VOICE_TOKENIZER_ID` 固定已登记 tokenizer 标识，不匹配即拒绝该响应。应用输出 model_view token/byte 与最终 wire byte；VoiceChat 的实际 tokenizer 对完整通道封装计数，由时间线 `backend.result_received.wire_tokens` 和 `backend.inject_profile` 对照。英文标点规范化、missing 展开与通道封装后的完整预算仍需与 CueKB 扩展版本配套；不以估算的字符/token 比冒充精确计数。

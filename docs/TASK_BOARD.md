@@ -1,15 +1,20 @@
 # 当前工作状态
 
-更新：2026-10-30。CueKB `main@30970e9` 已实现 `cuekb.evidence/2.1`；本项目已完成严格 consumer、单输入一次问题级请求、证据包 validate、终态后调用结清和正常 EOS 后等待新输入的编码，当前状态为代码验证完成、待配套部署和真实 GPU/语料验收。需求与接口见 [CueKB 方案](CueKB.md) 和 [消费契约](interfaces/cuekb.md)，所有现场操作与证据只维护在[当前验证手册](validation.md)。
+更新：2026-11-06。CueKB `main@30970e9` 已实现 `cuekb.evidence/2.1`；本项目已完成严格 consumer、单输入一次问题级请求、证据包 validate、终态后调用结清和正常 EOS 后等待新输入的编码，当前状态为本轮功能修复及回归完成、待配套部署和真实 GPU/语料验收；完整注入预算及工具期间实时 ASR 尚未完成。需求与接口见 [CueKB 方案](CueKB.md) 和 [消费契约](interfaces/cuekb.md)，所有现场操作与证据只维护在[当前验证手册](validation.md)。
 
 | 优先级 | 问题/任务 | 当前状态 | 完成条件 |
 | --- | --- | --- | --- |
-| P0 已编码，待现场 | 欢迎语完成后的再次主动输出 | VoiceChat 正常 EOS 与 PAD-tail 均进入 `awaiting_new_input`；API 只播放首次无输入欢迎语，后续无归属输出有界抑制，用户开口清除欢迎语剩余播放 | 配套部署后验证三秒欢迎语只一次、麦克风可打断、随后首问和同连接下一问正常；未知显式归属仍严格失败 |
+| P0 已编码，待现场 | 欢迎语完成后的再次主动输出 | VoiceChat 业务回答的正常 EOS 与 PAD-tail 均进入 `awaiting_new_input`；API 只播放首次无输入欢迎语，后续无归属输出有界抑制，用户开口清除欢迎语剩余播放 | 配套部署后验证三秒欢迎语只一次、麦克风可打断、随后首问和同连接下一问正常；未知显式归属仍严格失败 |
+| P0 已修复，待真实 GPU | ACK EOS 阻断早到工具结果 | 区分工具确认语 EOS 与业务回答 EOS；结果在 ACK 前后到达均可继续回答 | 两种时序下都出现正式回答且下一问可用 |
+| P0 已修复，待现场 | 英文弯引号导致工具结果断连 | 仅在语音边界规范化同义标点，原始证据不改 | 带弯引号/破折号的真实来源成功回答 |
+| P1 已修复，待现场 | 插话、重复答案、被抑制响应阻止轮换 | 按 response_id 丢弃旧播放帧；已回答输入拒绝重复输出；被抑制 done 仍标记 drained | 普通回答和欢迎语均可打断；不重查、不重复答、不误关连接 |
+| P1 已实现，待语料 | 指代绑定、问题项与事实状态 | 授权实体名/别名绑定，about 列举问题只传真实属性跨度；英文数字与密封/开封条件检查；保留 partial/insufficient/conflict 状态 | 目录覆盖与真实 Golden/Black 金标验收；词法检查不宣称完整语义证明 |
+| P1 部分完成 | 完整注入预算与实时输入 | 可固定 tokenizer ID；最终 wire bytes/后端 wire_tokens 单独观测；删去重复标志。逐 token 注入仍暂停 ASR，未改推理调度 | 后续需 CueKB 对最终语音投影共同预算和 GPU 验证；不把 model_view 120 token 当最终上限，不宣称延迟已解决 |
 | P0 外部实现已确认 | CueKB 问题级证据契约 | CueKB `30970e9` 已提供 `/v2/evidence/query`、`/v2/evidence/validate`、facet/decision、内部有界补召回、产品实体过滤、voice tokenizer 预算和签名包校验；本仓同步 provider fixture 与严格 consumer schema | 配套部署后以真实 Golden/Black 语料验证产品隔离、facet 决策、tokenizer 身份、package validate 和错误映射 |
-| P0 已编码，待现场 | 完整问题一次检索与单 input 单 Turn | 最终 ASR 原文进入 `question`，受控解析进入 `search_query/filters`；每输入固定一次 query、一次 validate、一次业务证据注入和一个 Turn，provider `model_view` 原样消费 | Golden 组合问题只出现一次 CueKB query 和一次 evidence result；冗余调用只接收小型 settlement result，Turn 不再 superseded/canceled，回答覆盖 provider decision/facets |
+| P0 已编码，待现场 | 完整问题一次检索与单 input 单 Turn | 最终 ASR 原文进入 `question`，受控解析进入 `search_query/filters`；每输入固定一次 query、一次 validate、一次业务证据注入和一个 Turn，provider `model_view` 保留事实消费，语音投影规范化英文标点并展开 missing | Golden 组合问题只出现一次 CueKB query 和一次 evidence result；冗余调用只接收小型 settlement result，Turn 不再 superseded/canceled，回答覆盖 provider decision/facets |
 | P0 已编码，待现场 | 终态后的工具调用结清 | 终态后调用返回 `not_executed/search_finished`，不访问 CueKB、不创建/修订 Turn并抑制冗余 ACK；记录 settled 计数但不关闭连接 | 强制第二/第三调用时 CueKB 请求数仍为 1，原 Turn answered、WebSocket 存活且下一问可用 |
 | P1 consumer 已编码，待内容验收 | Facet 回答完整性和产品隔离 | 严格保存 provider facet/decision、选中 evidence、必要条件、来源与 revision；语音仅消费受预算的 `model_view`，答案核验使用实际交付条件 | 真实 Golden/Black 金标无跨产品主事实，密封/最佳/开封条件完整，partial/clarify/conflict 门户展示与 CueKB 决策一致 |
-| 开发验证完成，待现场 | 引擎请求结束与多轮回答归属 | finished/失效请求、END 独立清理、最终 ASR、显式补充输入关联及 60 秒回答上限；无损合成负载减少 31.8%。本轮 API 契约 399、集成 314、VoiceChat/部署受影响契约 70 项通过；既有 Web 39 项结果未因本轮后端改动重跑 | API/VoiceChat 配套部署后做同一 A/B；真实 GPU 时延、首问路由和答案完整性仍独立验收 |
+| 开发验证完成，待现场 | 引擎请求结束与多轮回答归属 | finished/失效请求、END 独立清理、最终 ASR、显式补充输入关联及 60 秒回答上限；无损合成负载减少 31.8%。前轮 API 契约 399、集成 314、VoiceChat/部署受影响契约 70 项通过；既有 Web 39 项结果未因本轮后端改动重跑 | API/VoiceChat 配套部署后做同一 A/B；真实 GPU 时延、首问路由和答案完整性仍独立验收 |
 | 历史问题已对齐 | 宿主验证目录旧、API 新、VoiceChat 日志旧 | 10 月 29 日 b6960e0 preparation 已通过且 530-token 注入完成；此前混用版本不再作为本次根因 | 本次 API、Web、VoiceChat 配套重新加载后才开始新窗口 |
 | 回溯完成，兼容修补已加载 | aba0b53 影响与 CueKB 8a5aacc 兼容 | 相同响应在提交前后模型结果完全相同；旧 backend 两版均复现跨线程注入错误。新现场 b6960e0 注入完成，搜索与 Citation/必要上下文兼容修补已加载 | 不回退 DTO 补齐、不自动切换 adaptive；新版回答完整性与事实条件仍待验收 |
 | 旧注入错误已恢复，仍需整体验收 | 工具期间 ACK 中断 | 最新 530/530 注入完成；本轮处理随后出现的请求结束、归属和 UI 问题，保留窄线程模式与 PCM 节奏 | 完整 ACK、正式回答及同连接下一问，无播放积压或原任务悬挂；不扩大缓冲或重放工具 |
