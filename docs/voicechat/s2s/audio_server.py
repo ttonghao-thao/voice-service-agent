@@ -470,6 +470,10 @@ class AudioSession:
         self._response_id: Optional[str] = None
         self._output_item_id: Optional[str] = None
         self._input_item_id: Optional[str] = None
+        self._native_audio_frame_end = None
+        self._display_audio_frame_end = None
+        self._asr_input_start_frame = None
+        self._input_audio_intervals = []
         self._response_input_item_id = None
         self._response_call_ids = []
         self._response_related_inputs = []
@@ -479,6 +483,7 @@ class AudioSession:
 
         # Function calling state variables
         self.function_call_output = deque()
+        self._measurement_tasks = set()
         self.function_batches = {}
         self.function_call_batches = {}
         self.tools = "[]"
@@ -1122,10 +1127,28 @@ class AudioSession:
             f"sequence_id={self.sequence_id}, input: {self.input_audio_format}, output: {self.output_audio_format}"
         )
 
+    def _native_input_id(self):
+        """ASR may be ahead of LLM replay; use consumed audio for ownership."""
+        frame = getattr(self, "_native_audio_frame_end", None)
+        if frame is None:
+            return self._input_item_id
+        return next((item for start, item in reversed(self._input_audio_intervals) if start < frame), None)
+
+    def _native_consumed_input(self, item_id):
+        frame = getattr(self, "_native_audio_frame_end", None)
+        return frame is None or any(item == item_id and start < frame for start, item in self._input_audio_intervals)
+
     async def _emit_speech_started(self):
         """Emit VAD speech_started (Pipecat/OpenAI Realtime compatibility)."""
         self._speech_active = True
         self._input_item_id = str(uuid.uuid4())
+        frame = getattr(self, "_asr_input_start_frame", None)
+        if getattr(self, "_native_audio_frame_end", None) is not None and frame is None:
+            raise ValueError("ASR input has no audio-clock onset")
+        if frame is not None:
+            if len(self._input_audio_intervals) >= 512:
+                raise ValueError("Too many audio input intervals")
+            self._input_audio_intervals.append((frame, self._input_item_id))
         if self._awaiting_tool_answers or self.function_batches or self.function_call_output:
             if len(self._answer_inputs) >= 128:
                 raise ValueError("Too many inputs awaiting a tool answer")
@@ -1162,10 +1185,11 @@ class AudioSession:
         self._response_id = str(uuid.uuid4())
         self._response_call_ids = list(self._awaiting_tool_answers)
         self._response_input_item_id = (list(self._awaiting_tool_answers.values())[-1]
-                                        if self._awaiting_tool_answers else self._input_item_id)
+                                        if self._awaiting_tool_answers else self._native_input_id())
         self._response_related_inputs = list(dict.fromkeys(
             item for item in [*self._answer_inputs, self._input_item_id]
-            if self._awaiting_tool_answers and item and item != self._response_input_item_id))
+            if self._awaiting_tool_answers and item and item != self._response_input_item_id
+            and self._native_consumed_input(item)))
         self._output_item_id = str(uuid.uuid4())
         for msg in [
             {
@@ -1355,26 +1379,37 @@ class AudioSession:
             f"has_done={has_done} speech_active={self._speech_active}"
         )
 
-        if has_start and not self._speech_active:
-            logger.debug(f"Client {self.client_id}: emitting speech_started for ASR turn")
-            await self._emit_speech_started()
-
-        if clean_asr_text:
-            logger.debug(f"Client {self.client_id}: emitting transcription delta chars={len(clean_asr_text)}")
-            await self._emit_input_audio_transcription_delta(clean_asr_text)
-            self.accumulated_user_transcript.append(clean_asr_text)
-
-        if has_done and self._speech_active:
-            full_transcript = "".join(self.accumulated_user_transcript)
-            self._voice_diagnostic("asr.completed", chars=len(full_transcript),
-                                   sha256=hashlib.sha256(full_transcript.encode("utf-8")).hexdigest(),
-                                   source_chars_total=self._asr_source_chars,
-                                   source_sha256_total=self._asr_source_hash.hexdigest())
-            logger.debug(f"Client {self.client_id}: emitting transcription completed chars={len(full_transcript)}")
-            await self._emit_input_audio_transcription_completed(full_transcript)
-            logger.debug(f"Client {self.client_id}: emitting speech_stopped for ASR turn")
-            await self._emit_speech_stopped()
-            self.accumulated_user_transcript = []
+        # Markers are ordered boundaries. In particular </s><s> must close
+        # the old input before opening the next one, rather than merge words.
+        start_frames = getattr(self, "_asr_input_start_frames", None)
+        self._asr_input_start_frames = None
+        if start_frames is not None:
+            if not isinstance(start_frames, list) or len(start_frames) != asr_text_response.count("<s>"):
+                raise ValueError("ASR start metadata does not match turn boundaries")
+            start_frames = iter(start_frames)
+        for part in re.split(r"(<s>|</s>)", asr_text_response):
+            if part == "<s>":
+                if self._speech_active:
+                    raise ValueError("ASR started an input before ending its previous input")
+                if start_frames is not None:
+                    self._asr_input_start_frame = next(start_frames)
+                await self._emit_speech_started()
+            elif part == "</s>":
+                if not self._speech_active:
+                    raise ValueError("ASR ended an input that was not active")
+                full_transcript = "".join(self.accumulated_user_transcript)
+                self._voice_diagnostic("asr.completed", chars=len(full_transcript),
+                                       sha256=hashlib.sha256(full_transcript.encode("utf-8")).hexdigest(),
+                                       source_chars_total=self._asr_source_chars,
+                                       source_sha256_total=self._asr_source_hash.hexdigest())
+                await self._emit_input_audio_transcription_completed(full_transcript)
+                await self._emit_speech_stopped()
+                self.accumulated_user_transcript = []
+            elif part:
+                if not self._speech_active:
+                    raise ValueError("ASR text has no active input")
+                await self._emit_input_audio_transcription_delta(part)
+                self.accumulated_user_transcript.append(part)
 
     async def _emit_error(
         self, error_message: str, error_type: str = "invalid_request_error", error_code: str = "invalid_event"
@@ -1584,6 +1619,15 @@ class AudioSession:
             text_response = "".join(t.decode("utf-8") for t in output_text)
             asr_response = "".join(t.decode("utf-8") for t in output_asr_text)
             function_response = "".join(t.decode("utf-8") for t in output_function_text)
+            if function_response.startswith('{"voicechat_transport":'):
+                transport = json.loads(function_response)
+                if transport.get("voicechat_transport") != "audio-clock-v1":
+                    raise ValueError("Unsupported VoiceChat audio clock")
+                self._native_audio_frame_end = transport["audio_frame_end"]
+                self._display_audio_frame_end = transport["asr_frame_end"]
+                self._asr_input_start_frame = transport.get("asr_input_start_frame")
+                self._asr_input_start_frames = transport["asr_input_start_frames"]
+                function_response = transport["function_text"]
             if asr_response or function_response or "<s>" in text_response or "</s>" in text_response:
                 self._voice_diagnostic("triton.output", inference=self.triton_inferences,
                                        text_chars=len(text_response), asr_chars=len(asr_response),
@@ -1721,7 +1765,8 @@ class AudioSession:
         self._voice_diagnostic("function.parsed", chars=len(function_text), calls=len(calls))
         if not self._response_active:
             await self._emit_response_created()
-        self._response_input_item_id = self._input_item_id
+        native_input = self._native_input_id()
+        self._response_input_item_id = native_input
         self._response_call_ids = []
         self._response_related_inputs = []
         response_id = self._response_id
@@ -1730,7 +1775,7 @@ class AudioSession:
         self.function_batches[batch_id] = call_ids
         self.function_call_batches.update({call_id: batch_id for call_id in call_ids})
         for output_index, call in enumerate(calls):
-            self._function_inputs[call_ids[output_index]] = self._input_item_id
+            self._function_inputs[call_ids[output_index]] = native_input
             arguments = call.get("arguments", call.get("parameters", {}))
             if isinstance(arguments, str):
                 arguments = json.loads(arguments)
@@ -1743,7 +1788,7 @@ class AudioSession:
                 "item_id": str(uuid.uuid4()),
                 "output_index": output_index,
                 "call_id": call_ids[output_index],
-                "input_item_id": self._input_item_id,
+                "input_item_id": native_input,
                 "native_batch_id": batch_id,
                 "native_batch_size": len(calls),
                 "name": call.get("name", ""),
@@ -1752,7 +1797,7 @@ class AudioSession:
             self._voice_diagnostic("function.call", action="queued", tool=call.get("name", ""),
                                    call_id=call_ids[output_index], native_batch_id=batch_id,
                                    native_batch_size=len(calls), output_index=output_index,
-                                   input_item_id=str(self._input_item_id or "")[:128])
+                                   input_item_id=str(native_input or "")[:128])
             self._queue_output_event(fn_done)
 
     async def finalize_sequence(self):
@@ -1879,12 +1924,36 @@ class AudioSession:
             },
             "instructions": self.instructions,
             "tools": self.tools,
+            "capabilities": {"tool_result_measurement": "nemo-tool-response-v1"},
         }
         message = {"type": "session.updated", "event_id": str(uuid.uuid4()), "session": response_config}
         try:
             await asyncio.wait_for(self.websocket.send_text(json.dumps(message)), timeout=5.0)
         except asyncio.TimeoutError:
             logger.error(f"Client {self.client_id}: Timeout sending session.updated")
+
+    async def handle_tool_result_measure(self, data):
+        """Preflight the exact model-channel packet; never enqueue it as a result."""
+        event_id, text = data.get("event_id"), data.get("text")
+        if not isinstance(event_id, str) or not 1 <= len(event_id) <= 128 or not isinstance(text, str):
+            raise ValueError("Invalid tool result measurement")
+        if not 1 <= len(text.encode()) <= 32768:
+            raise ValueError("Tool result measurement exceeds byte limit")
+        json.loads(text)
+        await asyncio.wait_for(self.sequence_started.wait(), timeout=5)
+        inputs = [httpclient.InferInput("audio_signal", (1, 1), "FP32"),
+                  httpclient.InferInput("system_prompt", (1, 1), "BYTES"),
+                  httpclient.InferInput("function_response", (1, 1), "BYTES")]
+        inputs[0].set_data_from_numpy(np.zeros((1, 1), dtype=np.float32))
+        inputs[1].set_data_from_numpy(np.array([[b""]], dtype=object))
+        inputs[2].set_data_from_numpy(np.array([[text.encode()]], dtype=object))
+        response = await asyncio.wait_for(self.triton_client.infer(
+            model_name=TRITON_MODEL_NAME, inputs=inputs,
+            outputs=[httpclient.InferRequestedOutput("output_function_text")],
+            sequence_id=self.sequence_id, sequence_start=False, sequence_end=False,
+            parameters={"voicechat_tool_result_measure": True}), timeout=5)
+        metadata = json.loads(response.as_numpy("output_function_text").reshape(-1)[0].decode())
+        await self.websocket.send_text(json.dumps({"type": "tool_result.measured", "event_id": event_id, **metadata}))
 
     async def handle_function_call_output(self, item: dict):
         """Handle a function_call_output conversation item"""
@@ -2118,6 +2187,22 @@ async def handle_websocket(websocket: WebSocket):
                         session_config = data.get("session", {})
                         await session.handle_session_update(session_config)
 
+                    elif message_type == "tool_result.measure":
+                        # Keep the websocket receive loop accepting microphone
+                        # frames while this stateless tokenizer request waits.
+                        async def measure_tool_result(data=data):
+                            try:
+                                await session.handle_tool_result_measure(data)
+                            except Exception:
+                                await session.websocket.send_text(json.dumps({
+                                    "type": "tool_result.measured", "event_id": data.get("event_id"),
+                                    "error": "measurement_failed"}))
+                        if len(session._measurement_tasks) >= 1:
+                            raise ValueError("Only one tool measurement may be pending")
+                        task = asyncio.create_task(measure_tool_result())
+                        session._measurement_tasks.add(task)
+                        task.add_done_callback(session._measurement_tasks.discard)
+
                     elif message_type == "session.close":
                         logger.info(f"Client {client_id}: Received session.close")
                         graceful_close = True
@@ -2162,6 +2247,10 @@ async def handle_websocket(websocket: WebSocket):
         logger.error(f"Client {client_id}: Unexpected error: {e}", exc_info=True)
 
     finally:
+        measurement_tasks = list(session._measurement_tasks)
+        for task in measurement_tasks:
+            task.cancel()
+        await asyncio.gather(*measurement_tasks, return_exceptions=True)
         capture_reason = "graceful_close" if graceful_close else "disconnect_or_error"
         if graceful_close and session.chunks_received > 0:
             try:

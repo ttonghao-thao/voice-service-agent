@@ -34,6 +34,11 @@ class TritonSeqState:
     decoder_global_step: int = 0
     # Tool tokens advance decoder history, never the incoming audio clock.
     audio_frames_processed: int = 0
+    # Display RNNT may observe live input while the single LLM writer consumes
+    # tool tokens. It must never cause audio to be skipped by that LLM writer.
+    rnnt_display_frames_processed: int = 0
+    rnnt_display_live_turn: bool = False
+    rnnt_display_input_start_frame: Optional[int] = None
     pending_function_responses: deque = field(default_factory=deque)
     pending_inference_output: Any = None
     inference_error: Optional[str] = None
@@ -78,6 +83,7 @@ class TritonSeqState:
     rnnt_display_emitted_len: int = 0
     rnnt_display_turn_open: bool = False
     rnnt_display_pending_text: str = ""
+    rnnt_display_pending_starts: list[Optional[int]] = field(default_factory=list)
 
     # RNNT-based speech activity detection
     rnnt_user_speaking: bool = False  # speech_confirmed: True after BOU threshold, False after EOU/BOS/EOS
@@ -124,3 +130,7 @@ class InferenceResult:
     generated_audio: torch.Tensor
     skipped: bool = False
     error: Optional[str] = None
+    audio_frame_end: int = 0
+    asr_frame_end: int = 0
+    asr_input_start_frame: Optional[int] = None
+    asr_input_start_frames: list[Optional[int]] = field(default_factory=list)

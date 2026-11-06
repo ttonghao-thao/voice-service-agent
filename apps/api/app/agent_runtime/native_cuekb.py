@@ -151,6 +151,9 @@ class NativeCueKBExecutor:
         is_mock = self.settings.cuekb_mode == "mock"
         if ctx.tool_errors or result.get("status") == "failed":
             code = ctx.tool_errors[-1] if ctx.tool_errors else result.get("code", "TOOL_FAILED")
+            if code == "CUEKB_QUESTION_TOO_LONG":
+                return self.result("needs_clarification", code,
+                    "Please split the question into shorter, separate questions.", is_mock=is_mock)
             return self.result("failed", code,
                 "The documentation search failed. I cannot verify the product information right now.", is_mock=is_mock)
         if result.get("status") == "needs_clarification":
@@ -333,6 +336,9 @@ class NativeCueKBExecutor:
             "status": "evidence_ready", "query": request, "decision": result["decision"],
             "trace_id": trace_id, "model_view": model_view, "items": items,
             "delivery": result["delivery"],
+            "provider_decision": result["decision"], "provider_model_view": result["model_view"],
+            "facets": result["facets"], "conflicts": result["conflicts"],
+            "group_supports": {group["id"]: group["supports"] for group in result["evidence"]},
             "clarification": result.get("clarification"),
             "instructions": FINAL_INSTRUCTIONS,
             "presentation": presentation_contract("grounded", ctx.slots).model_dump(),

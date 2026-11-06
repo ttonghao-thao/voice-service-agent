@@ -13,7 +13,7 @@ from app.contracts import DomainError, Principal
 from app.main import create_app
 from app.voice.provider import MockVoiceAdapter, NvidiaVoiceChatAdapter, VoiceEvent, session_update
 from fastapi.testclient import TestClient
-from websockets.asyncio.server import serve
+from measured_voicechat import serve
 
 pytestmark = pytest.mark.usefixtures("legacy_native_catalog")
 

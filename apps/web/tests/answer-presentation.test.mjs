@@ -34,3 +34,10 @@ test("incomplete or conflicting evidence does not claim a complete reply", () =>
   assert.equal(answerLabel({ status: "insufficient_evidence" }), "Insufficient evidence");
   assert.equal(answerLabel({ status: "needs_clarification" }), "Clarification needed");
 });
+
+
+test("local delivery limits are distinguished from missing company documentation", () => {
+  const answer = { status: "insufficient_evidence", reason_code: "VOICE_EVIDENCE_BUDGET", citations: [] };
+  assert.equal(answerLabel(answer), "Limited evidence delivery");
+  assert.match(sourceNotice(answer), /complete evidence groups/);
+});

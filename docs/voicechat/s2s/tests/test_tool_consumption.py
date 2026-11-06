@@ -10,7 +10,7 @@ import asyncio
 import copy
 import threading
 from collections import deque
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from pathlib import Path
 from types import SimpleNamespace
 
@@ -28,6 +28,10 @@ class Result:
     generated_audio: torch.Tensor
     skipped: bool = False
     error: str | None = None
+    audio_frame_end: int = 0
+    asr_frame_end: int = 0
+    asr_input_start_frame: int | None = None
+    asr_input_start_frames: list[int | None] = field(default_factory=list)
 
 
 class Manager(dict):
@@ -50,7 +54,9 @@ def harness(states=None):
     tree = ast.parse(BACKEND.read_text())
     cls = next(n for n in tree.body if isinstance(n, ast.ClassDef) and n.name == 'TritonPythonModel')
     names = {'infer', '_infer_audio_window', '_response_embeddings', '_inject_response_tokens',
-             '_fast_inject_response_tokens'}
+             '_fast_inject_response_tokens', '_observe_audio_during_tool', '_observe_rnnt_display_frame',
+             '_rnnt_step_transcript_display', '_append_rnnt_display_output', '_reset_rnnt_display_buffer',
+             '_new_rnnt_display_state'}
     methods = [copy.deepcopy(n) for n in cls.body if isinstance(n, (ast.FunctionDef, ast.AsyncFunctionDef)) and n.name in names]
     for method in methods:
         method.decorator_list = []
@@ -58,7 +64,8 @@ def harness(states=None):
     messages = []
     namespace = {'torch': torch, 'deque': deque, 'InferenceResult': Result, 'List': list, 'SeqInfo': object,
                  'DTYPE': torch.float32, 'format_tool_response_for_nemo': lambda s: s,
-                 'time': __import__('time'), 'pb_utils': SimpleNamespace(Logger=SimpleNamespace(
+                 'time': __import__('time'), 'VOICECHAT_DIAGNOSTICS': False,
+                 'RNNT_EOS_SILENCE_FRAMES': 2, 'RNNT_DISPLAY_FALLBACK_CLEAR_FRAMES': 16, 'pb_utils': SimpleNamespace(Logger=SimpleNamespace(
                      log_info=messages.append, log_error=messages.append, log_verbose=lambda _: None))}
     exec(compile(ast.fix_missing_locations(module), str(BACKEND), 'exec'), namespace)
     model = namespace['Backend']()
@@ -301,3 +308,150 @@ def test_catchup_preserves_two_frame_eos_bos_packets_and_buffers_new_input():
     assert second.generated_audio.tolist() == [[3, 4]]
     assert s.audio_frames_processed == 4 and s.audio_buffer.tolist() == [[1, 2, 3, 4, 5, 6]]
     assert feed(model, [[]])[0].generated_audio.tolist() == [[5, 6]]
+
+
+def live_display_harness():
+    model, messages = harness()
+    seq = model._seq_mgr[1]
+    seq.rnnt_display_state = None
+    seq.rnnt_display_pending_text = ''
+    seq.rnnt_display_emitted_len = 0
+    seq.rnnt_display_turn_open = False
+    seq.rnnt_display_frames_processed = 0
+    seq.rnnt_display_live_turn = False
+    model.model.rnnt_decoder = object()
+    model.model.tokenizer.bos_id = 1
+    model.options.max_chunks_for_inference = 4
+    model._voice_diagnostic = lambda *a, **kw: None
+    model._capture_reference_rnnt = lambda *a, **kw: None
+    model._rnnt_display_decode_text = lambda ids: ''.join('word' + str(token) for token in ids)
+    model.decoded_display_frames = []
+
+    def perception(audio, lengths):
+        model.windows.append([row[:int(length)].clone() for row, length in zip(audio, lengths, strict=True)])
+        return audio, audio.unsqueeze(-1)
+    model.perception = perception
+
+    def decode(embedding, batch, seq_id, frame):
+        state = model._seq_mgr[seq_id]
+        display = state.rnnt_display_state or model._new_rnnt_display_state()
+        value = int(embedding[batch, frame, 0])
+        model.decoded_display_frames.append(value)
+        if value:
+            display['y_sequence'].append(value)
+            display['nonblank_total'] += 1
+            display['blank_count'] = 0
+            display['speech_confirmed'] = True
+        else:
+            display['blank_count'] += 1
+        state.rnnt_display_state = display
+        return [value] if value else []
+    model._rnnt_display_decode_frame = decode
+    original_output = model.decode_output_from_tokens
+    def output(ids):
+        text, function, _, audio = original_output(ids)
+        asr = [model._seq_mgr[seq_id].rnnt_display_pending_text for seq_id in ids]
+        for seq_id in ids:
+            model._seq_mgr[seq_id].rnnt_display_pending_text = ''
+        return text, function, asr, audio
+    model.decode_output_from_tokens = output
+    return model, seq
+
+
+def test_live_display_asr_advances_during_blocked_tool_then_llm_replays_once():
+    busy = 'injecting_response'
+    model, seq = live_display_harness()
+    seq.fn_call[busy] = True
+    first = feed(model, [[1, 2]])[0]
+    assert first.generated_asr_text == '<s>word1word2'
+    assert (first.audio_frame_end, first.asr_frame_end, first.asr_input_start_frame) == (0, 2, 0)
+    assert first.asr_input_start_frames == [0]
+    assert not first.generated_audio.numel() and not first.generated_text
+    assert seq.fn_call[busy]  # The tool writer is still blocked/running.
+    assert seq.audio_frames_processed == 0 and seq.decoder_global_step == 20
+    ended = feed(model, [[0, 0]])[0]
+    assert ended.generated_asr_text == '</s>'
+    followup = feed(model, [[3, 4]])[0]
+    assert followup.generated_asr_text == '<s>word3word4'
+    assert (followup.audio_frame_end, followup.asr_frame_end, followup.asr_input_start_frame) == (0, 6, 4)
+    assert seq.rnnt_display_frames_processed == 6
+    assert seq.audio_buffer.tolist() == [[1, 2, 0, 0, 3, 4]]
+
+    # A stale BOS from old LLM audio may not close the new live follow-up.
+    model._observe_rnnt_display_frame(torch.tensor([[[9.]]]), 0, 1, 0, 0, agent_bos_fired=True)
+    assert seq.rnnt_display_turn_open and not seq.rnnt_display_pending_text
+    assert model.decoded_display_frames == [1, 2, 0, 0, 3, 4]
+
+    def replay(audio, sequences, asr_emb=None):
+        for batch, seq_id in enumerate(sequences):
+            state = model._seq_mgr[seq_id]
+            end = min(state.audio_frames_processed + 2, 4)
+            values = audio[batch, end - 2:end].tolist()
+            model.consumed[seq_id].extend(values)
+            model._last_audio[seq_id] = torch.tensor([values])
+            for offset in range(2):
+                model._rnnt_step_transcript_display(asr_emb[batch:batch + 1], [seq_id], 3, offset)
+                state.audio_chunk_idx = min(3, state.audio_chunk_idx + 1)
+                state.audio_frames_processed += 1
+                state.decoder_global_step += 1
+    model.generate_tokens = replay
+    seq.fn_call[busy] = False
+    replayed = feed(model, [[0, 0]])[0]
+    assert replayed.generated_asr_text == ''  # Earlier replay frames precede this boundary.
+    assert feed(model, [[]])[0].generated_asr_text == '</s>'
+    assert model.decoded_display_frames == [1, 2, 0, 0, 3, 4, 0, 0]
+    assert model.consumed[1] == [1, 2, 0, 0, 3, 4, 0, 0]
+    assert seq.audio_frames_processed == seq.rnnt_display_frames_processed == 8
+    assert seq.decoder_global_step == 28
+    assert not seq.rnnt_display_turn_open
+
+
+def test_live_asr_runs_while_actual_injection_coroutine_is_waiting_for_engine():
+    model, seq = live_display_harness()
+    template, _, _ = injection_harness()
+    model.model.embed_tokens = template.model.embed_tokens
+    model.model.model_cfg = template.model.model_cfg
+    model.model.llm_custom_input_specs = template.model.llm_custom_input_specs
+    model._encoded_audio_dim = template._encoded_audio_dim
+    model.pad_id = 0
+    model._injection_threads = {1: object()}
+    seq.fn_call.update(state='process_response', response_tokens=deque([4, 5]), injecting_response=True)
+    entered, release = threading.Event(), threading.Event()
+    appended = []
+
+    async def append(seq_id, ids, embeds):
+        entered.set()
+        await asyncio.to_thread(release.wait, 5)
+        appended.append(embeds[0].clone())
+    model._get_vllm_llm_next_token = append
+    model._run_coro = asyncio.run
+    model._reset_fn_call_state = lambda fn, state: fn.update(state='idle')
+    worker = threading.Thread(target=model._fast_inject_response_tokens, args=(1,))
+    worker.start()
+    try:
+        assert entered.wait(3)
+        result = feed(model, [[1, 2]])[0]
+        assert worker.is_alive() and seq.fn_call['injecting_response']
+        assert result.generated_asr_text == '<s>word1word2'
+        assert seq.decoder_global_step == 20 and seq.audio_frames_processed == 0
+        assert not appended
+    finally:
+        release.set()
+        worker.join(timeout=5)
+    assert not worker.is_alive() and not seq.fn_call['injecting_response']
+    assert seq.inference_error is None and len(appended) == 2
+    assert seq.decoder_global_step == 22 and seq.audio_frames_processed == 0
+    assert seq.audio_buffer.tolist() == [[1, 2]]
+
+
+def test_live_asr_end_start_window_snapshots_each_published_input_onset():
+    model, seq = live_display_harness()
+    seq.fn_call['injecting_response'] = True
+    first = feed(model, [[1, 0]])[0]
+    assert first.generated_asr_text == '<s>word1'
+    assert first.asr_input_start_frames == [0]
+    adjacent = feed(model, [[0, 2]])[0]
+    assert adjacent.generated_asr_text == '</s><s>word2'
+    assert adjacent.asr_input_start_frames == [3]
+    assert adjacent.audio_frame_end == 0 and adjacent.asr_frame_end == 4
+    assert feed(model, [[0, 0]])[0].asr_input_start_frames == []

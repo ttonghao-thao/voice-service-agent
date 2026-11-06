@@ -1,6 +1,7 @@
 import type { Answer } from "./api";
 
 export function answerLabel(answer: Answer): string {
+  if (answer.reason_code === "VOICE_EVIDENCE_BUDGET" && answer.status === "insufficient_evidence") return "Limited evidence delivery";
   if (answer.reason_code === "CUEKB_PARTIAL_ANSWER") return "Partial answer";
   if (answer.reason_code === "CUEKB_CONFLICT") return "Conflicting sources";
   if (answer.status === "insufficient_evidence") return "Insufficient evidence";
@@ -18,6 +19,9 @@ export function answerLabel(answer: Answer): string {
 }
 
 export function sourceNotice(answer: Answer): string {
+  if (answer.reason_code === "VOICE_EVIDENCE_BUDGET" && answer.status === "insufficient_evidence") {
+    return "Some complete evidence groups could not fit the voice reply. The spoken response covers only the delivered evidence.";
+  }
   if (answer.status === "failed") {
     return answer.citations.length
       ? "The spoken answer did not pass verification. These retrieved sources are available for review; they do not verify the spoken claims."

@@ -11,7 +11,7 @@ from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 import httpx
 from app.contracts import Citation, DomainError, now, uid
 from app.task_context import REFERENCE
-from app.tools.entity_context import context_binding
+from app.tools.entity_context import catalog_rows, context_binding
 from app.tools.evidence_contract import (
     EvidenceFacetInput,
     EvidenceQueryRequest,
@@ -131,6 +131,11 @@ class CueKBAdapter:
                 spans = listed
         if not spans or len(spans) > 8:
             spans = [(0, len(question))]
+        if any(end - start > 500 for start, end in spans):
+            # The provider's facet contract is narrower than its question
+            # contract. Never truncate qualifiers or invent a semantic split.
+            raise DomainError("CUEKB_QUESTION_TOO_LONG",
+                              "Please split the question into shorter, separate questions.", 422)
         return [EvidenceFacetInput(id=f"f{index}", text=question[start:end], question_span=[start, end])
                 for index, (start, end) in enumerate(spans, 1)]
 
@@ -193,12 +198,11 @@ class CueKBAdapter:
                 rows = await bounded_json(self.client, "GET",
                     self.settings.cuekb_base_url.rstrip("/") + f"/knowledge-bases/{kb_id}/entities",
                     headers=headers, params={"limit": 200, "offset": offset}, limit=262144, retry=False)
-                if (not isinstance(rows, list) or len(rows) > 200 or any(
-                    not isinstance(row, dict) or str(row.get("kb_id")) != kb_id
-                    or not isinstance(row.get("name"), str) or not isinstance(row.get("aliases", []), list)
-                    for row in rows)):
-                    raise DomainError("CUEKB_CONTRACT_ERROR", "Invalid authorized entity catalog", 502)
-                entities.extend(rows)
+                try:
+                    page = catalog_rows(rows, kb_id)
+                except ValueError as exc:
+                    raise DomainError("CUEKB_CONTRACT_ERROR", "Invalid authorized entity catalog", 502) from exc
+                entities.extend(page)
                 if len(rows) < 200:
                     break
             else:

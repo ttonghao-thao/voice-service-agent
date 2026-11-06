@@ -130,7 +130,7 @@ async def saved_answers(conversation_id, window_start, window_end):
             checks = list(await db.scalars(select(Record).where(
                 Record.conversation_id == conversation_id,
                 Record.created_at >= window_start, Record.created_at <= window_end,
-                Record.kind.in_(("native_answer_check", "native_tool_batch", "native_cuekb_voice_evidence")),
+                Record.kind.in_(("native_answer_check", "native_tool_batch", "native_cuekb_voice_evidence", "native_wire_admission")),
             ).order_by(Record.created_at).limit(13)))
         emit("saved", {"conversation_id": conversation_id, "records_shown": min(len(records), 16),
                        "turns_shown": min(len(turns), 8), "records_truncated": len(records) > 16,
@@ -167,6 +167,11 @@ async def saved_answers(conversation_id, window_start, window_end):
                                       "reason": payload.get("reason_code"),
                                       "condition_failures": failures[:3],
                                       "omitted": max(0, len(failures) - 3)})
+            elif record.kind == "native_wire_admission":
+                emit("wire_admission", {key: payload.get(key) for key in (
+                    "input_item_id", "provider_decision", "decision", "retained_ids", "omitted_ids",
+                    "token_count", "token_budget", "byte_count", "tokenizer_id", "serialization", "budget_limited")
+                    if payload.get(key) is not None})
             elif record.kind == "native_tool_batch":
                 emit("evidence_delivery", {key: payload.get(key) for key in (
                     "input_item_id", "new_sources", "retained_sources", "result_injections", "payload_bytes")

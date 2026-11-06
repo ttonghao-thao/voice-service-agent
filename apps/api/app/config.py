@@ -48,6 +48,8 @@ class Settings(BaseSettings):
     cuekb_voice_token_budget: int = Field(default=120, ge=32, le=4096)
     # Optional deployment pin; this identifies CueKB's exact registered tokenizer.
     cuekb_voice_tokenizer_id: str = ""
+    # Actual NeMo function-channel packet, including wrapper and control fields.
+    voice_tool_result_max_tokens: int = Field(default=256, ge=64, le=4096)
     enabled_tools: str = "search_knowledge"
     weather_mode: Literal["mock", "real"] = "mock"
     weather_provider: Literal["http_contract"] = "http_contract"

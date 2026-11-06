@@ -19,9 +19,9 @@ from app.storage.models import Record, Turn
 from app.tools.adapters import CueKBAdapter
 from fastapi import FastAPI, Request
 from fastapi.testclient import TestClient
+from measured_voicechat import serve
 from pydantic import ValidationError
 from sqlalchemy import select
-from websockets.asyncio.server import serve
 
 KB = "00000000-0000-4000-8000-000000000001"
 

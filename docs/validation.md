@@ -1,6 +1,6 @@
 # 当前问题验证：工具等待、首问触发与回答完整性
 
-更新：2026-11-06。当前唯一执行入口；最新修复验收见第 16 节。历史验证方法已归档。**第 15 节记录 CueKB `30970e9` 问题级证据接入、单查询终态和欢迎语 EOS 修复的最新验收标准。** 第 8—14 节保留已有现场事实用于对照；部署后以第 15 节的新契约判据为准，首问工具选择、真实内容和 GPU 时延仍待验收。所有命令在**部署主机的本项目根目录**执行，操作者只操作、观察和回传，不需要挑日志、找会话 ID 或判断根因。
+更新：2026-11-06。当前唯一执行入口；最新配套版本验收见第 17 节。历史验证方法已归档。第 15—16 节保留问题级证据接入与前轮修复的记录。 第 8—14 节保留已有现场事实用于对照；部署后以第 17 节的统一判据为准，首问工具选择、真实内容和 GPU 时延仍待验收。所有命令在**部署主机的本项目根目录**执行，操作者只操作、观察和回传，不需要挑日志、找会话 ID 或判断根因。
 
 ## 1. 本轮要回答什么
 
@@ -546,7 +546,7 @@ CueKB `30970e9` 源码、公开 schema/fixture 和四个端点契约已核对；
 
 本次P0验证：契约与原生CueKB集成432 passed（1条现有Starlette弃用警告），专项43 passed；Ruff、契约生成、git diff --check通过。原生集成为测试环境，未验证真实GPU性能。首次扩大回归因PYTHONPATH缺仓库根而收集失败，修正为`PYTHONPATH=.:apps/api`后完整通过。
 
-## 16. ACK 时序、全双工生命周期与证据状态回归（2026-11-06）
+## 16. 前轮 ACK 与证据状态回归（未独立部署，当前执行第 17 节）
 
 本轮更改 API、Web、VoiceChat model 完整快照。按第 2 节重新部署三者；不改变音频、识别阈值或会话时长。hash 检查已增加 evidence_contract、entity_context、evidence 和 task_context 文件。云端 CPU/受控 Provider 测试只能证明代码控制流；不能代替实际听音、首问选工具、内容覆盖或 GPU 时延。
 
@@ -565,3 +565,27 @@ CueKB `30970e9` 源码、公开 schema/fixture 和四个端点契约已核对；
 本轮开发验证：后端全量覆盖 733 项；其中 724 项直接通过，9 项暴露压缩结果删除既有 `status` 的兼容问题，恢复字段后这 9 项全部重跑通过。Web 40 项通过，TypeScript/Vite 构建通过；受影响 Python 文件 Ruff、编译、部署脚本语法及 VoiceChat 完整快照哈希/补丁重放检查通过。契约导出已执行，无生成文件漂移。
 
 另以 CueKB `30970e9` 的实际 evidence 组装代码配合合成语料验证：Black 原始复合问题四项均 direct；Golden 的已登记别名绑定后，保质期/开封储存两项均 direct 且只选 Golden 证据。这不是生产检索排序、原生选工具或实际听音验收。没有在此环境部署生产容器或完成 GPU 测试。
+
+## 17. 统一部署与验收：生命周期、事实、多轮、实时 ASR 和完整预算
+
+此版本包含前轮 `bb9c277` 及本轮全部修复，一次配套部署后统一验证。先执行第 2.0、2.1、2.2 节，同步 API、Web 和六个 VoiceChat 挂载；本轮实际修改 model/data/audio_server，必须重新创建 VoiceChat。CueKB 沿用已完成的 `cuekb.evidence/2.1`。不要先部署 API 再用旧 VoiceChat 试通话；旧服务没有 `nemo-tool-response-v1` 计数能力时会明确报 `VOICE_TOKENIZER_UNAVAILABLE`。
+
+API `.env` 使用两个不同预算：`CUEKB_VOICE_TOKEN_BUDGET=120` 约束 CueKB model_view，新增 `VOICE_TOOL_RESULT_MAX_TOKENS=256` 约束最终完整 NeMo 工具包。两个参数均有默认值；不要求扩大超时、音频缓冲、会话寿命或改识别阈值。VoiceChat 使用现有模型仓库的 tokenizer，无新下载或额外依赖。网页强制刷新后再测试。
+
+统一现场顺序与采集命令：
+
+1. A：`bash scripts/validate_deployment.sh web-start golden_yolk`，在门户新通话发送原始 Golden 文件，等待完整回答；随后按第 5 节完整采集命令执行 `web-end` 和时间线。
+2. B：`bash scripts/validate_deployment.sh web-start black_pig_crisp_heart`，新通话发送 Black，随后同连接发送 Golden，保留原始文件停顿；结束后仍按第 5 节完整采集命令。前一个窗口未结束不要再次 web-start。
+3. 麦克风：先执行 `bash scripts/validate_deployment.sh web-start greeting`，在门户选择 Microphone 并新建通话，等待约三秒欢迎语；播报中开口，继续提问；知识查询确认语/注入期间再开口补充；随后再问一个独立问题。对应窗口按第 5 节采集。用户发声只停止旧播放，不取消业务检索；若回答覆盖补充输入，后续也不重复检索/回答该输入。
+
+验收必须同时成立：
+
+- 旧响应清除后，迟到的同 response_id 音频不恢复；抑制的 done 正常结清，声明但不发声的 ACK ID 不阻塞轮换。业务回答能完成，同连接下一问可用。
+- 首次结果后，提前入队和后到的第二/第三 call 都只收到小型结清结果；CueKB query 每输入最多一次，不新增 Turn，不再 VOICE_TOOL_LOOP 断连。重复答案和已覆盖追问的重复调用不再次执行。
+- Golden 指代仅使用当前授权实体目录的唯一用户原话/别名；换题、撤回和同名歧义不会带入旧产品。模型 query 和未来输入均不授权 entity ID。价格、重量等独立问题项保留实际跨度。
+- partial/insufficient/conflict/clarify 各自保留状态；英文数字与单位不能串用；无证据只能明确拒答或澄清。被预算省略的事实不得进入口述核验来源。核验仍是保守可执行检查，不声明完整语义证明。
+- `voice_evidence_wire_budget` 的 `wire_tokens <= token_budget`，token_basis 是 `nemo-tool-response-v1`；预检包含完整封装、控制指令、缺失项和批次结果。`native_wire_admission` 记录原 decision、准入/省略 ID；完全无法容纳证据时给出明确拒答，门户显示 Limited evidence delivery。
+- 在 backend.inject_started 与 inject_done 之间出现 `backend.live_asr`，observed_frames 大于 llm_audio_frames，且门户能够显示新的用户输入；这是独立 ASR 已推进、LLM 仍注入的证据。用户补充的原始 PCM 仍供随后 LLM 消费，ASR 不重复；同包结束旧输入并开始新输入时，两段不混合。旧调用归属按 LLM 已消费的音频位置确定，不能被提前识别的新输入接管。
+- 原生模型独立首问选工具、口述内容覆盖、听音中断与真实端到端时延仍用真实场景检查。精确预算与 CPU 通过不代表 GPU P95 或原生选工具已通过；本轮不改逐 token 引擎接口。
+
+开发验证：本轮后端全量 767 项中 765 项直接通过，2 个抽取方法的 CPU 夹具未包含新增输入归属方法，补齐后与最终预算、事实和交付回归共 120 项全部通过（含后增用例）；VoiceChat 独立 CPU 全套 65 项通过。Web 41 项及生产构建通过。契约导出、静态检查、编译、脚本语法和完整快照哈希/补丁重放均核对；生产容器、GPU 和真实听音未在此环境执行。统一现场回传仍只有本手册要求的有界摘要和门户现象。

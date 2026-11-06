@@ -285,7 +285,7 @@ async def test_crash_recovery_marks_started_delivery_unknown(app, conversation):
 async def test_native_websocket_wire_registers_tools_and_returns_result():
     from app.agent_runtime.dispatch import knowledge_tools
     from app.voice.provider import NvidiaVoiceChatAdapter
-    from websockets.asyncio.server import serve
+    from measured_voicechat import serve
     dispatcher = knowledge_tools(None, None)
     config = session_update("", dispatcher.definitions(tuple(dispatcher.tools)), "general_qa")
     received = []

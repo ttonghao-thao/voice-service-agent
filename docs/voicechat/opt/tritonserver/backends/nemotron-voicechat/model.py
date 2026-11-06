@@ -959,7 +959,8 @@ class TritonPythonModel:
         )
 
     def _append_rnnt_display_output(
-        self, seq_state, agent_bos_fired: bool, force_publish: bool = False, close_turn: bool = False
+        self, seq_state, agent_bos_fired: bool, force_publish: bool = False, close_turn: bool = False,
+        close_reason: str = "sequence_end",
     ) -> None:
         state = seq_state.rnnt_display_state
         if state is None:
@@ -980,6 +981,9 @@ class TritonPythonModel:
                                        gate=state.get("speech_confirmed", False), agent_bos=agent_bos_fired)
                 if not seq_state.rnnt_display_turn_open:
                     seq_state.rnnt_display_pending_text += "<s>"
+                    if not hasattr(seq_state, "rnnt_display_pending_starts"):
+                        seq_state.rnnt_display_pending_starts = []
+                    seq_state.rnnt_display_pending_starts.append(getattr(seq_state, "rnnt_display_input_start_frame", None))
                     seq_state.rnnt_display_turn_open = True
                     pb_utils.Logger.log_verbose(f"[RNNT display] [seq {seq_state.seq_id}] opened user turn")
                 seq_state.rnnt_display_pending_text += delta
@@ -990,7 +994,7 @@ class TritonPythonModel:
                 )
 
         if close_turn and seq_state.rnnt_display_turn_open:
-            self._voice_diagnostic(seq_state, "asr.final", reason="sequence_end", final_chars=len(full_text))
+            self._voice_diagnostic(seq_state, "asr.final", reason=close_reason, final_chars=len(full_text))
             seq_state.rnnt_display_pending_text += "</s>"
             pb_utils.Logger.log_verbose(
                 f"[RNNT display] [seq {seq_state.seq_id}] force-published turn on END "
@@ -1207,12 +1211,48 @@ class TritonPythonModel:
                 error_type=type(exc).__name__,
             )
 
+    def _observe_rnnt_display_frame(self, asr_emb, batch_idx, seq_id, frame_idx, absolute_frame,
+                                    agent_bos_fired=False, live=False):
+        """Display-only RNNT has its own audio cursor, independent of decoder steps.
+
+        The Triton request thread is its sole writer. A busy tool thread owns
+        LLM history, so this path must not run EOU counters, turn-taking, TTS,
+        function parsing or any decoder-token write.
+        """
+        seq_state = self._seq_mgr[seq_id]
+        cursor = getattr(seq_state, "rnnt_display_frames_processed", 0)
+        if absolute_frame < cursor:
+            # A BOS produced while replaying older LLM audio cannot close a
+            # new live input that the display predictor has already observed.
+            return
+        previous_nonblank = (seq_state.rnnt_display_state or {}).get("nonblank_total", 0)
+        emitted = self._rnnt_display_decode_frame(asr_emb, batch_idx, seq_id, frame_idx)
+        if not previous_nonblank and (seq_state.rnnt_display_state or {}).get("nonblank_total", 0):
+            seq_state.rnnt_display_input_start_frame = absolute_frame
+        self._capture_reference_rnnt(asr_emb, batch_idx, seq_id, frame_idx, emitted)
+        seq_state.rnnt_display_frames_processed = absolute_frame + 1
+        if live:
+            seq_state.rnnt_display_live_turn = True
+        live_turn = getattr(seq_state, "rnnt_display_live_turn", False)
+        self._append_rnnt_display_output(seq_state, agent_bos_fired and not live_turn)
+        display = seq_state.rnnt_display_state or {}
+        if (live_turn and display.get("nonblank_total", 0) > 0
+                and display.get("blank_count", 0) >= RNNT_EOS_SILENCE_FRAMES):
+            # Waiting for an old LLM BOS would keep a spoken follow-up open
+            # throughout result injection. Use the existing acoustic silence
+            # boundary, retaining the predictor recurrence for the next turn.
+            self._append_rnnt_display_output(seq_state, False, force_publish=True, close_turn=True,
+                                             close_reason="live_audio_silence")
+            self._reset_rnnt_display_buffer(seq_state, reason="live_audio_silence")
+            seq_state.rnnt_display_live_turn = False
+        elif live_turn and not live and not seq_state.rnnt_display_turn_open and not display.get("nonblank_total", 0):
+            seq_state.rnnt_display_live_turn = False
+
     def _rnnt_step_transcript_display(
         self, asr_emb: torch.Tensor, seq_ids_batched: List[int], max_audio_idx: int, step_offset: int,
     ) -> None:
         if asr_emb is None or self.model.rnnt_decoder is None:
             return
-
         bos_id = self.model.tokenizer.bos_id
         for batch_idx, seq_id in enumerate(seq_ids_batched):
             seq_state = self._seq_mgr[seq_id]
@@ -1221,15 +1261,46 @@ class TritonPythonModel:
             else:
                 frame_idx = seq_state.audio_chunk_idx
             frame_idx = max(0, min(frame_idx, max_audio_idx))
-            emitted = self._rnnt_display_decode_frame(asr_emb, batch_idx, seq_id, frame_idx)
-            self._capture_reference_rnnt(asr_emb, batch_idx, seq_id, frame_idx, emitted)
-
             t = seq_state.decoder_global_step
             agent_bos_fired = (
                 t < seq_state.generated_text_tokens.shape[1]
                 and int(seq_state.generated_text_tokens[0, t].item()) == bos_id
             )
-            self._append_rnnt_display_output(seq_state, agent_bos_fired)
+            self._observe_rnnt_display_frame(asr_emb, batch_idx, seq_id, frame_idx,
+                                             seq_state.audio_frames_processed, agent_bos_fired)
+
+    def _observe_audio_during_tool(self, seq_id):
+        """Observe one live two-frame input window without advancing LLM audio.
+
+        Perception and RNNT run on the normal Triton thread while the background
+        coroutine continues serial forced-token append/anext. Buffered PCM is
+        retained unchanged for subsequent LLM replay.
+        """
+        state = self._seq_mgr[seq_id]
+        if getattr(self.model, "rnnt_decoder", None) is None:
+            return False
+        count = self.options.num_chunks_per_inference
+        cursor = max(getattr(state, "rnnt_display_frames_processed", 0), state.audio_frames_processed)
+        end_frame = cursor + count
+        end_sample = end_frame * self.options.num_samples_per_chunk
+        if state.audio_buffer.shape[1] < end_sample:
+            return False
+        length = min(end_sample, self.options.max_samples_for_inference)
+        window = state.audio_buffer[:, end_sample - length:end_sample]
+        _, asr_emb = self.perception(window, torch.tensor([length], device=self.model.device))
+        if asr_emb is None:
+            return False
+        frame_count = asr_emb.shape[1]
+        for offset in range(count):
+            frame_idx = max(0, min(cursor + offset, frame_count - count + offset))
+            self._observe_rnnt_display_frame(asr_emb, 0, seq_id, frame_idx, cursor + offset, live=True)
+        self._voice_diagnostic(state, "asr.tool_progress", observed_frames=end_frame,
+                               llm_audio_frames=state.audio_frames_processed)
+        if not state.voice_diagnostics.get("tool_live_asr_observed"):
+            state.voice_diagnostics["tool_live_asr_observed"] = True
+            pb_utils.Logger.log_info(f"[seq {seq_id}] Tool live ASR observed_frames={end_frame} "
+                                     f"llm_audio_frames={state.audio_frames_processed}")
+        return True
 
     def _rnnt_eou_decode_frame(
         self, asr_emb: torch.Tensor, seq_ids_batched: List[int], frame_indices: List[int]
@@ -2175,6 +2246,9 @@ class TritonPythonModel:
             if seq_info.start_flags[index].item():
                 continue
             state = self._seq_mgr[seq_id]
+            results[index].audio_frame_end = state.audio_frames_processed
+            results[index].asr_frame_end = getattr(state, "rnnt_display_frames_processed", 0)
+            results[index].asr_input_start_frame = getattr(state, "rnnt_display_input_start_frame", None)
             self._capture_tensor(seq_id, "triton-received-16k", audio_signal[index],
                                  step=state.decoder_global_step, sample_rate=16000)
             state.audio_buffer = torch.cat((state.audio_buffer, audio_signal[index].unsqueeze(0)), dim=1)
@@ -2215,6 +2289,10 @@ class TritonPythonModel:
                 result.generated_text += part.generated_text
                 result.generated_asr_text += part.generated_asr_text
                 result.generated_function_text += part.generated_function_text
+                result.audio_frame_end = part.audio_frame_end
+                result.asr_frame_end = part.asr_frame_end
+                result.asr_input_start_frame = part.asr_input_start_frame
+                result.asr_input_start_frames.extend(part.asr_input_start_frames)
                 if part.generated_audio.numel():
                     result.generated_audio = (part.generated_audio if not result.generated_audio.numel()
                                               else torch.cat((result.generated_audio, part.generated_audio), dim=-1))
@@ -2270,6 +2348,9 @@ class TritonPythonModel:
 
             # Stop processing sequences that have exhausted the pre-allocated step buffer.
             seq_state_check = self._seq_mgr[seq_id]
+            results_batched[batch_idx].audio_frame_end = seq_state_check.audio_frames_processed
+            results_batched[batch_idx].asr_frame_end = getattr(seq_state_check, "rnnt_display_frames_processed", 0)
+            results_batched[batch_idx].asr_input_start_frame = getattr(seq_state_check, "rnnt_display_input_start_frame", None)
             buffer_capacity = seq_state_check.generated_text_tokens.shape[1]
             if (seq_state_check.decoder_global_step + self.options.num_chunks_per_inference > buffer_capacity
                     or seq_state_check.steps_exhausted):
@@ -2292,9 +2373,22 @@ class TritonPythonModel:
                     logger.log_info(f"[seq {seq_id}] Tool audio buffered "
                                     f"received_samples={seq_state_check.audio_buffer.shape[1]} "
                                     f"processed_frames={seq_state_check.audio_frames_processed}")
-                results_batched[batch_idx].skipped = True
+                # The dispatched call owns the answer association during
+                # injection. Extraction has not published that owner yet;
+                # keep its audio queued until the native request is emitted.
+                progressed = (self._observe_audio_during_tool(seq_id)
+                              if seq_state_check.fn_call.get("injecting_response", False) else False)
+                results_batched[batch_idx].generated_asr_text = getattr(seq_state_check, "rnnt_display_pending_text", "")
+                seq_state_check.rnnt_display_pending_text = ""
+                results_batched[batch_idx].audio_frame_end = seq_state_check.audio_frames_processed
+                results_batched[batch_idx].asr_frame_end = getattr(seq_state_check, "rnnt_display_frames_processed", 0)
+                results_batched[batch_idx].asr_input_start_frame = getattr(seq_state_check, "rnnt_display_input_start_frame", None)
+                results_batched[batch_idx].asr_input_start_frames = list(getattr(seq_state_check, "rnnt_display_pending_starts", []))
+                seq_state_check.rnnt_display_pending_starts = []
+                results_batched[batch_idx].skipped = not progressed
                 continue
             if seq_state_check.voice_diagnostics.pop("tool_audio_buffered", False):
+                seq_state_check.voice_diagnostics.pop("tool_live_asr_observed", None)
                 logger.log_info(f"[seq {seq_id}] Tool audio resumed "
                                 f"received_samples={seq_state_check.audio_buffer.shape[1]} "
                                 f"processed_frames={seq_state_check.audio_frames_processed}")
@@ -2404,6 +2498,12 @@ class TritonPythonModel:
         # don't match results_batched positions. Without this, outputs cross wires between streams.
         for gen_idx, seq_id in enumerate(seq_ids_batched):
             original_idx = seq_info.seq_to_batch_idx[seq_id]
+            state = self._seq_mgr[seq_id]
+            results_batched[original_idx].audio_frame_end = state.audio_frames_processed
+            results_batched[original_idx].asr_frame_end = getattr(state, "rnnt_display_frames_processed", 0)
+            results_batched[original_idx].asr_input_start_frame = getattr(state, "rnnt_display_input_start_frame", None)
+            results_batched[original_idx].asr_input_start_frames = list(getattr(state, "rnnt_display_pending_starts", []))
+            state.rnnt_display_pending_starts = []
             (
                 results_batched[original_idx].generated_text,
                 results_batched[original_idx].generated_function_text,
@@ -2417,12 +2517,49 @@ class TritonPythonModel:
             )
         return results_batched
 
+    def _tool_tokenizer_identity(self):
+        """Fingerprint the local tokenizer files used by this loaded model."""
+        cached = getattr(self, "_tool_tokenizer_fingerprint", None)
+        if cached:
+            return cached
+        root = Path(self.model.model_cfg.model.stt.model.pretrained_llm)
+        files = sorted(path for path in root.rglob("*") if path.is_file()
+                       and path.suffix in {".json", ".txt", ".model", ".tiktoken"})
+        if not files:
+            raise RuntimeError("Bundled tool tokenizer identity unavailable")
+        digest = hashlib.sha256()
+        for path in files:
+            digest.update(str(path.relative_to(root)).encode() + b"\0")
+            digest.update(path.read_bytes())
+        self._tool_tokenizer_fingerprint = "voicechat:" + digest.hexdigest()
+        return self._tool_tokenizer_fingerprint
+
+    def _measure_tool_result(self, request):
+        """Tokenize the exact final wrapper without touching any sequence state."""
+        raw = pb_utils.get_input_tensor_by_name(request, "function_response").as_numpy().reshape(-1)[0]
+        text = raw.decode("utf-8") if isinstance(raw, bytes) else str(raw)
+        if not text or len(text.encode()) > 32768:
+            raise ValueError("Tool result measurement exceeds byte limit")
+        json.loads(text)
+        result = {"token_count": len(self.model.tokenizer.text_to_ids(format_tool_response_for_nemo(text))),
+                  "tokenizer_id": self._tool_tokenizer_identity(),
+                  "serialization": "nemo-tool-response-v1",
+                  "text_sha256": hashlib.sha256(text.encode()).hexdigest()}
+        return pb_utils.InferenceResponse(output_tensors=[
+            pb_utils.Tensor(name, np.array([json.dumps(result).encode() if name == "output_function_text" else b""], dtype=np.object_))
+            for name in ("output_text", "output_asr_text", "output_function_text")
+        ] + [pb_utils.Tensor("output_audio", np.empty((1, 0), dtype=np.float32))])
+
     @_log_time("Execute")
     def execute(self, requests):
         """END is cleanup, including after failed inference; never decode on END."""
         responses = [None] * len(requests)
         active, indexes = [], []
         for index, request in enumerate(requests):
+            parameters = json.loads(request.parameters()) if hasattr(request, "parameters") else {}
+            if parameters.get("voicechat_tool_result_measure") is True:
+                responses[index] = self._measure_tool_result(request)
+                continue
             end = from_dlpack(pb_utils.get_input_tensor_by_name(request, "END"))
             if not end[0].item():
                 active.append(request)
@@ -2620,6 +2757,13 @@ class TritonPythonModel:
                         f"[RNNT display] [seq {seq_id}] Triton response output_asr_text={output_asr_text!r}"
                     )
                 output_text_arr = np.array([output_text.encode("utf-8")], dtype=np.object_)
+                # Transport metadata never enters native tool/decoder history.
+                output_function_text = json.dumps({"voicechat_transport": "audio-clock-v1",
+                    "function_text": output_function_text,
+                    "audio_frame_end": result.audio_frame_end,
+                    "asr_frame_end": result.asr_frame_end,
+                    "asr_input_start_frame": result.asr_input_start_frame,
+                    "asr_input_start_frames": result.asr_input_start_frames})
                 output_function_text_arr = np.array([output_function_text.encode("utf-8")], dtype=np.object_)
                 output_asr_text_arr = np.array([output_asr_text.encode("utf-8")], dtype=np.object_)
 

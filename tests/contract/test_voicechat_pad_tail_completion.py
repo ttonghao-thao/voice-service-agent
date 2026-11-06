@@ -602,7 +602,7 @@ def websocket_harness():
     names = {"_dispatch_model_output", "_finish_spoken_response", "_flush_response_audio",
              "_emit_response_created", "_emit_response_done", "_emit_audio_transcript_delta",
              "_emit_audio_transcript_done", "_queue_output_event", "_queue_audio_chunk",
-             "encode_audio_output", "_create_codec"}
+             "encode_audio_output", "_create_codec", "_native_input_id", "_native_consumed_input"}
     methods = [node for node in original.body if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef))
                and node.name in names]
     assert len(methods) == len(names)
@@ -637,8 +637,8 @@ def function_call_harness():
     tree = ast.parse(source.read_text())
     original = next(node for node in tree.body if isinstance(node, ast.ClassDef)
                     and node.name == "AudioSession")
-    names = {"_process_function_text", "handle_function_call_output"}
-    methods = [node for node in original.body if isinstance(node, ast.AsyncFunctionDef)
+    names = {"_process_function_text", "handle_function_call_output", "_native_input_id"}
+    methods = [node for node in original.body if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef))
                and node.name in names]
     assert len(methods) == len(names)
     module = ast.Module(body=[

@@ -229,6 +229,8 @@ class EvidenceQueryResponse(StrictModel):
             raise ValueError("facet_and_missing_ids_must_be_unique")
         if any(facet_id not in facets for facet_id in self.missing):
             raise ValueError("missing_facet_reference_missing")
+        if any(group.completeness != "complete" for group in self.evidence):
+            raise ValueError("voice_evidence_requires_complete_groups")
         groups = {group.id: group for group in self.evidence}
         if len(groups) != len(self.evidence):
             raise ValueError("evidence_group_ids_must_be_unique")
@@ -251,6 +253,21 @@ class EvidenceQueryResponse(StrictModel):
             facet.support not in {"direct", "entailed"} for facet in self.facets
         ):
             raise ValueError("answer_requires_all_facets_supported")
+        states = {facet.support for facet in self.facets}
+        expected_decision = ("answer" if states <= {"direct", "entailed"} else
+                             "conflict" if "conflicting" in states else
+                             "clarify" if "ambiguous" in states else
+                             "partial_answer" if states & {"direct", "entailed"} else "insufficient")
+        if self.decision != expected_decision:
+            raise ValueError("decision_must_match_facet_support")
+        expected_missing = [facet.id for facet in self.facets if facet.support in {"absent", "unassessed"}]
+        if self.missing != expected_missing:
+            raise ValueError("missing_must_match_unsupported_facets")
+        if any(conflict.facet_id not in facets
+               or facets[conflict.facet_id].support != "conflicting"
+               or set(conflict.evidence_ids) != set(facets[conflict.facet_id].evidence_ids)
+               for conflict in self.conflicts):
+            raise ValueError("conflict_must_match_facet_evidence")
         if self.model_view.decision != self.decision or self.model_view.missing != self.missing:
             raise ValueError("model_view_must_match_decision")
         model_items = {item.id: item for item in self.model_view.evidence}

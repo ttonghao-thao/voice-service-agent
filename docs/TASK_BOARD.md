@@ -1,6 +1,6 @@
 # 当前工作状态
 
-更新：2026-11-06。CueKB `main@30970e9` 已实现 `cuekb.evidence/2.1`；本项目已完成严格 consumer、单输入一次问题级请求、证据包 validate、终态后调用结清和正常 EOS 后等待新输入的编码，当前状态为本轮功能修复及回归完成、待配套部署和真实 GPU/语料验收；完整注入预算及工具期间实时 ASR 尚未完成。需求与接口见 [CueKB 方案](CueKB.md) 和 [消费契约](interfaces/cuekb.md)，所有现场操作与证据只维护在[当前验证手册](validation.md)。
+更新：2026-11-06。CueKB `main@30970e9` 已实现 `cuekb.evidence/2.1`；本项目已完成严格 consumer、单输入一次问题级请求、证据包 validate、终态后调用结清和正常 EOS 后等待新输入的编码，当前状态为本轮功能修复及回归完成、待配套部署和真实 GPU/语料验收；完整注入预算及注入期间实时显示 ASR 已编码，待统一 GPU 验收。需求与接口见 [CueKB 方案](CueKB.md) 和 [消费契约](interfaces/cuekb.md)，所有现场操作与证据只维护在[当前验证手册](validation.md)。
 
 | 优先级 | 问题/任务 | 当前状态 | 完成条件 |
 | --- | --- | --- | --- |
@@ -9,7 +9,7 @@
 | P0 已修复，待现场 | 英文弯引号导致工具结果断连 | 仅在语音边界规范化同义标点，原始证据不改 | 带弯引号/破折号的真实来源成功回答 |
 | P1 已修复，待现场 | 插话、重复答案、被抑制响应阻止轮换 | 按 response_id 丢弃旧播放帧；已回答输入拒绝重复输出；被抑制 done 仍标记 drained | 普通回答和欢迎语均可打断；不重查、不重复答、不误关连接 |
 | P1 已实现，待语料 | 指代绑定、问题项与事实状态 | 授权实体名/别名绑定，about 列举问题只传真实属性跨度；英文数字与密封/开封条件检查；保留 partial/insufficient/conflict 状态 | 目录覆盖与真实 Golden/Black 金标验收；词法检查不宣称完整语义证明 |
-| P1 部分完成 | 完整注入预算与实时输入 | 可固定 tokenizer ID；最终 wire bytes/后端 wire_tokens 单独观测；删去重复标志。逐 token 注入仍暂停 ASR，未改推理调度 | 后续需 CueKB 对最终语音投影共同预算和 GPU 验证；不把 model_view 120 token 当最终上限，不宣称延迟已解决 |
+| P1 已编码，待统一验收 | 完整注入预算与实时输入 | 后台已加载 tokenizer 精确预检完整包并按完整证据组准入；注入时显示 ASR 独立游标识别，原始音频仍完整交给 LLM；音频位置隔离旧工具与新输入 | API/Web/model/data/server 一起部署；验证最终包<=256、注入期间用户输入可识别、旧调用不转移归属。逐 token 引擎速度与真实 GPU 时延仍现场验收 |
 | P0 外部实现已确认 | CueKB 问题级证据契约 | CueKB `30970e9` 已提供 `/v2/evidence/query`、`/v2/evidence/validate`、facet/decision、内部有界补召回、产品实体过滤、voice tokenizer 预算和签名包校验；本仓同步 provider fixture 与严格 consumer schema | 配套部署后以真实 Golden/Black 语料验证产品隔离、facet 决策、tokenizer 身份、package validate 和错误映射 |
 | P0 已编码，待现场 | 完整问题一次检索与单 input 单 Turn | 最终 ASR 原文进入 `question`，受控解析进入 `search_query/filters`；每输入固定一次 query、一次 validate、一次业务证据注入和一个 Turn，provider `model_view` 保留事实消费，语音投影规范化英文标点并展开 missing | Golden 组合问题只出现一次 CueKB query 和一次 evidence result；冗余调用只接收小型 settlement result，Turn 不再 superseded/canceled，回答覆盖 provider decision/facets |
 | P0 已编码，待现场 | 终态后的工具调用结清 | 终态后调用返回 `not_executed/search_finished`，不访问 CueKB、不创建/修订 Turn并抑制冗余 ACK；记录 settled 计数但不关闭连接 | 强制第二/第三调用时 CueKB 请求数仍为 1，原 Turn answered、WebSocket 存活且下一问可用 |
@@ -35,4 +35,4 @@
 
 本轮完整 VoiceChat 文件、补丁、manifest、CueKB consumer schema 和部署变量一起维护。部署须重建 API、Web 并重新创建 VoiceChat；目录、识别阈值及权重不改。语音路径现固定使用 `cuekb.evidence/2.1`，每个稳定输入一次问题级请求和一次业务证据注入，补召回由 CueKB 在请求内有界完成；终态后冗余 call 只注入结清协议结果，不新增证据检索。系统不新增叠加 HTTP 重试、独立分类模型或子 Agent。
 
-`cuekb.evidence/2.1` 源码与 consumer 契约已核对，CPU/受控 Provider 回归仍不代表生产修复、内容准确或 GPU 提速。配套部署后按同一 A/B、欢迎语打断和强制 post-terminal 调用复测，并用实际 CueKB query/validate 次数、注入数、Turn 状态、浏览器播放和连接存活核对。两次无新增证据即停止同一思路，三种假设仍无进展则重新评估设计与环境。
+`cuekb.evidence/2.1` 源码与 consumer 契约已核对，CPU/受控 Provider 回归仍不代表生产修复、内容准确或 GPU 提速。配套部署后按验证手册第 17 节同一 A/B、欢迎语打断、注入期间输入和强制 post-terminal 调用统一复测，并用实际 CueKB query/validate 次数、注入数、Turn 状态、浏览器播放和连接存活核对。两次无新增证据即停止同一思路，三种假设仍无进展则重新评估设计与环境。

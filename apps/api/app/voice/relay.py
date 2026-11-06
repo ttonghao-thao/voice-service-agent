@@ -13,8 +13,8 @@ import time
 
 import anyio
 from app.agent_runtime.direct import EvidenceReady
-from app.agent_runtime.native_cuekb import compact_voice_result
 from app.agent_runtime.native_input import ANSWER_INSTRUCTIONS, FINAL_INSTRUCTIONS, NativeInputSearch
+from app.agent_runtime.voice_budget import fit_voice_result, measure_packet
 from app.contracts import (
     AnswerBundle,
     DomainError,
@@ -139,11 +139,16 @@ async def relay(gateway, ws, session, provider):
                 raise DomainError("VOICE_INPUT_INCOMPLETE", "The completed voice request is invalid.", 502)
             await current()
             search = searches.setdefault(item_id, NativeInputSearch(gateway.settings.voice_max_retrievals_per_input))
-            if batch.after_terminal:
+            # Queueing and result delivery run independently. A call received
+            # before the first result write may reach this worker after that
+            # input has finished; use current state, not just receipt-time state.
+            if batch.after_terminal or item_id in terminal_sent or item_id in completed_inputs:
                 call_ids = [payload["call_id"] for payload in batch.calls]
                 search.post_terminal_calls += len(call_ids)
                 outcomes = []
                 for index, (payload, decision) in enumerate(zip(batch.calls, decisions, strict=True)):
+                    if payload.get("response_id"):
+                        session.suppressed_responses.add(payload["response_id"])
                     await store.record(cid, epoch, "native_tool_arguments", payload["call_id"], {
                         "name": payload["name"], "arguments": decision.arguments.model_dump(),
                         "input_item_id": item_id, "matches_final_transcript": request == decision.arguments.query})
@@ -157,7 +162,10 @@ async def relay(gateway, ws, session, provider):
                                   if item_id in completed_inputs else FINAL_INSTRUCTIONS)}
                 if batch.size > 1:
                     settlement["call_results"] = outcomes
-                text = json.dumps(settlement, ensure_ascii=True, separators=(",", ":"))
+                packet = await measure_packet(settlement, provider.measure_tool_result,
+                    max_tokens=gateway.settings.voice_tool_result_max_tokens,
+                    max_bytes=gateway.settings.qa_direct_evidence_max_bytes)
+                text = packet.text
                 async with upstream_lock:
                     async with asyncio.timeout(2):
                         if batch.id:
@@ -219,16 +227,21 @@ async def relay(gateway, ws, session, provider):
                           "search_state": "finished", "instructions": ANSWER_INSTRUCTIONS + FINAL_INSTRUCTIONS}
             if batch.size > 1:
                 result["call_results"] = outcomes
-            text = json.dumps(compact_voice_result(result), ensure_ascii=True, separators=(",", ":"))
-            if isinstance(bundle, EvidenceReady) and bundle.envelope.get("delivery"):
-                delivery = bundle.envelope["delivery"]
-                logger.info("voice_evidence_wire_budget conversation_id=%s input_item_id=%s "
-                            "model_view_tokens=%s model_view_bytes=%s wire_bytes=%s tokenizer_id=%s "
-                            "token_basis=model_view_only",
-                            cid, item_id, delivery["token_count"], delivery["byte_count"],
-                            len(text.encode()), delivery["tokenizer_id"])
-            if len(text.encode()) > gateway.settings.qa_direct_evidence_max_bytes:
-                raise DomainError("VOICE_EVIDENCE_BUDGET", "The aggregate tool result exceeds its byte limit.", 502, True)
+            limits = {"max_tokens": gateway.settings.voice_tool_result_max_tokens,
+                      "max_bytes": gateway.settings.qa_direct_evidence_max_bytes}
+            packet = (await fit_voice_result(bundle, result, provider.measure_tool_result, **limits)
+                      if isinstance(bundle, EvidenceReady)
+                      else await measure_packet(result, provider.measure_tool_result, **limits))
+            text = packet.text
+            logger.info("voice_evidence_wire_budget conversation_id=%s input_item_id=%s "
+                        "wire_tokens=%s token_budget=%s wire_bytes=%s tokenizer_id=%s token_basis=nemo-tool-response-v1",
+                        cid, item_id, packet.token_count, limits["max_tokens"], len(text.encode()), packet.tokenizer_id)
+            if isinstance(bundle, EvidenceReady):
+                await store.record(cid, epoch, "native_wire_admission", turn.id, {
+                    "input_item_id": item_id, **bundle.envelope.get("wire_admission", {}),
+                    "provider_decision": bundle.envelope.get("provider_decision"),
+                    "decision": bundle.envelope.get("decision"),
+                    "_authorized_kb_ids": sorted(session.principal.knowledge_base_ids)}, turn.id, turn.request_revision)
             call_ids = [p["call_id"] for p in batch.calls]
             async with coordinator.lock(cid):
                 await current()
@@ -244,6 +257,11 @@ async def relay(gateway, ws, session, provider):
                 snapshot = await coordinator.runtime.catalog.snapshot(False)
                 if snapshot.revision != session.catalog_revision or snapshot.definitions != session.tool_definitions:
                     raise DomainError("VOICE_TOOL_CONFIGURATION_CHANGED", "Voice tools changed. Reconnect.", 409, True)
+                if isinstance(bundle, EvidenceReady):
+                    ctx = coordinator.contexts[turn.id]
+                    ctx.evidence = {citation.citation_id: citation for citation in bundle.citations}
+                    if not await store.execution(ctx, bundle):
+                        raise DomainError("STALE_REVISION", "The evidence changed before delivery.", 409)
                 for call_id in call_ids:
                     await store.delivery(cid, epoch, call_id, "tool_result", "write_started", turn.id, turn.request_revision,
                         input_item_id=item_id)
@@ -272,9 +290,9 @@ async def relay(gateway, ws, session, provider):
             await store.record(cid, epoch, "native_search_state", call_ids[0], counters, turn.id, turn.request_revision)
             await store.record(cid, epoch, "native_tool_batch", batch.id or call_ids[0], {
                 "input_item_id": item_id, "call_ids": call_ids, "outcomes": outcomes,
-                "result_injections": 1, "new_sources": len(result.get("sources", [])),
+                "result_injections": 1, "new_sources": len(packet.retained_ids) if packet.retained_ids else len(result.get("sources", [])),
                 "payload_bytes": len(text.encode()),
-                "retained_sources": len(search.delivered_sources)}, turn.id, turn.request_revision)
+                "retained_sources": len(bundle.citations) if isinstance(bundle, EvidenceReady) else len(search.delivered_sources)}, turn.id, turn.request_revision)
             logger.info("voice_search_state conversation_id=%s input_item_id=%s call_id=%s "
                         "retrieval_executions=%s retrieval_limit=%s duplicate_queries=%s "
                         "terminal_result_submitted=%s cumulative_sources=%s",
@@ -304,7 +322,7 @@ async def relay(gateway, ws, session, provider):
                     # evidence task or reassign its answer to the new input.
                     interrupted = []
                     for response_id, response in responses.items():
-                        if not response["done"] and response["input"] != latest_input:
+                        if not response["done"] and not response["drained"] and response["input"] != latest_input:
                             session.suppressed_responses.add(response_id)
                             interrupted.append(response_id)
                     logger.info("voice_input_started conversation_id=%s input_item_id=%s", cid, latest_input)
@@ -346,7 +364,7 @@ async def relay(gateway, ws, session, provider):
                 seen_calls[call_id] = fingerprint
                 call_inputs[call_id] = item_id
                 try:
-                    batch = batches.append(body, item_id, item_id in terminal_sent)
+                    batch = batches.append(body, item_id, item_id in terminal_sent or item_id in completed_inputs)
                     if batch is not None:
                         calls.put_nowait(batch)
                 except asyncio.QueueFull as exc:
@@ -359,7 +377,7 @@ async def relay(gateway, ws, session, provider):
                     response = response_for(rid, body)
                     tool = session.tool_catalog.get(body["name"])
                     response["acks"] = tool.ack_messages if tool else ()
-                    if item_id in terminal_sent:
+                    if item_id in terminal_sent or item_id in completed_inputs:
                         # This response is only the model's redundant checking
                         # acknowledgement. Drain it while the settlement result
                         # instructs the provider to answer or wait for new input.
@@ -369,6 +387,11 @@ async def relay(gateway, ws, session, provider):
                 continue
             rid = body["response_id"]
             response = response_for(rid, body)
+            # A tool event can declare a response ID without producing an ACK
+            # (the catalog permits no acknowledgement). Only actual output
+            # starts a transport segment that must later drain audio.done.
+            if event.kind != "audio.done":
+                response["drained"] = False
             # A response may have opened while the winning answer was still
             # streaming. Recheck on every frame, not only response creation.
             winner = completed_inputs.get(response["input"])
@@ -413,7 +436,8 @@ async def relay(gateway, ws, session, provider):
                 response["done"] = True
                 if response["text"] and not response["ack"] and not response.get("duplicate_answer"):
                     if response["input"]:
-                        completed_inputs[response["input"]] = rid
+                        for covered_input in (response["input"], *response["related_inputs"]):
+                            completed_inputs[covered_input] = rid
                     if operation and operation["sent"] and operation["evidence"]:
                         coordinator.provider_answer(operation["turn"], response["text"], response_id=rid)
                     elif not operation and response["input"]:
@@ -445,7 +469,10 @@ async def relay(gateway, ws, session, provider):
             for call in calls_for_response:
                 if call not in call_inputs:
                     raise DomainError("VOICE_PROTOCOL_ERROR", "Response refers to an unknown tool call.", 502)
-            if calls_for_response and item_id not in {call_inputs[call] for call in calls_for_response}:
+            if calls_for_response and (
+                item_id not in {call_inputs[call] for call in calls_for_response}
+                or any(call_inputs[call] not in {item_id, *related} for call in calls_for_response)
+            ):
                 raise DomainError("VOICE_PROTOCOL_ERROR", "Response does not match its tool context.", 502)
             # A legacy provider cannot safely disambiguate an interleaved answer.
             if "input_item_id" not in body and any(
@@ -463,7 +490,7 @@ async def relay(gateway, ws, session, provider):
                               "answer_kind": "greeting" if session_greeting else "knowledge" if calls_for_response else "general",
                               "unsolicited": unsolicited, "duplicate_answer": duplicate_answer,
                               "text": "", "ack": False, "acks": (),
-                              "sent": 0, "done": False, "sent_done": False, "drained": False, "streamed_chars": 0, "stream_text": ""}
+                              "sent": 0, "done": False, "sent_done": False, "drained": True, "streamed_chars": 0, "stream_text": ""}
         elif body.get("input_item_id", responses[rid]["input"]) != responses[rid]["input"]:
             raise DomainError("VOICE_PROTOCOL_ERROR", "A response changed its input association.", 502)
         elif any(key in body and body[key] != responses[rid][stored]

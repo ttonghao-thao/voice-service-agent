@@ -18,6 +18,8 @@ test -n "$VOICECHAT_MODEL_ROOT" && test -d "$VOICECHAT_MODEL_ROOT"
 
 ## 创建容器
 
+2026-11-06 配套版本补齐实时显示 ASR 与完整工具包预算。必须一起重载 `model.py`、`data_types.py`、`audio_server.py`：注入期间独立推进 ASR、保留 LLM 音频回放，并通过音频位置匹配输入；API 的计数预检使用后台已加载 tokenizer 与正式注入相同的 NeMo 封装。仍用下面六个只读挂载，无新增 VoiceChat 环境变量或依赖；API/Web 同步重建。旧服务未声明预检能力时 API 明确拒绝，不回退为估算。沿用模型仓库内现有 `tokenizer/`，不另行下载或升级权重。
+
 2026-11-06 更新修复 ACK EOS 与早到工具结果的竞争：只有业务回答正常结束才等待新输入；ACK 已进入 `process_response` 时保留回答通路。仍使用下面同一条 `docker run` 的六个只读挂载，无新增 VoiceChat 环境变量或 GPU 参数；须重新创建容器加载新的 `model.py`，同时发布本次 API/Web。
 
 2026-10-29 转写关联修复必须重新创建容器以加载最新 `s2s/audio_server.py`：只有具有非空匹配 response ID 的助手事件捕获回答关联，回答结束后清理可变上下文，下一轮 ASR 不再继承旧字段。六个挂载、镜像、GPU、模型参数和端口不变；API 也须同步更新以接受一次无用户归属的会话欢迎询问并过滤旧端转写字段。

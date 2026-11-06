@@ -77,6 +77,7 @@ def test_cloud_environment_template_cannot_enable_development_fallbacks():
         "CUEKB_MAX_EVIDENCE_BYTES",
         "CUEKB_VOICE_TOKEN_BUDGET",
         "CUEKB_VOICE_TOKENIZER_ID",
+        "VOICE_TOOL_RESULT_MAX_TOKENS",
         "VOICECHAT_WS_URL",
         "VOICECHAT_API_KEY",
         "QA_EXECUTION_MODE",

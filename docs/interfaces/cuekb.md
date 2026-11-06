@@ -96,4 +96,12 @@ HTTP 3xx 不跟随，语音路径不做叠加 HTTP 重试。上游响应有界�
 
 带代词的追问从服务端保存的用户输入中解析唯一的精确实体名/别名；只读取当前 principal 的 KB 的 `GET /knowledge-bases/{kb_id}/entities`，以 `context_bindings` 传给 CueKB。模型 query、助手回答和未来输入不参与授权。歧义、否定、换题或目录未完整读取时不推定绑定；ASR 的 yoke 等别名需由 CueKB 目录明确登记。每 KB 最多读取 1000 个实体，达到分页上限时保守不绑定。此 API 为只读目录读取，不计作第二次证据 query；权限/证据包验证仍由 CueKB 执行。
 
-`CUEKB_VOICE_TOKEN_BUDGET` 只约束服务端 canonical model_view，不能声称是最终函数通道的 token 上限。可设置 `CUEKB_VOICE_TOKENIZER_ID` 固定已登记 tokenizer 标识，不匹配即拒绝该响应。应用输出 model_view token/byte 与最终 wire byte；VoiceChat 的实际 tokenizer 对完整通道封装计数，由时间线 `backend.result_received.wire_tokens` 和 `backend.inject_profile` 对照。英文标点规范化、missing 展开与通道封装后的完整预算仍需与 CueKB 扩展版本配套；不以估算的字符/token 比冒充精确计数。
+`CUEKB_VOICE_TOKEN_BUDGET` 只约束服务端 canonical model_view，不能声称是最终函数通道的 token 上限。可设置 `CUEKB_VOICE_TOKENIZER_ID` 固定已登记 tokenizer 标识，不匹配即拒绝该响应。应用输出 model_view token/byte 与最终 wire byte；VoiceChat 的实际 tokenizer 对完整通道封装计数，由时间线 `backend.result_received.wire_tokens` 和 `backend.inject_profile` 对照。英文标点规范化、missing 展开与通道封装后的完整预算由下节 VoiceChat 精确预检独立实现，不改变 CueKB 原始包；不以估算的字符/token 比冒充精确计数。
+
+## 完整语音包准入（2026-11-06 配套版本）
+
+CueKB 的 `token_budget` 继续约束其 canonical model_view。API 另以 `VOICE_TOOL_RESULT_MAX_TOKENS`（默认 256）限制最终完整函数通道。VoiceChat 声明 `nemo-tool-response-v1` 计数能力，使用已加载 tokenizer 先对实际待发送文本及 NeMo 外层封装精确计数；预检不推进会话、音频或模型历史。旧服务未声明能力会明确报错，不以字符数推算真实预算。
+
+API 仅按原顺序准入完整证据组，不截断 statement 或 conditions；冲突证据作为一个整体保留或省略。`call_results`、缺失项、澄清和控制指令均纳入计数。每次计数回执绑定完整文本 SHA 和 tokenizer 指纹，同一拟合过程指纹变化即拒绝。正式发送使用通过计数的同一字符串。若没有完整组能容纳，则发送经过计数的明确拒答；任何组都不作为已交付证据核验。预算省略导致 decision 变化时，门户使用 `VOICE_EVIDENCE_BUDGET`，保留原始 CueKB decision/model_view 和真实交付集合供追溯。消费端也拒绝 completeness=incomplete 的语音证据组。
+
+最终核验在回答完成后读取实际准入的 citations；被省略事实不能授权口述。计数预检属于 VoiceChat 控制协议，不是新增 CueKB 查询、模型生成或工具重放。

@@ -313,6 +313,7 @@ class IndependentAPIs:
             await ws.send(json.dumps({"type": "session.created"}))
             update = json.loads(await ws.recv())
             self.updates.append(update)
+            update["session"]["capabilities"] = {"tool_result_measurement": "nemo-tool-response-v1"}
             await ws.send(json.dumps({"type": "session.updated", "session": update["session"]}))
             async for raw in ws:
                 event = json.loads(raw)
@@ -325,6 +326,12 @@ class IndependentAPIs:
                         plan = self.plans.popleft()
                         calls[plan.call_id] = plan
                         await self.input(ws, plan, update)
+                elif event["type"] == "tool_result.measure":
+                    import hashlib
+                    await ws.send(json.dumps({"type": "tool_result.measured", "event_id": event["event_id"],
+                        "text_sha256": hashlib.sha256(event["text"].encode()).hexdigest(),
+                        "token_count": 32, "tokenizer_id": "synthetic-simulation",
+                        "serialization": "nemo-tool-response-v1"}))
                 elif event["type"] == "conversation.item.create":
                     item = event["item"]
                     if item["type"] != "function_call_output":

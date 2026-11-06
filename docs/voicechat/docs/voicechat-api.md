@@ -117,3 +117,9 @@ python -m py_compile s2s/audio_server.py
 发布保留源码 hash、独立镜像 digest 和对应网关版本。重新构建 VoiceChat，并与 voice-service-agent API/Web 修复版本一起部署。其整轮业务默认 30 秒不等于本模型工具等待预算；工具超时需按实际模型配置与延迟探针对齐。
 
 GPU 验收至少包括两轮英文问答、问候与澄清、固定 ACK 后的最终口述、快速/延迟工具结果、停止后继续、真实 48 kHz 麦克风、实际扬声器与录音对照。Sent 包数、ready、EOS 或 CPU 测试通过均不能替代人工听音和 ASR 准确性结论。
+
+## Repository paired protocol: exact tool measurement and audio ownership
+
+`session.updated.session.capabilities.tool_result_measurement` advertises `nemo-tool-response-v1`. A client may send `{ "type": "tool_result.measure", "event_id": "id", "text": "<exact JSON tool output>" }`. The server responds with `tool_result.measured`, echoing event_id plus text_sha256, token_count, tokenizer_id and serialization. The loaded backend tokenizer counts the same `format_tool_response_for_nemo` string as formal injection. Measurement creates no tool output and advances no audio, sequence or engine state. A measurement failure is explicit. At most one measurement runs per connection; audio receive remains active.
+
+The maintained backend/server pair also transports `audio-clock-v1` metadata inside the existing output_function_text tensor, separate from native model text. It includes decoder-consumed and display-ASR frame positions and ASR onset positions. The server unwraps this before native function parsing and binds calls to the input actually consumed by the decoder. Live display ASR may progress during result injection; all raw PCM remains queued for once-only LLM consumption. This extension requires coordinated server/backend deployment and does not change the model weights, native function history or Triton tensor configuration.

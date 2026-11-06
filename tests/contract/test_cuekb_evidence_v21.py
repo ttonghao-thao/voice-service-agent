@@ -213,3 +213,125 @@ async def test_tokenizer_identity_mismatch_is_rejected_before_package_delivery()
             await CueKBAdapter(settings, client).invoke(CueKBSearchInput(query=question), context(question))
     assert caught.value.code == 'CUEKB_CONTRACT_ERROR'
     assert seen == ['/v2/evidence/query']
+
+
+@pytest.mark.parametrize('spoken,normalized', [
+    ('forty-five and three days', '45 and 3 days'),
+    ('one hundred and five days', '105 days'),
+])
+def test_numeric_list_items_are_not_added_together(spoken, normalized):
+    from app.agent_runtime.evidence import normalize_numbers
+    assert normalize_numbers(spoken) == normalized
+
+
+@pytest.mark.parametrize('claim,code', [
+    ('The voltage is twelve volts.', None),
+    ('The price is sixty five RMB.', 'VOICE_UNSUPPORTED_UNIT'),
+    ('The weight is forty two grams.', 'VOICE_UNSUPPORTED_UNIT'),
+    ('The weight is sixty five grams and the price is forty two RMB.', None),
+])
+def test_numbers_cannot_move_between_different_units(claim, code):
+    from app.agent_runtime.evidence import EvidenceGate
+    from app.contracts import Citation
+    source = Citation(citation_id='C1', document_id='d', chunk_id='c', title='Specification',
+                      version_id='v', trace_id='t', retrieval_id='r', rank=1,
+                      content='Voltage: 12 V. Weight: 65 g. Price: RMB 42.')
+    assert EvidenceGate.check_spoken(claim, [source]) == code
+
+
+def test_subject_property_negations_and_explicit_corrections_preserve_the_correct_binding():
+    from app.tools.entity_context import context_binding
+    first = {'id': '11111111-1111-4111-8111-111111111112', 'name': 'Product Alpha', 'aliases': []}
+    second = {'id': '11111111-1111-4111-8111-111111111113', 'name': 'Product Beta', 'aliases': []}
+    rows = [{'text': 'Tell me about Product Alpha.'}]
+    assert context_binding('Can it not be shipped?', rows, [first, second])[0]['entity_id'] == first['id']
+    assert context_binding('If refrigerated, how long can it last?', rows, [first, second])[0]['entity_id'] == first['id']
+    assert context_binding('How long is its shelf life?', [*rows, {'text': 'Not Product Alpha, Product Beta.'}],
+                           [first, second])[0]['entity_id'] == second['id']
+    assert not context_binding('What about this other product?', rows, [first, second])
+    assert context_binding('How long is its shelf life?', [*rows, {'text': 'My new model is Product Beta.'}],
+                           [first, second])[0]['entity_id'] == second['id']
+    assert not context_binding('How long is its shelf life?', [*rows, {'text': 'Forget Product Alpha.'}], [first, second])
+
+
+@pytest.mark.parametrize('patch', [
+    {'id': 'bad-uuid'}, {'aliases': [12]}, {'aliases': ['']}, {'kb_id': '22222222-2222-4222-8222-222222222222'},
+])
+async def test_malformed_or_cross_scope_entity_rows_are_contract_errors(patch):
+    from app.contracts import DomainError
+    row = {'id': '11111111-1111-4111-8111-111111111112', 'kb_id': KB,
+           'name': 'Product Alpha', 'aliases': []}
+    ctx = context('How long is its shelf life?')
+    ctx.task_context['recent_inputs'] = [{'text': 'Product Alpha'}]
+    def handle(request):
+        return httpx.Response(200, json=[{**row, **patch}])
+    settings = Settings(_env_file=None, cuekb_mode='real', cuekb_base_url='https://cuekb.fixture')
+    async with httpx.AsyncClient(transport=httpx.MockTransport(handle)) as client:
+        with pytest.raises(DomainError) as caught:
+            await CueKBAdapter(settings, client)._context_bindings(ctx, ctx.task_context['original_request'])
+    assert caught.value.code == 'CUEKB_CONTRACT_ERROR'
+
+
+@pytest.mark.parametrize('mutation', ['decision', 'missing', 'conflict'])
+def test_inconsistent_evidence_decisions_and_missing_items_are_rejected(mutation):
+    payload = provider_response()
+    if mutation == 'decision':
+        payload['decision'] = payload['model_view']['decision'] = 'insufficient'
+    elif mutation == 'missing':
+        payload['missing'] = payload['model_view']['missing'] = [payload['facets'][0]['id']]
+    else:
+        payload['conflicts'] = [{'facet_id': payload['facets'][0]['id'], 'evidence_ids': ['E1', 'E2'],
+                                 'reason': 'incompatible_values'}]
+    with pytest.raises(ValidationError):
+        EvidenceQueryResponse.model_validate(payload)
+
+
+@pytest.mark.parametrize('text,decision,code', [
+    ('I cannot confirm the requested information from the available documentation.', 'insufficient', None),
+    ('Which product do you mean?', 'clarify', None),
+    ('It can be shipped.', 'insufficient', 'VOICE_ANSWER_UNGROUNDED'),
+    ('I cannot confirm that. It can be shipped.', 'insufficient', 'VOICE_ANSWER_UNGROUNDED'),
+    ('I cannot confirm a forty five day shelf life.', 'insufficient', 'VOICE_UNSUPPORTED_NUMBER'),
+])
+def test_no_evidence_disposition_does_not_authorize_positive_facts(text, decision, code):
+    from app.agent_runtime.evidence import EvidenceGate
+    assert EvidenceGate.check_disposition(text, decision) == code
+
+
+
+async def test_long_indivisible_question_requests_clarification_without_http_or_truncation():
+    from app.contracts import DomainError
+    question = 'What is ' + 'a' * 493
+    assert len(question) == 501
+    calls = []
+    def handle(request):
+        calls.append(request)
+        raise AssertionError('No incomplete question may be submitted')
+    settings = Settings(_env_file=None, cuekb_mode='real', cuekb_base_url='https://cuekb.fixture')
+    async with httpx.AsyncClient(transport=httpx.MockTransport(handle)) as client:
+        with pytest.raises(DomainError) as caught:
+            await CueKBAdapter(settings, client).invoke(CueKBSearchInput(query=question), context(question))
+    assert caught.value.code == 'CUEKB_QUESTION_TOO_LONG'
+    assert calls == []
+    assert CueKBAdapter._question_facets(question[:-1])[0].text == question[:-1]
+
+
+
+@pytest.mark.parametrize('provider,admitted,expected_reason', [
+    ('answer', 'partial_answer', 'VOICE_EVIDENCE_BUDGET'),
+    ('partial_answer', 'insufficient', 'VOICE_EVIDENCE_BUDGET'),
+    ('partial_answer', 'partial_answer', 'CUEKB_PARTIAL_ANSWER'),
+])
+def test_local_delivery_omissions_are_not_reported_as_provider_retrieval_failures(provider, admitted, expected_reason):
+    from app.sessions.coordinator import evidence_outcome
+    status, reason = evidence_outcome({'decision': admitted, 'provider_decision': provider,
+                                      'wire_admission': {'omitted_ids': ['E2']}})
+    assert status == 'insufficient_evidence'
+    assert reason == expected_reason
+
+
+def test_speech_consumer_rejects_incomplete_selected_group():
+    payload = provider_response()
+    payload['evidence'][0]['completeness'] = 'incomplete'
+    with pytest.raises(ValidationError, match='voice_evidence_requires_complete_groups'):
+        EvidenceQueryResponse.model_validate(payload)

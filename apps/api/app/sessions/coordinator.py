@@ -16,6 +16,20 @@ from sqlalchemy import select
 logger = logging.getLogger(__name__)
 
 
+def evidence_outcome(envelope):
+    """Preserve provider disposition and identify local delivery limitations."""
+    decision = envelope.get("decision")
+    status = {"clarify": "needs_clarification", "insufficient": "insufficient_evidence",
+              "conflict": "insufficient_evidence", "partial_answer": "insufficient_evidence"}.get(decision, "answered")
+    reason = {"partial_answer": "CUEKB_PARTIAL_ANSWER", "conflict": "CUEKB_CONFLICT",
+              "insufficient": "CUEKB_INSUFFICIENT", "clarify": "CUEKB_NEEDS_CLARIFICATION"}.get(decision)
+    if ((envelope.get("wire_admission", {}).get("omitted_ids")
+         or envelope.get("wire_admission", {}).get("budget_limited"))
+        and envelope.get("provider_decision", decision) != decision):
+        reason = "VOICE_EVIDENCE_BUDGET"
+    return status, reason
+
+
 class SessionCoordinator:
     def __init__(self, store, runtime, coordination, settings):
         self.store, self.runtime, self.coordination, self.settings = store, runtime, coordination, settings
@@ -328,7 +342,7 @@ class SessionCoordinator:
     async def finish_provider(self, ctx, request, history, ready, future, voice_relay=False):
         try:
             contract = presentation_contract("grounded", ctx.slots)
-            checked_evidence = spoken_citations(ready)
+            checked_evidence = []
             budget = min(self.settings.qa_provider_answer_timeout_ms / 1000,
                          max(0, ready.deadline - time.monotonic()))
             try:
@@ -336,7 +350,14 @@ class SessionCoordinator:
                 # retrieval deadline must not cancel result injection or speech.
                 # Disconnect/explicit cancellation still cancels this observer.
                 text = await future if voice_relay else await asyncio.wait_for(future, budget)
-                code = EvidenceGate.check_presentation(text, contract, checked_evidence)
+                # Admission can reduce complete groups before native delivery.
+                # Snapshot only after that delivery and spoken completion, so
+                # omitted facts cannot authorize the answer's claims.
+                checked_evidence = spoken_citations(ready)
+                if not checked_evidence and ready.envelope.get("decision") in {"insufficient", "clarify"}:
+                    code = EvidenceGate.check_disposition(text, ready.envelope["decision"])
+                else:
+                    code = EvidenceGate.check_presentation(text, contract, checked_evidence)
             except TimeoutError:
                 text, code = "", "VOICE_ANSWER_TIMEOUT"
             allowed = await self.runtime.registry.allowed(ctx.principal)
@@ -363,11 +384,7 @@ class SessionCoordinator:
                 "VOICE_UNSUPPORTED_UNIT", "VOICE_MISSING_CONDITION",
             }
             evidence_decision = ready.envelope.get("decision")
-            result_status = {"clarify": "needs_clarification", "insufficient": "insufficient_evidence",
-                             "conflict": "insufficient_evidence", "partial_answer": "insufficient_evidence"}.get(
-                                 evidence_decision, "answered")
-            decision_reason = {"partial_answer": "CUEKB_PARTIAL_ANSWER", "conflict": "CUEKB_CONFLICT",
-                               "insufficient": "CUEKB_INSUFFICIENT", "clarify": "CUEKB_NEEDS_CLARIFICATION"}.get(evidence_decision)
+            result_status, decision_reason = evidence_outcome(ready.envelope)
             bundle = AnswerBundle(
                 answer_id=ready.answer_id, status="failed" if code else result_status,
                 display_text="The spoken response could not be verified. Please try again." if code else text,

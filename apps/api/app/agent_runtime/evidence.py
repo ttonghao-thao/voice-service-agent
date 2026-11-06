@@ -12,7 +12,7 @@ _NUMBER_WORDS = dict(zip(
     range(20), strict=True))
 _NUMBER_WORDS.update(dict(zip("twenty thirty forty fifty sixty seventy eighty ninety".split(), range(20, 100, 10), strict=True)))
 _NUMBER_WORDS.update(hundred=100, thousand=1000, million=1000000)
-_NUMBER_PATTERN = re.compile(r"\b(?:" + "|".join(_NUMBER_WORDS) + r")(?:[ -]+(?:and[ -]+)?(?:" + "|".join(_NUMBER_WORDS) + r"))*\b", re.I)
+_NUMBER_PATTERN = re.compile(r"\b(?:" + "|".join(_NUMBER_WORDS) + r")(?:[ -]+(?:" + "|".join(_NUMBER_WORDS) + r"))*\b", re.I)
 
 
 def normalize_numbers(text):
@@ -37,6 +37,10 @@ def normalize_numbers(text):
     text = re.sub(r"\bpoint ((?:" + digits + r")(?:[ -]+(?:" + digits + r"))*)\b",
                   lambda match: "point " + "".join(str(_NUMBER_WORDS[word])
                       for word in re.split(r"[ -]+", match[1].lower())), text, flags=re.I)
+    # Cardinal "and" joins a scale (one hundred and five), not a list
+    # of independent facts (forty-five and three must not become 48).
+    text = re.sub(r"\b(hundred|thousand|million)\s+and\s+(?=(?:" + "|".join(_NUMBER_WORDS) + r")\b)",
+                  r"\1 ", text, flags=re.I)
     text = _NUMBER_PATTERN.sub(convert, text)
     text = re.sub(r"\b(\d+) point (\d+)\b", r"\1.\2", text, flags=re.I)
     return re.sub(r"(\d)\s+percent\b", r"\1%", text, flags=re.I)
@@ -121,13 +125,28 @@ class EvidenceGate:
         text, source = normalize_numbers(text), normalize_numbers(source)
         # Reject new numeric facts; this deliberately does not certify paraphrases.
         def numbers(value):
-            return set(re.findall(r"(?<![A-Za-z0-9])\d+(?:\.\d+)*(?:%|[A-Za-z]+)?", value))
+            return set(re.findall(r"(?<![A-Za-z0-9])\d+(?:\.\d+)*", value))
         if numbers(re.sub(r"\[C\d+\]", "", text)) - numbers(source):
             return "VOICE_UNSUPPORTED_NUMBER"
         def quantities(value):
-            return set(re.findall(r"\b\d+(?:\.\d+)?\s*(?:ms|seconds?|minutes?|hours?|days?|"
-                                  r"mbps|gbps|mhz|ghz|volts?|watts?|meters?|metres?|degrees?)\b", value, re.I))
-        if {q.casefold() for q in quantities(text)} - {q.casefold() for q in quantities(source)}:
+            aliases = {
+                "ms": "ms", "millisecond": "ms", "milliseconds": "ms",
+                "second": "second", "seconds": "second", "minute": "minute", "minutes": "minute",
+                "hour": "hour", "hours": "hour", "day": "day", "days": "day",
+                "g": "gram", "gram": "gram", "grams": "gram", "kg": "kilogram", "kilograms": "kilogram",
+                "v": "volt", "volt": "volt", "volts": "volt", "w": "watt", "watt": "watt", "watts": "watt",
+                "a": "amp", "amp": "amp", "amps": "amp", "ampere": "amp", "amperes": "amp",
+                "meter": "meter", "meters": "meter", "metre": "meter", "metres": "meter",
+                "degree": "degree", "degrees": "degree", "connection": "connection", "connections": "connection",
+                "mbps": "mbps", "gbps": "gbps", "mhz": "mhz", "ghz": "ghz", "%": "%",
+                "usd": "usd", "dollars": "usd", "$": "usd", "rmb": "cny", "cny": "cny",
+            }
+            units = "|".join(re.escape(unit) for unit in sorted(aliases, key=len, reverse=True))
+            suffix = re.findall(r"\b(\d+(?:\.\d+)?)\s*(" + units + r")(?![A-Za-z])", value, re.I)
+            prefix = re.findall(r"(?<![A-Za-z])(" + units + r")\s*(\d+(?:\.\d+)?)\b", value, re.I)
+            return {(number, aliases[unit.casefold()]) for number, unit in suffix} | {
+                (number, aliases[unit.casefold()]) for unit, number in prefix}
+        if quantities(text) - quantities(source):
             return "VOICE_UNSUPPORTED_UNIT"
         # Do not allow a number present elsewhere in the source to migrate
         # into a different explicit condition (e.g. sealed vs after opening).
@@ -146,6 +165,22 @@ class EvidenceGate:
                         return "VOICE_MISSING_CONDITION"
         if EvidenceGate.missing_conditions(text, evidence):
             return "VOICE_MISSING_CONDITION"
+        return None
+
+    @staticmethod
+    def check_disposition(text, decision):
+        """No-evidence outcomes authorize a refusal or clarification, not facts."""
+        code = EvidenceGate.check_spoken(text, [])
+        if code:
+            return code
+        clauses = [clause.strip() for clause in re.split(r"(?<=[.!?])\s+|;|\bbut\b|\bhowever\b", text, flags=re.I)
+                   if clause.strip()]
+        refusal = re.compile(r"\b(?:cannot|can't|could not|unable to|do not know|don't know|no verified|no reliable|insufficient|not enough)\b", re.I)
+        clarify = re.compile(r"^(?:(?:which|what)\b.*\?|(?:can|could) you (?:specify|clarify|provide|select)\b|please (?:specify|clarify|provide|select)\b)", re.I)
+        if decision not in {"insufficient", "clarify"} or not clauses or any(
+            not refusal.search(clause) and not clarify.search(clause) for clause in clauses
+        ):
+            return "VOICE_ANSWER_UNGROUNDED"
         return None
 
     @staticmethod

@@ -1,5 +1,6 @@
 import asyncio
 import base64
+import hashlib
 import json
 import logging
 from dataclasses import dataclass, field
@@ -208,6 +209,8 @@ class NvidiaVoiceChatAdapter:
     capabilities = ProviderCapabilities()
     def __init__(self, settings):
         self.settings, self.ws = settings, None
+        self.tool_result_measurement = None
+        self._measurements = {}
 
     async def connect(self, summary):
         s = self.settings
@@ -235,6 +238,11 @@ class NvidiaVoiceChatAdapter:
             if updated.get("type") != "session.updated":
                 raise DomainError("VOICE_PROTOCOL_ERROR", "Voice session configuration was not confirmed", 502)
             configuration = updated.get("session")
+            if isinstance(configuration, dict):
+                capabilities = configuration.get("capabilities", {})
+                if not isinstance(capabilities, dict):
+                    raise DomainError("VOICE_PROTOCOL_ERROR", "VoiceChat returned invalid capabilities", 502)
+                self.tool_result_measurement = capabilities.get("tool_result_measurement")
             audio = configuration.get("audio") if isinstance(configuration, dict) else None
             for direction in ("input", "output"):
                 stream = audio.get(direction) if isinstance(audio, dict) else None
@@ -279,6 +287,34 @@ class NvidiaVoiceChatAdapter:
             json.dumps({"type": "input_audio_buffer.append", "event_id": uid(), "audio": audio})
         )
 
+    async def measure_tool_result(self, text):
+        """Count the final NeMo wrapper with the running backend tokenizer.
+
+        The existing event reader is the only WebSocket reader. A preflight is
+        correlated by event ID and content hash and never creates a tool output.
+        """
+        if self.tool_result_measurement != "nemo-tool-response-v1":
+            raise DomainError("VOICE_TOKENIZER_UNAVAILABLE", "Upgrade VoiceChat for exact tool-result budgeting.", 502)
+        if not printable_ascii(text) or len(text.encode()) > 32768:
+            raise DomainError("VOICE_EVIDENCE_BUDGET", "Invalid tool-result measurement payload.", 502)
+        event_id = uid()
+        future = asyncio.get_running_loop().create_future()
+        self._measurements[event_id] = future
+        try:
+            await self.ws.send(json.dumps({"type": "tool_result.measure", "event_id": event_id, "text": text}))
+            async with asyncio.timeout(8):
+                measured = await future
+            if (measured.get("serialization") != "nemo-tool-response-v1"
+                or measured.get("text_sha256") != hashlib.sha256(text.encode()).hexdigest()
+                or type(measured.get("token_count")) is not int or not 0 < measured["token_count"] <= 32768
+                or not isinstance(measured.get("tokenizer_id"), str) or not 0 < len(measured["tokenizer_id"]) <= 200):
+                raise DomainError("VOICE_PROTOCOL_ERROR", "Invalid tool-result token measurement.", 502)
+            return measured
+        except TimeoutError as exc:
+            raise DomainError("VOICE_TOKENIZER_UNAVAILABLE", "Tool-result token measurement timed out.", 502, True) from exc
+        finally:
+            self._measurements.pop(event_id, None)
+
     async def submit_tool_result(self, call_id, text, *, batch_id=None, call_ids=None):
         try:
             result = json.loads(text)
@@ -300,11 +336,21 @@ class NvidiaVoiceChatAdapter:
 
     async def events(self):
         async for raw in self.ws:
-            event = normalize(decode_event(raw))
+            raw_event = decode_event(raw)
+            if raw_event["type"] == "tool_result.measured":
+                future = self._measurements.get(raw_event.get("event_id"))
+                if future is None or future.done():
+                    raise DomainError("VOICE_PROTOCOL_ERROR", "Unsolicited tool-result token measurement.", 502)
+                future.set_result(raw_event)
+                continue
+            event = normalize(raw_event)
             if event:
                 yield event
 
     async def close(self):
+        for future in self._measurements.values():
+            if not future.done():
+                future.set_exception(DomainError("VOICE_UNAVAILABLE", "VoiceChat closed during token measurement.", 502))
         if self.ws:
             await self.ws.close()
             return self.ws.close_code in (1000, 1001)
@@ -324,6 +370,12 @@ class MockVoiceAdapter:
 
     async def send_audio(self, audio):
         base64.b64decode(audio, validate=True)
+
+    async def measure_tool_result(self, text):
+        # Synthetic test budget only; never identifies this as a real tokenizer.
+        return {"event_id": "mock", "text_sha256": hashlib.sha256(text.encode()).hexdigest(),
+                "token_count": max(1, len(text.encode()) // 8),
+                "tokenizer_id": "synthetic-mock-byte-budget", "serialization": "nemo-tool-response-v1"}
 
     async def submit_tool_result(self, call_id, text):
         pass

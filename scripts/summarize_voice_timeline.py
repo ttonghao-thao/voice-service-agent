@@ -23,7 +23,7 @@ FIELDS = (
     "conversation_id", "input_item_id", "call_id", "turn_id", "response_id", "tool",
     "batch_id", "calls", "injections", "trace_id", "retrieval_status", "hit_count",
     "decision", "facets", "groups", "tokens", "duration_ms", "phase", "samples", "status",
-    "model_view_tokens", "model_view_bytes", "wire_bytes", "tokenizer_id", "token_basis",
+    "model_view_tokens", "model_view_bytes", "wire_bytes", "wire_tokens", "token_budget", "tokenizer_id", "token_basis",
 )
 BACKEND = {
     "response_chars=": "backend.result_received",
@@ -37,6 +37,7 @@ BACKEND = {
     "Tool audio buffered": "backend.audio_buffered",
     "Tool audio resumed": "backend.audio_resumed",
     "Tool response consumption": "backend.inject_profile",
+    "Tool live ASR": "backend.live_asr",
     "Voice LLM finished": "backend.request_finished",
 }
 
@@ -98,7 +99,7 @@ def summarize(lines, conversation_id):
             event = next((event for marker, event in BACKEND.items() if marker in line), None)
             if event:
                 metrics = {key: int(value) for key, value in re.findall(
-                    r"\b(received_samples|processed_frames|tokens|completed|preparation_ms|append_wait_ms|remaining_tokens|prompt_tokens|appended_tokens|output_tokens|decoder_steps)=(\d+)", line)}
+                    r"\b(received_samples|processed_frames|observed_frames|llm_audio_frames|tokens|completed|preparation_ms|append_wait_ms|remaining_tokens|prompt_tokens|appended_tokens|output_tokens|decoder_steps)=(\d+)", line)}
                 if event == "backend.result_received":
                     count = re.search(r"Token length:(\d+)", line)
                     if count:
