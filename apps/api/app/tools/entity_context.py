@@ -36,7 +36,9 @@ def catalog_rows(rows, kb_id):
 
 
 def normalized(text):
-    return ' '.join(re.findall(r'[a-z0-9]+', text.casefold()))
+    text = text.casefold().replace('’', "'")
+    text = re.sub(r"\b([a-z]+)n't\b", r'\1 not', text)
+    return ' '.join(re.findall(r'[a-z0-9]+', text))
 
 
 def context_binding(question, recent_inputs, entities):

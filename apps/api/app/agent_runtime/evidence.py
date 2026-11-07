@@ -168,6 +168,47 @@ class EvidenceGate:
         return None
 
     @staticmethod
+    def check_facets(text, envelope):
+        """Conservative attribute coverage; never infer semantic entailment."""
+        attributes = {
+            "price": r"\b(?:price|cost|rmb|usd|dollars)\b",
+            "weight": r"\b(?:weight|weighs?|grams?|kilograms?|kg)\b",
+            "shipping": r"\b(?:ship|shipped|shipping|deliver|delivery)\b",
+            "storage": r"\b(?:store|stored|storage|refrigerat\w*)\b",
+            "shelf life": r"\b(?:shelf ?life|sealed|unopened|lasts?)\b",
+        }
+        admitted = envelope.get("wire_admission")
+        covered = ({facet for group in admitted["retained_ids"]
+                    for facet in envelope.get("group_supports", {}).get(group, [])}
+                   if admitted is not None else None)
+        for facet in envelope.get("facets", []):
+            if covered is not None and facet["id"] not in covered:
+                continue
+            if facet["support"] not in {"direct", "entailed"}:
+                continue
+            for pattern in attributes.values():
+                if re.search(pattern, facet["text"], re.I) and not re.search(pattern, text, re.I):
+                    return "VOICE_ANSWER_INVALID"
+        # Negation must attach to the same property, not another sentence.
+        negative = r"\b(?:not|never|cannot|can't|doesn't|don't)\b"
+        if envelope.get("decision") == "conflict":
+            return None  # Opposing claims must remain available for explanation.
+        for pattern in attributes.values():
+            polarities = {
+                bool(re.search(negative, source, re.I))
+                for item in envelope.get("items", [])
+                for source in re.split(r"[.;!?]", item["text"])
+                if re.search(pattern, source, re.I)
+            }
+            if len(polarities) != 1:
+                continue  # Mixed conditions need semantic assessment, not a global verdict.
+            for claim in re.split(r"[.;!?]", text):
+                if (re.search(pattern, claim, re.I)
+                    and bool(re.search(negative, claim, re.I)) not in polarities):
+                    return "VOICE_MISSING_CONDITION"
+        return None
+
+    @staticmethod
     def check_disposition(text, decision):
         """No-evidence outcomes authorize a refusal or clarification, not facts."""
         code = EvidenceGate.check_spoken(text, [])

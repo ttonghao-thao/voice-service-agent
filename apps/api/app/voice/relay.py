@@ -425,19 +425,20 @@ async def relay(gateway, ws, session, provider):
                     if not response["ack"] and not response.get("unsolicited") and not response.get("duplicate_answer"):
                         await store.record(cid, epoch, "voicechat_transcript", rid, {
                             **body, "input_item_id": response["input"],
-                            "related_input_item_ids": response["related_inputs"],
+                            "related_input_item_ids": [],
                             "answer_kind": response["answer_kind"],
                             "_authorized_kb_ids": sorted(session.principal.knowledge_base_ids) if operation else []})
                 body.update(phase="status" if response["ack"] else "answer", segment_index=0,
-                    input_item_id=response["input"], related_input_item_ids=response["related_inputs"],
+                    input_item_id=response["input"], related_input_item_ids=[],
                     answer_kind=response["answer_kind"])
             if event.kind == "audio.done":
                 body["phase"] = "status" if response["ack"] else "answer"
                 response["done"] = True
                 if response["text"] and not response["ack"] and not response.get("duplicate_answer"):
                     if response["input"]:
-                        for covered_input in (response["input"], *response["related_inputs"]):
-                            completed_inputs[covered_input] = rid
+                        # Related inputs are transport context, not proof that their
+                        # complete questions were consumed and answered.
+                        completed_inputs[response["input"]] = rid
                     if operation and operation["sent"] and operation["evidence"]:
                         coordinator.provider_answer(operation["turn"], response["text"], response_id=rid)
                     elif not operation and response["input"]:

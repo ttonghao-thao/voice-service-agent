@@ -129,6 +129,16 @@ class CueKBAdapter:
                 if cursor < end:
                     listed.append((cursor, end))
                 spans = listed
+        # Split only a closed syntactic list of property nouns. Preserve exact
+        # spans; do not split product names or arbitrary conjunctions.
+        if len(spans) == 1:
+            match = re.fullmatch(
+                r"(?:What is|What are) (?:its|the) (?P<left>price|weight|shelf life|storage|dimensions)"
+                r" and (?P<right>price|weight|shelf life|storage|dimensions)\??",
+                question, re.IGNORECASE,
+            )
+            if match:
+                spans = [match.span("left"), match.span("right")]
         if not spans or len(spans) > 8:
             spans = [(0, len(question))]
         if any(end - start > 500 for start, end in spans):

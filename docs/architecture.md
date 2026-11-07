@@ -37,7 +37,7 @@
 
 收音、转写、模型理解、播放与业务任务是不同状态。欢迎语允许无用户 input；后续无归属输出抑制但不断连。用户开口清理并抑制已有 response 的迟到播放；Stop playback 不取消检索。明确业务取消/End call/失效 epoch 或权限按规则结清。
 
-注入期间 display RNNT 以独立音频游标运行，原始 PCM 留给 LLM 后续一次消费；不把显示 ASR 的推进说成 LLM 同时理解。工具提取期仍缓冲，结果仍逐 token append/anext。新显示输入与旧工具所属输入按音频位置区分；当前 related-input 判定仅覆盖到起点，不能证明整个补充问题已经回答（F3）。
+注入期间 display RNNT 以独立音频游标运行，原始 PCM 留给 LLM 后续一次消费；不把显示 ASR 的推进说成 LLM 同时理解。工具提取期仍缓冲，结果仍逐 token append/anext。新显示输入与旧工具所属输入按音频位置区分；VoiceChat 的 related-input 判定仅覆盖到起点；API 因此不再将 related 当作完成或向门户宣称包含回答，补充问题保留独立处理资格（F3）。
 
 VoiceChat 普通回答 EOS 等待新输入；ACK EOS 允许待答结果继续。API 按 response 抑制旧音频/重复输出并处理 drained。工具正文提交后等待答案默认 60 秒；连接默认 105 秒、活动宽限 30 秒。到期/背压/协议错误仍可能结束连接，不是无限会话。
 
@@ -45,8 +45,8 @@ VoiceChat 普通回答 EOS 等待新输入；ACK EOS 允许待答结果继续。
 
 ## 5. 多轮与权限
 
-最终 ASR/Utterance 是可信用户输入来源；助手文字和模型 query 不授权产品实体。代词追问读取授权实体目录，以唯一名字/已审核别名建立 binding；目前英文缩写撤回有缺陷（F2）。自然停顿可生成多个 input，不把 WAV 文件边界强制当一轮。
+最终 ASR/Utterance 是可信用户输入来源；助手文字和模型 query 不授权产品实体。代词追问读取授权实体目录，以唯一名字/已审核别名建立 binding；英文缩写撤回已统一规范化（F2），复杂指代仍需语料验证。自然停顿可生成多个 input，不把 WAV 文件边界强制当一轮。
 
-一个 conversation 的新业务 revision 会替代旧任务；普通发声不等同新业务提交。关联到同一回答的输入当前会一起标完成，这一策略需 F3 收紧。历史、来源、后续摘要、执行和提交均需检查授权；CueKB validate 与实际写入间仍有窗口（F7）。
+一个 conversation 的新业务 revision 会替代旧任务；普通发声不等同新业务提交。当前只将响应主 input 标完成，关联输入不再自动结清。历史、来源、后续摘要、执行和提交均需检查授权；CueKB validate 与实际写入间仍有窗口（F7）。
 
 未知 input/tool、归属中途变化、权限撤销不能以“不断连”为由忽略。增强等待 operation 的 ProviderCapabilities 仍未获生产验证；实时显示 ASR 不自动使这些能力变 true。

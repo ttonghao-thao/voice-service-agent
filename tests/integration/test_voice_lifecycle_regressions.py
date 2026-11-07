@@ -163,7 +163,7 @@ def test_completed_input_settles_late_call_without_second_answer_and_preserves_d
                 if answer:
                     break
                 time.sleep(.01)
-            assert answer['status'] == ('answered' if decision == 'answer' else 'needs_clarification' if decision == 'clarify' else 'insufficient_evidence')
+            assert answer['status'] == ('failed' if decision == 'answer' else 'needs_clarification' if decision == 'clarify' else 'insufficient_evidence')
             if decision == 'partial_answer':
                 assert outputs[0]['missing'] == ['What is Product AX price?']
         client.portal.call(http.aclose)
@@ -232,7 +232,7 @@ def test_queued_preterminal_call_is_settled_and_no_ack_segment_does_not_block_ro
         client.portal.call(http.aclose)
 
 
-def test_grouped_followup_is_completed_without_another_search_or_answer(tmp_path):
+def test_related_followup_remains_eligible_for_its_own_search_and_answer(tmp_path):
     settings = configuration(tmp_path)
     app = create_app(settings)
     queries, outputs = [], []
@@ -261,7 +261,6 @@ def test_grouped_followup_is_completed_without_another_search_or_answer(tmp_path
             outputs.append(json.loads(text))
             if call_id == 'c1':
                 await self.queue.put(VoiceEvent('input.state', {'state': 'speaking', 'item_id': 'i2'}))
-                await self.queue.put(VoiceEvent('transcript.done', {'item_id': 'i2', 'text': 'What is the connection limit?'}))
                 context = {'response_id': 'answer', 'input_item_id': 'i1',
                            'related_input_item_ids': ['i2'], 'tool_call_ids': ['c1']}
             else:
@@ -272,6 +271,8 @@ def test_grouped_followup_is_completed_without_another_search_or_answer(tmp_path
                 VoiceEvent('audio.done', context),
             ]:
                 await self.queue.put(event)
+            if call_id == 'c1':
+                await self.queue.put(VoiceEvent('transcript.done', {'item_id': 'i2', 'text': 'What is the connection limit?'}))
             if call_id != 'c1':
                 await self.queue.put(VoiceEvent('transcript.done', {'item_id': 'barrier', 'text': 'Thanks.'}))
 
@@ -295,12 +296,12 @@ def test_grouped_followup_is_completed_without_another_search_or_answer(tmp_path
             while True:
                 event = ws.receive_json()
                 assert event['type'] != 'portal.error', event
-                assert event['payload'].get('response_id') != 'duplicate'
+                # A related input is not certified answered by transport metadata.
                 if event['type'] == 'portal.transcript.done' and event['payload']['item_id'] == 'barrier':
                     break
-            assert len(queries) == 1
-            assert outputs[1]['status'] == 'not_executed'
-            assert 'Wait for new user input' in outputs[1]['instructions']
+            assert len(queries) == 2
+            assert outputs[1]['status'] == 'ok'
+
         client.portal.call(http.aclose)
 
 

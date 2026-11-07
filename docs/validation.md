@@ -259,3 +259,17 @@ PYTHON
 本次只运行只读探针和文档链接/锚点、差异、命令语法检查，不重跑应用测试。上一代码版本记录：最终定向 120 项、VoiceChat CPU 65 项、Web 41 项及构建通过；后端此前全量 767 中 2 项夹具失败经补齐后纳入定向回归，未声称重新跑完整 767 全绿。这些属于 `2a8ba8b` 的历史开发证据，不覆盖本次新发现 F1—F4，也不是生产放行。
 
 修改业务代码时按影响范围选择现有契约/集成/快照测试；契约变化执行 `PYTHONPATH=apps/api .venv/bin/python scripts/export_contracts.py`。本手册覆盖替换旧版本，不再追加“下一轮第 N 节”。
+
+## 当前修复复测（2026-11-07）
+
+本轮修改 API 的规则与完成判定，VoiceChat/CueKB 运行文件未改。保留以上配套部署和 A/B/C/D 方法。F1 原低层探针仍显示旧检查的局限；实际 Coordinator 现在额外调用 check_facets，因此须用集成回归判断最终认证。F3 起始帧谓词仍不证明整段消费，API 已不据 related 标完成。F4 简单 price/weight 输入现在拆两项；复杂组合仍未解决。
+
+开发回归命令：
+
+```bash
+.venv/bin/python -m pytest tests/contract/test_review_regressions.py tests/contract/test_cuekb_evidence_v21.py tests/contract/test_voice_wire_budget.py tests/integration/test_voice_lifecycle_regressions.py tests/integration/test_wire_budget_delivery.py -q
+```
+
+定向验证包含缩写撤回/属性否定、属性跨度/产品名 and、极性矛盾/漏项/预算省略，以及尚未 final 的 related 输入后续仍可查询。生产真实 GPU、听音、首问路由和复杂语义不由这些测试替代。
+
+本轮上述定向回归实际结果：70 passed，1 条既有 Starlette 弃用警告；Ruff 与 git diff --check 通过。未部署，未执行真实 GPU/听音。

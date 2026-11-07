@@ -358,6 +358,8 @@ class SessionCoordinator:
                     code = EvidenceGate.check_disposition(text, ready.envelope["decision"])
                 else:
                     code = EvidenceGate.check_presentation(text, contract, checked_evidence)
+                    if not code:
+                        code = EvidenceGate.check_facets(text, ready.envelope)
             except TimeoutError:
                 text, code = "", "VOICE_ANSWER_TIMEOUT"
             allowed = await self.runtime.registry.allowed(ctx.principal)
