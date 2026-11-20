@@ -27,6 +27,14 @@ test("completed reply does not claim requested facts were found", () => {
   assert.equal(answerLabel({ status: "failed", reason_code: "AGENT_FAILED" }), "Request failed");
 });
 
+test("Sophon receipt and retrieved sources do not render as a completed reply", () => {
+  for (const reason_code of ["VOICE_ANSWER_UNVERIFIED", "VOICE_COMMENTARY_UNCONFIRMED"]) {
+    const answer = { status: "failed", reason_code, citations: [{ citation_id: "C1" }] };
+    assert.equal(answerLabel(answer), "Spoken reply unverified");
+    assert.match(sourceNotice(answer), /retrieved excerpts.*could not be verified/);
+  }
+});
+
 
 test("incomplete or conflicting evidence does not claim a complete reply", () => {
   assert.equal(answerLabel({ status: "insufficient_evidence", reason_code: "CUEKB_PARTIAL_ANSWER" }), "Partial answer");

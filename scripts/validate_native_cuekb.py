@@ -173,9 +173,18 @@ def assess_sophon(case, history, seen_inputs, output_samples, seen_calls, observ
     retrievals = [row["payload"] for row in records if row["kind"] == "native_cuekb_result"
                   and row["payload"].get("input_item_id") in seen_inputs]
     timing = {key: [] for key in ("delegation_ms_after_audio", "query_and_validation_ms",
-                                  "result_to_audio_ms", "input_to_audio_ms")}
+                                  "send_to_candidate_audio_ms", "input_to_candidate_audio_ms")}
+    receipts = 0
+    first_candidates = set()
     for row in records:
-        if row["kind"] in ("sophon_commentary", "sophon_answer_observed") and row["source_id"] in new_calls:
+        if row["kind"] == "sophon_commentary_ack" and row["source_id"] in new_calls:
+            receipts += 1
+        nearby = row["payload"].get("nearby_delegation_id")
+        is_first_candidate = (row["kind"] == "sophon_audio_candidate" and nearby in new_calls
+                              and nearby not in first_candidates)
+        if is_first_candidate:
+            first_candidates.add(nearby)
+        if is_first_candidate or row["kind"] == "sophon_commentary" and row["source_id"] in new_calls:
             for key in timing:
                 value = row["payload"].get(key)
                 if isinstance(value, (int, float)) and value >= 0:
@@ -188,6 +197,7 @@ def assess_sophon(case, history, seen_inputs, output_samples, seen_calls, observ
         "retrieval": "passed" if any(row.get("status") == "answer" for row in retrievals)
         else "not_applicable" if expected == "CHAT" and not new_calls else "unverified",
         "answer_status": answer.get("status"), "answer_citation_count": len(answer.get("citations", [])),
+        "gateway_commentary_receipts": receipts, "delegations_with_audio_candidates": len(first_candidates),
         "reason_code": answer.get("reason_code"), "timings_ms": timing,
         "speech_transport": "passed" if output_samples else "failed",
         "spoken_faithfulness": "manual_review_required", "playback": "unverified",
@@ -272,6 +282,9 @@ async def run(args):
                         response_phases, post_answer_audio = {}, set()
                         latest_case_input = None
                         row["answer_complete"] = "unverified"
+                        segment_completion = "media_segment_complete" if sophon else "answer_complete"
+                        candidate_id_field = "candidate_response_id" if sophon else "answer_response_id"
+                        row[segment_completion] = "unverified"
                         primary_sent = asyncio.Event()
                         answer_ended = False
                         answer_ended_at = None
@@ -303,16 +316,20 @@ async def run(args):
                                     # to produce a second answer. New input
                                     # events below invalidate this candidate.
                                     if (not answer_ended and primary_sent.is_set()
-                                            and row.get("answer_response_id") is not None
-                                            and answer_responses.get(row["answer_response_id"]) == latest_case_input):
+                                            and row.get(candidate_id_field) is not None
+                                            and answer_responses.get(row[candidate_id_field]) == latest_case_input):
                                         answer_ended = True
                                         answer_ended_at = time.monotonic()
-                                        row["answer_complete"] = "passed"
+                                        row[segment_completion] = "passed"
                                     if (answer_ended_at is not None
                                             and time.monotonic() - answer_ended_at >= ANSWER_OBSERVATION_SECONDS):
                                         unclassified = [rid for rid in post_answer_audio
                                                         if response_phases.get(rid) != "status"
                                                         and answer_responses.get(rid, latest_case_input) == latest_case_input]
+                                        if sophon:
+                                            row["additional_candidate_segments"] = len(unclassified)
+                                            row["post_candidate_observation"] = "observed"
+                                            break
                                         if unclassified:
                                             row["post_answer_observation"] = "failed"
                                             row["unclassified_post_answer_audio"] = len(unclassified)
@@ -327,11 +344,12 @@ async def run(args):
                                     body = event["payload"]
                                     if body.get("response_id") and body.get("phase"):
                                         response_phases[body["response_id"]] = body["phase"]
-                                    if (answer_ended and event["type"] in (
+                                    reply_segment = body.get("phase") == "answer" or sophon and body.get("phase") == "candidate"
+                                    if (not sophon and answer_ended and event["type"] in (
                                             "portal.speech_text.delta", "portal.speech_text.done")
                                             and body.get("phase") == "answer" and body.get("text", "").strip()
                                             and body.get("input_item_id") == latest_case_input
-                                            and body["response_id"] != row.get("answer_response_id")):
+                                            and body["response_id"] != row.get(candidate_id_field)):
                                         row["additional_answer_responses"] += 1
                                         row["post_answer_observation"] = "failed"
                                         row["portal_error"] = "VOICE_UNSOLICITED_RESPONSE"
@@ -343,7 +361,7 @@ async def run(args):
                                         answer_ended_at = None
                                         post_answer_audio.clear()
                                         row["post_answer_observation"] = "unverified"
-                                        row["answer_complete"] = "unverified"
+                                        row[segment_completion] = "unverified"
                                         latest_case_input = None
                                     elif event["type"] == "portal.transcript.done":
                                         if body["item_id"] != latest_case_input:
@@ -351,14 +369,14 @@ async def run(args):
                                             answer_ended_at = None
                                             post_answer_audio.clear()
                                             row["post_answer_observation"] = "unverified"
-                                            row["answer_complete"] = "unverified"
+                                            row[segment_completion] = "unverified"
                                         latest_case_input = body["item_id"]
                                         seen_inputs.add(body["item_id"])
                                     elif event["type"] == "portal.audio.delta":
                                         raw = base64.b64decode(body["audio"], validate=True)
                                         samples += len(raw) // 2
                                         rid = body["response_id"]
-                                        if raw and answer_ended and rid != row.get("answer_response_id"):
+                                        if raw and answer_ended and rid != row.get(candidate_id_field):
                                             post_answer_audio.add(rid)
                                         response_samples[rid] = response_samples.get(rid, 0) + len(raw) // 2
                                         if args.audio_dir and len(audio) + len(raw) <= 16 * 1024 * 1024:
@@ -366,19 +384,21 @@ async def run(args):
                                     elif event["type"] == "portal.error":
                                         row["portal_error"] = body["code"]
                                         raise ValueError("Portal voice error")
-                                    elif (event["type"] == "portal.speech_text.done" and body.get("phase") == "answer"
+                                    elif (event["type"] == "portal.speech_text.done" and reply_segment
                                           and body.get("input_item_id") in seen_inputs and body.get("text", "").strip()):
                                         answer_responses[body["response_id"]] = body["input_item_id"]
-                                    elif (event["type"] == "portal.audio.done" and body.get("phase") == "answer"
+                                    elif (event["type"] == "portal.audio.done" and reply_segment
                                           and latest_case_input is not None
                                           and answer_responses.get(body["response_id"]) == latest_case_input
                                           and response_samples.get(body["response_id"], 0) > 0):
                                         # Never stop on a response completed while the WAV
                                         # still contains unprocessed speech (e.g. Golden Yolk).
+                                        if sophon and answer_ended:
+                                            continue
                                         answer_ended = primary_sent.is_set()
                                         answer_ended_at = time.monotonic() if answer_ended else None
-                                        row["answer_complete"] = "passed" if answer_ended else "unverified"
-                                        row["answer_response_id"] = body["response_id"]
+                                        row[segment_completion] = "passed" if answer_ended else "unverified"
+                                        row[candidate_id_field] = body["response_id"]
                                         row["answer_samples"] = response_samples[body["response_id"]]
                                         if not primary_sent.is_set():
                                             row["answer_ended_before_full_input"] = True

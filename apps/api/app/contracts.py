@@ -251,7 +251,7 @@ class SpeechTextPayload(StrictModel):
     response_id: str = Field(min_length=1, max_length=128)
     item_id: str | None = Field(default=None, min_length=1, max_length=128)
     segment_index: int = Field(default=0, ge=0)
-    phase: Literal["status", "answer"] = "answer"
+    phase: Literal["status", "answer", "candidate"] = "answer"
     text: str = Field(max_length=100000)
     input_item_id: str | None = Field(default=None, max_length=128)
     related_input_item_ids: list[str] = Field(default_factory=list, max_length=128)
@@ -278,7 +278,7 @@ class AudioDeltaPayload(StrictModel):
 class ResponseDonePayload(StrictModel):
     response_id: str = Field(min_length=1, max_length=128)
     item_id: str | None = Field(default=None, min_length=1, max_length=128)
-    phase: Literal["status", "answer"] = "answer"
+    phase: Literal["status", "answer", "candidate"] = "answer"
 
 
 class InputStatePayload(StrictModel):

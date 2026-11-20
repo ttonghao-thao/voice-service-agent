@@ -1,6 +1,12 @@
 import type { Answer } from "./api";
 
+export function spokenReplyUnverified(answer: Answer): boolean {
+  return answer.reason_code === "VOICE_ANSWER_UNVERIFIED" ||
+    answer.reason_code === "VOICE_COMMENTARY_UNCONFIRMED";
+}
+
 export function answerLabel(answer: Answer): string {
+  if (spokenReplyUnverified(answer)) return "Spoken reply unverified";
   if (answer.reason_code === "VOICE_EVIDENCE_BUDGET" && answer.status === "insufficient_evidence") return "Limited evidence delivery";
   if (answer.reason_code === "CUEKB_PARTIAL_ANSWER") return "Partial answer";
   if (answer.reason_code === "CUEKB_CONFLICT") return "Conflicting sources";
@@ -19,6 +25,11 @@ export function answerLabel(answer: Answer): string {
 }
 
 export function sourceNotice(answer: Answer): string {
+  if (spokenReplyUnverified(answer)) {
+    return answer.citations.length
+      ? "These are retrieved excerpts. The spoken reply could not be verified."
+      : answer.display_text;
+  }
   if (answer.reason_code === "VOICE_EVIDENCE_BUDGET" && answer.status === "insufficient_evidence") {
     return "Some complete evidence groups could not fit the voice reply. The spoken response covers only the delivered evidence.";
   }

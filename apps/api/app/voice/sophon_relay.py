@@ -26,6 +26,7 @@ from app.contracts import (
     printable_ascii,
     uid,
 )
+from app.sessions.coordinator import SophonEvidenceOutcome
 from app.voice.sophon_live import RATE
 from pydantic import Field
 from starlette.websockets import WebSocketDisconnect
@@ -34,6 +35,7 @@ logger = logging.getLogger(__name__)
 ASR_SETTLE = 0.25
 INPUT_GAP_MS = 800
 OUTPUT_GAP_MS = 900
+DELEGATION_INPUT_LOOKBACK_MS = 8000
 TOOL = "search_knowledge_base"
 
 
@@ -107,8 +109,11 @@ class InputTurnAssembler:
         return None
 
     def at_delegation(self, offset):
-        turn = next((item for item in reversed(self.turns) if item.start <= offset), None)
-        return turn if turn and offset - turn.end <= 8000 else None
+        # Live stamps the event after waiting on ASR. Its timestamp can fall
+        # inside a later utterance. Even an input with no ASR yet competes.
+        candidates = [turn for turn in self.turns
+                      if turn.start <= offset and offset - turn.end <= DELEGATION_INPUT_LOOKBACK_MS]
+        return candidates[0] if len(candidates) == 1 and candidates[0] is self.latest else None
 
     @staticmethod
     def stable(turn, clock):
@@ -129,10 +134,8 @@ class Delegation:
 class ResultDelivery:
     call: Delegation
     turn: object
-    event_id: str
     sent_at: float
     ack_offset: int | None = None
-    response_id: str | None = None
 
 
 @dataclass
@@ -161,7 +164,8 @@ async def sophon_relay(gateway, ws, session, provider):
     clock = samples = seq = 0
     client_seq = -1
     segment = delivery = leading = None
-    stale_delivery = False
+    receipts = {}
+    interrupted_delivery = False
     tasks = []
     error = None
     created_at = last_input = time.monotonic()
@@ -209,12 +213,15 @@ async def sophon_relay(gateway, ws, session, provider):
     def response_body(response):
         owner = response.owner
         operation = response.delivery
-        phase = "status" if owner and owner.delegated and not owner.settled_without_evidence and not operation else "answer"
+        if operation or interrupted_delivery:
+            phase = "candidate"
+        else:
+            phase = "status" if owner and owner.delegated and not owner.settled_without_evidence else "answer"
         return {"response_id": response.id, "input_item_id": owner.id if owner else None, "phase": phase,
                 "answer_kind": "knowledge" if operation else "general"}
 
     async def finish_segment():
-        nonlocal segment, delivery
+        nonlocal segment
         response, segment = segment, None
         if response.id in session.suppressed_responses:
             return
@@ -223,21 +230,17 @@ async def sophon_relay(gateway, ws, session, provider):
         if response.text.strip():
             emit("speech_text.done", {**response_body(response), "text": response.text}, turn_id)
         emit("audio.done", {"response_id": response.id, "phase": response_body(response)["phase"]}, turn_id)
-        if operation and delivery is operation and response.text.strip() and inputs.latest is operation.call.owner:
-            # The upstream has no response IDs/final event. Publish an
-            # observed post-commentary transcript only with the matching ACK,
-            # new audio, text and a quiet boundary. It remains provider-only.
-            delivery = None
-            recorded = await store.record(cid, epoch, "sophon_answer_observed", operation.call.id, {
-                "response_id": response.id, "input_item_id": operation.call.owner.id,
+        if operation and response.text.strip():
+            # This measures output near a receipt, not the model's consumption
+            # of the result. A later segment can contain the actual answer.
+            await store.record(cid, epoch, "sophon_audio_candidate", response.id, {
+                "nearby_delegation_id": operation.call.id, "input_item_id": operation.call.owner.id,
                 "first_audio_ms": response.start, "commentary_ack_ms": operation.ack_offset,
-                "result_to_audio_ms": round((response.first_audio_at - operation.sent_at) * 1000),
-                "input_to_audio_ms": response.start - operation.call.owner.end,
+                "send_to_candidate_audio_ms": round((response.first_audio_at - operation.sent_at) * 1000),
+                "input_to_candidate_audio_ms": response.start - operation.call.owner.end,
                 "_authorized_kb_ids": sorted(session.principal.knowledge_base_ids),
             }, turn_id, operation.turn.request_revision)
-            coordinator.provider_answer(turn_id, response.text.strip()
-                                        if recorded and inputs.latest is operation.call.owner else "", response.id)
-        elif (not operation and response.owner and response.owner.final and not response.owner.delegated
+        elif (not interrupted_delivery and response.owner and response.owner.final and not response.owner.delegated
               and response.start >= response.owner.end - 100 and response.text.strip()):
             await store.utterance(session.principal, cid, epoch, response.owner.id, answer=AnswerBundle(
                 status="answered", display_text=response.text.strip(), speech_text="",
@@ -273,7 +276,7 @@ async def sophon_relay(gateway, ws, session, provider):
                 await ws.send_json(event)
 
     async def browser():
-        nonlocal client_seq, last_input, voiced_frames, quiet_frames, speaking, delivery, stale_delivery
+        nonlocal client_seq, last_input, voiced_frames, quiet_frames, speaking, delivery, interrupted_delivery
         frames = 0
         while True:
             raw = await ws.receive_text()
@@ -300,10 +303,10 @@ async def sophon_relay(gateway, ws, session, provider):
                     owner = inputs.speech(clock)
                     input_changed.set()
                     if delivery and owner is not delivery.call.owner:
-                        # An already written result cannot be recalled. Its
-                        # next unidentifiable audio segment cannot own this input.
-                        stale_delivery = delivery.response_id is None
-                        coordinator.provider_answer(delivery.turn.id, "")
+                        # Keep listening. Live cannot identify a belated tool
+                        # reply, so later speech cannot enter conversation history.
+                        interrupted_delivery = True
+                        coordinator.sophon_evidence_outcome(delivery.turn.id, SophonEvidenceOutcome.SUPERSEDED)
                         delivery = None
                     voiced_frames += 1
                     quiet_frames = 0
@@ -332,13 +335,13 @@ async def sophon_relay(gateway, ws, session, provider):
                 response.acknowledged = max(response.acknowledged, event.payload.played_samples)
                 if response.acknowledged and not response.playback_started:
                     response.playback_started = True
-                    logger.info("sophon_playback_observed conversation_id=%s response_id=%s tool_answer=%s",
+                    logger.info("sophon_playback_observed conversation_id=%s response_id=%s post_commentary_candidate=%s",
                                 cid, response.id, response.delivery is not None)
             elif isinstance(event, PortalSessionClose) or event.type == "portal.interrupt":
                 return
 
     async def receiver():
-        nonlocal clock, samples, segment, leading, muted_until_quiet, stale_delivery
+        nonlocal clock, samples, segment, leading, muted_until_quiet
         async for event in provider.events():
             await current()
             body = event.payload
@@ -350,22 +353,29 @@ async def sophon_relay(gateway, ws, session, provider):
             elif event.kind == "delegation":
                 did, task = body["id"], body["task"]
                 if did in seen:
-                    if seen[did] != (task, body["offset"]):
+                    if seen[did] != task:
                         raise DomainError("VOICE_PROTOCOL_ERROR", "Sophon reused a delegation ID.", 502)
                     continue
                 if len(seen) >= 128 or calls.full():
                     raise DomainError("VOICE_TOOL_LIMIT", "Too many voice delegations.", 502, True)
-                seen[did] = (task, body["offset"])
+                seen[did] = task
                 call = Delegation(did, task, body["offset"], time.monotonic(),
                                   inputs.at_delegation(body["offset"]))
                 if call.owner and task.startswith("CUEKB:"):
                     call.owner.delegated = True
                 calls.put_nowait(call)
             elif event.kind == "ack":
-                if delivery and body["event_id"] == delivery.event_id and delivery.ack_offset is None:
-                    delivery.ack_offset = body["offset"]
+                receipt = receipts.pop(body["event_id"], None)
+                if receipt:
+                    receipt.ack_offset = body["offset"]
+                    coordinator.sophon_evidence_outcome(receipt.turn.id, SophonEvidenceOutcome.GATEWAY_RECEIVED)
                     logger.info("sophon_commentary_ack conversation_id=%s delegation_id=%s offset_ms=%s",
-                                cid, delivery.call.id, delivery.ack_offset)
+                                cid, receipt.call.id, receipt.ack_offset)
+                    await store.record(cid, epoch, "sophon_commentary_ack", receipt.call.id, {
+                        "client_event_id": body["event_id"], "offset_ms": receipt.ack_offset,
+                        "input_item_id": receipt.call.owner.id, "basis": "gateway_receipt",
+                        "_authorized_kb_ids": sorted(session.principal.knowledge_base_ids),
+                    })
             elif event.kind == "output_text":
                 # Timestamps refer to the shared output clock, not a tool ID.
                 if segment and segment.start - 200 <= body["start"] <= clock + 200:
@@ -388,27 +398,20 @@ async def sophon_relay(gateway, ws, session, provider):
                 if not segment and not audible:
                     leading = body["audio"]
                     continue
-                if (audible and segment and not segment.delivery and delivery and delivery.ack_offset is not None
-                    and start >= delivery.ack_offset + 200 and start - segment.last_voice >= 200):
+                candidate = delivery if delivery and (
+                    delivery.ack_offset is not None and start >= delivery.ack_offset + 200
+                    and inputs.latest is delivery.call.owner
+                    and time.monotonic() - delivery.sent_at < settings.voice_native_answer_timeout_seconds
+                ) else None
+                if audible and segment and not segment.delivery and candidate and start - segment.last_voice >= 200:
                     await finish_segment()
                 if audible and not segment:
-                    operation = delivery
-                    # Commentary must be acknowledged before the segment
-                    # starts. An existing ACK/response is never promoted.
-                    if (operation is None or operation.ack_offset is None or
-                        start < operation.ack_offset + 200 or operation.response_id is not None or
-                        inputs.latest is not operation.call.owner):
-                        operation = None
-                    uncertain = stale_delivery and operation is None
-                    stale_delivery = False
-                    segment = Segment(uid(), start, clock, None if uncertain else inputs.latest, operation,
-                                      first_audio_at=time.monotonic())
+                    # A nearby receipt gives context for display only.
+                    operation = candidate if candidate is delivery else None
+                    segment = Segment(uid(), start, clock, inputs.latest, operation, first_audio_at=time.monotonic())
                     segments[segment.id] = segment
-                    if uncertain:
-                        session.suppressed_responses.add(segment.id)
                     if operation:
-                        operation.response_id = segment.id
-                        logger.info("sophon_post_commentary_audio conversation_id=%s delegation_id=%s response_id=%s wait_ms=%s",
+                        logger.info("sophon_audio_candidate conversation_id=%s nearby_delegation_id=%s response_id=%s wait_ms=%s",
                                     cid, operation.call.id, segment.id, round((time.monotonic() - operation.sent_at) * 1000))
                     if session.suppress_next_response:
                         session.suppress_next_response = False
@@ -424,7 +427,8 @@ async def sophon_relay(gateway, ws, session, provider):
                 else:
                     emit("audio.delta", {"response_id": segment.id, "audio": body["audio"]},
                          segment.delivery.turn.id if segment.delivery else None)
-        raise DomainError("VOICE_PROVIDER_CLOSED", "Sophon Live closed the connection.", 502, True)
+        if not provider.close_confirmed:
+            raise DomainError("VOICE_PROVIDER_CLOSED", "Sophon Live closed the connection.", 502, True)
 
     async def write_result(call, content, turn=None, observe=False):
         nonlocal delivery
@@ -435,11 +439,12 @@ async def sophon_relay(gateway, ws, session, provider):
                 replaced = "SUPERSEDED_AUDIO"
                 observe = False
                 content = disposition(replaced, chinese)
-                coordinator.provider_answer(turn.id, "")
+                coordinator.sophon_evidence_outcome(turn.id, SophonEvidenceOutcome.SUPERSEDED)
             event_id = uid()
             sent = time.monotonic()
             if observe:
-                delivery = ResultDelivery(call, turn, event_id, sent)
+                delivery = ResultDelivery(call, turn, sent)
+                receipts[event_id] = delivery
             await provider.submit_result(call.id, content, event_id=event_id)
         logger.info("sophon_commentary_sent conversation_id=%s delegation_id=%s status=%s total_ms=%s",
                     cid, call.id, "evidence_decision" if observe else "disposition", round((sent - call.received) * 1000))
@@ -457,8 +462,10 @@ async def sophon_relay(gateway, ws, session, provider):
             versions = {}
             owner = call.owner
             tool = (session.tool_catalog or {}).get(TOOL)
-            if not tool or tool.kind != "cuekb" or not call.task.startswith("CUEKB:") or not call.task[6:].strip():
+            if not tool or tool.kind != "cuekb" or call.task.startswith("UNSUPPORTED:"):
                 code = "UNSUPPORTED"
+            elif not call.task.startswith("CUEKB:") or not call.task[6:].strip():
+                code = "ROUTE_UNDECLARED"
             elif owner is None or owner is not inputs.latest:
                 code = "INPUT_UNCERTAIN"
             else:
@@ -524,7 +531,11 @@ async def sophon_relay(gateway, ws, session, provider):
                     else:
                         code = "SUPERSEDED_AUDIO"
                     if code:
-                        coordinator.provider_answer(turn.id, "")
+                        coordinator.sophon_evidence_outcome(turn.id, {
+                            "FORBIDDEN": SophonEvidenceOutcome.FORBIDDEN,
+                            "SUPERSEDED_AUDIO": SophonEvidenceOutcome.SUPERSEDED,
+                            "EVIDENCE_BUDGET": SophonEvidenceOutcome.BUDGET,
+                        }[code])
                 if not code and not isinstance(result, EvidenceReady):
                     code = "FAILED"
                 if code == "AGENT_TIMEOUT":
@@ -548,7 +559,6 @@ async def sophon_relay(gateway, ws, session, provider):
             })
 
     async def watchdog():
-        nonlocal delivery
         while True:
             await asyncio.sleep(.25)
             await current()
@@ -556,15 +566,16 @@ async def sophon_relay(gateway, ws, session, provider):
                 if not owner.final and InputTurnAssembler.stable(owner, clock):
                     await finalize_input(owner)
             input_changed.set()
-            if delivery and time.monotonic() - delivery.sent_at >= settings.voice_native_answer_timeout_seconds:
-                logger.warning("sophon_answer_observation_timeout conversation_id=%s delegation_id=%s",
-                               cid, delivery.call.id)
-                coordinator.provider_answer(delivery.turn.id, "")
-                delivery = None
+            for event_id, receipt in list(receipts.items()):
+                if time.monotonic() - receipt.sent_at >= settings.voice_native_answer_timeout_seconds:
+                    receipts.pop(event_id)
+                    logger.warning("sophon_commentary_receipt_timeout conversation_id=%s delegation_id=%s",
+                                   cid, receipt.call.id)
+                    coordinator.sophon_evidence_outcome(receipt.turn.id, SophonEvidenceOutcome.RECEIPT_UNKNOWN)
             if time.monotonic() - last_input > 5:
                 raise DomainError("AUDIO_BACKPRESSURE", "Audio capture stalled. Restart voice.", 409, True)
             if time.monotonic() - created_at > settings.voice_session_max_seconds:
-                if not speaking and segment is None and delivery is None and calls.empty() and coordinator.tasks.get(cid) is None:
+                if not speaking and segment is None and not receipts and calls.empty() and coordinator.tasks.get(cid) is None:
                     raise DomainError("VOICE_SESSION_ROTATION_REQUIRED", "Reconnect to continue voice.", 409, True)
                 if time.monotonic() - created_at > settings.voice_session_max_seconds + 30:
                     raise DomainError("VOICE_SESSION_EXPIRED", "The voice connection reached its time limit.", 409, True)
@@ -648,6 +659,8 @@ def disposition(code, chinese):
     messages = {
         "UNSUPPORTED": ("当前后端只支持查询企业知识库。请告知用户这项任务不受支持。",
                         "The backend only searches company documentation. Tell the user this task is unsupported."),
+        "ROUTE_UNDECLARED": ("无法确认是否需要查企业资料。请向用户澄清，请勿声称已经查询。",
+                            "Ask whether the user wants company documentation. No search was performed."),
         "INPUT_UNCERTAIN": ("没能可靠确认用户问题，请请用户重述，不要猜测。",
                             "The user's question could not be confirmed. Ask them to repeat it. Do not guess."),
         "DUPLICATE": ("本次输入已经委托过，请等待结果或下一次输入，不要重复查询。",

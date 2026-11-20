@@ -22,7 +22,7 @@ Python 3.12/FastAPI、React/TypeScript/AudioWorklet、PostgreSQL/Redis。NVIDIA 
 
 调用方向保持 Gateway → Coordinator → Runtime → Registry → CueKB。音频保持单条 VoiceChat 连接；供应商结构仅在 voice 边界解释，业务不能凭模型参数扩大 KB/权限。
 
-Sophon Live 使用同一门户音频协议和业务链。Adapter 通过 `session.start` 建连，relay 在 24 kHz PCM 上处理连续音频、字幕和打断。Sophon 的客户端 Delegation 只触发已注册并授权的 `search_knowledge_base`，查询以关联到当前音频的用户 ASR 原文为准。CueKB 2.1 query 和 validate 通过后，用一次 Commentary 交付证据。Sophon 没有最终 ASR 事件和响应 ID，输入关联和输出分段依赖时间线；关联不清时要求重述，候选口述保留 `provider_only` 标记。
+Sophon Live 使用同一门户音频协议和业务链。Adapter 通过 `session.start` 建连，relay 在 24 kHz PCM 上处理连续音频、字幕和打断。客户端委托必须明确请求企业资料，并与一次稳定、无竞争的用户 ASR 输入关联，才能执行已注册并授权的 `search_knowledge_base`。CueKB 2.1 完成 query 和 validate 后发一次 Commentary。Gateway 回执只结清消息接收状态。候选语音以 `phase=candidate` 播放和显示字幕，业务记录保留授权来源和语音未核实状态。只有具备输入、委托和回答的可验证关联，才能进一步认证完整口述。
 
 ## 3. 知识执行
 

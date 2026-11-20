@@ -1558,7 +1558,8 @@
           "default": "answer",
           "enum": [
             "status",
-            "answer"
+            "answer",
+            "candidate"
           ],
           "title": "Phase",
           "type": "string"
@@ -1911,7 +1912,8 @@
           "default": "answer",
           "enum": [
             "status",
-            "answer"
+            "answer",
+            "candidate"
           ],
           "title": "Phase",
           "type": "string"

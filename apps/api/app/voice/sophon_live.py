@@ -119,9 +119,11 @@ class SophonLiveAdapter:
                 if not isinstance(body, dict) or body.get("type") != "delegation" or body.get("target") != "client":
                     raise protocol_error()
                 task = body.get("task")
-                if not isinstance(task, str) or not task.strip() or len(task) > 2000:
+                if task is not None and (not isinstance(task, str) or len(task) > 2000):
                     raise protocol_error()
-                yield VoiceEvent("delegation", {"id": identifier(body.get("id")), "task": task,
+                # The official Gateway can forward a missing engine task as
+                # null. The relay can settle that ID without executing a tool.
+                yield VoiceEvent("delegation", {"id": identifier(body.get("id")), "task": task or "",
                                                 "offset": timestamp(event.get("offset_ms"))})
             elif kind == "session.commentary.appended":
                 yield VoiceEvent("ack", {"event_id": identifier(event.get("client_event_id")),

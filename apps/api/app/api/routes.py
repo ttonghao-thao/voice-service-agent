@@ -122,7 +122,8 @@ def _record_for_principal(record, user, settings):
     payload = dict(record.payload)
     scope = payload.pop("_authorized_kb_ids", None)
     if record.kind in ("voicechat_transcript", "speech_validation", "native_cuekb_result", "native_answer_check",
-                       "sophon_delegation", "sophon_commentary", "sophon_answer_observed"):
+                       "sophon_delegation", "sophon_commentary", "sophon_commentary_ack",
+                       "sophon_audio_candidate", "sophon_answer_observed"):
         current = set(user.knowledge_base_ids)
         configured = _configured_kbs(settings)
         if (scope is None and ("customer" in user.roles or current != configured)) or (

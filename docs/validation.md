@@ -276,7 +276,7 @@ PYTHON
 
 ## Sophon Live 验证
 
-Sophon 部署参数见 [部署与运行](deployment.md#部署方式边界)，协议字段以 [Sophon gateway](https://github.com/adventists-ai/sophon-realtime/blob/main/live/sophon_live/gateway.py) 为参考。独立上游的 `session.started` 只验证会话创建。光有 Commentary ACK 或音频帧不能证明模型按证据回答或浏览器听到语音。
+Sophon 部署参数见 [部署与运行](deployment.md#部署方式边界)。目标上游由部署方确认为独立运行的 32B Flash 4-bit。协议审计对照 [Sophon Gateway ace091b](https://github.com/adventists-ai/sophon-realtime/blob/ace091b1841adb2b0588cd609ac06e3dfc261643/live/sophon_live/gateway.py)。独立上游的 `session.started` 证明会话创建，不能凭回显的 `gpt-live-1` 判定引擎版本。
 
 先用浏览器麦克风在同一次通话内测试以下场景，记录时间和关联 ID。
 
@@ -294,10 +294,14 @@ PYTHONPATH=apps/api:. python scripts/validate_native_cuekb.py \
   --output /tmp/sophon-report.json
 ```
 
-报告按原始 Delegation 计算 TP/FP/TN/FN。后端拒绝的误委托仍属于 FP。观察不全的样本单独标记。阶段时延记录委托位置、CueKB 查询与校验、结果到首个候选答案音频，输出样本数、P50 与 P95。浏览器实际播出、自然接话及语义准确性需按麦克风流程确认。
+报告按原始 Delegation 计算 TP/FP/TN/FN。后端拒绝的误委托仍属于 FP。观察不全的样本单独标记。报告分别统计 Gateway 回执、候选媒体片段结束、候选片段数和延迟。多个候选片段可包含等待话术和后续语音，不能据此确认答复已结束。Sophon 报告保持 `answer_complete=unverified`；浏览器实际播出、自然接话及语义准确性需按麦克风流程确认。
 
-Sophon 语音链对 `CUEKB:` 前缀做显式业务准入，由模型按提示词输出该前缀。模型原始 task 仅用于路由审计，查询问题由同一输入的稳定 ASR 提供。失去时间戳或归属歧义时要求重述；每输入最多一次查询。Sophon 没有最终 ASR 或回答 ID，relay 的稳定窗、静音分段和后置字幕归属仍需真实样本验证。结果已发出后发生插话且尚无可定位的输出段时，忽略下一段无法归属的音频。
+Sophon 语音链只有在收到明确 `CUEKB:` 任务时才考虑查询。空任务或未声明的路由请模型澄清，模型任务文本不能充当用户问题。委托的 `offset_ms` 是发送时间。以它为上限回看 8 秒时有多段可能输入、没有稳定 ASR 或在处理时已换题，要求重述；每输入最多一次查询。遇到上游首段时间戳偏移时不平移 ASR 去匹配其他输入。连续快速追问可能需要重述，这是缺少输入关联 ID 时的保守行为。
+
+每次证据回传分别记录发送、匹配到的 Gateway 回执和附近的候选音频。回执匹配用本次 `event_id` 对应的 `client_event_id`。真实引擎是否消费无从回执判断。门户以候选字幕继续展示实时语音，资料来源可复核，业务状态保留语音未核实。换题时清理当前的旧播放，继续接收后续语音，不因猜测晚到语音而丢弃下一段；可能晚到的口述不写入可信历史。现有公开 Live 协议缺少原始输入 ID、引擎消费确认及由该结果生成的响应 ID 和终态。可靠认证需上游提供这些关联证据，首段时间戳问题需在上游修复并复测。
 
 2026-11-21 本机通过 6 个 Sophon WebSocket/CueKB 协议夹具、41 个 Web 单元测试和 5 个浏览器语音夹具测试；Web 构建、API fixture 启动、契约导出和静态检查通过。全量 Python 回归仍有原生 NVIDIA 和部署文档等历史失败。
+
+同日审计修复复测：192 项定向 Python 测试通过，包括 11 项 Sophon 集成场景。42 项 Web 单测、5 项浏览器语音夹具、Web 构建、契约导出和静态检查通过。在官方 Gateway 源码接替代推理引擎的环境里，确认延迟委托遇到两段可能输入时被拒绝。夹具确认进度话术和后续语音均保留为候选，两段播放完成后业务状态仍为语音未核实。
 
 外部 WSS 地址的 TLS 握手在本机超时或被重置，未取得新 `session.started`；用户提供了既有 16 kHz 握手记录。真实 24 kHz 会话、中文 ASR、真实 CueKB 证据质量、打断和浏览器听音待验。

@@ -148,6 +148,11 @@ test("A file reply finishes only after its answer playback, and late replies do 
     response_id: "ack", phase: "status", text: "Let me check." });
   h.frame({ type: "ack", epoch: 1, response: "ack", samples: 1920, done: true });
   assert.equal(h.progress.at(-1).stage, "waiting_answer");
+  h.socket().emit("portal.speech_text.done", { input_item_id: "followup",
+    response_id: "candidate", phase: "candidate", text: "I am still checking." });
+  h.socket().emit("portal.audio.done", { response_id: "candidate", phase: "candidate" });
+  h.frame({ type: "ack", epoch: 1, response: "candidate", samples: 1920, done: true });
+  assert.equal(h.progress.at(-1).stage, "waiting_answer");
   h.socket().emit("portal.speech_text.done", { input_item_id: "first", related_input_item_ids: ["followup"],
     response_id: "answer", phase: "answer", text: "Refrigerate it." });
   h.socket().emit("portal.audio.done", { response_id: "answer", phase: "answer" });

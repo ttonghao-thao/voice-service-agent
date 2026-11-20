@@ -30,7 +30,7 @@ import {
   VoiceState,
 } from "./audio/VoiceClient";
 import { prepareRecording, PreparedRecording } from "./audio/recordedAudio";
-import { answerLabel, sourceNotice } from "./answerPresentation";
+import { answerLabel, sourceNotice, spokenReplyUnverified } from "./answerPresentation";
 
 const stateLabels: Record<VoiceState, string> = {
   closed: "Voice disconnected",
@@ -100,7 +100,7 @@ export default function App() {
     Record<string, { text: string; done: boolean }>
   >({});
   const [spoken, setSpoken] = useState<
-    Record<string, { turnId: string; inputKey?: string; relatedInputKeys?: string[]; answerKind?: string; text: string; done: boolean }>
+    Record<string, { turnId: string; inputKey?: string; relatedInputKeys?: string[]; answerKind?: string; candidate?: boolean; text: string; done: boolean }>
   >({});
   const [timeline, setTimeline] = useState<string[]>([]);
   const [atBottom, setAtBottom] = useState(true);
@@ -354,7 +354,7 @@ export default function App() {
       if (
         event.type === "portal.audio.done" &&
         (event.turn_id || event.payload.input_item_id) &&
-        event.payload.phase !== "status"
+        event.payload.phase !== "status" && event.payload.phase !== "candidate"
       ) {
         setFinishedTurns((old) => {
           const next = new Set(old);
@@ -410,6 +410,7 @@ export default function App() {
             inputKey,
             relatedInputKeys: ((event.payload.related_input_item_ids || []) as string[]).map((item) => `input:${event.epoch}:${item}`),
             answerKind: String(event.payload.answer_kind || "general"),
+            candidate: event.payload.phase === "candidate",
             text: done
               ? String(event.payload.text || "")
               : old[key]?.done
@@ -1057,6 +1058,8 @@ export default function App() {
                 const presentationFailed = Object.values(presentations).some(
                   (item) => (item.inputKey ? item.inputKey === key : item.turnId === (t?.id || key)) && item.status === "failed",
                 );
+                const unverifiedReply = t?.answer ? spokenReplyUnverified(t.answer) : false;
+                const candidateSpeech = speechParts.some((part) => part.candidate);
                 return (
                   <article className="turn" key={key}>
                     <div className="user-message">
@@ -1082,10 +1085,13 @@ export default function App() {
                     {!t && speech && (
                       <div className="assistant-message">
                         <div className="assistant-label">
-                          <strong>Answer</strong><Tag>{speechParts.some((part) => part.answerKind === "knowledge") ? "Knowledge reply" : "Model general answer"}</Tag>
+                          <strong>{candidateSpeech ? "Live transcript" : "Answer"}</strong>
+                          <Tag>{candidateSpeech ? "Spoken reply unverified" : speechParts.some((part) => part.answerKind === "knowledge") ? "Knowledge reply" : "Model general answer"}</Tag>
                         </div>
                         <p aria-live="polite">{speech}</p>
-                        <small className="muted">{speechParts.some((part) => part.answerKind === "knowledge") ? "Sources are pending." : "No company sources were checked."}</small>
+                        {!candidateSpeech && (
+                          <small className="muted">{speechParts.some((part) => part.answerKind === "knowledge") ? "Sources are pending." : "No company sources were checked."}</small>
+                        )}
                       </div>
                     )}
                     {t && (
@@ -1115,7 +1121,9 @@ export default function App() {
                             {speech ? (
                               <>
                                 <p aria-live="polite">{speech}</p>
-                                {(presentationFailed || (t.answer?.status === "failed" && t.answer.verification_timing === "after_audio")) && (
+                                {unverifiedReply || candidateSpeech ? (
+                                  <small className="input-status">Live transcript · Spoken reply unverified</small>
+                                ) : (presentationFailed || (t.answer?.status === "failed" && t.answer.verification_timing === "after_audio")) && (
                                   <Alert type="warning" showIcon message="The spoken reply was not verified. Review the result and any retrieved sources below." />
                                 )}
                                 {voiceState !== "ready" &&
@@ -1127,7 +1135,7 @@ export default function App() {
                               </>
                             ) : t.answer ? (
                               <p className="muted">
-                                {voiceState === "ready" &&
+                                {unverifiedReply ? t.answer.display_text : voiceState === "ready" &&
                                 !finishedTurns.has(t.id) && !finishedTurns.has(key) &&
                                 t.answer.status !== "failed"
                                   ? "Answer ready. Waiting for spoken reply."
@@ -1148,7 +1156,7 @@ export default function App() {
                             )}
                             {t.answer && (
                               <details className="full-answer">
-                                <summary>View full answer / Sources</summary>
+                                <summary>{unverifiedReply ? "View result / Sources" : "View full answer / Sources"}</summary>
                                 <p>{t.answer.display_text}</p>
                                 {t.answer.verification_timing === "after_audio" && (
                                   <small className="muted">Sources checked after the spoken response.</small>

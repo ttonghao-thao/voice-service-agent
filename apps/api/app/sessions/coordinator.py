@@ -3,6 +3,7 @@ import logging
 import time
 import weakref
 from datetime import timedelta
+from enum import StrEnum
 
 from app.agent_runtime.context import RunContext
 from app.agent_runtime.direct import EvidenceReady
@@ -14,6 +15,14 @@ from app.task_context import combined_history, task_status, values
 from sqlalchemy import select
 
 logger = logging.getLogger(__name__)
+
+
+class SophonEvidenceOutcome(StrEnum):
+    GATEWAY_RECEIVED = "VOICE_ANSWER_UNVERIFIED"
+    RECEIPT_UNKNOWN = "VOICE_COMMENTARY_UNCONFIRMED"
+    SUPERSEDED = "VOICE_ANSWER_SUPERSEDED"
+    FORBIDDEN = "FORBIDDEN"
+    BUDGET = "VOICE_EVIDENCE_BUDGET"
 
 
 def evidence_outcome(envelope):
@@ -344,10 +353,14 @@ class SessionCoordinator:
                 ctx.task_context["provider_response_id"] = response_id
             future.set_result(text)
 
+    def sophon_evidence_outcome(self, turn_id, outcome: SophonEvidenceOutcome):
+        future = self.awaiting_answers.get(turn_id)
+        if future and not future.done():
+            future.set_result(outcome)
+
     async def finish_provider(self, ctx, request, history, ready, future, voice_relay=False):
         try:
             sophon = voice_relay and self.settings.voice_provider == "sophon_live"
-            chinese = sophon and ctx.locale == "zh-CN"
             contract = presentation_contract("grounded", ctx.slots)
             checked_evidence = []
             budget = min(self.settings.qa_provider_answer_timeout_ms / 1000,
@@ -356,17 +369,24 @@ class SessionCoordinator:
                 # Native full-duplex speech belongs to the live connection. The
                 # retrieval deadline must not cancel result injection or speech.
                 # Disconnect/explicit cancellation still cancels this observer.
-                text = await future if voice_relay else await asyncio.wait_for(future, budget)
-                # Admission can reduce complete groups before native delivery.
-                # Snapshot only after that delivery and spoken completion, so
-                # omitted facts cannot authorize the answer's claims.
-                checked_evidence = spoken_citations(ready)
-                if not checked_evidence and ready.envelope.get("decision") in {"insufficient", "clarify"}:
-                    code = EvidenceGate.check_disposition(text, ready.envelope["decision"], chinese=chinese)
+                outcome = await future if voice_relay else await asyncio.wait_for(future, budget)
+                if sophon:
+                    # Live v1 never identifies an engine-consumed result or a
+                    # completed response for a delegation. Only report the
+                    # transport disposition; no transcript enters history.
+                    text = ""
+                    code = (outcome if isinstance(outcome, SophonEvidenceOutcome)
+                            else SophonEvidenceOutcome.RECEIPT_UNKNOWN)
                 else:
-                    code = EvidenceGate.check_presentation(text, contract, checked_evidence, allow_unicode=chinese)
-                    if not code:
-                        code = EvidenceGate.check_facets(text, ready.envelope)
+                    text = outcome
+                    # Check only sources actually admitted to the native reply.
+                    checked_evidence = spoken_citations(ready)
+                    if not checked_evidence and ready.envelope.get("decision") in {"insufficient", "clarify"}:
+                        code = EvidenceGate.check_disposition(text, ready.envelope["decision"])
+                    else:
+                        code = EvidenceGate.check_presentation(text, contract, checked_evidence)
+                        if not code:
+                            code = EvidenceGate.check_facets(text, ready.envelope)
             except TimeoutError:
                 text, code = "", "VOICE_ANSWER_TIMEOUT"
             allowed = await self.runtime.registry.allowed(ctx.principal)
@@ -379,7 +399,7 @@ class SessionCoordinator:
                     "input_item_id": ctx.task_context.get("input_source", {}).get("input_item_id"),
                     "response_id": ctx.task_context.get("provider_response_id"),
                     "reason_code": code,
-                    "evidence_basis": "delivered_sources",
+                    "evidence_basis": "retrieved_sources_only" if sophon else "delivered_sources",
                     "condition_failures": EvidenceGate.missing_conditions(
                         text, checked_evidence, contract.required_conditions)
                         if code == "VOICE_MISSING_CONDITION" else [],
@@ -391,12 +411,22 @@ class SessionCoordinator:
             reviewable = voice_relay and code in {
                 "VOICE_ANSWER_INVALID", "RAG_INVALID_CITATION", "VOICE_UNSUPPORTED_NUMBER",
                 "VOICE_UNSUPPORTED_UNIT", "VOICE_MISSING_CONDITION",
+                SophonEvidenceOutcome.GATEWAY_RECEIVED, SophonEvidenceOutcome.RECEIPT_UNKNOWN,
             }
             evidence_decision = ready.envelope.get("decision")
             result_status, decision_reason = evidence_outcome(ready.envelope)
+            display = "The spoken response could not be verified. Please try again." if code else text
+            if sophon:
+                display = {
+                    SophonEvidenceOutcome.GATEWAY_RECEIVED: "The voice service acknowledged receipt. The spoken reply could not be verified.",
+                    SophonEvidenceOutcome.RECEIPT_UNKNOWN: "The voice service did not acknowledge the result. The spoken reply could not be verified.",
+                    SophonEvidenceOutcome.SUPERSEDED: "The previous search was set aside because the conversation moved on.",
+                    SophonEvidenceOutcome.BUDGET: "The evidence exceeded the voice delivery limit.",
+                    SophonEvidenceOutcome.FORBIDDEN: "Knowledge access is unavailable.",
+                }.get(code, display)
             bundle = AnswerBundle(
                 answer_id=ready.answer_id, status="failed" if code else result_status,
-                display_text="The spoken response could not be verified. Please try again." if code else text,
+                display_text=display,
                 speech_text="" if code else text if len(text) <= 160 else "Please read the written answer in the portal.",
                 speech_language=ctx.locale if sophon else "en-US",
                 citations=ready.citations if not code or reviewable else [], reason_code=code or decision_reason,

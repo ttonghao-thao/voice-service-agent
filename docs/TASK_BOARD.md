@@ -1,5 +1,11 @@
 # 待优化项与验证状态
 
+2026-11-21 Sophon Live 审计修复（已实现，待真实服务验收）
+
+1. S4：多段可能输入时拒绝延迟委托；无可确认的任务类型时不查询。保留单一明确输入的 CueKB 执行。
+2. S5：分别记录 Commentary 发送、Gateway 回执和候选语音。保留获取的授权来源，候选字幕和播放结束均不提交为已核实回答。
+3. S6：用官方 Gateway 协议复现和受控夹具复测。独立部署的 32B Flash 4-bit 实际听音和端到端验收见 [Sophon Live 验证](validation.md#sophon-live-验证)。
+
 2026-11-21 Sophon Live 接入（已实现，待真实服务验收）
 
 1. S1：独立 WebSocket Provider、音频、字幕和同连接多轮在协议夹具中通过。
