@@ -968,7 +968,9 @@ export default function App() {
               <div>
                 <span className="status-dot" />
                 <strong>Support conversation</strong>
-                <span className="locale">English</span>
+                <span className="locale">
+                  {caps?.required_voice_languages?.[0] === "zh-CN" ? "Mandarin" : "English"}
+                </span>
               </div>
               <span className="small muted">{stateLabels[voiceState]}</span>
             </div>

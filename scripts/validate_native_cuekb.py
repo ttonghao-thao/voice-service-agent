@@ -1,4 +1,4 @@
-"""Send authorized English WAVs through the deployed portal's real voice path.
+"""Send authorized WAVs through the deployed portal's real voice path.
 
 One conversation/voice connection for sequential cases, with continuous silence
 after each WAV. Tool execution stays in the application; no synthetic results.
@@ -162,6 +162,65 @@ def assess(case, history, seen_inputs, output_samples):
             "presentation_reason": reason if reason and reason.startswith("VOICE_") else None}
 
 
+def assess_sophon(case, history, seen_inputs, output_samples, seen_calls, observed):
+    records = history.get("records", [])
+    new_calls = {row["source_id"] for row in records if row["kind"] == "sophon_delegation"} - seen_calls
+    seen_calls.update(new_calls)
+    expected = "DELEGATE" if case["expected_tool"] else "CHAT"
+    actual = "DELEGATE" if new_calls else "CHAT" if observed and seen_inputs else None
+    turns = [row for row in history.get("items", []) if row.get("input_item_id") in seen_inputs]
+    answer = next((row["answer"] for row in reversed(turns) if row.get("answer")), {})
+    retrievals = [row["payload"] for row in records if row["kind"] == "native_cuekb_result"
+                  and row["payload"].get("input_item_id") in seen_inputs]
+    timing = {key: [] for key in ("delegation_ms_after_audio", "query_and_validation_ms",
+                                  "result_to_audio_ms", "input_to_audio_ms")}
+    for row in records:
+        if row["kind"] in ("sophon_commentary", "sophon_answer_observed") and row["source_id"] in new_calls:
+            for key in timing:
+                value = row["payload"].get(key)
+                if isinstance(value, (int, float)) and value >= 0:
+                    timing[key].append(value)
+    return {
+        "expected_route": expected, "observed_route": actual, "delegations": len(new_calls),
+        "selection": "passed" if actual == expected else "failed" if actual else "unverified",
+        "arguments": "manual_review_required" if new_calls else "not_applicable",
+        "retrieval_executions": len(retrievals), "retrieval_limit": 1,
+        "retrieval": "passed" if any(row.get("status") == "answer" for row in retrievals)
+        else "not_applicable" if expected == "CHAT" and not new_calls else "unverified",
+        "answer_status": answer.get("status"), "answer_citation_count": len(answer.get("citations", [])),
+        "reason_code": answer.get("reason_code"), "timings_ms": timing,
+        "speech_transport": "passed" if output_samples else "failed",
+        "spoken_faithfulness": "manual_review_required", "playback": "unverified",
+    }
+
+
+def sophon_metrics(rows):
+    counts = dict.fromkeys(("tp", "fp", "tn", "fn", "unverified"), 0)
+    samples = {}
+    for row in rows:
+        expected, actual = row.get("expected_route"), row.get("observed_route")
+        if actual is None:
+            counts["unverified"] += 1
+        else:
+            counts[{("DELEGATE", "DELEGATE"): "tp", ("CHAT", "DELEGATE"): "fp",
+                    ("CHAT", "CHAT"): "tn", ("DELEGATE", "CHAT"): "fn"}[expected, actual]] += 1
+        for name, values in row.get("timings_ms", {}).items():
+            samples.setdefault(name, []).extend(values)
+    tp, fp, tn, fn = (counts[key] for key in ("tp", "fp", "tn", "fn"))
+
+    def ratio(n, d):
+        return n / d if d else None
+
+    def percentile(values, fraction):
+        from math import ceil
+        return sorted(values)[ceil(len(values) * fraction) - 1] if values else None
+
+    return {**counts, "recall": ratio(tp, tp + fn), "precision": ratio(tp, tp + fp),
+            "chat_accuracy": ratio(tn, tn + fp), "accuracy": ratio(tp + tn, tp + tn + fp + fn),
+            "latency_ms": {name: {"n": len(values), "p50": percentile(values, .50), "p95": percentile(values, .95)}
+                           for name, values in samples.items()}}
+
+
 async def run(args):
     if not 1 <= args.case_timeout <= 180:
         raise ValueError("case-timeout must be 1-180 seconds")
@@ -174,12 +233,15 @@ async def run(args):
             "Query term checks are lexical; meaning, missing conditions and spoken facts need human review.",
             "This sequential probe does not certify tool-wait interruption, microphone AEC or latency targets."]}
     cid = None
+    provider = getattr(args, "provider", "nvidia")
+    sophon = provider == "sophon_live"
+    seen_calls = set()
     try:
         async with httpx.AsyncClient(base_url=args.base_url, timeout=10, follow_redirects=False) as http:
             response = await http.get("/api/v1/capabilities")
             response.raise_for_status()
             caps = response.json()
-            validate_voice_policy(caps, cuekb_only=True)
+            validate_voice_policy(caps, cuekb_only=True, provider=provider)
             report["capabilities"] = {key: caps.get(key) for key in (
                 "provider", "native_tools", "native_tool_revision", "qa_toolset_version", "answer_policy")}
             created = await http.post("/api/v1/conversations", json={"title": "Native CueKB voice validation"})
@@ -195,7 +257,7 @@ async def run(args):
             endpoint = urlunsplit(("wss" if parts.scheme == "https" else "ws", parts.netloc, "", "", "")) + issued["ws_url"]
             try:
                 async with connect(endpoint, origin=origin, max_size=131072) as ws:
-                    ready = json.loads(await asyncio.wait_for(ws.recv(), 10))
+                    ready = json.loads(await asyncio.wait_for(ws.recv(), 18 if sophon else 10))
                     if ready["type"] != "portal.session.ready":
                         raise ValueError("Voice session was not ready")
                     seq = 0
@@ -330,13 +392,15 @@ async def run(args):
                                 if not pending:
                                     break
                                 await asyncio.sleep(0.05)
-                            row.update(assess(case, history, seen_inputs, samples))
+                            row.update(assess_sophon(case, history, seen_inputs, samples, seen_calls, True)
+                                       if sophon else assess(case, history, seen_inputs, samples))
                             row["status"] = "observed"
                         except Exception:
                             try:
                                 response = await http.get(f"/api/v1/conversations/{cid}/messages")
                                 response.raise_for_status()
-                                row.update(assess(case, response.json(), seen_inputs, samples))
+                                row.update(assess_sophon(case, response.json(), seen_inputs, samples, seen_calls, False)
+                                           if sophon else assess(case, response.json(), seen_inputs, samples))
                             except Exception:
                                 row["audit_status"] = "unavailable"
                             raise
@@ -363,6 +427,8 @@ async def run(args):
                     await http.delete(f"/api/v1/conversations/{cid}")
     except Exception as exc:
         report["error_type"] = type(exc).__name__
+    if sophon:
+        report["sophon_route_metrics"] = sophon_metrics(report["cases"])
     output = Path(args.output)
     await asyncio.to_thread(output.parent.mkdir, parents=True, exist_ok=True)
     await asyncio.to_thread(output.write_text, json.dumps(report, indent=2) + "\n")
@@ -424,6 +490,7 @@ def passed(report):
 if __name__ == "__main__":
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--base-url", required=True, help="Portal origin, using its trusted TLS certificate")
+    parser.add_argument("--provider", choices=("nvidia", "sophon_live"), default="nvidia")
     parser.add_argument("--origin", help="Configured PUBLIC_ORIGIN if different from base-url")
     parser.add_argument("--cases", required=True, help="JSON list with case_id, wav, expected_tool, optional query_terms")
     parser.add_argument("--case-id", help="Run only this case, on a new conversation/connection")

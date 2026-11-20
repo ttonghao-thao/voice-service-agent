@@ -1,6 +1,6 @@
 # Codex 工作入口
 
-仅支持英文（en-US）的全双工知识客服；开发沟通/文档可用中文，产品语音、UI、工具描述必须英文。Python 3.12/FastAPI，React/TypeScript/AudioWorklet，PostgreSQL/Redis。
+全双工知识客服。门户 UI 和 NVIDIA VoiceChat 沿用英文（en-US），Sophon Live 按 `SOPHON_LIVE_LOCALE` 验证中文或英文语音。Python 3.12/FastAPI，React/TypeScript/AudioWorklet，PostgreSQL/Redis。
 
 交付目标是 `origin/main`，完成验证后直接推送，不以任务分支替代。当前状态查[任务板](docs/TASK_BOARD.md)，不要把旧提交的通过记录当作本版本验收。
 
@@ -13,7 +13,7 @@
 
 ## 不变边界
 
-- VoiceChat/CueKB 独立部署；保持 Gateway → Coordinator → Runtime → Registry。供应商结构归 app/voice，Agents SDK 归 app/agent_runtime。
+- NVIDIA VoiceChat、Sophon Live、CueKB 独立部署；保持 Gateway → Coordinator → Runtime → Registry。供应商结构归 app/voice，Agents SDK 归 app/agent_runtime。
 - tools/instructions 原生选工具，不加 WS tool_choice、分类模型、独立 Nano 或子 Agent 调度。一般回答不是企业证据；mock 不证明真实能力，real 失败不回退 mock。
 - 全局后台目录决定原生工具数量/描述，不能把初始工具数当上限；执行另验权限。涉及注册/刷新时读[工具契约](docs/interfaces/voice-tools.md)。
 - Coordinator 唯一提交；提交/交付复核 epoch/revision/Turn/租约/权限。普通发声和停止播放不取消查询；旧调用结清或关闭连接，unknown 不自动重发。
@@ -21,7 +21,7 @@
 
 ## 修改与验证
 
-以英文全双工、多轮、有据回答为准。区分实现、模拟/CPU、真实 GPU、网络发送和听音。定位记录假设/方法/预期；同思路两次无新证据即停，三种假设仍失败则评估设计/环境，每三轮回顾目标与更简单方案。非阻塞项记待办，不降低验收标准。
+按各 Provider 的目标语言验证全双工、多轮及有据回答。区分实现、模拟/CPU、真实 GPU、网络发送和听音。定位记录假设/方法/预期；同思路两次无新证据即停，三种假设仍失败则评估设计/环境，每三轮回顾目标与更简单方案。非阻塞项记待办，不降低验收标准。
 
 只更新受影响主题；契约变更执行 scripts/export_contracts.py，同步客户端并回归。纯文档只改 Markdown，检查链接/锚点/命令语法/diff，无需跑应用测试。状态变化更新任务板，新验证才更新证据，勿追加全仓流水。维护规则按需读 [documentation.md](docs/development/documentation.md)。
 

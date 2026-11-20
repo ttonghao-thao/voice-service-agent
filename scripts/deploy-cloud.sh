@@ -37,19 +37,25 @@ require_values \
   IMAGE_TAG POSTGRES_PASSWORD REDIS_PASSWORD KNOWLEDGE_BASE_IDS \
   WEB_TLS_CERT_FILE WEB_TLS_KEY_FILE \
   PUBLIC_ORIGIN AGENT_PROVIDER \
-  CUEKB_BASE_URL CUEKB_API_KEY VOICECHAT_WS_URL VOICECHAT_API_KEY
+  CUEKB_BASE_URL CUEKB_API_KEY
 
-# This deployment is for VoiceChat-owned routing, including direct replies.
+case "$(environment_value VOICE_PROVIDER)" in
+  nvidia|'') require_values VOICECHAT_WS_URL VOICECHAT_API_KEY ;;
+  sophon_live) require_values SOPHON_LIVE_WS_URL ;;
+  *) echo "VOICE_PROVIDER must be nvidia or sophon_live." >&2; exit 1 ;;
+esac
+
+# The configured voice model chooses direct replies or tool calls.
 # Reject an old strict .env before starting or migrating any container.
 if [ "$(environment_value QA_EXECUTION_MODE)" != "dual_tools" ] || \
    [ "$(environment_value QA_ANSWER_POLICY)" != "general_qa" ]; then
-  echo "VoiceChat autonomous replies require QA_EXECUTION_MODE=dual_tools and QA_ANSWER_POLICY=general_qa. Create a new conversation after deployment." >&2
+  echo "Autonomous voice replies require QA_EXECUTION_MODE=dual_tools and QA_ANSWER_POLICY=general_qa. Create a new conversation after deployment." >&2
   exit 1
 fi
 
 case "$(environment_value AGENT_PROVIDER)" in
   disabled) ;;
-  *) echo "Phase-1 native Function Calling requires AGENT_PROVIDER=disabled; VoiceChat generates answers." >&2; exit 1 ;;
+  *) echo "Native voice routing requires AGENT_PROVIDER=disabled." >&2; exit 1 ;;
 esac
 for key in WEB_TLS_CERT_FILE WEB_TLS_KEY_FILE; do
   path=$(environment_value "$key")
@@ -77,6 +83,7 @@ api_image="voice-service-agent-api:$image_tag"
 web_image="voice-service-agent-web:$image_tag"
 export IMAGE_TAG="$image_tag"
 export PUBLIC_ORIGIN="$(environment_value PUBLIC_ORIGIN)"
+export VOICE_PROVIDER="$(environment_value VOICE_PROVIDER)"
 export WEB_TLS_CERT_FILE="$(environment_value WEB_TLS_CERT_FILE)"
 export WEB_TLS_KEY_FILE="$(environment_value WEB_TLS_KEY_FILE)"
 export POSTGRES_PASSWORD="$(environment_value POSTGRES_PASSWORD)"

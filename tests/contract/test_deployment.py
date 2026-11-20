@@ -20,7 +20,7 @@ def test_cloud_compose_is_a_production_only_container_topology():
     assert services["api"]["environment"]["AUTH_MODE"] == "validation"
     assert services["api"]["environment"]["CUEKB_MODE"] == "real"
     assert services["api"]["environment"]["ENABLED_TOOLS"] == "search_knowledge"
-    assert services["api"]["environment"]["VOICE_PROVIDER"] == "nvidia"
+    assert services["api"]["environment"]["VOICE_PROVIDER"] == "${VOICE_PROVIDER:-nvidia}"
     assert services["api"]["env_file"] == "${DEPLOY_ENV_FILE:-../.env}"
     assert services["api"]["image"] == services["migrate"]["image"]
     assert (
@@ -80,6 +80,12 @@ def test_cloud_environment_template_cannot_enable_development_fallbacks():
         "VOICE_TOOL_RESULT_MAX_TOKENS",
         "VOICECHAT_WS_URL",
         "VOICECHAT_API_KEY",
+        "VOICE_PROVIDER",
+        "SOPHON_LIVE_WS_URL",
+        "SOPHON_LIVE_API_KEY",
+        "SOPHON_LIVE_LOCALE",
+        "SOPHON_LIVE_TOOL_TIMEOUT_SECONDS",
+        "SOPHON_LIVE_MAX_DELEGATIONS_PER_INPUT",
         "QA_EXECUTION_MODE",
         "QA_ANSWER_POLICY",
         "QA_TOOLSET_VERSION",
@@ -104,7 +110,7 @@ def test_cloud_environment_template_cannot_enable_development_fallbacks():
     assert "CUEKB_MODE" not in values
     assert "ENABLED_TOOLS" not in values
     assert not any(key.startswith("WEATHER_") for key in values)
-    assert "VOICE_PROVIDER" not in values
+    assert values["VOICE_PROVIDER"] == "nvidia"
     assert values["VOICECHAT_WS_URL"].startswith("REPLACE_")
     origin = urlparse(values["PUBLIC_ORIGIN"])
     assert origin.scheme == "https" and origin.port == 8087 and origin.path == ""

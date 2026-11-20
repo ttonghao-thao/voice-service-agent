@@ -135,7 +135,11 @@ class SessionCoordinator:
                 raise DomainError("SERVICE_DRAINING", "Service is under maintenance. Please try again later.", 503, True)
             if len(self.all_tasks) >= self.settings.max_agent_runs:
                 raise DomainError("AGENT_CAPACITY_EXCEEDED", "Search service is busy. Please try again later.", 429, True)
-            deadline = time.monotonic() + self.settings.agent_deadline_ms / 1000
+            sophon = channel == "voice" and self.settings.voice_provider == "sophon_live"
+            budget = self.settings.agent_deadline_ms / 1000
+            if sophon:
+                budget = min(budget, self.settings.sophon_live_tool_timeout_seconds)
+            deadline = time.monotonic() + budget
             previous_ctx = self.contexts.get(revision_of[0]) if revision_of else None
             if revision_of:
                 if not previous_ctx or not previous_ctx.deadline or previous_ctx.deadline <= time.monotonic():
@@ -168,7 +172,8 @@ class SessionCoordinator:
                 turn.id,
                 turn.epoch,
                 request_revision=turn.request_revision,
-                locale=conversation.locale,
+                locale=self.settings.sophon_live_locale
+                if sophon else conversation.locale,
                 slots={**{k: v for k, v in conversation.slots.items() if k not in ("product_model", "software_version")},
                        **values(turn.task_context)},
                 deadline=deadline,
@@ -341,6 +346,8 @@ class SessionCoordinator:
 
     async def finish_provider(self, ctx, request, history, ready, future, voice_relay=False):
         try:
+            sophon = voice_relay and self.settings.voice_provider == "sophon_live"
+            chinese = sophon and ctx.locale == "zh-CN"
             contract = presentation_contract("grounded", ctx.slots)
             checked_evidence = []
             budget = min(self.settings.qa_provider_answer_timeout_ms / 1000,
@@ -355,9 +362,9 @@ class SessionCoordinator:
                 # omitted facts cannot authorize the answer's claims.
                 checked_evidence = spoken_citations(ready)
                 if not checked_evidence and ready.envelope.get("decision") in {"insufficient", "clarify"}:
-                    code = EvidenceGate.check_disposition(text, ready.envelope["decision"])
+                    code = EvidenceGate.check_disposition(text, ready.envelope["decision"], chinese=chinese)
                 else:
-                    code = EvidenceGate.check_presentation(text, contract, checked_evidence)
+                    code = EvidenceGate.check_presentation(text, contract, checked_evidence, allow_unicode=chinese)
                     if not code:
                         code = EvidenceGate.check_facets(text, ready.envelope)
             except TimeoutError:
@@ -391,9 +398,11 @@ class SessionCoordinator:
                 answer_id=ready.answer_id, status="failed" if code else result_status,
                 display_text="The spoken response could not be verified. Please try again." if code else text,
                 speech_text="" if code else text if len(text) <= 160 else "Please read the written answer in the portal.",
+                speech_language=ctx.locale if sophon else "en-US",
                 citations=ready.citations if not code or reviewable else [], reason_code=code or decision_reason,
                 answer_kind="clarification" if evidence_decision == "clarify" else "knowledge", composition="nano_grounded",
-                validation_level="source_checked", verification_timing="after_audio",
+                validation_level="provider_only" if sophon else "source_checked",
+                verification_timing="not_verified" if sophon else "after_audio",
                 is_mock=any(c.is_mock for c in ready.citations),
                 presentation=contract,
             )

@@ -4,7 +4,23 @@
 
 ## 部署方式边界
 
-本阶段只有一套原生 Function Calling 验证配置：`.env.example` 是唯一模板，`deploy/compose.production.yaml` 是唯一 Compose 拓扑。VoiceChat、CueKB 独立部署；本项目提供门户、原生工具注册、鉴权、Knowledge Adapter 和结果交付。VoiceChat 自主直接回答或调用工具，不增加 ASR/TTS、意图分类器或额外答案模型。
+使用 `.env.example` 和 `deploy/compose.production.yaml` 配置部署。默认 `VOICE_PROVIDER=nvidia`，可切换到 `sophon_live` 连接独立 Sophon 服务。两个 Provider 都采用模型原生工具选择与独立 CueKB。
+
+Sophon 验证部署使用以下配置，其余 CueKB、PostgreSQL、Redis 和门户配置沿用同一模板。
+
+```dotenv
+VOICE_PROVIDER=sophon_live
+SOPHON_LIVE_WS_URL=wss://sx.ppy8.xyz:14080/v1/live/sessions
+SOPHON_LIVE_API_KEY=
+SOPHON_LIVE_LOCALE=zh-CN
+SOPHON_LIVE_TOOL_TIMEOUT_SECONDS=12
+SOPHON_LIVE_MAX_DELEGATIONS_PER_INPUT=1
+AGENT_PROVIDER=disabled
+QA_EXECUTION_MODE=dual_tools
+QA_ANSWER_POLICY=general_qa
+```
+
+上游启用 Bearer 认证时，在部署 API 的环境填入密钥。公网使用 WSS，隔离内网无密钥时可用 WS。上游须确认 24 kHz PCM、客户端委托和 `store=false`。更新配置后重建 API 容器并新建通话。切回 NVIDIA 时设置 `VOICE_PROVIDER=nvidia`、`VOICECHAT_WS_URL` 和 `VOICECHAT_API_KEY`。复测步骤见 [Sophon Live 验证](validation.md#sophon-live-验证)。
 
 ## 问答模式与预算（Q07）
 
@@ -55,7 +71,7 @@ python /app/scripts/configure_native_cuekb.py --apply
 
 ## 镜像构建与部署
 
-本项目发布 API/Web，VoiceChat 独立镜像。先同步 [完整 VoiceChat 文件](../deploy/voicechat/README.md)，构建/重建独立服务，再发布配套 API/Web；清理浏览器旧页面缓存，新建通话验证。模型权重和 GPU 参数沿用现场配置，本次不重新转换模型。
+本项目发布 API/Web。NVIDIA 部署先同步 [完整 VoiceChat 文件](../deploy/voicechat/README.md) 并按该版本重建独立语音服务。Sophon 由现有外部服务提供 Live WebSocket，通过环境变量切换后新建通话验证。
 
 当前实际门户若通过另一 HTTPS 入口暴露，应核对 PUBLIC_ORIGIN、证书和同源 API 路由，不据截图修改默认端口。记录 API/Web/VoiceChat 镜像及挂载 hash；按 [验收标准](validation.md) 分别确认当前单轮和后续多轮能力。
 

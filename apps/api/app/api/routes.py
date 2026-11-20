@@ -121,7 +121,8 @@ def _event_for_principal(payload, user, settings):
 def _record_for_principal(record, user, settings):
     payload = dict(record.payload)
     scope = payload.pop("_authorized_kb_ids", None)
-    if record.kind in ("voicechat_transcript", "speech_validation", "native_cuekb_result", "native_answer_check"):
+    if record.kind in ("voicechat_transcript", "speech_validation", "native_cuekb_result", "native_answer_check",
+                       "sophon_delegation", "sophon_commentary", "sophon_answer_observed"):
         current = set(user.knowledge_base_ids)
         configured = _configured_kbs(settings)
         if (scope is None and ("customer" in user.roles or current != configured)) or (
@@ -140,6 +141,7 @@ def _record_for_principal(record, user, settings):
 def capabilities(s):
     voice_configured = bool(
         s.voice_provider == "mock"
+        or (s.voice_provider == "sophon_live" and s.sophon_live_ws_url)
         or (s.voice_provider == "nvidia" and s.voicechat_ws_url and s.voicechat_api_key.get_secret_value())
     )
     return {
@@ -152,7 +154,7 @@ def capabilities(s):
         "voice_available": voice_configured,
         "text_configured": s.agent_provider == "mock"
         or (s.agent_provider != "disabled" and bool(s.agent_model and s.openai_api_key.get_secret_value())),
-        "streaming_audio": s.voice_provider in ("mock", "nvidia"),
+        "streaming_audio": s.voice_provider in ("mock", "nvidia", "sophon_live"),
         "native_full_duplex": voice_configured,
         "function_result_return": voice_configured,
         "native_cancel_response": False,
@@ -160,8 +162,8 @@ def capabilities(s):
         "portal_task_progress": True,
         "dynamic_instructions": False,
         "arbitrary_text_to_speech": False,
-        "required_voice_languages": ["en-US"],
-        "declared_voice_languages": ["en-US"],
+        "required_voice_languages": [s.sophon_live_locale if s.voice_provider == "sophon_live" else "en-US"],
+        "declared_voice_languages": ["en-US", "zh-CN"] if s.voice_provider == "sophon_live" else ["en-US"],
         "integration_verified_voice_languages": [],
         "tool_phase_recovery": "close_and_reconnect",
         "qa_execution_mode": s.qa_execution_mode,
@@ -174,6 +176,7 @@ def capabilities(s):
 @router.get("/capabilities")
 async def get_capabilities(request: Request):
     auth = request.app.state.auth
+    settings = request.app.state.settings
     user = Principal(
         user_id="capability-check",
         roles=frozenset({"customer"}),
@@ -181,11 +184,14 @@ async def get_capabilities(request: Request):
         knowledge_base_ids=auth.knowledge_base_ids(),
     )
     snapshot = await request.app.state.coordinator.runtime.catalog.snapshot()
+    native_tools = list(snapshot.tools) if settings.qa_execution_mode == "dual_tools" else ["consult_service_agent"]
+    if settings.voice_provider == "sophon_live":
+        native_tools = [name for name, tool in snapshot.tools.items()
+                        if name == "search_knowledge_base" and tool.kind == "cuekb"]
     return {
-        **capabilities(request.app.state.settings),
+        **capabilities(settings),
         "available_tools": sorted(await request.app.state.registry.allowed(user)),
-        "native_tools": list(snapshot.tools) if request.app.state.settings.qa_execution_mode == "dual_tools"
-            else ["consult_service_agent"],
+        "native_tools": native_tools,
         "native_tool_revision": snapshot.revision,
     }
 
@@ -596,7 +602,8 @@ async def test_tool(name: str, request: Request, user: User):
 async def services(request: Request, user: User):
     admin(user)
     s = request.app.state.settings
-    voice = "configured" if s.voice_provider == "nvidia" and s.voicechat_ws_url else s.voice_provider
+    voice_url = s.sophon_live_ws_url if s.voice_provider == "sophon_live" else s.voicechat_ws_url
+    voice = "configured" if s.voice_provider in ("nvidia", "sophon_live") and voice_url else s.voice_provider
     return {
         "voice_health": voice,
         "text_model": "disabled" if s.agent_provider == "disabled" else "mock"

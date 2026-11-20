@@ -2,7 +2,7 @@
 
 核对基线：voice-service-agent `2a8ba8b`，CueKB `30970e9`（2026-11-06 核对远端 main）。本次只审查和整理文档，未改业务代码或部署。
 
-产品是仅支持英文（en-US）的知识客服：浏览器麦克风或原始 PCM WAV 连续输入，NVIDIA VoiceChat 负责语音理解、原生工具调用、口述及连接内上下文，CueKB 提供授权证据。本项目负责身份、会话、工具执行、业务提交和门户来源。
+产品是全双工知识客服。浏览器麦克风或 PCM WAV 持续输入。部署可选英文 NVIDIA VoiceChat，或配置为中文、英文的 Sophon Live 验证链路。语音服务负责语音理解、工具选择及口述，CueKB 提供授权证据，本项目负责身份、会话、执行、业务提交和来源展示。
 
 当前原生路径为 `dual_tools/general_qa`、`AGENT_PROVIDER=disabled`。模型自主调用 `search_knowledge_base(query)`；API 使用最终 ASR 构造问题级请求，每 input 最多一次 CueKB query，成功包再 validate，不以额外模型、转写自动补查或强制 tool_choice 代替原生选工具。
 

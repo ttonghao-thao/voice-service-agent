@@ -29,17 +29,17 @@ def validate_ready(payload, expected_tools, *, require_text=True):
     }
 
 
-def validate_voice_policy(payload, *, cuekb_only=False):
+def validate_voice_policy(payload, *, cuekb_only=False, provider="nvidia"):
     """Check the deployed mode, not the model's ability to choose or use tools."""
-    expected = {"provider": "nvidia", "qa_execution_mode": "dual_tools", "answer_policy": "general_qa"}
+    expected = {"provider": provider, "qa_execution_mode": "dual_tools", "answer_policy": "general_qa"}
     if any(payload.get(key) != value for key, value in expected.items()):
         raise ValueError(
-            "VoiceChat autonomous answers require provider=nvidia, "
+            f"Autonomous voice answers require provider={provider}, "
             "QA_EXECUTION_MODE=dual_tools and QA_ANSWER_POLICY=general_qa. "
             "knowledge_required rejects replies without a tool call. Create a new conversation after changing policy."
         )
     if payload.get("is_mock") is not False or payload.get("voice_available") is not True:
-        raise ValueError("A real configured VoiceChat service is required")
+        raise ValueError("A real configured voice service is required")
     if cuekb_only and (
         payload.get("native_tools") != ["search_knowledge_base"]
         or payload.get("agent_provider") != "disabled"
@@ -71,7 +71,8 @@ def main():
         check = validate_ready(payload, settings.enabled_tool_names, require_text=settings.agent_provider != "disabled")
         if args.expect_autonomous_voice or args.expect_cuekb_native:
             with urlopen(args.base_url.rstrip("/") + "/api/v1/capabilities", timeout=5) as response:  # noqa: S310
-                check["voice_policy"] = validate_voice_policy(json.load(response), cuekb_only=args.expect_cuekb_native)
+                check["voice_policy"] = validate_voice_policy(json.load(response),
+                    cuekb_only=args.expect_cuekb_native, provider=settings.voice_provider)
     except OSError as exc:
         raise SystemExit("Deployment voice capabilities endpoint is unavailable") from exc
     except ValueError as exc:

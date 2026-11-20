@@ -4,7 +4,7 @@
 
 ## 1. 产品与部署边界
 
-仅英文（en-US）；Python 3.12/FastAPI、React/TypeScript/AudioWorklet、PostgreSQL/Redis。VoiceChat 和 CueKB 独立部署；本项目不直连 CueKB 索引、不训练模型。产品语言以 contracts/config 和英文提示词为准。
+Python 3.12/FastAPI、React/TypeScript/AudioWorklet、PostgreSQL/Redis。NVIDIA VoiceChat（英文）、Sophon Live（中文或英文验证）和 CueKB 均独立部署。门户界面使用英文，模型语音语言按 Provider 配置。
 
 当前知识语音使用 `dual_tools/general_qa`、`AGENT_PROVIDER=disabled`。原生工具目录可配置，执行由静态可信实现和权限复核决定；不是固定只能注册两个工具。不启用分类模型、独立 ASR/TTS 服务或子 Agent 调度。模型可直接回答一般问题；企业问题漏调用仍是待优化项，不能冒充已查询。
 
@@ -21,6 +21,8 @@
 | VoiceChat 快照 | 原生工具提取/注入，显示 ASR、音频位置、响应结束 | docs/voicechat/s2s/audio_server.py；快照 backend/model.py、data_types.py |
 
 调用方向保持 Gateway → Coordinator → Runtime → Registry → CueKB。音频保持单条 VoiceChat 连接；供应商结构仅在 voice 边界解释，业务不能凭模型参数扩大 KB/权限。
+
+Sophon Live 使用同一门户音频协议和业务链。Adapter 通过 `session.start` 建连，relay 在 24 kHz PCM 上处理连续音频、字幕和打断。Sophon 的客户端 Delegation 只触发已注册并授权的 `search_knowledge_base`，查询以关联到当前音频的用户 ASR 原文为准。CueKB 2.1 query 和 validate 通过后，用一次 Commentary 交付证据。Sophon 没有最终 ASR 事件和响应 ID，输入关联和输出分段依赖时间线；关联不清时要求重述，候选口述保留 `provider_only` 标记。
 
 ## 3. 知识执行
 

@@ -171,6 +171,7 @@ export interface Capabilities {
   cuekb_mode: string;
   weather_mode: string;
   provider: string;
+  required_voice_languages?: string[];
   voice_session_max_seconds: number;
   qa_execution_mode?: string;
   native_tools?: string[];

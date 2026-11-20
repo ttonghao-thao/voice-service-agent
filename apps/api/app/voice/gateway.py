@@ -34,6 +34,7 @@ from app.voice.provider import (
     ProviderCapabilities,
     session_update,
 )
+from app.voice.sophon_live import SophonLiveAdapter
 
 logger = logging.getLogger(__name__)
 TRANSCRIPT_FINAL_TIMEOUT_SECONDS = 5
@@ -71,9 +72,9 @@ class VoiceGateway:
     def __init__(self, settings, coordinator, store):
         self.settings, self.coordinator, self.store = settings, coordinator, store
         self.sessions = {}
-        self.provider_factory = (
-            MockVoiceAdapter if settings.voice_provider == "mock" else NvidiaVoiceChatAdapter
-        )
+        self.provider_factory = {
+            "mock": MockVoiceAdapter, "sophon_live": SophonLiveAdapter,
+        }.get(settings.voice_provider, NvidiaVoiceChatAdapter)
 
     def expire(self):
         for sid, s in list(self.sessions.items()):
@@ -98,6 +99,8 @@ class VoiceGateway:
                 or not s.voicechat_api_key.get_secret_value()
             ):
                 raise DomainError("VOICE_UNAVAILABLE", "VoiceChat is not configured", 503)
+            if s.voice_provider == "sophon_live" and conversation.answer_policy != "general_qa":
+                raise DomainError("VOICE_UNAVAILABLE", "Start a new conversation with general voice answers enabled.", 409)
             if len(self.sessions) >= s.max_voice_sessions:
                 raise DomainError("VOICE_CAPACITY_EXCEEDED", "Voice capacity is full. Use text or try again later.", 429, True)
             registered_tools, tool_definitions, tool_catalog, catalog_revision = (), None, None, 0
@@ -215,6 +218,10 @@ class VoiceGateway:
         session.used, session.task = True, asyncio.current_task()
         await ws.accept()
         provider = self.provider_factory(self.settings)
+        if self.settings.voice_provider == "sophon_live":
+            from app.voice.sophon_relay import sophon_relay
+            await sophon_relay(self, ws, session, provider)
+            return
         if session.qa_mode == "dual_tools":
             provider.configuration = session_update(session.summary, session.tool_definitions, session.answer_policy)
         if (session.qa_mode == "dual_tools" and session.answer_policy == "general_qa"

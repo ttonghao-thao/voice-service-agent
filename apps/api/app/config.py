@@ -55,9 +55,14 @@ class Settings(BaseSettings):
     weather_provider: Literal["http_contract"] = "http_contract"
     weather_base_url: str = ""
     weather_api_key: SecretStr = SecretStr("")
-    voice_provider: Literal["disabled", "mock", "nvidia"] = "mock"
+    voice_provider: Literal["disabled", "mock", "nvidia", "sophon_live"] = "mock"
     voicechat_ws_url: str = ""
     voicechat_api_key: SecretStr = SecretStr("")
+    sophon_live_ws_url: str = ""
+    sophon_live_api_key: SecretStr = SecretStr("")
+    sophon_live_locale: Literal["zh-CN", "en-US"] = "zh-CN"
+    sophon_live_tool_timeout_seconds: float = Field(default=12, ge=1, le=30)
+    sophon_live_max_delegations_per_input: Literal[1] = 1
     # Pending optimization: retain the 105s connection limit and relay's fixed
     # 30s active-answer grace. Coverage/streaming changes must not raise these.
     voice_session_max_seconds: int = 105
@@ -108,6 +113,13 @@ class Settings(BaseSettings):
             raise ValueError("External tracing requires a reviewed redaction exporter; currently disabled")
         if self.qa_execution_mode == "legacy" and self.qa_answer_policy == "general_qa":
             raise ValueError("General answers require dual_tools mode")
+        if self.voice_provider == "sophon_live":
+            url = urlparse(self.sophon_live_ws_url)
+            if (url.scheme not in ("ws", "wss") or not url.hostname
+                or url.path != "/v1/live/sessions" or url.username or url.password or url.query or url.fragment):
+                raise ValueError("SOPHON_LIVE_WS_URL must be a WS or WSS Live sessions endpoint without credentials")
+            if self.sophon_live_api_key.get_secret_value() and url.scheme != "wss":
+                raise ValueError("SOPHON_LIVE_API_KEY requires WSS")
         return self
 
     @property
@@ -153,8 +165,10 @@ class Settings(BaseSettings):
             or origin.fragment
         ):
             raise ValueError("PUBLIC_ORIGIN must be an HTTPS origin without a path")
-        if self.voice_provider != "nvidia":
-            raise ValueError("Deployment requires NVIDIA VoiceChat for end-to-end validation")
+        if self.voice_provider not in ("nvidia", "sophon_live"):
+            raise ValueError("Deployment requires NVIDIA VoiceChat or Sophon Live")
+        if self.voice_provider == "sophon_live" and self.agent_provider != "disabled":
+            raise ValueError("Sophon Live requires AGENT_PROVIDER=disabled")
         http_integrations = []
         if self.agent_provider == "compatible":
             http_integrations.append(self.agent_base_url)
@@ -171,7 +185,7 @@ class Settings(BaseSettings):
         if "weather" in self.enabled_tool_names and urlparse(self.weather_base_url).scheme != "https":
             raise ValueError("Weather integration requires HTTPS")
         voicechat_url = urlparse(self.voicechat_ws_url)
-        if self.voicechat_ws_url and (
+        if self.voice_provider == "nvidia" and self.voicechat_ws_url and (
             voicechat_url.scheme not in ("ws", "wss") or not voicechat_url.hostname
         ):
             raise ValueError("VOICECHAT_WS_URL requires a WS or WSS URL with a host")

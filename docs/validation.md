@@ -273,3 +273,31 @@ PYTHON
 定向验证包含缩写撤回/属性否定、属性跨度/产品名 and、极性矛盾/漏项/预算省略，以及尚未 final 的 related 输入后续仍可查询。生产真实 GPU、听音、首问路由和复杂语义不由这些测试替代。
 
 本轮上述定向回归实际结果：70 passed，1 条既有 Starlette 弃用警告；Ruff 与 git diff --check 通过。未部署，未执行真实 GPU/听音。
+
+## Sophon Live 验证
+
+Sophon 部署参数见 [部署与运行](deployment.md#部署方式边界)，协议字段以 [Sophon gateway](https://github.com/adventists-ai/sophon-realtime/blob/main/live/sophon_live/gateway.py) 为参考。独立上游的 `session.started` 只验证会话创建。光有 Commentary ACK 或音频帧不能证明模型按证据回答或浏览器听到语音。
+
+先用浏览器麦克风在同一次通话内测试以下场景，记录时间和关联 ID。
+
+1. 问“你好，你是谁？”，听到自然回复并看到字幕。确认没有 Delegation。
+2. 自然停顿后问“帮我查询一下 FTTR 主网关经常离线是什么原因”。逐项核对中文 ASR 原文、原始 Delegation、CueKB query/validate、Commentary、口述与页面来源。
+3. 口述中插话换题，核对旧播放清理和下一轮接话。另在 CueKB 查询期间插话，旧查询继续结清，证据不得注入新问题。复测同题重问使用新输入 ID，及天气请求等不支持的委托。
+4. 切回 NVIDIA，用本文英文样本复测其原生工具、播报和打断。
+
+录音用现有的 WAV 入口。清单每项包含 `case_id`、`wav` 和 `expected_tool`。WAV 为 24 kHz 单声道 PCM16，闲聊工具标为 `null`，知识问答标为 `"search_knowledge_base"`。实际录音和报告保存到仓库以外。
+
+```bash
+PYTHONPATH=apps/api:. python scripts/validate_native_cuekb.py \
+  --base-url https://portal.example.com:8087 --provider sophon_live \
+  --cases /tmp/sophon-cases.json --case-id chat_zh --followup-case-id kb_zh \
+  --output /tmp/sophon-report.json
+```
+
+报告按原始 Delegation 计算 TP/FP/TN/FN。后端拒绝的误委托仍属于 FP。观察不全的样本单独标记。阶段时延记录委托位置、CueKB 查询与校验、结果到首个候选答案音频，输出样本数、P50 与 P95。浏览器实际播出、自然接话及语义准确性需按麦克风流程确认。
+
+Sophon 语音链对 `CUEKB:` 前缀做显式业务准入，由模型按提示词输出该前缀。模型原始 task 仅用于路由审计，查询问题由同一输入的稳定 ASR 提供。失去时间戳或归属歧义时要求重述；每输入最多一次查询。Sophon 没有最终 ASR 或回答 ID，relay 的稳定窗、静音分段和后置字幕归属仍需真实样本验证。结果已发出后发生插话且尚无可定位的输出段时，忽略下一段无法归属的音频。
+
+2026-11-21 本机通过 6 个 Sophon WebSocket/CueKB 协议夹具、41 个 Web 单元测试和 5 个浏览器语音夹具测试；Web 构建、API fixture 启动、契约导出和静态检查通过。全量 Python 回归仍有原生 NVIDIA 和部署文档等历史失败。
+
+外部 WSS 地址的 TLS 握手在本机超时或被重置，未取得新 `session.started`；用户提供了既有 16 kHz 握手记录。真实 24 kHz 会话、中文 ASR、真实 CueKB 证据质量、打断和浏览器听音待验。

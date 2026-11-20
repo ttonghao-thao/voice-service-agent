@@ -113,8 +113,10 @@ class EvidenceGate:
         return "ready"
 
     @staticmethod
-    def check_spoken(text, evidence):
-        if not text.strip() or len(text) > 8000 or not printable_ascii(text):
+    def check_spoken(text, evidence, *, allow_unicode=False):
+        valid = (all(char.isprintable() or char in "\n\r" for char in text)
+                 if allow_unicode else printable_ascii(text))
+        if not text.strip() or len(text) > 8000 or not valid:
             return "VOICE_ANSWER_INVALID"
         references = set(re.findall(r"\[(C\d+)\]", text))
         if references - {item.citation_id for item in evidence}:
@@ -209,15 +211,23 @@ class EvidenceGate:
         return None
 
     @staticmethod
-    def check_disposition(text, decision):
+    def check_disposition(text, decision, *, chinese=False):
         """No-evidence outcomes authorize a refusal or clarification, not facts."""
-        code = EvidenceGate.check_spoken(text, [])
+        code = EvidenceGate.check_spoken(text, [], allow_unicode=chinese)
         if code:
             return code
         clauses = [clause.strip() for clause in re.split(r"(?<=[.!?])\s+|;|\bbut\b|\bhowever\b", text, flags=re.I)
                    if clause.strip()]
         refusal = re.compile(r"\b(?:cannot|can't|could not|unable to|do not know|don't know|no verified|no reliable|insufficient|not enough)\b", re.I)
         clarify = re.compile(r"^(?:(?:which|what)\b.*\?|(?:can|could) you (?:specify|clarify|provide|select)\b|please (?:specify|clarify|provide|select)\b)", re.I)
+        if chinese:
+            # Keep the persisted disposition conservative for Chinese speech.
+            clauses = [part.strip() for part in re.split(r"[。！？；!?;]|但是|不过", text) if part.strip()]
+            if decision in {"insufficient", "clarify"} and clauses and all(
+                re.match(r"^(?:抱歉[，, ]*)?(?:我?无法|我?不能|目前没有|没有查到|证据不足|请(?:提供|说明|确认|补充|重述))", part)
+                for part in clauses
+            ):
+                return None
         if decision not in {"insufficient", "clarify"} or not clauses or any(
             not refusal.search(clause) and not clarify.search(clause) for clause in clauses
         ):
@@ -225,7 +235,7 @@ class EvidenceGate:
         return None
 
     @staticmethod
-    def check_presentation(text, contract, evidence=(), approved_text=None):
+    def check_presentation(text, contract, evidence=(), approved_text=None, *, allow_unicode=False):
         if contract.mode == "verbatim":
             # Punctuation/case may change; numbers and their attached units may not.
             def normalize(value):
@@ -233,7 +243,7 @@ class EvidenceGate:
             if not text.strip() or not printable_ascii(text) or normalize(text) != normalize(approved_text or ""):
                 return "VOICE_SPEECH_MISMATCH"
             return None
-        code = EvidenceGate.check_spoken(text, evidence)
+        code = EvidenceGate.check_spoken(text, evidence, allow_unicode=allow_unicode)
         if code:
             return code
         if any(not contains_condition(text, value) for value in contract.required_conditions.values()):
