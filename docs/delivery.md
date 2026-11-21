@@ -13,3 +13,11 @@
 当前阻塞和优化项只在[任务板](TASK_BOARD.md)维护。本次静态审查和只读函数验证发现的新缺口尚未修复，不以历史测试数量或旧版 answered 记录放行。当前配套版本的 GPU、真实 CueKB 语料、首问选工具和麦克风交互仍待现场验证，唯一流程见[验证手册](validation.md)。
 
 后台持续播报暂缓；现有连接寿命和轮换不是无限连续通话承诺。legacy、外置 SDK/文本模型、天气等兼容实现仍存在，但不属于当前知识语音路径；删除旧说明不代表删除兼容代码。
+
+## LiveKit 与 Sophon 升级目标
+
+升级沿用现有门户。浏览器用 WebRTC 加入 LiveKit Room，后端签发限定 Room、身份和时效的 Token，LiveKit AgentSession 通过 `/v1/live/sessions` 与独立部署的 Sophon 进行全双工对话。Sophon 自主决定何时委派。普通闲聊由 Sophon 直接回答。
+
+委派处理只对存在可靠用户输入归属的任务运行一次 Router，选择 WEATHER、CUEKB、WEB_SEARCH 或请求澄清。天气复用现有 WeatherAdapter，企业检索复用现有 CueKB 证据 query/validate 与服务端授权，公网搜索由单一供应商适配。模型任务文本仅用于辅助路由。发送前重新核对输入归属，按原委派 ID 回传 Commentary。单工具、短时有界的委派状态保存在会话内存，已存在的会话身份和知识权限继续由后端维护。
+
+依次验证官方 GPT-Live 兼容性、迁移门户语音、接入三个工具、回归多轮与打断。兼容性门槛包含真实 Sophon 的语音输入、结果口述与打断恢复。阶段状态见[任务板](TASK_BOARD.md)，探针、结果及放行条件见[验收](validation.md#livekit-sophon-phase-0)。

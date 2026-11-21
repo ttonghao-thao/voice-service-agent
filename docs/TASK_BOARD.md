@@ -1,5 +1,12 @@
 # 待优化项与验证状态
 
+## LiveKit 与 Sophon 升级
+
+1. Phase 0 · 已核对现有 Provider、门户音频、WeatherAdapter、Registry 和 CueKB 2.1。官方 SDK 和 Gateway 的受控结果见 [Phase 0 验收](validation.md#livekit-sophon-phase-0)。真实 Sophon 握手待从可达环境复测。
+2. Phase 1 · 待 Phase 0 通过。将 Room Token、AgentSession 和 LiveKit Web SDK 接入现有入口，验证连续对话、打断与退出。
+3. Phase 2 · 待 Room 语音链路验证通过。实现 Client Delegation Handler 和单层 Tool Router，按权限接入 WEATHER、CUEKB、WEB_SEARCH。
+4. Phase 3 · 覆盖重复及漏委派、实时查询、中断、并发和断开，记录路由准确率与时延后交付 `origin/main`。
+
 2026-11-21 Sophon Live 审计修复（已实现，待真实服务验收）
 
 1. S4：多段可能输入时拒绝延迟委托；无可确认的任务类型时不查询。保留单一明确输入的 CueKB 执行。
