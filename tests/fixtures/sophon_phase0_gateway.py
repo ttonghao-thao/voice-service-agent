@@ -72,6 +72,7 @@ async def serve_fixture(path):
 
     async def handler(ws):
         assert ws.request.path == "/v1/live/sessions"
+        assert "authorization" not in ws.request.headers
         session = gateway.LiveSession(ws, types.SimpleNamespace(engine="", bridge=""), asr, asyncio.Lock())
         try:
             async for raw in ws:

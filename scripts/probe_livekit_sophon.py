@@ -11,16 +11,16 @@ from contextlib import aclosing
 from pathlib import Path
 from urllib.parse import urlsplit
 
+from app.voice.sophon_gpt_live import sophon_gpt_live
 from livekit import api, rtc
-from livekit.agents import Agent, AgentSession, APIConnectOptions, room_io
-from livekit.plugins.openai.realtime import GPTLiveModel
+from livekit.agents import Agent, AgentSession, room_io
 
 RATE = 24000
 FRAME_SAMPLES = RATE // 50
 
 
 class ProbeAgent(Agent):
-    def __init__(self, language, expected_transcript):
+    def __init__(self, language, expected_transcript, expected_reply):
         instructions = {
             "zh": "你是语音接口测试助手。用户询问校验码时发起客户端委派，收到结果后口述校验码。其他问题简短回答。",
             "en": "You are testing a voice interface. Delegate requests for a verification code to the client, "
@@ -32,13 +32,20 @@ class ProbeAgent(Agent):
             "en": "The verification code for this voice test is six four two nine. Say the code aloud.",
         }[language]
         self.expected_transcript = expected_transcript
+        self.expected_reply = expected_reply
+        self.output_tail = ""
         self.started_at = time.monotonic()
         self.ready = asyncio.Event()
         self.receipt = asyncio.Event()
         self.wire_delegations = {}
         self.delegations = {}
         self.commentary_events = {}
-        self.report = {"delegations": [], "errors": [], "audio_rate": None, "close_confirmed": False}
+        self.report = {
+            "delegations": [], "errors": [], "audio_rate": None, "close_confirmed": False,
+            "input_transcript_events": 0, "output_transcript_events": 0,
+        }
+        if expected_reply:
+            self.report["output_transcript_matches"] = False
 
     def elapsed_ms(self):
         return round((time.monotonic() - self.started_at) * 1000)
@@ -56,9 +63,21 @@ class ProbeAgent(Agent):
                 self.report["client_delegation"] = session.get("delegation", {}).get("type") == "client"
                 self.report["store_disabled"] = session.get("store") is False
                 self.ready.set()
+            elif kind == "session.input_transcript.delta":
+                self.report["input_transcript_events"] += 1
+            elif kind == "session.output_transcript.delta":
+                self.report["output_transcript_events"] += 1
+                if self.expected_reply and not self.report["output_transcript_matches"]:
+                    text = self.output_tail + event["delta"]
+                    self.report["output_transcript_matches"] = self.expected_reply in text
+                    self.output_tail = text[-len(self.expected_reply):]
             elif kind == "session.delegation.created":
                 delegation = event["delegation"]
-                self.wire_delegations[delegation["id"]] = bool(delegation.get("task"))
+                task = delegation.get("task")
+                self.wire_delegations[delegation["id"]] = {
+                    "task_on_wire": bool(task),
+                    "task_matches": isinstance(task, str) and self.expected_transcript in task,
+                }
             elif kind == "session.commentary.appended":
                 delivery = self.commentary_events.get(event.get("client_event_id"))
                 if delivery is not None:
@@ -85,7 +104,7 @@ class ProbeAgent(Agent):
                 "received_ms": self.elapsed_ms(),
                 "transcript_chars": len(delegation.pending_transcript),
                 "transcript_matches": self.expected_transcript in delegation.pending_transcript,
-                "task_on_wire": self.wire_delegations.get(delegation.id, False),
+                **self.wire_delegations.get(delegation.id, {}),
                 "task_on_sdk_object": hasattr(delegation, "task"),
             }
             self.delegations[delegation.id] = delivery
@@ -115,15 +134,17 @@ async def probe(args):
     endpoint = os.environ["SOPHON_LIVE_WS_URL"]
     if urlsplit(endpoint).path != "/v1/live/sessions":
         raise ValueError("SOPHON_LIVE_WS_URL must end in /v1/live/sessions.")
+    async with sophon_gpt_live(endpoint, os.environ.get("SOPHON_LIVE_API_KEY")) as model:
+        return await room_probe(args, model, pcm, barge)
+
+
+async def room_probe(args, model, pcm, barge):
     room_name = "voice-probe-" + uuid.uuid4().hex
     agent_room, caller = rtc.Room(), rtc.Room()
     source = rtc.AudioSource(RATE, 1, queue_size_ms=100)
-    model = GPTLiveModel(base_url=endpoint, api_key=os.environ.get("SOPHON_LIVE_API_KEY") or "unused",
-                         voice="chelsie", delegation="client",
-                         conn_options=APIConnectOptions(max_retry=0, timeout=8))
     # The caller publishes WAV frames directly. There is no acoustic echo path.
     session = AgentSession(llm=model, aec_warmup_duration=None)
-    agent = ProbeAgent(args.language, args.expected_transcript)
+    agent = ProbeAgent(args.language, args.expected_transcript, args.expected_reply)
     report = agent.report
     output = bytearray()
     post_receipt_output = asyncio.Event()
@@ -171,7 +192,6 @@ async def probe(args):
         report["probe_error_type"] = type(exc).__name__
     finally:
         await session.aclose()
-        await model.aclose()
         await agent_room.disconnect()
         await caller.disconnect()
         await source.aclose()
@@ -191,6 +211,7 @@ async def probe(args):
         report["audio_rate"] == RATE and report.get("client_delegation") and report.get("store_disabled")
         and post_receipt_output.is_set() and report["close_confirmed"] and not report["errors"]
         and "probe_error_type" not in report and "audio_reader_error_type" not in report
+        and report.get("output_transcript_matches", True)
         and any(item["transcript_matches"] and "gateway_receipt_ms" in item for item in report["delegations"])
     )
 
@@ -203,4 +224,8 @@ if __name__ == "__main__":
     parser.add_argument("--language", choices=("zh", "en"), default="zh")
     parser.add_argument("--expected-transcript", required=True, help="Expected fragment of the input ASR.")
     parser.add_argument("--observe-seconds", type=int, choices=range(1, 16), default=8)
-    raise SystemExit(0 if asyncio.run(probe(parser.parse_args())) else 1)
+    parser.add_argument("--expected-reply", help="Expected fragment of the provider output transcript.")
+    args = parser.parse_args()
+    if not args.expected_transcript.strip():
+        parser.error("--expected-transcript must be nonempty.")
+    raise SystemExit(0 if asyncio.run(probe(args)) else 1)

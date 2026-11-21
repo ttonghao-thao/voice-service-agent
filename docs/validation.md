@@ -304,7 +304,7 @@ Sophon 语音链只有在收到明确 `CUEKB:` 任务时才考虑查询。空任
 
 同日审计修复复测：192 项定向 Python 测试通过，包括 11 项 Sophon 集成场景。42 项 Web 单测、5 项浏览器语音夹具、Web 构建、契约导出和静态检查通过。在官方 Gateway 源码接替代推理引擎的环境里，确认延迟委托遇到两段可能输入时被拒绝。夹具确认进度话术和后续语音均保留为候选，两段播放完成后业务状态仍为语音未核实。
 
-外部 WSS 地址的 TLS 握手在本机超时或被重置，未取得新 `session.started`；用户提供了既有 16 kHz 握手记录。真实 24 kHz 会话、中文 ASR、真实 CueKB 证据质量、打断和浏览器听音待验。
+早期 WSS 探测曾出现 TLS 超时。当前的真实 24 kHz 握手、回传与打断结果记录在下节。既有门户仍需验证中文输入 ASR、真实 CueKB 和浏览器听音。
 
 ## LiveKit Sophon Phase 0
 
@@ -318,6 +318,12 @@ Sophon 语音链只有在收到明确 `CUEKB:` 任务时才考虑查询。空任
 - 直接把候选 SDK 版本加入现有依赖的 dry run 失败。项目固定 `opentelemetry-api==1.44.0` 和 `openai==3.8.0`，候选 SDK 分别需要 `opentelemetry-api>=1.45,<1.46` 和 `openai>=3.28,<4`。探针使用隔离虚拟环境。生产依赖合并及既有 OpenAI Agents API 回归归 Phase 1。
 - 现有 Sophon 集成和 CueKB 2.1 契约复跑共 51 项通过。首次运行的 `barge_after_ack` 曾在读取历史时得到尚未写入的 answer。重构前全量 Python 基线为 694 项通过、98 项失败。Phase 0 独立于生产入口和依赖清单。
 
+### 真实 Sophon 结果
+
+- 2026-11-21 复测，同一地址在无 Authorization 时完成 HTTPS Upgrade 和 24 kHz `session.started`，送入占位 Bearer 会得到 HTTP 401。`sophon_gpt_live` 在未配置密钥时，通过专用 aiohttp session 省略 SDK 的占位请求头。有密钥时由官方 SDK 发送。TLS 校验保持开启。 [aiohttp 客户端中间件](https://docs.aiohttp.org/en/stable/client_advanced.html#client-middleware)
+- 真实 Room 的中文 WAV 触发了委派。原始 `task` 含“校验码”，匹配收到 Commentary 回执。官方音频轨接收到回应，离线转写辨识到校验码 6429。打断用例中，收到的房间音频由等待话术转到下一题的身份回答，连接正常关闭。校验码是探针返回的数据，真实工具和浏览器扬声器尚待验收。
+- 无打断和打断两类通话均未收到 `session.input_transcript.delta`，SDK 的 `pending_transcript` 为空。探针用原始事件计数区分未发送和 SDK 解析问题。现有 WebSocket Adapter 直连复测也收到音频、输出字幕、委派和回执，输入字幕为零。现有 CueKB 路径需要转写绑定用户原问题与当前输入。使用固定版 Gateway 的部署可核对 `--asr`／`SOPHON_LIVE_ASR` 的实际值及 ASR 初始化日志。验收需要补齐用户输入转写，再复核多段输入归属。 [Gateway ASR 启动逻辑](https://github.com/adventists-ai/sophon-realtime/blob/ace091b1841adb2b0588cd609ac06e3dfc261643/live/sophon_live/gateway.py#L607-L616)
+
 ### 复测
 
 在仓库根目录创建独立 Python 3.12 环境。先在单独终端运行官方开发服务器 `livekit-server --dev --bind 127.0.0.1`。
@@ -329,6 +335,7 @@ probe_python="$probe_dir/venv/bin/python"
 "$probe_python" -m pip install livekit-agents==1.8.10 livekit-plugins-openai==1.8.10 \
   livekit-local-inference==0.2.7 websockets==15.0.1
 export LIVEKIT_URL=ws://127.0.0.1:7880 LIVEKIT_API_KEY=devkey LIVEKIT_API_SECRET=secret
+export PYTHONPATH=apps/api
 ```
 
 受控复测使用以下 Gateway 与纯音样本。在一个终端运行最后一行启动夹具。
@@ -347,7 +354,7 @@ ffmpeg -hide_banner -loglevel error -f lavfi -i 'sine=frequency=392:duration=1.1
 在保留 `probe_dir`、`probe_python` 及 LiveKit 环境变量的终端运行探针。检查 JSON 中的 24 kHz、委派 ID、`transcript_matches=true`、`task_on_wire=true`、匹配回执及 `close_confirmed=true`。检查夹具的 `playback dropped` 日志和 WAV 中旧音频后的下一段音频。
 
 ```bash
-SOPHON_LIVE_WS_URL=ws://127.0.0.1:18782/v1/live/sessions \
+SOPHON_LIVE_WS_URL=ws://127.0.0.1:18782/v1/live/sessions SOPHON_LIVE_API_KEY= \
   "$probe_python" scripts/probe_livekit_sophon.py --language en \
   --wav "$probe_dir/input.wav" --barge-wav "$probe_dir/barge.wav" \
   --expected-transcript "verification code" --output "$probe_dir/room-fixture.wav"
@@ -359,10 +366,11 @@ SOPHON_LIVE_WS_URL=ws://127.0.0.1:18782/v1/live/sessions \
 export SOPHON_LIVE_WS_URL=wss://sx.ppy8.xyz:14080/v1/live/sessions
 "$probe_python" scripts/probe_livekit_sophon.py \
   --wav "$probe_dir/request.wav" \
-  --expected-transcript "校验码" --output "$probe_dir/room-live.wav"
+  --expected-transcript "校验码" --expected-reply "六四二九" \
+  --output "$probe_dir/room-live.wav"
 "$probe_python" scripts/probe_livekit_sophon.py \
   --wav "$probe_dir/request.wav" --barge-wav "$probe_dir/interrupt.wav" \
   --expected-transcript "校验码" --output "$probe_dir/room-live-barge.wav"
 ```
 
-本机使用现有 Adapter 和官方 SDK 对真实 WSS 的尝试均未取得 `session.started`。TCP 已连接，TLS 握手超时。真实放行须收到委派、核对中文转写，并听到回传的校验码和打断后的新回答。使用耳麦或设备扬声器的实际体验需另验。Gateway 回执和随后出现的音频均作为传输证据。只有确认实际口述和同连接打断恢复后才迁移门户和接入三个工具。
+真实放行核对原始委派、中文输入转写、回传校验码和同连接打断后的新回答。探针缺少输入转写时返回非零状态，并保留其余实测字段。耳麦或设备扬声器体验在门户迁移后单独验收。
