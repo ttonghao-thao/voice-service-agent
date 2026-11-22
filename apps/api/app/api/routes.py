@@ -147,6 +147,7 @@ def capabilities(s):
     )
     return {
         "provider": s.voice_provider,
+        "voice_transport": "livekit" if s.livekit_url else "websocket",
         "is_mock": s.mock,
         "agent_provider": s.agent_provider,
         "cuekb_mode": s.cuekb_mode,
@@ -181,7 +182,7 @@ async def get_capabilities(request: Request):
     user = Principal(
         user_id="capability-check",
         roles=frozenset({"customer"}),
-        scopes=frozenset({"knowledge:read"}),
+        scopes=settings.customer_scopes,
         knowledge_base_ids=auth.knowledge_base_ids(),
     )
     snapshot = await request.app.state.coordinator.runtime.catalog.snapshot()
@@ -281,6 +282,7 @@ async def messages(
                     "escalation_reason": t.escalation_reason,
                     "execution_phase": t.execution_phase,
                     "user_text": t.user_text,
+                    **({"request_origin": "delegation"} if (t.task_context or {}).get("input_source", {}).get("text_origin") == "delegation" else {}),
                     "channel": t.channel,
                     # Once an answer exists, its normalized terminal state is the
                     # customer-visible state. This also repairs pre-D18 rows.
@@ -581,6 +583,8 @@ async def test_tool(name: str, request: Request, user: User):
         raise DomainError("TOOL_NOT_DEPLOYED", "This tool is not enabled in this deployment", 409)
     if not await registry.store.enabled(name):
         raise DomainError("TOOL_DISABLED", "This tool was disabled by an administrator", 409)
+    if name == "web_search":
+        return {"status": "configured", "message": "Use a public search in a LiveKit call to verify this service"}
     mode = getattr(s, spec.mode_ref)
     if mode == "mock":
         return {"status": "mock", "message": "Demo adapter; this does not verify a real service connection"}

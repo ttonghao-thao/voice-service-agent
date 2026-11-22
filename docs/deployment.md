@@ -22,6 +22,26 @@ QA_ANSWER_POLICY=general_qa
 
 上游启用 Bearer 认证时，在部署 API 的环境填入密钥。公网使用 WSS，隔离内网无密钥时可用 WS。上游须确认 24 kHz PCM、客户端委托和 `store=false`。更新配置后重建 API 容器并新建通话。切回 NVIDIA 时设置 `VOICE_PROVIDER=nvidia`、`VOICECHAT_WS_URL` 和 `VOICECHAT_API_KEY`。复测步骤见 [Sophon Live 验证](validation.md#sophon-live-验证)。
 
+### 启用 LiveKit 音频和三类工具
+
+独立部署 LiveKit Server，按官方单机文档开放 TLS 和 WebRTC 端口。浏览器和 API 容器均需访问同一 WSS origin。本机夹具可用 ws://127.0.0.1:7880。API 内置每 Room 一个 AgentSession。 [LiveKit 自托管文档](https://docs.livekit.io/transport/self-hosting/)
+
+配置以下值后重新构建 API、Web 镜像。密钥只交给 API。Web 容器从 LIVEKIT_URL 生成 CSP，浏览器获得短时 Room Token。天气沿用 WeatherAdapter 的两个 HTTPS POST 接口 /v1/places/resolve 和 /v1/weather。公开搜索使用 Brave。 [Brave Search API](https://api-dashboard.search.brave.com/api-reference/web/search/get)
+
+```dotenv
+VOICE_PROVIDER=sophon_live
+LIVEKIT_URL=wss://livekit.example.com
+LIVEKIT_API_KEY=<server-key>
+LIVEKIT_API_SECRET=<server-secret>
+ENABLED_TOOLS=search_knowledge,weather,web_search
+WEATHER_MODE=real
+WEATHER_BASE_URL=https://weather.example.com
+WEATHER_API_KEY=<weather-key>
+WEB_SEARCH_API_KEY=<brave-search-key>
+```
+
+沿用 AGENT_PROVIDER=disabled、QA_EXECUTION_MODE=dual_tools、QA_ANSWER_POLICY=general_qa 及 Sophon、CueKB 配置。未配置的天气或公开搜索从 ENABLED_TOOLS 省略。按现有 scripts/deploy-cloud.sh 部署。切回 Sophon WebSocket 时清空 LiveKit 三项并恢复 ENABLED_TOOLS=search_knowledge。 [LiveKit 验收](validation.md#livekit-门户与工具验收)
+
 ## 问答模式与预算（Q07）
 
 一期配置：

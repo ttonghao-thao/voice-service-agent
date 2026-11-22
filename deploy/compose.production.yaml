@@ -53,7 +53,7 @@ services:
       AUTO_CREATE_SCHEMA: "false"
       AUTH_MODE: validation
       CUEKB_MODE: real
-      ENABLED_TOOLS: search_knowledge
+      ENABLED_TOOLS: ${ENABLED_TOOLS:-search_knowledge}
       VOICE_PROVIDER: ${VOICE_PROVIDER:-nvidia}
       DATABASE_URL: postgresql+asyncpg://voice_service:${POSTGRES_PASSWORD}@postgres/voice_service
       REDIS_URL: redis://:${REDIS_PASSWORD}@redis:6379/0
@@ -97,6 +97,9 @@ services:
   web:
     image: voice-service-agent-web:${IMAGE_TAG:?Set the prebuilt IMAGE_TAG in .env}
     pull_policy: never
+    environment:
+      LIVEKIT_URL: ${LIVEKIT_URL:-}
+      NGINX_ENVSUBST_FILTER: '^LIVEKIT_URL$'
     ports:
       - "0.0.0.0:8087:8087"
     volumes:
@@ -111,6 +114,7 @@ services:
       retries: 6
     read_only: true
     tmpfs:
+      - /etc/nginx/conf.d:size=1m,mode=0755
       - /var/cache/nginx:size=32m
       - /var/run:size=1m
       - /tmp:size=16m

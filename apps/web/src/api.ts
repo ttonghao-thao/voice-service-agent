@@ -115,6 +115,7 @@ export interface Turn {
   input_item_id?: string | null;
   created_at?: string;
   user_text: string;
+  request_origin?: "delegation";
   channel: string;
   status: string;
   answer: Answer | null;
@@ -171,6 +172,7 @@ export interface Capabilities {
   cuekb_mode: string;
   weather_mode: string;
   provider: string;
+  voice_transport?: "livekit" | "websocket";
   required_voice_languages?: string[];
   voice_session_max_seconds: number;
   qa_execution_mode?: string;

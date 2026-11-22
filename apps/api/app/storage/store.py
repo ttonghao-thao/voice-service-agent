@@ -158,6 +158,8 @@ class Store:
         context_arguments=None,
         deadline_at=None,
         revision_of=None,
+        *,
+        delegated_text=False,
     ):
         async with self.transaction() as db:
             c = await self.get(db, cid, principal, lock=True)
@@ -212,11 +214,13 @@ class Store:
             )
             source = {"input_item_id": input_item_id or "text:" + t.id, "epoch": c.epoch,
                       "request_revision": c.request_revision, "channel": channel}
+            if delegated_text:
+                source["text_origin"] = "delegation"
             state = observe(c.context_state, request, source)
             entry = next(x for x in state["inputs"] if
                          x["source"]["epoch"] == c.epoch and x["source"]["input_item_id"] == source["input_item_id"])
             source = entry["source"]  # Preserve the revision at which final ASR was actually received.
-            state, errors = bind_arguments(state, context_arguments or {}, request, source)
+            state, errors = (state, []) if delegated_text else bind_arguments(state, context_arguments or {}, request, source)
             t.task_context = snapshot(state, request, source, turn_id=t.id, revision=t.request_revision,
                 epoch=t.epoch, kb_ids=principal.knowledge_base_ids, deadline_at=deadline_at,
                 parent_task_id=parent_task_id)

@@ -58,6 +58,10 @@ class Settings(BaseSettings):
     voice_provider: Literal["disabled", "mock", "nvidia", "sophon_live"] = "mock"
     voicechat_ws_url: str = ""
     voicechat_api_key: SecretStr = SecretStr("")
+    livekit_url: str = ""
+    livekit_api_key: SecretStr = SecretStr("")
+    livekit_api_secret: SecretStr = SecretStr("")
+    web_search_api_key: SecretStr = SecretStr("")
     sophon_live_ws_url: str = ""
     sophon_live_api_key: SecretStr = SecretStr("")
     sophon_live_locale: Literal["zh-CN", "en-US"] = "zh-CN"
@@ -113,6 +117,18 @@ class Settings(BaseSettings):
             raise ValueError("External tracing requires a reviewed redaction exporter; currently disabled")
         if self.qa_execution_mode == "legacy" and self.qa_answer_policy == "general_qa":
             raise ValueError("General answers require dual_tools mode")
+        if self.livekit_url or self.livekit_api_key.get_secret_value() or self.livekit_api_secret.get_secret_value():
+            room_url = urlparse(self.livekit_url)
+            if (self.voice_provider != "sophon_live" or self.qa_execution_mode != "dual_tools"
+                or self.answer_policy != "general_qa" or not self.livekit_api_key.get_secret_value()
+                or not self.livekit_api_secret.get_secret_value() or room_url.scheme not in {"ws", "wss"}
+                or not room_url.hostname or room_url.username or room_url.password or room_url.query
+                or room_url.fragment or room_url.path not in ("", "/")):
+                raise ValueError("LiveKit requires an origin URL, key and secret, and Sophon dual_tools/general_qa")
+            if room_url.scheme == "ws" and room_url.hostname not in {"localhost", "127.0.0.1", "::1"}:
+                raise ValueError("Remote LiveKit requires WSS")
+        if "web_search" in self.enabled_tool_names and (not self.livekit_url or not self.web_search_api_key.get_secret_value()):
+            raise ValueError("Web search requires LiveKit and WEB_SEARCH_API_KEY")
         if self.voice_provider == "sophon_live":
             url = urlparse(self.sophon_live_ws_url)
             if (url.scheme not in ("ws", "wss") or not url.hostname
@@ -121,6 +137,13 @@ class Settings(BaseSettings):
             if self.sophon_live_api_key.get_secret_value() and url.scheme != "wss":
                 raise ValueError("SOPHON_LIVE_API_KEY requires WSS")
         return self
+
+    @property
+    def customer_scopes(self):
+        scopes = {"knowledge:read"}
+        if self.livekit_url:
+            scopes.update({"weather:read", "web_search:read"})
+        return frozenset(scopes)
 
     @property
     def answer_policy(self) -> str:
@@ -140,9 +163,10 @@ class Settings(BaseSettings):
             raise ValueError("Deployment requires a configured text model")
         if self.agent_provider == "disabled" and (
             self.qa_execution_mode != "dual_tools" or self.answer_policy != "general_qa"
-            or self.enabled_tool_names != {"search_knowledge"}
+            or ("search_knowledge" not in self.enabled_tool_names if self.livekit_url
+                else self.enabled_tool_names != {"search_knowledge"})
         ):
-            raise ValueError("Native CueKB deployment requires dual_tools, general_qa and only search_knowledge")
+            raise ValueError("Native CueKB deployment requires dual_tools, general_qa and search_knowledge")
         if self.agent_provider == "compatible" and not self.agent_base_url:
             raise ValueError("Compatible text model requires AGENT_BASE_URL")
         if "search_knowledge" in self.enabled_tool_names and (

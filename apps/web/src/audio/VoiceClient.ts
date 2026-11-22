@@ -1,4 +1,5 @@
 import { api, PortalEvent } from "../api";
+import type { LiveKitMedia, RoomCredentials } from "./LiveKitMedia";
 import type { PreparedRecording } from "./recordedAudio";
 
 export type VoiceInput =
@@ -35,6 +36,9 @@ export class VoiceClient {
   private node?: AudioWorkletNode;
   private media?: MediaStream;
   private ws?: WebSocket;
+  private room?: LiveKitMedia;
+  private roomStoppedInput = "";
+  private roomInput = "";
   private cid = "";
   private sid = "";
   private epoch = -1;
@@ -165,6 +169,16 @@ export class VoiceClient {
       name: recording.name, samples: recording.sampleCount, file_id: this.fileId,
       frame_samples: 1920, frame_ms: 80,
     });
+    if (this.room && this.context) {
+      const room = this.room;
+      room.playRecording(this.context, recording, () => {
+        if (!this.ready || this.room !== room) return;
+        this.sentFileSamples = recording.sampleCount;
+        this.fileSourceEnded = this.fileComplete = true;
+        this.emitRecording("waiting_answer");
+      });
+      return;
+    }
     // Transfer a copy so an explicit later send can still use the selected WAV.
     const pcm = recording.pcm.slice();
     this.node!.port.postMessage({ type: "file", epoch: this.epoch,
@@ -252,25 +266,12 @@ export class VoiceClient {
           autoGainControl: microphoneSettings.autoGainControl,
         });
       }
-      await context.audioWorklet.addModule("/audio-worklet.js");
-      if (generation !== this.generation) return;
-      this.node = new AudioWorkletNode(context, "portal-audio", {
-        numberOfInputs: 1,
-        numberOfOutputs: 1,
-        outputChannelCount: [1],
-        processorOptions: { capture: input.kind === "microphone" },
-      });
-      if (input.kind === "microphone") {
-        context.createMediaStreamSource(this.media!).connect(this.node);
-      } else {
-        this.validateRecording(input.recording);
-      }
-      this.node.connect(context.destination);
       const session = await api<{
         voice_session_id: string;
         epoch: number;
         request_revision: number;
         ws_url: string;
+        livekit?: RoomCredentials;
       }>(`/conversations/${cid}/voice-sessions`, {
         method: "POST",
         body: "{}",
@@ -287,13 +288,44 @@ export class VoiceClient {
       this.requestRevision = session.request_revision;
       this.seq = 0;
       this.suppressed = true;
-      this.node.port.postMessage({ type: "reset", epoch: this.epoch });
+      if (session.livekit) {
+        const { LiveKitMedia } = await import("./LiveKitMedia");
+        if (generation !== this.generation) return;
+        const room = new LiveKitMedia();
+        this.room = room;
+        this.roomStoppedInput = this.roomInput = "";
+        await room.connect(session.livekit, context, this.media?.getAudioTracks()[0], () => {
+          if (this.room !== room) return;
+          void this.stop();
+          this.onError("The audio room disconnected. Start a new call.");
+        });
+        if (generation !== this.generation) {
+          await room.close();
+          return;
+        }
+      } else {
+        await context.audioWorklet.addModule("/audio-worklet.js");
+        if (generation !== this.generation) return;
+        this.node = new AudioWorkletNode(context, "portal-audio", {
+          numberOfInputs: 1,
+          numberOfOutputs: 1,
+          outputChannelCount: [1],
+          processorOptions: { capture: input.kind === "microphone" },
+        });
+        if (input.kind === "microphone") {
+          context.createMediaStreamSource(this.media!).connect(this.node);
+        } else {
+          this.validateRecording(input.recording);
+        }
+        this.node.connect(context.destination);
+      }
+      this.node?.port.postMessage({ type: "reset", epoch: this.epoch });
       this.setMuted(this.muted);
       this.setVolume(this.volume);
       const url = new URL(session.ws_url, location.href);
       url.protocol = location.protocol === "https:" ? "wss:" : "ws:";
       this.ws = new WebSocket(url);
-      this.node.port.onmessage = ({ data: d }) => {
+      if (this.node) this.node.port.onmessage = ({ data: d }) => {
         if (generation !== this.generation) return;
         if (d.type === "error") {
           this.clear();
@@ -391,6 +423,7 @@ export class VoiceClient {
           this.lastCapture = 0;
           this.node?.port.postMessage({ type: "ready", epoch: this.epoch });
           this.onState("ready");
+          this.room?.muteOutput(false);
           this.armRecording();
         }
         if (event.type.startsWith("portal.transcript.") && this.input.kind === "file") {
@@ -402,6 +435,14 @@ export class VoiceClient {
           const inputs = [event.payload.input_item_id, ...((event.payload.related_input_item_ids || []) as string[])];
           if (inputs.some((id) => this.fileInputs.has(String(id))))
             this.fileAnswerResponses.add(String(event.payload.response_id));
+        }
+        if (this.room && event.type.startsWith("portal.transcript.")) {
+          this.roomInput = String(event.payload.item_id || this.roomInput);
+        }
+        if (this.room && event.type.startsWith("portal.speech_text.")) {
+          const inputId = String(event.payload.input_item_id || "");
+          if (inputId) this.roomInput = inputId;
+          if (!this.suppressed && inputId && inputId !== this.roomStoppedInput) this.room.muteOutput(false);
         }
         if (event.type === "portal.audio.delta" && !this.suppressed) {
           const response = String(event.payload.response_id);
@@ -502,6 +543,10 @@ export class VoiceClient {
   }
   private resetPlayback() {
     this.activeResponse = "";
+    if (this.room) {
+      this.roomStoppedInput = this.roomInput;
+      this.room.muteOutput(true);
+    }
     this.node?.port.postMessage({
       type: "reset",
       epoch: this.epoch,
@@ -550,6 +595,7 @@ export class VoiceClient {
   }
   setVolume(value: number) {
     this.volume = value;
+    this.room?.setVolume(value);
     this.node?.port.postMessage({ type: "volume", value });
   }
   async stop() {
@@ -566,6 +612,9 @@ export class VoiceClient {
     this.sid = "";
     this.ws?.close();
     this.ws = undefined;
+    const room = this.room;
+    this.room = undefined;
+    await room?.close().catch(() => {});
     this.node?.disconnect();
     this.node = undefined;
     this.media?.getTracks().forEach((t) => t.stop());

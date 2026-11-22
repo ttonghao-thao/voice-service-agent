@@ -17,7 +17,7 @@ class Auth:
 
     def fixture_principal(self):
         s = self.settings
-        scopes = {"knowledge:read", "weather:read"}
+        scopes = set(self.settings.customer_scopes) | {"weather:read"}
         roles = {"operator"}
         if s.dev_admin:
             scopes.add("tools:admin")
@@ -48,7 +48,7 @@ class Auth:
         return Principal(
             user_id=owner_id,
             roles=frozenset({"customer"}),
-            scopes=frozenset({"knowledge:read"}),
+            scopes=s.customer_scopes,
             knowledge_base_ids=self.knowledge_base_ids(),
         )
 

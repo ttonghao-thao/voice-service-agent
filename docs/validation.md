@@ -322,7 +322,7 @@ Sophon 语音链只有在收到明确 `CUEKB:` 任务时才考虑查询。空任
 
 - 2026-11-21 复测，同一地址在无 Authorization 时完成 HTTPS Upgrade 和 24 kHz `session.started`，送入占位 Bearer 会得到 HTTP 401。`sophon_gpt_live` 在未配置密钥时，通过专用 aiohttp session 省略 SDK 的占位请求头。有密钥时由官方 SDK 发送。TLS 校验保持开启。 [aiohttp 客户端中间件](https://docs.aiohttp.org/en/stable/client_advanced.html#client-middleware)
 - 真实 Room 的中文 WAV 触发了委派。原始 `task` 含“校验码”，匹配收到 Commentary 回执。官方音频轨接收到回应，离线转写辨识到校验码 6429。打断用例中，收到的房间音频由等待话术转到下一题的身份回答，连接正常关闭。校验码是探针返回的数据，真实工具和浏览器扬声器尚待验收。
-- 无打断和打断两类通话均未收到 `session.input_transcript.delta`，SDK 的 `pending_transcript` 为空。探针用原始事件计数区分未发送和 SDK 解析问题。现有 WebSocket Adapter 直连复测也收到音频、输出字幕、委派和回执，输入字幕为零。现有 CueKB 路径需要转写绑定用户原问题与当前输入。使用固定版 Gateway 的部署可核对 `--asr`／`SOPHON_LIVE_ASR` 的实际值及 ASR 初始化日志。验收需要补齐用户输入转写，再复核多段输入归属。 [Gateway ASR 启动逻辑](https://github.com/adventists-ai/sophon-realtime/blob/ace091b1841adb2b0588cd609ac06e3dfc261643/live/sophon_live/gateway.py#L607-L616)
+- 无打断和打断两类通话均未收到 `session.input_transcript.delta`，SDK 的 `pending_transcript` 为空。探针用原始事件计数区分未发送和 SDK 解析问题。现有 WebSocket Adapter 直连复测也收到音频、输出字幕、委派和回执，输入字幕为零。既有 Sophon WebSocket 路径需要转写绑定用户原问题与当前输入。使用固定版 Gateway 的部署可核对 `--asr`／`SOPHON_LIVE_ASR` 的实际值及 ASR 初始化日志。LiveKit 路径另验有转写优先和无转写时的委派归属。 [Gateway ASR 启动逻辑](https://github.com/adventists-ai/sophon-realtime/blob/ace091b1841adb2b0588cd609ac06e3dfc261643/live/sophon_live/gateway.py#L607-L616)
 
 ### 复测
 
@@ -374,3 +374,48 @@ export SOPHON_LIVE_WS_URL=wss://sx.ppy8.xyz:14080/v1/live/sessions
 ```
 
 真实放行核对原始委派、中文输入转写、回传校验码和同连接打断后的新回答。探针缺少输入转写时返回非零状态，并保留其余实测字段。耳麦或设备扬声器体验在门户迁移后单独验收。
+
+## LiveKit 门户与工具验收
+
+2026-11-22，从当前执行机验证真实 Sophon 时，系统解析地址和保留域名校验的直连地址均收到 Nginx HTTP 502。WebSocket Upgrade 未进入 session.started，部署后的 ASR 仍待复测。前一天的 24 kHz、回执和打断证据见上节。恢复后运行中文探针检查 input_transcript_events 大于 0、transcript_matches 为 true 及匹配的回执。
+
+本地浏览器测试使用真实 LiveKit Server、固定提交的官方 Gateway 和替身推理引擎。测试开启两个 Room，检查委派来源显示、候选口述、WebRTC 音轨、控制 WebSocket 无 PCM、停止播放及断开。先启动上节的 LiveKit Server，并下载校验 gateway.py。用仓库的开发依赖运行以下夹具：
+
+```bash
+.venv/bin/python tests/fixtures/sophon_phase0_gateway.py "$probe_dir/gateway.py" \
+  --language zh --task 'CUEKB: Find the integration sample.' \
+  --expected-commentary '"search":"finished"' --no-input-transcript
+```
+
+应用与 Vite 分别启动。以下应用配置使用临时 SQLite 与 CueKB mock，只服务本机：
+
+```bash
+ROOM_TEST_DATABASE="$probe_dir/portal.db" PYTHONPATH=apps/api .venv/bin/python - <<'PYTHON'
+import os
+import uvicorn
+from app.config import Settings
+from app.main import create_app
+
+settings = Settings(
+    _env_file=None, auto_create_schema=True,
+    database_url="sqlite+aiosqlite:///" + os.environ["ROOM_TEST_DATABASE"],
+    qa_execution_mode="dual_tools", agent_provider="disabled", voice_provider="sophon_live",
+    sophon_live_ws_url="ws://127.0.0.1:18782/v1/live/sessions",
+    livekit_url="ws://127.0.0.1:7880", livekit_api_key="devkey", livekit_api_secret="secret",
+)
+uvicorn.run(create_app(settings), host="127.0.0.1", port=8000)
+PYTHON
+```
+
+Vite 使用 npm --prefix apps/web run dev。回归从仓库根目录执行：
+
+```bash
+ffmpeg -hide_banner -loglevel error -f lavfi -i 'sine=frequency=523:duration=0.85' \
+  -af 'apad=pad_dur=0.8' -ar 24000 -ac 1 -c:a pcm_s16le "$probe_dir/room.wav"
+LIVEKIT_E2E_WAV="$probe_dir/room.wav" npm --prefix apps/web run test:e2e -- livekit-room.spec.ts
+.venv/bin/python -m pytest -q tests/integration/test_livekit_delegation.py
+```
+
+三类工具回归通过现有 Registry 和 HTTP 夹具。检查 CueKB query/validate、天气地点和日期、公开来源、重复任务、短停顿、失败和未经授权的外发。真实部署使用麦克风分别测试闲聊、授权企业资料、天气、公开搜索及自然追问，在旧回复中插话并核对下一轮。记录原始委派 ID、工具执行与回执。使用实际音频核对口述，回执与候选字幕均保留为传输证据。
+
+本机受控结果包括 10 项 LiveKit 委派集成、17 项原 WebSocket 浏览器场景、1 项双 Room 浏览器场景、42 项 Web 单测及 Web 构建。应用静态检查、依赖一致性与契约导出通过。全量 Python 检查记录为 767 项通过、33 项失败，涉及 NVIDIA 兼容查询链和旧验收脚本。已在升级前基线复现其中 5 项部署及验收脚本失败，其余失败待逐项归因。现场 WSS ASR、真实供应商凭据下的三类工具、音质及生产 Compose 需要部署环境复验。

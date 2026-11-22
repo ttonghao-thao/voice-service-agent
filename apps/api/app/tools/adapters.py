@@ -193,7 +193,10 @@ class CueKBAdapter:
         }
 
     async def _context_bindings(self, ctx, question):
-        recent = ctx.task_context.get("recent_inputs", [])
+        if ctx.task_context.get("input_source", {}).get("text_origin") == "delegation":
+            return []
+        recent = [row for row in ctx.task_context.get("recent_inputs", [])
+                  if row.get("source", {}).get("text_origin") != "delegation"]
         sequence = ctx.task_context.get("input_source", {}).get("sequence")
         if sequence is not None:
             recent = [row for row in recent if row.get("source", {}).get("sequence", sequence) <= sequence]

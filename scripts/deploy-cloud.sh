@@ -45,6 +45,14 @@ case "$(environment_value VOICE_PROVIDER)" in
   *) echo "VOICE_PROVIDER must be nvidia or sophon_live." >&2; exit 1 ;;
 esac
 
+if [ -n "$(environment_value LIVEKIT_URL)" ]; then
+  require_values LIVEKIT_URL LIVEKIT_API_KEY LIVEKIT_API_SECRET
+  if ! grep -Eq '^LIVEKIT_URL=wss://[A-Za-z0-9.-]+(:[0-9]+)?/?$' "$environment_file"; then
+    echo "LIVEKIT_URL must be a WSS origin." >&2
+    exit 1
+  fi
+fi
+
 # The configured voice model chooses direct replies or tool calls.
 # Reject an old strict .env before starting or migrating any container.
 if [ "$(environment_value QA_EXECUTION_MODE)" != "dual_tools" ] || \

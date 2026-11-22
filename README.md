@@ -1,8 +1,8 @@
-# Voice Service Agent · 英文全双工知识客服
+# Voice Service Agent · 全双工知识客服
 
-本系统面向英文实时全双工知识问答与连接内多轮对话。独立 NVIDIA VoiceChat 负责语音和原生工具选择，独立 CueKB 提供检索；本项目处理 Web 门户、会话、权限、有限检索及有来源答案交付。当前部署为 `dual_tools/general_qa`，单工具 `search_knowledge_base`，不需要外置答案模型。具体需求、已实现设计及未解决问题统一见 [交付说明](docs/delivery.md)。
+本系统提供实时全双工语音客服与连接内多轮对话。NVIDIA VoiceChat 负责英文口述，Sophon Live 按配置提供中文或英文口述。Sophon 可使用 LiveKit WebRTC，并通过客户端委派选择授权 CueKB、天气及公开搜索。身份、会话、证据与业务提交由本项目维护。部署范围见 [交付说明](docs/delivery.md)。
 
-产品语音、门户交互和新会话语言均为英文（`en-US`）。中文开发文档、历史测试文本及 Unicode 数据兼容不代表产品支持中文语音；实现约束见 [架构的产品边界](docs/architecture.md#1-产品与部署边界)。
+门户界面沿用英文。Sophon LiveKit 的语言、Room 与工具配置见 [部署文档](docs/deployment.md#启用-livekit-音频和三类工具)。
 
 后续开发统一在 `main` 演进，基线来自 `codex/q1003`。
 

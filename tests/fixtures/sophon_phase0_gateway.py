@@ -7,6 +7,7 @@ import json
 import logging
 import sys
 import types
+from functools import partial
 from pathlib import Path
 
 import numpy as np
@@ -14,13 +15,14 @@ from websockets.asyncio.server import serve
 
 
 class FixtureEngine:
-    def __init__(self, *_):
+    def __init__(self, *_, options):
+        self.options = options
         self.q = asyncio.Queue()
         self.voiced_samples = 0
         self.delegated = self.replied = self.followed_up = False
 
     async def start(self, *, lang, tools, **_):
-        assert lang == "en" and len(tools) == 1
+        assert lang == self.options.language and len(tools) == 1
 
     async def send_audio(self, pcm):
         if np.abs(pcm).max(initial=0) < 0.03:
@@ -33,7 +35,7 @@ class FixtureEngine:
             self.delegated = True
             self.q.put_nowait({
                 "t": "tool_call", "name": "delegate", "call_id": "fixture_call",
-                "arguments": {"task": "Look up the verification code."},
+                "arguments": {"task": self.options.task},
             })
 
     def emit_reply(self, rid, text, hz, seconds):
@@ -44,7 +46,8 @@ class FixtureEngine:
         self.q.put_nowait({"t": "done", "rid": rid})
 
     async def tool_result(self, call_id, text, *, speak):
-        assert call_id == "fixture_call" and "six four two nine" in text and speak
+        assert call_id == "fixture_call" and self.options.expected_commentary in text and speak
+        logging.info("Fixture accepted commentary")
         self.replied = True
         self.voiced_samples = 0
         self.emit_reply("answer", "The verification code is six four two nine.", 660, 3.5)
@@ -54,16 +57,16 @@ class FixtureEngine:
         logging.info("Fixture engine closed")
 
 
-async def serve_fixture(path):
+async def serve_fixture(options):
     # Load the original Gateway. Only its inference and ASR dependencies are replaced.
     package = types.ModuleType("probe_sophon")
     package.__path__ = []
     adapters = types.ModuleType("probe_sophon.adapters")
-    adapters.VllmOmniAdapter = FixtureEngine
+    adapters.VllmOmniAdapter = partial(FixtureEngine, options=options)
     realtime = types.ModuleType("probe_sophon.realtime")
     realtime.RealtimeSession = None
     sys.modules.update({module.__name__: module for module in (package, adapters, realtime)})
-    spec = importlib.util.spec_from_file_location("probe_sophon.gateway", path)
+    spec = importlib.util.spec_from_file_location("probe_sophon.gateway", options.gateway)
     gateway = importlib.util.module_from_spec(spec)
     spec.loader.exec_module(gateway)
 
@@ -73,7 +76,8 @@ async def serve_fixture(path):
     async def handler(ws):
         assert ws.request.path == "/v1/live/sessions"
         assert "authorization" not in ws.request.headers
-        session = gateway.LiveSession(ws, types.SimpleNamespace(engine="", bridge=""), asr, asyncio.Lock())
+        session = gateway.LiveSession(ws, types.SimpleNamespace(engine="", bridge=""),
+                                      None if options.no_input_transcript else asr, asyncio.Lock())
         try:
             async for raw in ws:
                 await session.on_event(json.loads(raw))
@@ -87,5 +91,9 @@ async def serve_fixture(path):
 if __name__ == "__main__":
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("gateway", type=Path, help="Source path of the pinned upstream Sophon Gateway")
+    parser.add_argument("--language", choices=("en", "zh"), default="en")
+    parser.add_argument("--task", default="Look up the verification code.")
+    parser.add_argument("--expected-commentary", default="six four two nine")
+    parser.add_argument("--no-input-transcript", action="store_true")
     logging.basicConfig(level=logging.INFO)
-    asyncio.run(serve_fixture(parser.parse_args().gateway))
+    asyncio.run(serve_fixture(parser.parse_args()))

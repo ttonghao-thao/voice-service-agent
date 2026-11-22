@@ -19,7 +19,7 @@ def test_cloud_compose_is_a_production_only_container_topology():
     assert services["api"]["environment"]["AUTO_CREATE_SCHEMA"] == "false"
     assert services["api"]["environment"]["AUTH_MODE"] == "validation"
     assert services["api"]["environment"]["CUEKB_MODE"] == "real"
-    assert services["api"]["environment"]["ENABLED_TOOLS"] == "search_knowledge"
+    assert services["api"]["environment"]["ENABLED_TOOLS"] == "${ENABLED_TOOLS:-search_knowledge}"
     assert services["api"]["environment"]["VOICE_PROVIDER"] == "${VOICE_PROVIDER:-nvidia}"
     assert services["api"]["env_file"] == "${DEPLOY_ENV_FILE:-../.env}"
     assert services["api"]["image"] == services["migrate"]["image"]
@@ -63,6 +63,7 @@ def test_cloud_environment_template_cannot_enable_development_fallbacks():
             values[key] = value
 
     assert set(values) == {
+        "LIVEKIT_URL", "LIVEKIT_API_KEY", "LIVEKIT_API_SECRET", "WEB_SEARCH_API_KEY",
         "IMAGE_TAG",
         "PUBLIC_ORIGIN",
         "WEB_TLS_CERT_FILE",

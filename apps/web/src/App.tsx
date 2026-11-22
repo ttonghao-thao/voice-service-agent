@@ -1064,7 +1064,7 @@ export default function App() {
                   <article className="turn" key={key}>
                     <div className="user-message">
                       <span className="message-label">
-                        You · {t?.channel === "text" ? "Text" : "Voice request"}
+                        {t?.request_origin === "delegation" ? "Delegated request" : t?.channel === "text" ? "You · Text" : "You · Voice request"}
                       </span>
                       <p aria-live={t ? undefined : "polite"}>
                         {t?.user_text || input?.text || "…"}
@@ -1432,7 +1432,7 @@ export default function App() {
                       {microphone.sampleRate
                         ? ` · ${microphone.sampleRate} Hz capture`
                         : ""}
-                      {" · 24000 Hz sent"}
+                      {caps?.voice_transport === "livekit" ? " · WebRTC audio" : " · 24000 Hz sent"}
                       {microphone.channelCount
                         ? ` · ${microphone.channelCount} channel`
                         : ""}

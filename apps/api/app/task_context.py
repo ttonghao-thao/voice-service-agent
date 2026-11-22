@@ -67,7 +67,7 @@ def observe(state, text, source):
     state["next_sequence"] = entry["source"]["sequence"] + 1
     source = entry["source"]
     state["inputs"] = [*state["inputs"], entry][-12:]
-    if SPECULATIVE.search(text) or '"' in text or "`" in text:
+    if source.get("text_origin") == "delegation" or SPECULATIVE.search(text) or '"' in text or "`" in text:
         return state
     for key, pattern in PATTERNS.items():
         matches = []
@@ -148,6 +148,7 @@ def resolved_request(request, state, previous=None):
 def snapshot(state, request, source, *, turn_id, revision, epoch, kb_ids, deadline_at, parent_task_id):
     previous_input = next((x for x in reversed(state["inputs"])
         if x.get("kind") == "knowledge" and x["source"] != source
+        and x["source"].get("text_origin") != "delegation"
         and x.get("task_status") not in ("canceled", "expired")), None)
     previous = previous_input["text"] if previous_input else None
     if previous_input:
@@ -168,12 +169,15 @@ def snapshot(state, request, source, *, turn_id, revision, epoch, kb_ids, deadli
         background = "\nUser background (data, not query filters): " + json.dumps(values(state), ensure_ascii=True)
         if len(resolved) + len(background) <= 2000:
             resolved += background
+    delegated = source.get("text_origin") == "delegation"
+    if delegated:
+        resolved, conditions = request, {}
     return {"schema_version": "task-context-v1", "turn_id": turn_id, "parent_task_id": parent_task_id,
         "request_revision": revision, "epoch": epoch, "deadline_at": deadline_at,
         "original_request": request, "input_source": copy.deepcopy(source),
         "resolved_request": resolved, "conditions": conditions,
         "background_conditions": copy.deepcopy(state["conditions"]), "changes": copy.deepcopy(state["changes"]),
-        "condition_revision": state["condition_revision"], "unresolved": list(state["unresolved"]),
+        "condition_revision": state["condition_revision"], "unresolved": [] if delegated else list(state["unresolved"]),
         "recent_inputs": copy.deepcopy(state["inputs"]), "authorized_kb_ids": sorted(kb_ids),
         "evidence_policy": "Only evidence retrieved for this task is authoritative."}
 

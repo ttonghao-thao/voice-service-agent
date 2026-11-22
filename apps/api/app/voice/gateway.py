@@ -158,13 +158,17 @@ class VoiceGateway:
                     capabilities=capabilities,
                 )
             self.sessions[sid] = session
-            return {
+            response = {
                 "voice_session_id": sid,
                 "epoch": epoch,
                 "request_revision": request_revision,
                 "wait_interaction": capabilities.wait_interaction,
                 "ws_url": f"/api/v1/voice-sessions/{sid}/stream?ticket={ticket}",
             }
+            if s.livekit_url:
+                from app.voice.livekit_room import browser_credentials
+                response["livekit"] = browser_credentials(s, sid)
+            return response
 
     async def close_conversation(self, cid):
         for sid, session in list(self.sessions.items()):
@@ -217,6 +221,10 @@ class VoiceGateway:
             return
         session.used, session.task = True, asyncio.current_task()
         await ws.accept()
+        if self.settings.livekit_url:
+            from app.voice.livekit_room import run_room
+            await run_room(self, ws, session)
+            return
         provider = self.provider_factory(self.settings)
         if self.settings.voice_provider == "sophon_live":
             from app.voice.sophon_relay import sophon_relay

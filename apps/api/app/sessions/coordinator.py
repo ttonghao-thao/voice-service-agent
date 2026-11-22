@@ -137,6 +137,7 @@ class SessionCoordinator:
         voice_relay=False,
         native_search=None,
         execute_search=True,
+        delegated_text=False,
     ):
         async with self.lock(cid):
             await self.ensure_owner(principal, cid)
@@ -167,6 +168,7 @@ class SessionCoordinator:
                 decision.arguments.model_dump() if decision else None,
                 (now() + timedelta(seconds=max(0, deadline - time.monotonic()))).isoformat(),
                 revision_of,
+                delegated_text=delegated_text,
             )
             if not created:
                 return turn, None
@@ -306,6 +308,8 @@ class SessionCoordinator:
                     "context_sequence": ctx.task_context.get("input_source", {}).get("sequence", -1),
                 },
             ]
+            if ctx.task_context.get("input_source", {}).get("text_origin") == "delegation":
+                new_history = visible_history
             commit_started = time.monotonic()
             async with self.lock(ctx.conversation_id):
                 await self.coordination.check(ctx.conversation_id)
@@ -441,6 +445,8 @@ class SessionCoordinator:
                 {"role": "assistant", "content": bundle.display_text,
                  "authorized_kb_ids": sorted(ctx.principal.knowledge_base_ids),
                  "context_sequence": ctx.task_context.get("input_source", {}).get("sequence", -1)}]
+            if ctx.task_context.get("input_source", {}).get("text_origin") == "delegation":
+                new_history = history
             async with self.lock(ctx.conversation_id):
                 await self.coordination.check(ctx.conversation_id)
                 committed = await self.store.commit(ctx.conversation_id, ctx.epoch, ctx.request_revision,
