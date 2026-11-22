@@ -378,7 +378,7 @@ export SOPHON_LIVE_WS_URL=wss://sx.ppy8.xyz:14080/v1/live/sessions
 
 ## LiveKit 门户与工具验收
 
-2026-11-22，从当前执行机验证真实 Sophon 时，系统解析地址和保留域名校验的直连地址均收到 Nginx HTTP 502。WebSocket Upgrade 未进入 `session.started`，部署后的 ASR 仍待复测。前一天的 24 kHz、回执和打断证据见上节。恢复后运行中文探针，分别检查 `delegation_passed` 和 `input_transcript_matches`。
+2026-11-22 10:47（北京时间），当前执行机访问 `wss://sx.ppy8.xyz:14080/v1/live/sessions` 时在 WebSocket Upgrade 收到 Nginx HTTP 502。同日 14:48 使用 Python `websockets` 对同一地址复测，禁用客户端代理且保持 TLS 证书校验。DNS、TCP、TLS 1.3 和 WebSocket `101 Switching Protocols` 通过。发送 `session.start` 后收到 `session.started`，返回 `status=active`、24 kHz PCM、`delegation.type=client`、`store=false`；发送 `session.close` 后收到 `session.closed`。本次只发送会话控制消息。线上 ASR 字幕和任务委派仍需使用上节语音探针复测 `input_transcript_matches` 和 `delegation_passed`。
 
 本地浏览器测试使用真实 LiveKit Server、固定提交的官方 Gateway 和替身推理引擎。测试开启两个 Room，检查委派来源显示、候选口述、WebRTC 音轨、控制 WebSocket 无 PCM、停止播放及断开。先启动上节的 LiveKit Server，并下载校验 gateway.py。用仓库的开发依赖运行以下夹具：
 
@@ -423,4 +423,4 @@ LIVEKIT_E2E_WAV="$probe_dir/room.wav" npm --prefix apps/web run test:e2e -- live
 
 本机受控结果包括 10 项 LiveKit 委派集成、17 项原 WebSocket 浏览器场景、1 项双 Room 浏览器场景、42 项 Web 单测及 Web 构建。应用静态检查、依赖一致性与契约导出通过。全量 Python 检查记录为 767 项通过、33 项失败，涉及 NVIDIA 兼容查询链和旧验收脚本。已在升级前基线复现其中 5 项部署及验收脚本失败，其余失败待逐项归因。现场 WSS ASR、真实供应商凭据下的三类工具、音质及生产 Compose 需要部署环境复验。
 
-ASR 边界调整后，46 项定向 Python 测试、42 项 Web 单测、Web 构建及契约导出通过。原 WebSocket 与 LiveKit 夹具均验证了无 ASR 或字幕与任务冲突时仍使用 `task`。双 Room 浏览器测试在开启和关闭夹具字幕时分别通过；开启时页面同时显示字幕和委派文本。关闭时探针报告 `input_transcript_events=0`、`delegation_passed=true`。同日指定 WSS 复测仍返回 HTTP 502。
+ASR 边界调整后，46 项定向 Python 测试、42 项 Web 单测、Web 构建及契约导出通过。原 WebSocket 与 LiveKit 夹具均验证了无 ASR 或字幕与任务冲突时仍使用 `task`。双 Room 浏览器测试在开启和关闭夹具字幕时分别通过；开启时页面同时显示字幕和委派文本。关闭时探针报告 `input_transcript_events=0`、`delegation_passed=true`。

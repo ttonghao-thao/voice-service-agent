@@ -2,7 +2,7 @@
 
 ## LiveKit 与 Sophon 升级
 
-1. Phase 0 · 已验证真实 Sophon 的 24 kHz 握手、委派回传与打断换题。2026-11-22 复测 ASR 时，目标 WSS 的 Nginx 返回 HTTP 502，恢复后重测。
+1. Phase 0 · 已验证真实 Sophon 的 24 kHz 握手、委派回传与打断换题。2026-11-22 14:48（北京时间）复测目标 WSS 成功开启和关闭会话。线上 ASR 字幕仍待语音复测。
 2. Phase 1 · LiveKit Web SDK 和官方 AgentSession 已接入门户。受控测试通过并发 Room、播放、停止播放及退出。旧 NVIDIA 和 Sophon WebSocket 音频入口按部署模式使用。
 3. Phase 2 · Client Delegation 已接入授权 CueKB、天气 HTTP 合约与 Brave Search。`task` 提供工具类型与参数，PCM 确认唯一用户输入，门户单独展示委派文本与 ASR 字幕。
 4. Phase 3 · 真实工具口述、连续快速追问、路由准确率与端到端时延待部署验收。见 [LiveKit 验收](validation.md#livekit-门户与工具验收)。
