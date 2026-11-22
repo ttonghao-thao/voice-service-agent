@@ -2,12 +2,14 @@
 
 ## LiveKit 与 Sophon 升级
 
-2026-11-22 里程碑：① QWeather/Tavily 接入完成，私有 CueKB 不变，两家公网 API 冒烟通过；② LiveKit 已结清输入不再阻塞快速追问，保留处理中/重叠歧义拒绝；③ 供应商、多轮与部署脚本定向回归通过；全量仍有 26 项 NVIDIA/旧 CueKB 链路失败，均在修改前基线复现，详见[当前验收记录](validation.md#livekit-门户与工具验收)。Router 沿用原生 `task`，不增加分类模型。
+官方 14 录音 Web 验证已执行，工具闭环未通过：有效音轨/可见输出字幕 14/14，不需工具时未误委派 7/7，应委派时触发 1/7（格式未识别），正式工具执行 0，输入 ASR 0/14。候选字幕隐藏已修复；单次天气曾跑通，但重跑未稳定复现。P0 待解决：native delegate 选择稳定性、task 与 Router 的格式契约、上游输入 ASR。逐条数据及复跑入口见[唯一验收记录](validation.md#官方-14-录音的-web-全流程验证2026-11-22)。CueKB 未接入时转 Tavily 公开检索；接入后走私有服务，已配置服务失败不外发。
+
+2026-11-22 里程碑：① QWeather/Tavily 接入完成，CueKB 保留入口、尚未接入，两家公网 API 冒烟通过；② LiveKit 已结清输入不再阻塞快速追问，保留处理中/重叠歧义拒绝；③ 供应商、多轮与部署脚本定向回归通过；全量仍有 26 项 NVIDIA/旧 CueKB 链路失败，均在修改前基线复现，详见[当前验收记录](validation.md#livekit-门户与工具验收)。Router 沿用原生 `task`，不增加分类模型。
 
 1. Phase 0 · 已验证真实 Sophon 的 24 kHz 握手、委派回传与打断换题。2026-11-22 14:48（北京时间）复测目标 WSS 成功开启和关闭会话。线上 ASR 字幕仍待语音复测。
 2. Phase 1 · LiveKit Web SDK 和官方 AgentSession 已接入门户。受控测试通过并发 Room、播放、停止播放及退出。旧 NVIDIA 和 Sophon WebSocket 音频入口按部署模式使用。
-3. Phase 2 · Client Delegation 已接入授权 CueKB、QWeather 实况/预报与 Tavily Search。`task` 提供工具类型与参数，PCM 确认唯一用户输入，门户单独展示委派文本与 ASR 字幕。
-4. Phase 3 · 真实工具口述、连续快速追问、路由准确率与端到端时延待部署验收。见 [LiveKit 验收](validation.md#livekit-门户与工具验收)。
+3. Phase 2 · Client Delegation 保留 CueKB 接口（未接入时转公开 Tavily），接入 QWeather 实况/预报与 Tavily Search。`task` 提供工具类型与参数，PCM 确认唯一用户输入，门户单独展示委派文本与 ASR 字幕。
+4. Phase 3 · 真实 Web 官方录音验证已执行但工具闭环失败；连续快速追问、路由准确率及完整答复时延仍待验收。见 [LiveKit 验收](validation.md#livekit-门户与工具验收)。
 
 2026-11-21 Sophon Live 审计修复（已实现，待真实服务验收）
 

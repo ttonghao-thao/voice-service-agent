@@ -2,6 +2,7 @@
 
 import json
 from datetime import datetime
+from types import SimpleNamespace
 
 import httpx
 import pytest
@@ -11,11 +12,27 @@ from app.contracts import DomainError, Principal
 from app.tools.qweather import QWeatherAdapter
 from app.tools.schemas import WeatherInput
 from app.tools.web_search import WebSearchAdapter, WebSearchInput
+from app.voice.delegation_router import DelegationRouter
+from pydantic import SecretStr
 
 STAMP = datetime.fromisoformat("2026-11-22T23:30:00+00:00")
 GEO = {"code": "200", "location": [{"id": "tokyo", "name": "Tokyo", "country": "Japan",
         "tz": "Asia/Tokyo", "lat": "35.69", "lon": "139.69"}]}
 ATTRIBUTIONS = {"attributions": ["https://developer.qweather.com/attribution.html"]}
+
+
+@pytest.mark.parametrize("url,key,query,expected", [
+    ("", "", "public product manual", "web_search"),
+    ("", "", "confidential internal upgrade notes", None),
+    ("https://cuekb.fixture", "", "public product manual", None),
+    ("", "configured", "public product manual", None),
+    ("https://cuekb.fixture", "configured", "public product manual", None),
+])
+def test_only_unconnected_cuekb_routes_to_public_search(url, key, query, expected):
+    registry = SimpleNamespace(settings=Settings(_env_file=None, cuekb_base_url=url, cuekb_api_key=SecretStr(key)),
+        specs={name: SimpleNamespace(description=name, permission_scope=name + ":read") for name in ("weather", "web_search")})
+    decision, _ = DelegationRouter(registry).select("CUEKB: " + query, {})
+    assert (decision.tool.name if decision else None) == expected
 
 
 def context():

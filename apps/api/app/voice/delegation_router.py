@@ -32,12 +32,18 @@ class DelegationRouter:
         if not sep or not arguments:
             return None, ""
         if route == "CUEKB":
-            tool = catalog.get("search_knowledge_base")
-            if not tool or tool.kind != "cuekb":
-                return None, ""
-            if len(arguments) > 2000 or not any(char.isalnum() for char in arguments):
-                return None, ""
-            return ExecutionDecision(tool, SophonQuestion(query=arguments)), arguments
+            settings = self.registry.settings
+            if not settings.cuekb_base_url and not settings.cuekb_api_key.get_secret_value():
+                # Only an unconnected integration falls back. Configured private
+                # service errors/denials must never trigger a public request.
+                route = "WEB_SEARCH"
+            else:
+                tool = catalog.get("search_knowledge_base")
+                if not tool or tool.kind != "cuekb":
+                    return None, ""
+                if len(arguments) > 2000 or not any(char.isalnum() for char in arguments):
+                    return None, ""
+                return ExecutionDecision(tool, SophonQuestion(query=arguments)), arguments
         tool = self.tools.get(route)
         if tool is None or INTERNAL.search(arguments):
             return None, ""

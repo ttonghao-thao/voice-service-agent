@@ -209,6 +209,18 @@ def test_deployment_cuekb_only_does_not_require_weather_configuration():
     assert settings.enabled_tool_names == {"search_knowledge"} and settings.mock is False
 
 
+def test_livekit_deployment_can_use_public_search_before_cuekb_is_connected():
+    settings = deployment_settings(
+        agent_provider="disabled", qa_execution_mode="dual_tools", qa_answer_policy="general_qa",
+        enabled_tools="web_search", cuekb_base_url="", cuekb_api_key="",
+        voice_provider="sophon_live", sophon_live_ws_url="wss://voice.example.invalid/v1/live/sessions",
+        livekit_url="wss://room.example.invalid", livekit_api_key="test",
+        livekit_api_secret="test-secret-with-at-least-32-bytes", web_search_api_key="test-search",
+    )
+    settings.validate_deployment()
+    assert settings.enabled_tool_names == {"web_search"} and settings.mock is False
+
+
 def test_compatible_model_requires_explicit_base_url():
     settings = deployment_settings(agent_provider="compatible")
     with pytest.raises(ValueError, match="AGENT_BASE_URL"):

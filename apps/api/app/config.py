@@ -169,7 +169,7 @@ class Settings(BaseSettings):
             raise ValueError("Deployment requires a configured text model")
         if self.agent_provider == "disabled" and (
             self.qa_execution_mode != "dual_tools" or self.answer_policy != "general_qa"
-            or ("search_knowledge" not in self.enabled_tool_names if self.livekit_url
+            or (not ({"search_knowledge", "web_search"} & self.enabled_tool_names) if self.livekit_url
                 else self.enabled_tool_names != {"search_knowledge"})
         ):
             raise ValueError("Native CueKB deployment requires dual_tools, general_qa and search_knowledge")

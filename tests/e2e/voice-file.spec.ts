@@ -263,6 +263,24 @@ test("Native VoiceChat calls remain available when no extra text model is config
   expect(fixture.errors).toEqual([]);
 });
 
+test("Candidate speech remains visible when the input ASR is unavailable", async ({ page }) => {
+  const fixture = await filePortal(page);
+  await selectWave(page, 2400);
+  const connection = await startFile(page, fixture);
+  connection.emit("portal.transcript.delta", { item_id: "audio-only", text: "" });
+  connection.emit("portal.speech_text.delta", { input_item_id: "audio-only", response_id: "candidate-reply",
+    phase: "candidate", text: "I can chat with you." });
+  await expect(page.locator(".assistant-message")).toContainText("I can chat with you.");
+  await expect(page.getByText("Spoken reply unverified", { exact: true })).toBeVisible();
+  await expect(page.getByText("Voice input · Transcript unavailable", { exact: true })).toBeVisible();
+  await expect(page.getByText("Model general answer", { exact: true })).toHaveCount(0);
+  connection.emit("portal.transcript.done", { item_id: "audio-only", text: "Actual input subtitle" });
+  await expect(page.getByText("Actual input subtitle", { exact: true })).toBeVisible();
+  await expect(page.getByText("Voice input · Transcript unavailable", { exact: true })).toHaveCount(0);
+  await expect(page.locator(".assistant-message")).toContainText("I can chat with you.");
+  await page.getByRole("button", { name: "End call", exact: true }).click();
+});
+
 test("Invalid or excessive recorded WAV files cannot create a call or upload audio", async ({
   page,
 }) => {

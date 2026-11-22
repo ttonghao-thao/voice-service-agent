@@ -36,8 +36,11 @@ export DEPLOY_ENV_FILE=$environment_file
 require_values \
   IMAGE_TAG POSTGRES_PASSWORD REDIS_PASSWORD KNOWLEDGE_BASE_IDS \
   WEB_TLS_CERT_FILE WEB_TLS_KEY_FILE \
-  PUBLIC_ORIGIN AGENT_PROVIDER \
-  CUEKB_BASE_URL CUEKB_API_KEY
+  PUBLIC_ORIGIN AGENT_PROVIDER
+
+case ",$(environment_value ENABLED_TOOLS)," in
+  ,,|*,search_knowledge,*) require_values CUEKB_BASE_URL CUEKB_API_KEY ;;
+esac
 
 case "$(environment_value VOICE_PROVIDER)" in
   nvidia|'') require_values VOICECHAT_WS_URL VOICECHAT_API_KEY ;;

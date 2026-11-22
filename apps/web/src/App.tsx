@@ -403,6 +403,11 @@ export default function App() {
         setProgress("");
         if (!event.turn_id && event.payload.answer_kind !== "knowledge") setSelected(null);
         const done = event.type.endsWith(".done");
+        if (event.payload.phase === "candidate" && inputKey) {
+          const inputId = inputKey.slice(6);
+          setInputs((old) => old[inputId] ? old : { ...old, [inputId]: { text: "", done: false } });
+          setTimeline((old) => old.includes(inputKey) ? old : [...old, inputKey]);
+        }
         setSpoken((old) => ({
           ...old,
           [key]: {
@@ -1074,7 +1079,7 @@ export default function App() {
                         {delegated ? "Delegated request" : t?.channel === "text" ? "You · Text" : "You · Voice request"}
                       </span>
                       <p aria-live={t ? undefined : "polite"}>
-                        {t?.user_text || input?.text || "…"}
+                        {t?.user_text || input?.text || (candidateSpeech ? "Voice input · Transcript unavailable" : "…")}
                       </p>
                       {!t && !speech && (
                         <small className="input-status">

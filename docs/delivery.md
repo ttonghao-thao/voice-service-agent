@@ -18,6 +18,6 @@
 
 升级沿用现有门户。浏览器用 WebRTC 加入 LiveKit Room，后端签发限定 Room、身份和时效的 Token，LiveKit AgentSession 通过 `/v1/live/sessions` 与独立部署的 Sophon 进行全双工对话。Sophon 自主决定何时委派。普通闲聊由 Sophon 直接回答。
 
-Sophon 模型直接理解音频并生成委派 `task`。ASR 仅供字幕展示。委派处理只对存在可靠音频归属的任务运行一次 Router，按 `task` 校验 WEATHER、CUEKB、WEB_SEARCH 的参数或请求澄清。工具供应商确认为 QWeather（和风天气）、私有 CueKB 和 Tavily。天气支持实况及未来十日内单日预报，地点不明确时澄清，不猜测用户位置；企业检索复用现有 CueKB 证据 query/validate 与服务端授权。Router 采用原生 `task` 格式校验，不增加轻量 LLM 分类服务。发送前重新核对输入归属，按原委派 ID 回传 Commentary。单工具、短时有界的委派状态保存在会话内存，已存在的会话身份和知识权限继续由后端维护。
+Sophon 模型直接理解音频并生成委派 `task`。ASR 仅供字幕展示。委派处理只对存在可靠音频归属的任务运行一次 Router，按 `task` 校验 WEATHER、CUEKB、WEB_SEARCH 的参数或请求澄清。工具供应商确认为 QWeather（和风天气）、CueKB 入口和 Tavily。当前 CueKB 尚未接入；其地址和凭据均未配置时，将 CUEKB 意图作为独立公开问题转 Tavily，来源标为 public_web，不认证企业内部事实。配置私有 CueKB 后恢复私有检索；部分配置、服务错误、权限拒绝或已回填企业资料均不触发公网转发。天气支持实况及未来十日内单日预报，地点不明确时澄清，不猜测用户位置；企业检索复用现有 CueKB 证据 query/validate 与服务端授权。Router 采用原生 `task` 格式校验，不增加轻量 LLM 分类服务。发送前重新核对输入归属，按原委派 ID 回传 Commentary。单工具、短时有界的委派状态保存在会话内存，已存在的会话身份和知识权限继续由后端维护。
 
 依次验证官方 GPT-Live 兼容性、迁移门户语音、接入三个工具、回归多轮与打断。放行须验证真实 Sophon、各工具的实际供应商与门户听音。委派按 `task`、音频归属与工具结果验收，ASR 按字幕准确性和呈现单独验收。阶段状态见[任务板](TASK_BOARD.md)，探针、结果及放行条件见[验收](validation.md#livekit-sophon-phase-0)。

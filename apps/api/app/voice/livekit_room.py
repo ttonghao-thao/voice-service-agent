@@ -208,11 +208,15 @@ class RoomCall:
                 if call_id in self.raw_tasks and self.raw_tasks[call_id] != task:
                     raise ValueError("conflicting delegation")
                 self.raw_tasks[call_id] = task
+                route = task.partition(":")[0].strip().upper()
+                logger.info("sophon_room_delegation_received conversation_id=%s delegation_id=%s route=%s",
+                            self.cid, call_id, route if route in {"WEATHER", "CUEKB", "WEB_SEARCH"} else "unclassified")
             elif kind == "session.input_transcript.delta":
                 owner = self.inputs.at_delegation(time.monotonic(), exclude_settled=False)
                 text = event.get("delta")
                 if (not isinstance(text, str) or timestamp(event.get("start_ms")) >= timestamp(event.get("end_ms"))):
                     raise ValueError("invalid input transcript")
+                logger.info("sophon_room_input_transcript conversation_id=%s chars=%s", self.cid, len(text))
                 if owner and len(owner.transcript) + len(text) <= 2000:
                     owner.transcript += text
                     self.emit("transcript.delta", {"item_id": owner.id, "text": text})

@@ -184,7 +184,12 @@ async def test_room_delegation_executes_and_settles_once(
 
 
 async def test_two_fast_turns_can_repeat_query_without_reexecuting_duplicate_ids(tmp_path):
-    app = create_app(settings(tmp_path))
+    from pydantic import SecretStr
+
+    config = settings(tmp_path)
+    config.cuekb_base_url, config.cuekb_api_key = "", SecretStr("")
+    config.enabled_tools = "weather,web_search"
+    app = create_app(config)
     requests = []
 
     def backend(request):
@@ -217,7 +222,7 @@ async def test_two_fast_turns_can_repeat_query_without_reexecuting_duplicate_ids
                         call_id = f"task-{index}"
                         call.receive({"type": "session.delegation.created", "delegation": {
                             "id": call_id, "type": "delegation", "target": "client",
-                            "task": "WEB_SEARCH:" if index == 0 else "WEB_SEARCH: public standards | pm",
+                            "task": ["WEB_SEARCH:", "CUEKB: public standards", "WEB_SEARCH: public standards | pm"][index],
                         }})
                         event = SimpleNamespace(id=call_id, pending_transcript="")
                         call.delegate(event)

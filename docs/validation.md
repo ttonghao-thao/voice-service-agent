@@ -434,3 +434,61 @@ LIVEKIT_E2E_WAV="$probe_dir/room.wav" npm --prefix apps/web run test:e2e -- live
 使用用户提供的真实凭据直接请求供应商 API：QWeather GeoAPI 返回北京及行政区候选，唯一精确名称确定北京；实况与明日预报均返回 `status=ok`、来源和非过期数据。Tavily 以公开 LiveKit 文档查询返回三条来源。密钥通过请求头发送，只保存在本地被忽略、权限 0600 的 `.env`，不进入仓库。这些是 Adapter/API 证据，不证明真实 CueKB、Sophon 消费结果、浏览器发声或口述正确。
 
 现场验收仍按本节先启动 LiveKit、再部署应用的方式执行。分别测试闲聊、北京实况、东京明日预报、私有 CueKB、公开 Tavily 搜索；补充无地点后澄清、同名城市、超出未来十日、工具超时，以及一轮结清后立即追问/主动重复查询。每次记录 delegation ID、工具次数、输入窗口、Commentary 回执和实际听音。正在执行/回执未知时换题仍保守拒绝歧义；上游缺少稳定输入 ID 时，不能将延迟旧任务的新 ID 认证为新问题。至少三十条有实际音频与结果的语音样本、两个以上真实会话、路由准确率、误委派率及端到端时延仍待验收，现有纯文本用例不能作为通过记录。
+
+
+## 官方 14 录音的 Web 全流程验证（2026-11-22）
+
+本次通过项目现有 Web 的 Audio file → Choose WAV → Start file call 逐条输入，未截获/伪造 API、WebSocket 或工具响应。上游测试材料固定为 `6b1713518eb75f8495415662870f682357372d09` 的 `live/cases/cases.json` 和对应 WAV：[官方清单](https://github.com/adventists-ai/sophon-realtime/blob/6b1713518eb75f8495415662870f682357372d09/live/cases/cases.json)。原录音仅用 FFmpeg 重采样到 24 kHz mono PCM16，没有裁剪、变速或修改停顿；逐样例保存原文件/输入文件 SHA256。官方脚本自身使用 mock backend，本次业务链未使用 mock。
+
+环境为本机真实 LiveKit Server 1.13.11、Agents/OpenAI 插件 1.8.10、Chrome/Playwright、真实 Sophon `wss://sx.ppy8.xyz:14080/v1/live/sessions` 与 QWeather/Tavily。身份是隔离的本地 fixture identity，会话存储为临时 SQLite；没有部署生产 Compose、验证生产身份或审计远端 GPU/模型版本。CueKB 未接入，按已确认的规则保留入口并转公开搜索；两字段部分配置或真实私有服务失败不外发。每个样例独立 Room，中文/英文分别使用 zh-CN/en-US 的应用实例，串行执行。每条在录音播完后继续观察 20 秒。窗口结束不代表回答终态。
+
+初轮 14 条都有有效音频，但委派为 0，且无输入 ASR 时页面隐藏了已收到的候选字幕。该 UI 问题已修复：显示实际输出字幕和 “Voice input · Transcript unavailable”，不填造用户原话，不认证业务回答。浏览器回归覆盖空 ASR、候选输出及迟到真实 ASR 替换。另明确了原生 delegate 调用提示；单次天气补测通过，但后续正式复测未稳定复现，不能标为已修复原生选工具。
+
+最终正式复测如下：所有 14 条都收到浏览器 MediaStream 中的有效音频及可见输出字幕；输入 ASR 的原始事件和页面字幕均为 0。控制 WebSocket 中 PCM 帧为 0，音频确经 WebRTC。首段有效音频以录音最后有声的 20 ms 窗口（RMS > 300/32768）结束，到浏览器检测到峰值 > 600/32768 计时，包含 RTC/浏览器缓冲；中位数 738.5 ms，范围 674–1662 ms。首段可能只是等待话术，不能当作最终工具答案时延或与官方 H100 推理延迟直接比较。
+
+| 样例 | 官方预期 | 原生委派数 | 工具执行数 | 首段有效音频 ms |
+| --- | --- | ---: | ---: | ---: |
+| zh_time | 委派 | 0 | 0 | 839 |
+| zh_weather | 委派 | 0 | 0 | 674 |
+| zh_light | 委派 | 0 | 0 | 786 |
+| zh_memory | 委派 | 0 | 0 | 684 |
+| zh_news | 委派 | 1 | 0 | 1662 |
+| zh_chat1 | 直接回答 | 0 | 0 | 707 |
+| zh_chat2 | 直接回答 | 0 | 0 | 719 |
+| zh_chat3 | 直接回答 | 0 | 0 | 726 |
+| zh_know | 直接回答 | 0 | 0 | 694 |
+| zh_joke | 直接回答 | 0 | 0 | 677 |
+| en_time | 委派 | 0 | 0 | 1019 |
+| en_weather | 委派 | 0 | 0 | 841 |
+| en_chat | 直接回答 | 0 | 0 | 856 |
+| en_know | 直接回答 | 0 | 0 | 751 |
+
+官方分类一致性为 8/14：不需工具的 7 条均未误委派；应委派的 7 条只有 zh_news 发出原生委派，但任务路由未被识别，客户端返回澄清，正式复测工具执行为 0。官方清单含时间、关灯和个人记忆等超出本项目三工具范围的用例，保留官方分母，同时明确不把这些请求的模拟完成算业务成功。天气和新闻等已在本项目范围内的请求也未稳定完成，因此工具闭环验收失败。
+
+对照与补测没有替换正式结果：使用官方 persona 直连同一 Sophon，上海天气收到自然语言 task 的原生委派；明确 native delegate 参数的直连对照也收到 WEATHER task。Web 单次天气补测得到一次真实 QWeather 执行（325 ms）、匹配 Commentary 回执及候选口述，但正式重跑又漏调。两条额外的 macOS Tingting 合成输入（公开产品参数、F7005 参数，均非官方录音）各发出一次原生委派，仍因任务路由未识别而澄清，未执行 Tavily。不能将 API 冒烟或格式正确的受控集成当作这些语音请求已经通过。
+
+当前阻塞为两类委派问题：模型可能只说等待话术/工具标签而不调用 native delegate；实际 native task 也可能不符合本项目严格前缀契约，导致 Router 澄清。还需核对部署的原生 delegate 描述/参数约束与真实调用输出，并修复输入 ASR 的部署配置和初始化。没有启用 ASR 补调、分类模型、工具强制选择或伪造调用。现有协议仍不能认证某段口述属于某次结果的最终答案，所有候选保持 unverified。英文长回答可能在观察窗口结束时仍在输出，报告保存已观察部分，不宣称完整回答结束。
+
+复跑入口是 `scripts/validate_sophon_web.mjs`，需要已启动的真实 API/Web/LiveKit、项目 Web 开发依赖、Chrome/Playwright 和 ffmpeg。按部署文档配置公网工具与未接入 CueKB 状态。server-log 为该次 API 实例的当前日志文件，用 conversation_id 关联，报告不保存请求票据或 Room Token。中文/英文运行时必须分别配套 SOPHON_LIVE_LOCALE，输出到不同目录：
+
+```bash
+OFFICIAL_DIR=$(mktemp -d /tmp/sophon-official-XXXXXX)
+GIT_LFS_SKIP_SMUDGE=1 git clone --depth 1 --filter=blob:none --sparse \
+  https://github.com/adventists-ai/sophon-realtime.git "$OFFICIAL_DIR/source"
+git -C "$OFFICIAL_DIR/source" fetch --depth 1 origin 6b1713518eb75f8495415662870f682357372d09
+git -C "$OFFICIAL_DIR/source" checkout --detach FETCH_HEAD
+git -C "$OFFICIAL_DIR/source" sparse-checkout set live
+node scripts/validate_sophon_web.mjs \
+  --cases "$OFFICIAL_DIR/source/live/cases/cases.json" \
+  --source-revision 6b1713518eb75f8495415662870f682357372d09 \
+  --base-url http://localhost:5173 --language zh \
+  --server-log /tmp/current-api-zh.log --output "$OFFICIAL_DIR/report-zh"
+# 使用 en-US 的真实应用实例，提供它自己的当前日志：
+node scripts/validate_sophon_web.mjs \
+  --cases "$OFFICIAL_DIR/source/live/cases/cases.json" \
+  --source-revision 6b1713518eb75f8495415662870f682357372d09 \
+  --base-url http://localhost:5173 --language en \
+  --server-log /tmp/current-api-en.log --output "$OFFICIAL_DIR/report-en"
+```
+
+本次原始材料保存在仓库外 `/tmp/sophon-web-14.aENraE`：`run-manifest.json`、`final-14.json`、`results/final-zh`、`results/final-en`、`results/native-zh`、`results/supplement`；目录含每条截图、浏览器返回 PCM WAV 和 JSON。现场测试结束后，LiveKit 查询为 0 Room、0 participant。开发检查：118 项定向 Python、13 项浏览器文件入口回归、42 项 Web 单测、Web 构建、Ruff、契约导出及 shell/JS 语法通过；这些不改变真实语音工具验收失败的结论。

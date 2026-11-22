@@ -33,7 +33,10 @@ VOICE_PROVIDER=sophon_live
 LIVEKIT_URL=wss://livekit.example.com
 LIVEKIT_API_KEY=<server-key>
 LIVEKIT_API_SECRET=<server-secret>
-ENABLED_TOOLS=search_knowledge,weather,web_search
+# CueKB is not connected yet; keep its registry entry but do not enable execution.
+ENABLED_TOOLS=weather,web_search
+CUEKB_BASE_URL=
+CUEKB_API_KEY=
 WEATHER_PROVIDER=qweather
 WEATHER_MODE=real
 WEATHER_BASE_URL=https://your-account.re.qweatherapi.com
@@ -41,7 +44,7 @@ WEATHER_API_KEY=<weather-key>
 WEB_SEARCH_API_KEY=<tavily-search-key>
 ```
 
-沿用 AGENT_PROVIDER=disabled、QA_EXECUTION_MODE=dual_tools、QA_ANSWER_POLICY=general_qa 及 Sophon、CueKB 配置。凭据只写部署主机受保护的 `.env`，不放前端或镜像。更新这些值后重新创建 API 容器；不得仅 restart。原有 `WEATHER_PROVIDER=http_contract` 仅用于显式旧代理兼容，QWeather 失败不会回退。未配置的天气或公开搜索从 ENABLED_TOOLS 省略。按现有 scripts/deploy-cloud.sh 部署。切回 Sophon WebSocket 时清空 LiveKit 三项并恢复 ENABLED_TOOLS=search_knowledge。 [LiveKit 验收](validation.md#livekit-门户与工具验收)
+沿用 AGENT_PROVIDER=disabled、QA_EXECUTION_MODE=dual_tools、QA_ANSWER_POLICY=general_qa 及 Sophon 配置。接入 CueKB 后再填写 CUEKB_BASE_URL/CUEKB_API_KEY，并将 search_knowledge 加入 ENABLED_TOOLS；未接入时，CUEKB 意图按公开问题转 Tavily。已配置私有服务出错不会切换。凭据只写部署主机受保护的 `.env`，不放前端或镜像。更新这些值后重新创建 API 容器；不得仅 restart。原有 `WEATHER_PROVIDER=http_contract` 仅用于显式旧代理兼容，QWeather 失败不会回退。未配置的天气或公开搜索从 ENABLED_TOOLS 省略。按现有 scripts/deploy-cloud.sh 部署。切回 Sophon WebSocket 时清空 LiveKit 三项并恢复 ENABLED_TOOLS=search_knowledge。 [LiveKit 验收](validation.md#livekit-门户与工具验收)
 
 ## 问答模式与预算（Q07）
 
