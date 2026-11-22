@@ -1532,11 +1532,13 @@ function WeatherCard({ card }: { card: Record<string, unknown> }) {
   const c = card as unknown as {
     place: { name: string; timezone: string };
     kind: string;
-    temperature: { value: number; unit: string };
+    temperature?: { value: number; unit: string } | null;
+    temperature_min?: { value: number; unit: string } | null;
+    temperature_max?: { value: number; unit: string } | null;
     condition: string;
     valid_at: string;
     fetched_at: string;
-    source: { provider: string; is_mock: boolean };
+    source: { provider: string; is_mock: boolean; attributions?: string[] };
     stale: boolean;
   };
   return (
@@ -1547,8 +1549,9 @@ function WeatherCard({ card }: { card: Record<string, unknown> }) {
       </span>
       <h3>{c.place.name}</h3>
       <div className="temperature">
-        {c.temperature.value}
-        <small>°{c.temperature.unit}</small>
+        {c.temperature_min && c.temperature_max
+          ? `${c.temperature_min.value}–${c.temperature_max.value}` : c.temperature?.value}
+        <small>°{c.temperature_min?.unit || c.temperature?.unit}</small>
       </div>
       <p>{c.condition}</p>
       <small>
@@ -1561,6 +1564,9 @@ function WeatherCard({ card }: { card: Record<string, unknown> }) {
         <br />
         Source {c.source.provider}
         {c.source.is_mock ? " (synthetic)" : ""}
+        {c.source.attributions?.map((url) => (
+          <span key={url}> · <a href={url} target="_blank" rel="noreferrer">Attribution</a></span>
+        ))}
       </small>
     </article>
   );

@@ -115,6 +115,12 @@ bash scripts/validate_deployment.sh check
 
 ## 3. 文件通话 A/B
 
+NVIDIA 配套部署完成第 2 节检查后，可用宿主单入口顺序执行两个核心文件用例及同连接追问；该命令不用于 Sophon LiveKit 放行：
+
+```bash
+bash scripts/validate_deployment.sh auto core
+```
+
 **A：Golden 独立首问。**
 
 ```bash
@@ -421,6 +427,10 @@ LIVEKIT_E2E_WAV="$probe_dir/room.wav" npm --prefix apps/web run test:e2e -- live
 
 三类工具回归通过现有 Registry 和 HTTP 夹具。检查 CueKB query/validate、天气地点和日期、公开来源、重复任务、短停顿、失败和未经授权的外发。真实部署使用麦克风分别测试闲聊、授权企业资料、天气、公开搜索及自然追问，在旧回复中插话并核对下一轮。记录原始委派 ID、工具执行与回执。使用实际音频核对口述，回执与候选字幕均保留为传输证据。
 
-本机受控结果包括 10 项 LiveKit 委派集成、17 项原 WebSocket 浏览器场景、1 项双 Room 浏览器场景、42 项 Web 单测及 Web 构建。应用静态检查、依赖一致性与契约导出通过。全量 Python 检查记录为 767 项通过、33 项失败，涉及 NVIDIA 兼容查询链和旧验收脚本。已在升级前基线复现其中 5 项部署及验收脚本失败，其余失败待逐项归因。现场 WSS ASR、真实供应商凭据下的三类工具、音质及生产 Compose 需要部署环境复验。
+2026-11-22 当前工具升级基于 `3c2dda8`，实现 QWeather/Tavily，保留私有 CueKB；修复 LiveKit 已结清输入阻塞快速追问，以及宿主 Bash 3.2 空数组导致的采集失败。供应商与多轮定向 Python 回归 211 项通过；最后一次 Router 调整后的供应商/LiveKit 定向复测 47 项通过。Web 单测 42 项、TypeScript/Web 构建、Ruff、契约导出、编译、shell 语法、依赖一致性及 diff 检查通过。构建仍提示 LiveKit chunk 大于 500 kB；Starlette 有既有弃用警告。本轮没有重跑浏览器 Room 夹具，也没有部署生产 Compose。
 
-ASR 边界调整后，46 项定向 Python 测试、42 项 Web 单测、Web 构建及契约导出通过。原 WebSocket 与 LiveKit 夹具均验证了无 ASR 或字幕与任务冲突时仍使用 `task`。双 Room 浏览器测试在开启和关闭夹具字幕时分别通过；开启时页面同时显示字幕和委派文本。关闭时探针报告 `input_transcript_events=0`、`delegation_passed=true`。
+全量 Python 首次运行记录为 807 passed、27 failed；其中环境模板测试在运行期间完成适配，随后定向复测通过，未将第一次结果改写为全绿。其余 26 项在 `3c2dda8` 源码导出目录中逐项复现（26 failed），失败节点和各模块主要症状一致：continuous_dialogue 5、delivery_lifecycle 1、live_agent_interactions 4、native_cuekb 1、qa_routing 1、simulated_full_flow 14。表现包括等待答案超时、audio.done 前断连、追问缺失及 WebSocketDisconnect；这些既有失败本轮未修复，不能宣布全仓回归通过。
+
+使用用户提供的真实凭据直接请求供应商 API：QWeather GeoAPI 返回北京及行政区候选，唯一精确名称确定北京；实况与明日预报均返回 `status=ok`、来源和非过期数据。Tavily 以公开 LiveKit 文档查询返回三条来源。密钥通过请求头发送，只保存在本地被忽略、权限 0600 的 `.env`，不进入仓库。这些是 Adapter/API 证据，不证明真实 CueKB、Sophon 消费结果、浏览器发声或口述正确。
+
+现场验收仍按本节先启动 LiveKit、再部署应用的方式执行。分别测试闲聊、北京实况、东京明日预报、私有 CueKB、公开 Tavily 搜索；补充无地点后澄清、同名城市、超出未来十日、工具超时，以及一轮结清后立即追问/主动重复查询。每次记录 delegation ID、工具次数、输入窗口、Commentary 回执和实际听音。正在执行/回执未知时换题仍保守拒绝歧义；上游缺少稳定输入 ID 时，不能将延迟旧任务的新 ID 认证为新问题。至少三十条有实际音频与结果的语音样本、两个以上真实会话、路由准确率、误委派率及端到端时延仍待验收，现有纯文本用例不能作为通过记录。

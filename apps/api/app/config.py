@@ -52,7 +52,7 @@ class Settings(BaseSettings):
     voice_tool_result_max_tokens: int = Field(default=256, ge=64, le=4096)
     enabled_tools: str = "search_knowledge"
     weather_mode: Literal["mock", "real"] = "mock"
-    weather_provider: Literal["http_contract"] = "http_contract"
+    weather_provider: Literal["qweather", "http_contract"] = "qweather"
     weather_base_url: str = ""
     weather_api_key: SecretStr = SecretStr("")
     voice_provider: Literal["disabled", "mock", "nvidia", "sophon_live"] = "mock"
@@ -136,6 +136,12 @@ class Settings(BaseSettings):
                 raise ValueError("SOPHON_LIVE_WS_URL must be a WS or WSS Live sessions endpoint without credentials")
             if self.sophon_live_api_key.get_secret_value() and url.scheme != "wss":
                 raise ValueError("SOPHON_LIVE_API_KEY requires WSS")
+        if self.weather_provider == "qweather" and self.weather_base_url:
+            url = urlparse(self.weather_base_url)
+            if (url.scheme != "https" or not url.hostname or not url.hostname.endswith(".qweatherapi.com")
+                or url.username or url.password or url.port not in (None, 443)
+                or url.path not in ("", "/") or url.query or url.fragment):
+                raise ValueError("QWeather requires your dedicated HTTPS API Host origin")
         return self
 
     @property

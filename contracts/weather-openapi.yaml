@@ -2,7 +2,7 @@ openapi: 3.1.0
 info:
   title: 本项目天气供应商代理契约
   version: 1.0.0
-  description: 不预设实际天气厂商。供应商代理须实现此契约，或修改受信任 WeatherAdapter 映射；禁止模型指定地址。
+  description: 仅用于显式 WEATHER_PROVIDER=http_contract 的旧代理兼容。默认 QWeatherAdapter 直接映射 GeoAPI/Weather v1，不要求额外代理；禁止模型指定地址。
 security: [{serviceBearer: []}]
 paths:
   /v1/places/resolve:

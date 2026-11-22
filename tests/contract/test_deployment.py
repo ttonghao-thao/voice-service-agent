@@ -64,6 +64,7 @@ def test_cloud_environment_template_cannot_enable_development_fallbacks():
 
     assert set(values) == {
         "LIVEKIT_URL", "LIVEKIT_API_KEY", "LIVEKIT_API_SECRET", "WEB_SEARCH_API_KEY",
+        "WEATHER_PROVIDER", "WEATHER_MODE", "WEATHER_BASE_URL", "WEATHER_API_KEY",
         "IMAGE_TAG",
         "PUBLIC_ORIGIN",
         "WEB_TLS_CERT_FILE",
@@ -110,7 +111,9 @@ def test_cloud_environment_template_cannot_enable_development_fallbacks():
     assert values["QA_ANSWER_POLICY"] == "general_qa"
     assert "CUEKB_MODE" not in values
     assert "ENABLED_TOOLS" not in values
-    assert not any(key.startswith("WEATHER_") for key in values)
+    assert values["WEATHER_PROVIDER"] == "qweather"
+    assert values["WEATHER_MODE"] == "real"
+    assert values["WEATHER_BASE_URL"] == values["WEATHER_API_KEY"] == ""
     assert values["VOICE_PROVIDER"] == "nvidia"
     assert values["VOICECHAT_WS_URL"].startswith("REPLACE_")
     origin = urlparse(values["PUBLIC_ORIGIN"])

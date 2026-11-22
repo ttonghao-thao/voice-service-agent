@@ -55,8 +55,12 @@ class DelegationRouter:
         output = await self.registry.invoke(name, ctx.tool_arguments, ctx)
         chinese = ctx.locale == "zh-CN"
         if output.get("status") == "failed":
+            if output["code"] == "WEATHER_DATE_OUT_OF_RANGE":
+                message = "日期超出预报范围，请查询今天至未来九天。" if chinese else "Please choose today or one of the next nine days."
+            else:
+                message = "查询暂时失败，请稍后再试。" if chinese else "The search failed. Please try again."
             return AnswerBundle(status="failed", reason_code=output["code"], speech_text="",
-                display_text="查询暂时失败，请稍后再试。" if chinese else "The search failed. Please try again.")
+                display_text=message)
         if name == "weather":
             if output["status"] != "ok" or output["stale"]:
                 return AnswerBundle(
@@ -66,8 +70,13 @@ class DelegationRouter:
                     speech_text="",
                 )
             location = output["place"]["name"]
-            temperature = output["temperature"]
-            content = f'{location}: {temperature["value"]} °{temperature["unit"]}, {output["condition"]} ({output["valid_at"]}).'
+            if output.get("temperature_min") and output.get("temperature_max"):
+                low, high = output["temperature_min"], output["temperature_max"]
+                degrees = f'{low["value"]}–{high["value"]} °{low["unit"]}'
+            else:
+                temperature = output["temperature"]
+                degrees = f'{temperature["value"]} °{temperature["unit"]}'
+            content = f'{location}: {degrees}, {output["condition"]} ({output["valid_at"]}). Source: {output["source"]["provider"]}.'
             citations = []
         else:
             trace_id = uid()

@@ -618,7 +618,8 @@ class WeatherAdapter:
             if (
                 result.place != place
                 or result.source.is_mock
-                or result.temperature.unit != ("C" if args.units == "metric" else "F")
+                or any(temp.unit != ("C" if args.units == "metric" else "F")
+                       for temp in (result.temperature, result.temperature_min, result.temperature_max) if temp is not None)
             ):
                 raise DomainError("TOOL_BAD_RESPONSE", "Weather location, source, or units do not match", 502)
             try:

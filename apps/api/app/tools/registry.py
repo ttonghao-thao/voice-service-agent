@@ -10,6 +10,7 @@ from app.contracts import DomainError, StrictModel
 from app.storage.models import ToolRun
 from app.task_context import affirmative, resolved_request
 from app.tools.adapters import CueKBAdapter, WeatherAdapter
+from app.tools.qweather import QWeatherAdapter
 from app.tools.web_search import WebSearchAdapter
 from pydantic import Field, ValidationError
 
@@ -41,8 +42,8 @@ class ToolRegistry:
         self.settings, self.store = settings, store
         self.adapters = {
             "cuekb_http": CueKBAdapter(settings, client),
-            "weather_http": WeatherAdapter(settings, client),
-            "brave_http": WebSearchAdapter(settings, client),
+            "weather_http": (QWeatherAdapter if settings.weather_provider == "qweather" else WeatherAdapter)(settings, client),
+            "tavily_http": WebSearchAdapter(settings, client),
         }
         config = yaml.safe_load((ROOT / "config/tools.yaml").read_text())
         self.version = config["version"]

@@ -12,6 +12,7 @@
           "type": "string"
         },
         "country_code": {
+          "description": "ISO country code when supplied by the provider; otherwise empty.",
           "title": "Country Code",
           "type": "string"
         },
@@ -62,6 +63,15 @@
         "is_mock": {
           "title": "Is Mock",
           "type": "boolean"
+        },
+        "attributions": {
+          "description": "Provider attribution URLs to display with the data.",
+          "items": {
+            "type": "string"
+          },
+          "maxItems": 10,
+          "title": "Attributions",
+          "type": "array"
         }
       },
       "required": [
@@ -99,7 +109,40 @@
       "type": "string"
     },
     "temperature": {
-      "$ref": "#/$defs/Temperature"
+      "anyOf": [
+        {
+          "$ref": "#/$defs/Temperature"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null,
+      "description": "Current temperature; null for QWeather daily forecasts."
+    },
+    "temperature_min": {
+      "anyOf": [
+        {
+          "$ref": "#/$defs/Temperature"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null,
+      "description": "Daily forecast minimum; paired with temperature_max."
+    },
+    "temperature_max": {
+      "anyOf": [
+        {
+          "$ref": "#/$defs/Temperature"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null,
+      "description": "Daily forecast maximum; paired with temperature_min."
     },
     "condition": {
       "maxLength": 500,
@@ -120,7 +163,6 @@
     "kind",
     "valid_at",
     "fetched_at",
-    "temperature",
     "condition",
     "source",
     "stale"

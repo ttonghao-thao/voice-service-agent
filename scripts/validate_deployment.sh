@@ -64,7 +64,7 @@ collect() {
   [[ -z "$cid" ]] || args=(--conversation-id "$cid")
   [[ -z "$prefix_case" ]] || args+=(--input-prefix-case "$prefix_case")
   cat "$dir/api.log" "$dir/voicechat.log" | docker exec -i "$API_CONTAINER" \
-    python /app/scripts/collect_validation_summary.py --window-start "$start" --window-end "$end" "${args[@]}" >"$dir/summary.txt" 2>"$dir/collector-error.log" || code=1
+    python /app/scripts/collect_validation_summary.py --window-start "$start" --window-end "$end" ${args[@]+"${args[@]}"} >"$dir/summary.txt" 2>"$dir/collector-error.log" || code=1
   cat "$dir/summary.txt"
   if [[ "$code" != 0 ]] && { [[ -z "$prefix_case" ]] || ! grep -q '^prefix_diagnostic=' "$dir/summary.txt"; }; then
     printf 'collection=failed stage=summary\n'
@@ -83,7 +83,7 @@ auto_one() {
   report="/tmp/native-cuekb/$(basename "$dir")/report.json"
   printf 'operation=%s case=%s\n' "$mode" "$case_id"
   docker exec "$API_CONTAINER" python /app/scripts/run_native_cuekb_validation.py \
-    --case-id "$case_id" "${followup[@]}" --case-timeout 120 --output "$report" \
+    --case-id "$case_id" ${followup[@]+"${followup[@]}"} --case-timeout 120 --output "$report" \
     --audio-dir "${report%/*}/replies" >"$dir/validation.txt" 2>"$dir/validation-error.log" || code=$?
   # The runner already emits an allowlisted summary; retain that instead of a traceback.
   sed -n '/^preflight=/p; /^window_start=/p; /^case=/p; /^answer_check=/p; /^validation=/p' "$dir/validation.txt"

@@ -26,7 +26,7 @@ QA_ANSWER_POLICY=general_qa
 
 独立部署 LiveKit Server，按官方单机文档开放 TLS 和 WebRTC 端口。浏览器和 API 容器均需访问同一 WSS origin。本机夹具可用 ws://127.0.0.1:7880。API 内置每 Room 一个 AgentSession。 [LiveKit 自托管文档](https://docs.livekit.io/transport/self-hosting/)
 
-配置以下值后重新构建 API、Web 镜像。密钥只交给 API。Web 容器从 LIVEKIT_URL 生成 CSP，浏览器获得短时 Room Token。天气沿用 WeatherAdapter 的两个 HTTPS POST 接口 /v1/places/resolve 和 /v1/weather。公开搜索使用 Brave。 [Brave Search API](https://api-dashboard.search.brave.com/api-reference/web/search/get)
+配置以下值后重新构建 API、Web 镜像。密钥只交给 API。Web 容器从 LIVEKIT_URL 生成 CSP，浏览器获得短时 Room Token。天气使用 QWeather（和风天气）：GeoAPI 解析地点，Weather v1 查询实况或未来十日内的单日预报。API Key 通过 `X-QW-Api-Key` 请求头发送，`WEATHER_BASE_URL` 必须是控制台分配的专属 HTTPS API Host。公开搜索使用 Tavily `POST /search`，只取最多三条来源，不请求生成答案。 [QWeather API Host](https://dev.qweather.com/en/docs/configuration/api-host/) · [Tavily Search](https://docs.tavily.com/documentation/api-reference/endpoint/search)
 
 ```dotenv
 VOICE_PROVIDER=sophon_live
@@ -34,13 +34,14 @@ LIVEKIT_URL=wss://livekit.example.com
 LIVEKIT_API_KEY=<server-key>
 LIVEKIT_API_SECRET=<server-secret>
 ENABLED_TOOLS=search_knowledge,weather,web_search
+WEATHER_PROVIDER=qweather
 WEATHER_MODE=real
-WEATHER_BASE_URL=https://weather.example.com
+WEATHER_BASE_URL=https://your-account.re.qweatherapi.com
 WEATHER_API_KEY=<weather-key>
-WEB_SEARCH_API_KEY=<brave-search-key>
+WEB_SEARCH_API_KEY=<tavily-search-key>
 ```
 
-沿用 AGENT_PROVIDER=disabled、QA_EXECUTION_MODE=dual_tools、QA_ANSWER_POLICY=general_qa 及 Sophon、CueKB 配置。未配置的天气或公开搜索从 ENABLED_TOOLS 省略。按现有 scripts/deploy-cloud.sh 部署。切回 Sophon WebSocket 时清空 LiveKit 三项并恢复 ENABLED_TOOLS=search_knowledge。 [LiveKit 验收](validation.md#livekit-门户与工具验收)
+沿用 AGENT_PROVIDER=disabled、QA_EXECUTION_MODE=dual_tools、QA_ANSWER_POLICY=general_qa 及 Sophon、CueKB 配置。凭据只写部署主机受保护的 `.env`，不放前端或镜像。更新这些值后重新创建 API 容器；不得仅 restart。原有 `WEATHER_PROVIDER=http_contract` 仅用于显式旧代理兼容，QWeather 失败不会回退。未配置的天气或公开搜索从 ENABLED_TOOLS 省略。按现有 scripts/deploy-cloud.sh 部署。切回 Sophon WebSocket 时清空 LiveKit 三项并恢复 ENABLED_TOOLS=search_knowledge。 [LiveKit 验收](validation.md#livekit-门户与工具验收)
 
 ## 问答模式与预算（Q07）
 

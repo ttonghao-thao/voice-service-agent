@@ -16,9 +16,9 @@ tools:
     retry_policy: {max_retries: 1}
     audit_policy: evidence_only
   - name: weather
-    display_name: Weather
+    display_name: QWeather
     mode_ref: weather_mode
-    version: '1'
+    version: '2'
     description: Get weather for a user-confirmed location. date is an ISO date, today, tomorrow, or null; ambiguous locations require clarification.
     adapter_id: weather_http
     endpoint_ref: weather_base_url
@@ -28,14 +28,14 @@ tools:
     read_only: true
     enabled: true
     result_limit: 32768
-    retry_policy: {max_retries: 1}
+    retry_policy: {max_retries: 0}
     audit_policy: evidence_only
   - name: web_search
-    display_name: Public web search
+    display_name: Tavily public search
     mode_ref: web_search_mode
-    version: '1'
+    version: '2'
     description: Search only public internet sources with the standalone query. Preserve source URLs.
-    adapter_id: brave_http
+    adapter_id: tavily_http
     endpoint_ref: ''
     secret_ref: web_search_api_key
     permission_scope: web_search:read

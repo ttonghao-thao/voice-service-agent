@@ -267,6 +267,7 @@ def test_deployment_rejects_non_http_text_or_cuekb_url(field, value):
 
 def test_deployment_keeps_weather_on_https():
     settings = deployment_settings(
+        weather_provider="http_contract",
         enabled_tools="weather",
         weather_mode="real",
         weather_base_url="http://weather.internal",

@@ -1,4 +1,5 @@
 import math
+import re
 from datetime import datetime
 from typing import Annotated, Any, Literal
 from uuid import UUID
@@ -271,11 +272,30 @@ class WeatherInput(StrictModel):
     date: str | None = Field(default=None, max_length=32)
     units: Literal["metric", "imperial"] = "metric"
 
+    @field_validator("place")
+    @classmethod
+    def nonblank_place(cls, value):
+        if not value.strip():
+            raise ValueError("Provide a location")
+        return value.strip()
+
+    @field_validator("date")
+    @classmethod
+    def supported_date(cls, value):
+        from datetime import date
+
+        if value is None or value in {"today", "tomorrow", "今天", "明天"}:
+            return value
+        if not re.fullmatch(r"\d{4}-\d{2}-\d{2}", value):
+            raise ValueError("Use today, tomorrow or an ISO date")
+        date.fromisoformat(value)
+        return value
+
 
 class Place(StrictModel):
     id: str
     name: str
-    country_code: str
+    country_code: str = Field(description="ISO country code when supplied by the provider; otherwise empty.")
     timezone: str
 
 
@@ -291,6 +311,7 @@ class Temperature(StrictModel):
 class WeatherSource(StrictModel):
     provider: str
     is_mock: bool
+    attributions: list[str] = Field(default_factory=list, max_length=10, description="Provider attribution URLs to display with the data.")
 
 
 class WeatherResponse(StrictModel):
@@ -299,10 +320,26 @@ class WeatherResponse(StrictModel):
     kind: Literal["current", "forecast"]
     valid_at: str
     fetched_at: str
-    temperature: Temperature
+    temperature: Temperature | None = Field(default=None, description="Current temperature; null for QWeather daily forecasts.")
+    temperature_min: Temperature | None = Field(default=None, description="Daily forecast minimum; paired with temperature_max.")
+    temperature_max: Temperature | None = Field(default=None, description="Daily forecast maximum; paired with temperature_min.")
     condition: str = Field(max_length=500)
     source: WeatherSource
     stale: bool
+
+    @model_validator(mode="after")
+    def temperatures(self):
+        if self.kind == "current" and self.temperature is None:
+            raise ValueError("Current weather requires a temperature")
+        if (self.temperature_min is None) != (self.temperature_max is None):
+            raise ValueError("Forecast range requires both endpoints")
+        if self.temperature_min and self.temperature_max:
+            if (self.temperature_min.unit != self.temperature_max.unit
+                or self.temperature_min.value > self.temperature_max.value):
+                raise ValueError("Invalid forecast temperature range")
+        elif self.temperature is None:
+            raise ValueError("Weather requires a temperature or a range")
+        return self
 
 
 class WeatherClarification(StrictModel):

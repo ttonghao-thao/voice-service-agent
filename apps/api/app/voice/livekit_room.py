@@ -59,6 +59,7 @@ class SpeechInput:
     ended: float | None = None
     claimed: bool = False
     transcript: str = ""
+    settled_at: float | None = None
 
 
 class RoomInputs:
@@ -78,7 +79,8 @@ class RoomInputs:
         now = time.monotonic()
         if speaking:
             prior = self.latest
-            if prior and prior.ended is not None and now - prior.ended <= SPEECH_PAUSE and not prior.claimed:
+            if (prior and prior.ended is not None and now - prior.ended <= SPEECH_PAUSE
+                and not prior.claimed and prior.settled_at is None):
                 prior.ended = None
             else:
                 self.recent.append(SpeechInput(uid(), now))
@@ -86,9 +88,11 @@ class RoomInputs:
             self.latest.ended = now
         self.changed.set()
 
-    def at_delegation(self, received):
+    def at_delegation(self, received, *, exclude_settled=True):
         candidates = [item for item in self.recent if item.started <= received
-                      and (item.ended is None or received - item.ended <= INPUT_LOOKBACK)]
+                      and (item.ended is None or received - item.ended <= INPUT_LOOKBACK)
+                      and not (exclude_settled and item is not self.latest and item.settled_at is not None
+                               and item.settled_at <= self.latest.started)]
         return candidates[0] if len(candidates) == 1 else None
 
 
@@ -205,7 +209,7 @@ class RoomCall:
                     raise ValueError("conflicting delegation")
                 self.raw_tasks[call_id] = task
             elif kind == "session.input_transcript.delta":
-                owner = self.inputs.at_delegation(time.monotonic())
+                owner = self.inputs.at_delegation(time.monotonic(), exclude_settled=False)
                 text = event.get("delta")
                 if (not isinstance(text, str) or timestamp(event.get("start_ms")) >= timestamp(event.get("end_ms"))):
                     raise ValueError("invalid input transcript")
@@ -235,7 +239,7 @@ class RoomCall:
             self.end(DomainError("VOICE_PROTOCOL_ERROR", "Invalid Sophon Live event.", 502))
 
     def transcript_finished(self, event):
-        owner = self.inputs.at_delegation(time.monotonic())
+        owner = self.inputs.at_delegation(time.monotonic(), exclude_settled=False)
         if event.is_final and owner and owner.transcript and event.transcript == owner.transcript:
             self.emit("transcript.done", {"item_id": owner.id, "text": owner.transcript})
 
@@ -269,7 +273,7 @@ class RoomCall:
             task = self.raw_tasks[event.id]
             await self.current()
             if owner is None or owner is not self.inputs.latest:
-                self.duplex.append_commentary(disposition("INPUT_UNCERTAIN", self.chinese), delegation_id=event.id)
+                await self.respond(event.id, disposition("INPUT_UNCERTAIN", self.chinese), None)
                 continue
             try:
                 async with asyncio.timeout_at(received + 1.75):
@@ -279,27 +283,52 @@ class RoomCall:
             except TimeoutError:
                 pass
             if owner is not self.inputs.latest or owner.ended is None:
-                self.duplex.append_commentary(disposition("INPUT_UNCERTAIN", self.chinese), delegation_id=event.id)
+                await self.respond(event.id, disposition("INPUT_UNCERTAIN", self.chinese), None)
                 continue
             decision, question = self.router.select(task, self.session.tool_catalog or {})
+            logger.info("sophon_room_route conversation_id=%s delegation_id=%s tool=%s elapsed_ms=%s",
+                        self.cid, event.id, decision.tool.name if decision else "clarify",
+                        round((time.monotonic() - received) * 1000))
             if owner.claimed or not decision:
                 if owner.claimed:
                     content = disposition("DUPLICATE", self.chinese)
                 else:
                     content = ("请向用户澄清查询对象或缺失条件。请勿声称已经查询。" if self.chinese
                                else "Ask the caller to clarify the request or missing details. No search was performed.")
-                self.duplex.append_commentary(content, delegation_id=event.id)
+                owner.claimed = True
+                await self.respond(event.id, content, owner)
                 continue
             owner.claimed = True
             if decision.tool.name == "web_search" and self.sent_private_content:
-                self.duplex.append_commentary(disposition("PRIVATE_WEB_SEARCH", self.chinese), delegation_id=event.id)
+                await self.respond(event.id, disposition("PRIVATE_WEB_SEARCH", self.chinese), owner)
                 continue
             try:
                 await self.execute(event.id, owner, decision, question, received)
             except DomainError as exc:
                 if exc.code not in {"AGENT_CAPACITY_EXCEEDED", "SERVICE_DRAINING"}:
                     raise
-                self.duplex.append_commentary(disposition("FAILED", self.chinese), delegation_id=event.id)
+                await self.respond(event.id, disposition("FAILED", self.chinese), owner)
+
+    async def respond(self, call_id, content, owner):
+        receipt = asyncio.Event()
+        self.receipts[call_id] = receipt
+        self.duplex.append_commentary(content, delegation_id=call_id)
+        await self.wait_receipt(call_id, receipt, owner)
+
+    async def wait_receipt(self, call_id, receipt, owner):
+        try:
+            await asyncio.wait_for(receipt.wait(), timeout=3)
+            # Retire only before later speech begins; a receipt is not spoken-
+            # answer verification and cannot disambiguate an overlapping input.
+            if owner is not None and owner is self.inputs.latest and not self.inputs.speaking:
+                owner.settled_at = time.monotonic()
+                self.inputs.changed.set()
+            return True
+        except TimeoutError:
+            return False
+        finally:
+            self.receipts.pop(call_id, None)
+            self.receipt_ids = {eid: did for eid, did in self.receipt_ids.items() if did != call_id}
 
     async def execute(self, call_id, owner, decision, question, received):
         registry = self.coordinator.runtime.registry
@@ -351,15 +380,11 @@ class RoomCall:
 
         outcome = SophonEvidenceOutcome.RECEIPT_UNKNOWN
         try:
-            await asyncio.wait_for(receipt.wait(), timeout=3)
-            outcome = SophonEvidenceOutcome.GATEWAY_RECEIVED
-            await self.store.delivery(self.cid, self.epoch, call_id, "tool_result", "sent",
-                                      turn.id, turn.request_revision)
-        except TimeoutError:
-            pass
+            if await self.wait_receipt(call_id, receipt, owner):
+                outcome = SophonEvidenceOutcome.GATEWAY_RECEIVED
+                await self.store.delivery(self.cid, self.epoch, call_id, "tool_result", "sent",
+                                          turn.id, turn.request_revision)
         finally:
-            self.receipts.pop(call_id, None)
-            self.receipt_ids = {eid: did for eid, did in self.receipt_ids.items() if did != call_id}
             if owner is not self.inputs.latest:
                 outcome = SophonEvidenceOutcome.SUPERSEDED
             self.coordinator.sophon_evidence_outcome(turn.id, outcome)

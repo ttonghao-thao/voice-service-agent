@@ -12,6 +12,7 @@
           "type": "string"
         },
         "country_code": {
+          "description": "ISO country code when supplied by the provider; otherwise empty.",
           "title": "Country Code",
           "type": "string"
         },

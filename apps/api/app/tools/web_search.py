@@ -1,4 +1,4 @@
-"""A bounded read-only Brave Search adapter."""
+"""A bounded read-only Tavily Search adapter."""
 
 import re
 from html import unescape
@@ -9,7 +9,7 @@ from app.contracts import DomainError, StrictModel
 from app.tools.adapters import bounded_json
 from pydantic import Field, TypeAdapter
 
-ENDPOINT = "https://api.search.brave.com/res/v1/web/search"
+ENDPOINT = "https://api.tavily.com/search"
 
 
 class WebSearchInput(StrictModel):
@@ -38,23 +38,22 @@ class WebSearchAdapter:
         key = self.settings.web_search_api_key.get_secret_value()
         if not key:
             raise DomainError("TOOL_NOT_CONFIGURED", "Public search is unavailable.", 503)
-        params = {"q": args.query, "count": 3, "result_filter": "web",
-                  "search_lang": "zh-hans" if ctx.locale == "zh-CN" else "en"}
+        payload = {"query": args.query, "max_results": 3, "search_depth": "basic",
+                   "include_answer": False, "include_raw_content": False}
         if args.freshness:
-            params["freshness"] = args.freshness
+            payload["time_range"] = {"pd": "day", "pw": "week", "pm": "month", "py": "year"}[args.freshness]
         data = await bounded_json(
-            self.client, "GET", ENDPOINT, retry=False, limit=65536, params=params,
-            headers={"X-Subscription-Token": key, "Accept": "application/json"},
+            self.client, "POST", ENDPOINT, retry=False, limit=65536, json=payload,
+            headers={"Authorization": "Bearer " + key, "Accept": "application/json"},
         )
-        web = data.get("web", {}) if isinstance(data, dict) else None
-        results = web.get("results", []) if isinstance(web, dict) else None
+        results = data.get("results") if isinstance(data, dict) else None
         if not isinstance(results, list):
             raise DomainError("TOOL_BAD_RESPONSE", "Public search returned an invalid response.", 502)
         sources = []
         for item in results[:3]:
             if not isinstance(item, dict):
                 continue
-            title, url, excerpt = (item.get(name) for name in ("title", "url", "description"))
+            title, url, excerpt = (item.get(name) for name in ("title", "url", "content"))
             if not all(isinstance(value, str) and value.strip() for value in (title, url, excerpt)):
                 continue
             try:

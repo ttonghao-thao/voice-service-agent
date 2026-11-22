@@ -26,7 +26,9 @@ Python 3.12/FastAPI、React/TypeScript/AudioWorklet、PostgreSQL/Redis。NVIDIA 
 
 配置 LIVEKIT_URL 后，Gateway 继续从现有会话入口鉴权，并签发仅限当前 Room 的短时 Token。浏览器以 WebRTC 收发音频，门户 WebSocket 只传状态与字幕。API 每 Room 启动一个官方 AgentSession，由 GPTLiveModel 连接独立 Sophon Live。Sophon 负责语音打断，门户的 Stop playback 即时静音并在新输入的字幕到达后恢复播放。
 
-LiveKit 路径根据官方 SDK 已发送的 PCM 观察输入窗口，短停顿归入同一个输入。Router 校验委派的路由和参数，现有 Coordinator、Registry 和 CueKB 负责授权、证据校验及业务提交。只有唯一候选输入时才执行每轮一次的检索。结果回传前复核输入及权限。两条 Sophon 路径均使用模型生成的 `task` 提供查询参数，业务记录标为委派来源，ASR 仅作为门户字幕。已回传企业资料的 Room 拒绝向公网发送后续搜索，用户可在新通话请求公开搜索。
+LiveKit 路径根据官方 SDK 已发送的 PCM 观察输入窗口，短停顿归入同一个输入。Router 校验委派的路由和参数，现有 Coordinator、Registry 和 CueKB 负责授权、证据校验及业务提交。只有唯一候选输入时才执行每轮一次的检索。已收到工具结果或澄清回执、且在新发声前结清的输入退出后续委派竞争；处理中、回执未知和重叠输入仍按歧义拒绝，字幕归属不使用这个排除规则。同一请求的重复 ID 不执行，新输入允许主动重复同一查询。此本地生命周期修复不补足上游缺少输入 ID 的协议，延迟旧任务使用新 ID 时仍不能作可靠归属认证。结果回传前复核输入及权限。两条 Sophon 路径均使用模型生成的 `task` 提供查询参数，业务记录标为委派来源，ASR 仅作为门户字幕。已回传企业资料的 Room 拒绝向公网发送后续搜索，用户可在新通话请求公开搜索。
+
+QWeather Adapter 使用 GeoAPI 和 Weather v1，将供应商响应映射到既有天气契约。唯一精确名称/Location ID 可从行政区候选中确定地点，多个同名地点仍澄清。实况返回 `temperature`，预报返回 `temperature_min/temperature_max`，不将最高温误作实况。GeoAPI 未提供 ISO 国家代码时留空，完整国家名称保留在地点显示中；来源保留 attribution。Tavily Adapter 使用固定 HTTPS endpoint、Bearer 请求头、最多三条摘要和链接。两者无自动重试，继续由 Registry 控制超时、权限及审计。
 
 口述字幕标为候选。Gateway 回执用于确认消息收到，真实口述归属和听音另验。
 
