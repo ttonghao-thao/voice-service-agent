@@ -281,7 +281,7 @@ Sophon 部署参数见 [部署与运行](deployment.md#部署方式边界)。目
 先用浏览器麦克风在同一次通话内测试以下场景，记录时间和关联 ID。
 
 1. 问“你好，你是谁？”，听到自然回复并看到字幕。确认没有 Delegation。
-2. 自然停顿后问“帮我查询一下 FTTR 主网关经常离线是什么原因”。逐项核对中文 ASR 原文、原始 Delegation、CueKB query/validate、Commentary、口述与页面来源。
+2. 自然停顿后问“帮我查询一下 FTTR 主网关经常离线是什么原因”。核对原始 Delegation 的 `task`、CueKB query/validate、Commentary、口述与页面来源。单独核对 ASR 字幕是否忠实于原话。
 3. 口述中插话换题，核对旧播放清理和下一轮接话。另在 CueKB 查询期间插话，旧查询继续结清，证据不得注入新问题。复测同题重问使用新输入 ID，及天气请求等不支持的委托。
 4. 切回 NVIDIA，用本文英文样本复测其原生工具、播报和打断。
 
@@ -296,7 +296,7 @@ PYTHONPATH=apps/api:. python scripts/validate_native_cuekb.py \
 
 报告按原始 Delegation 计算 TP/FP/TN/FN。后端拒绝的误委托仍属于 FP。观察不全的样本单独标记。报告分别统计 Gateway 回执、候选媒体片段结束、候选片段数和延迟。多个候选片段可包含等待话术和后续语音，不能据此确认答复已结束。Sophon 报告保持 `answer_complete=unverified`；浏览器实际播出、自然接话及语义准确性需按麦克风流程确认。
 
-Sophon 语音链只有在收到明确 `CUEKB:` 任务时才考虑查询。空任务或未声明的路由请模型澄清，模型任务文本不能充当用户问题。委托的 `offset_ms` 是发送时间。以它为上限回看 8 秒时有多段可能输入、没有稳定 ASR 或在处理时已换题，要求重述；每输入最多一次查询。遇到上游首段时间戳偏移时不平移 ASR 去匹配其他输入。连续快速追问可能需要重述，这是缺少输入关联 ID 时的保守行为。
+Sophon WebSocket 仅执行明确、可归属的 `CUEKB:` 任务。空任务或未声明的路由请模型澄清。`offset_ms` 是发送时间，以它为上限回看 8 秒时有多段可能音频，或处理时已换题，要求重述。每输入最多一次查询。ASR 时间戳用于字幕归属，业务参数使用模型 `task`。固定版本 Gateway 在模型已生成工具调用后可能等待 ASR 再发委派事件，测时需区别模型委派和接收到协议通知。 [固定 Gateway 源码](https://github.com/adventists-ai/sophon-realtime/blob/ace091b1841adb2b0588cd609ac06e3dfc261643/live/sophon_live/gateway.py)
 
 每次证据回传分别记录发送、匹配到的 Gateway 回执和附近的候选音频。回执匹配用本次 `event_id` 对应的 `client_event_id`。真实引擎是否消费无从回执判断。门户以候选字幕继续展示实时语音，资料来源可复核，业务状态保留语音未核实。换题时清理当前的旧播放，继续接收后续语音，不因猜测晚到语音而丢弃下一段；可能晚到的口述不写入可信历史。现有公开 Live 协议缺少原始输入 ID、引擎消费确认及由该结果生成的响应 ID 和终态。可靠认证需上游提供这些关联证据，首段时间戳问题需在上游修复并复测。
 
@@ -322,7 +322,7 @@ Sophon 语音链只有在收到明确 `CUEKB:` 任务时才考虑查询。空任
 
 - 2026-11-21 复测，同一地址在无 Authorization 时完成 HTTPS Upgrade 和 24 kHz `session.started`，送入占位 Bearer 会得到 HTTP 401。`sophon_gpt_live` 在未配置密钥时，通过专用 aiohttp session 省略 SDK 的占位请求头。有密钥时由官方 SDK 发送。TLS 校验保持开启。 [aiohttp 客户端中间件](https://docs.aiohttp.org/en/stable/client_advanced.html#client-middleware)
 - 真实 Room 的中文 WAV 触发了委派。原始 `task` 含“校验码”，匹配收到 Commentary 回执。官方音频轨接收到回应，离线转写辨识到校验码 6429。打断用例中，收到的房间音频由等待话术转到下一题的身份回答，连接正常关闭。校验码是探针返回的数据，真实工具和浏览器扬声器尚待验收。
-- 无打断和打断两类通话均未收到 `session.input_transcript.delta`，SDK 的 `pending_transcript` 为空。探针用原始事件计数区分未发送和 SDK 解析问题。现有 WebSocket Adapter 直连复测也收到音频、输出字幕、委派和回执，输入字幕为零。既有 Sophon WebSocket 路径需要转写绑定用户原问题与当前输入。使用固定版 Gateway 的部署可核对 `--asr`／`SOPHON_LIVE_ASR` 的实际值及 ASR 初始化日志。LiveKit 路径另验有转写优先和无转写时的委派归属。 [Gateway ASR 启动逻辑](https://github.com/adventists-ai/sophon-realtime/blob/ace091b1841adb2b0588cd609ac06e3dfc261643/live/sophon_live/gateway.py#L607-L616)
+- 无打断和打断两类通话均未收到 `session.input_transcript.delta`，SDK 的 `pending_transcript` 为空。探针用原始事件计数区分未发送和 SDK 解析问题。WebSocket Adapter 直连复测也收到音频、输出字幕、委派和回执，输入字幕为零。使用固定版 Gateway 的部署可核对 `--asr`／`SOPHON_LIVE_ASR` 的实际值及 ASR 初始化日志。 [Gateway ASR 启动逻辑](https://github.com/adventists-ai/sophon-realtime/blob/ace091b1841adb2b0588cd609ac06e3dfc261643/live/sophon_live/gateway.py)
 
 ### 复测
 
@@ -351,13 +351,14 @@ ffmpeg -hide_banner -loglevel error -f lavfi -i 'sine=frequency=392:duration=1.1
 "$probe_python" tests/fixtures/sophon_phase0_gateway.py "$probe_dir/gateway.py"
 ```
 
-在保留 `probe_dir`、`probe_python` 及 LiveKit 环境变量的终端运行探针。检查 JSON 中的 24 kHz、委派 ID、`transcript_matches=true`、`task_on_wire=true`、匹配回执及 `close_confirmed=true`。检查夹具的 `playback dropped` 日志和 WAV 中旧音频后的下一段音频。
+在保留 `probe_dir`、`probe_python` 及 LiveKit 环境变量的终端运行探针。检查 JSON 中的 24 kHz、委派 ID、`delegation_passed=true`、原始 `task`、匹配回执及 `close_confirmed=true`。当设置 `--expected-transcript` 时，同时检查 `input_transcript_matches=true`。检查夹具的 `playback dropped` 日志和 WAV 中旧音频后的下一段音频。
 
 ```bash
 SOPHON_LIVE_WS_URL=ws://127.0.0.1:18782/v1/live/sessions SOPHON_LIVE_API_KEY= \
   "$probe_python" scripts/probe_livekit_sophon.py --language en \
   --wav "$probe_dir/input.wav" --barge-wav "$probe_dir/barge.wav" \
-  --expected-transcript "verification code" --output "$probe_dir/room-fixture.wav"
+  --expected-task "verification code" --expected-transcript "verification code" \
+  --output "$probe_dir/room-fixture.wav"
 ```
 
 真实复测须从可达的验证环境运行。准备两段 24 kHz 单声道 PCM16 WAV。第一段问“请查询本次验证使用的校验码”，第二段要求停止刚才的回答并换题。先完整听一次结果，再开新通话在回复开始后打断。上游启用认证时通过环境配置 `SOPHON_LIVE_API_KEY`。
@@ -366,18 +367,18 @@ SOPHON_LIVE_WS_URL=ws://127.0.0.1:18782/v1/live/sessions SOPHON_LIVE_API_KEY= \
 export SOPHON_LIVE_WS_URL=wss://sx.ppy8.xyz:14080/v1/live/sessions
 "$probe_python" scripts/probe_livekit_sophon.py \
   --wav "$probe_dir/request.wav" \
-  --expected-transcript "校验码" --expected-reply "六四二九" \
+  --expected-task "校验码" --expected-transcript "校验码" --expected-reply "六四二九" \
   --output "$probe_dir/room-live.wav"
 "$probe_python" scripts/probe_livekit_sophon.py \
   --wav "$probe_dir/request.wav" --barge-wav "$probe_dir/interrupt.wav" \
-  --expected-transcript "校验码" --output "$probe_dir/room-live-barge.wav"
+  --expected-task "校验码" --output "$probe_dir/room-live-barge.wav"
 ```
 
-真实放行核对原始委派、中文输入转写、回传校验码和同连接打断后的新回答。探针缺少输入转写时返回非零状态，并保留其余实测字段。耳麦或设备扬声器体验在门户迁移后单独验收。
+真实放行核对原始委派、中文输入字幕、回传校验码和同连接打断后的新回答。`delegation_passed` 单独报告委派结果；只有指定 `--expected-transcript` 才将 ASR 字幕匹配纳入探针退出状态。耳麦或设备扬声器体验在门户单独验收。
 
 ## LiveKit 门户与工具验收
 
-2026-11-22，从当前执行机验证真实 Sophon 时，系统解析地址和保留域名校验的直连地址均收到 Nginx HTTP 502。WebSocket Upgrade 未进入 session.started，部署后的 ASR 仍待复测。前一天的 24 kHz、回执和打断证据见上节。恢复后运行中文探针检查 input_transcript_events 大于 0、transcript_matches 为 true 及匹配的回执。
+2026-11-22，从当前执行机验证真实 Sophon 时，系统解析地址和保留域名校验的直连地址均收到 Nginx HTTP 502。WebSocket Upgrade 未进入 `session.started`，部署后的 ASR 仍待复测。前一天的 24 kHz、回执和打断证据见上节。恢复后运行中文探针，分别检查 `delegation_passed` 和 `input_transcript_matches`。
 
 本地浏览器测试使用真实 LiveKit Server、固定提交的官方 Gateway 和替身推理引擎。测试开启两个 Room，检查委派来源显示、候选口述、WebRTC 音轨、控制 WebSocket 无 PCM、停止播放及断开。先启动上节的 LiveKit Server，并下载校验 gateway.py。用仓库的开发依赖运行以下夹具：
 
@@ -416,6 +417,10 @@ LIVEKIT_E2E_WAV="$probe_dir/room.wav" npm --prefix apps/web run test:e2e -- live
 .venv/bin/python -m pytest -q tests/integration/test_livekit_delegation.py
 ```
 
+复测字幕时，去掉夹具的 `--no-input-transcript` 并用 `LIVEKIT_E2E_TRANSCRIPT='What is the verification code?'` 重跑浏览器测试。页面应同时显示夹具字幕和独立委派文本 `Find the integration sample.`。
+
 三类工具回归通过现有 Registry 和 HTTP 夹具。检查 CueKB query/validate、天气地点和日期、公开来源、重复任务、短停顿、失败和未经授权的外发。真实部署使用麦克风分别测试闲聊、授权企业资料、天气、公开搜索及自然追问，在旧回复中插话并核对下一轮。记录原始委派 ID、工具执行与回执。使用实际音频核对口述，回执与候选字幕均保留为传输证据。
 
 本机受控结果包括 10 项 LiveKit 委派集成、17 项原 WebSocket 浏览器场景、1 项双 Room 浏览器场景、42 项 Web 单测及 Web 构建。应用静态检查、依赖一致性与契约导出通过。全量 Python 检查记录为 767 项通过、33 项失败，涉及 NVIDIA 兼容查询链和旧验收脚本。已在升级前基线复现其中 5 项部署及验收脚本失败，其余失败待逐项归因。现场 WSS ASR、真实供应商凭据下的三类工具、音质及生产 Compose 需要部署环境复验。
+
+ASR 边界调整后，46 项定向 Python 测试、42 项 Web 单测、Web 构建及契约导出通过。原 WebSocket 与 LiveKit 夹具均验证了无 ASR 或字幕与任务冲突时仍使用 `task`。双 Room 浏览器测试在开启和关闭夹具字幕时分别通过；开启时页面同时显示字幕和委派文本。关闭时探针报告 `input_transcript_events=0`、`delegation_passed=true`。同日指定 WSS 复测仍返回 HTTP 502。

@@ -4,7 +4,7 @@
 
 1. Phase 0 · 已验证真实 Sophon 的 24 kHz 握手、委派回传与打断换题。2026-11-22 复测 ASR 时，目标 WSS 的 Nginx 返回 HTTP 502，恢复后重测。
 2. Phase 1 · LiveKit Web SDK 和官方 AgentSession 已接入门户。受控测试通过并发 Room、播放、停止播放及退出。旧 NVIDIA 和 Sophon WebSocket 音频入口按部署模式使用。
-3. Phase 2 · Client Delegation 已接入授权 CueKB、天气 HTTP 合约与 Brave Search。优先使用用户转写。只有模型任务文本时，须关联唯一用户输入，门户单独标识其来源。
+3. Phase 2 · Client Delegation 已接入授权 CueKB、天气 HTTP 合约与 Brave Search。`task` 提供工具类型与参数，PCM 确认唯一用户输入，门户单独展示委派文本与 ASR 字幕。
 4. Phase 3 · 真实工具口述、连续快速追问、路由准确率与端到端时延待部署验收。见 [LiveKit 验收](validation.md#livekit-门户与工具验收)。
 
 2026-11-21 Sophon Live 审计修复（已实现，待真实服务验收）
@@ -16,7 +16,7 @@
 2026-11-21 Sophon Live 接入（已实现，待真实服务验收）
 
 1. S1：独立 WebSocket Provider、音频、字幕和同连接多轮在协议夹具中通过。
-2. S2：中文 ASR 原文经现有 CueKB 查询和校验；有证据、无证据、重复委托和证据失效均有夹具结果。
+2. S2：中文委派 `task` 经现有 CueKB 查询和校验；有证据、无证据、重复委派和证据失效均有夹具结果。
 3. S3：完成受控停顿、播放打断、查询期间换题和浏览器语音回归。真实 24 kHz 会话、自然对话、路由指标和 CueKB 听音待按 [Sophon Live 验证](validation.md#sophon-live-验证) 执行。
 
 更新：2026-11-06。审查代码基线 `2a8ba8b`；CueKB main `30970e9`。2026-11-07 已实施 F1/F2/F3/F4 的下述限定修复，未部署。以下是当前未完成项，历史流水由 Git 追溯；详细代码原因见[审查](reviews/duplex-tool-audit.md)。

@@ -53,20 +53,22 @@ def test_stale_and_competing_speech_have_no_owner():
 
 
 @pytest.mark.parametrize(
-    ("task_text", "transcript", "expected_tool", "expected_content", "expected_urls"),
+    ("task_text", "transcript", "private_context", "expected_tool", "expected_content", "expected_urls"),
     [
-        ("CUEKB: Find the integration sample.", "", "search_knowledge_base", "search", ["/v2/evidence/query", "/v2/evidence/validate"]),
-        ("CUEKB: Do not choose this rewrite.", "Find the integration sample.", "search_knowledge_base", "search", ["/v2/evidence/query", "/v2/evidence/validate"]),
-        ("WEATHER: Beijing | today", "", "weather", "22.0 °C", ["/v1/places/resolve", "/v1/weather"]),
-        ("WEB_SEARCH: latest Wi-Fi 7 standard | pm", "", "web_search", "https://example.org/wifi", ["/res/v1/web/search"]),
-        ("WEB_SEARCH: confidential company notes", "", None, "澄清", []),
-        ("WEATHER: | tomorrow", "", None, "澄清", []),
-        ("WEB_SEARCH: public product launch", "", "web_search", "查询暂时失败", ["/res/v1/web/search"]),
-        ("WEB_SEARCH: public outdated result | pm", "", "web_search", "不要播报旧问题", ["/res/v1/web/search"]),
+        ("CUEKB: Find the integration sample.", "", False, "search_knowledge_base", "search", ["/v2/evidence/query", "/v2/evidence/validate"]),
+        ("CUEKB: Find the integration sample.", "model is WRONG9. What is the weather?", False, "search_knowledge_base", "search", ["/v2/evidence/query", "/v2/evidence/validate"]),
+        ("CUEKB:", "Find the integration sample.", False, None, "澄清", []),
+        ("WEATHER: Beijing | today", "What is the weather in London?", False, "weather", "22.0 °C", ["/v1/places/resolve", "/v1/weather"]),
+        ("WEB_SEARCH: latest Wi-Fi 7 standard | pm", "confidential transcription error", False, "web_search", "https://example.org/wifi", ["/res/v1/web/search"]),
+        ("WEB_SEARCH: latest Wi-Fi 7 standard | pm", "latest Wi-Fi 7 standard", True, None, "开启新会话", []),
+        ("WEB_SEARCH: confidential company notes", "", False, None, "澄清", []),
+        ("WEATHER: | tomorrow", "", False, None, "澄清", []),
+        ("WEB_SEARCH: public product launch", "", False, "web_search", "查询暂时失败", ["/res/v1/web/search"]),
+        ("WEB_SEARCH: public outdated result | pm", "", False, "web_search", "不要播报旧问题", ["/res/v1/web/search"]),
     ],
 )
 async def test_room_delegation_executes_and_settles_once(
-    tmp_path, task_text, transcript, expected_tool, expected_content, expected_urls,
+    tmp_path, task_text, transcript, private_context, expected_tool, expected_content, expected_urls,
 ):
     config = settings(tmp_path)
     app = create_app(config)
@@ -79,11 +81,13 @@ async def test_room_delegation_executes_and_settles_once(
             assert request.headers["Authorization"] == "Bearer cuekb-fixture"
             if request.url.path.endswith("/query"):
                 assert body["question"] == "Find the integration sample."
+                assert body["search_query"] == body["question"]
                 assert body["kb_ids"] == [config.knowledge_base_ids]
                 return httpx.Response(200, json=evidence_v21(body))
             return httpx.Response(200, json=validate_v21(body, [config.knowledge_base_ids]))
         place = {"id": "bjs", "name": "Beijing", "country_code": "CN", "timezone": "Asia/Shanghai"}
         if request.url.path.endswith("/resolve"):
+            assert json.loads(request.content)["query"] == "Beijing"
             return httpx.Response(200, json={"places": [place]})
         if request.url.path.endswith("/weather"):
             stamp = datetime.now(UTC).isoformat()
@@ -97,6 +101,8 @@ async def test_room_delegation_executes_and_settles_once(
             return httpx.Response(503)
         if "outdated" in request.url.params["q"]:
             call.inputs.update(True)
+        else:
+            assert request.url.params["q"] == "latest Wi-Fi 7 standard"
         assert request.url.params["freshness"] == "pm"
         return httpx.Response(200, json={"web": {"results": [
             {"url": "https://example.org/wifi", "title": "Wi-Fi 7", "description": "<strong>Public</strong> specifications"},
@@ -112,6 +118,7 @@ async def test_room_delegation_executes_and_settles_once(
                 issued = (await client.post(f"/api/v1/conversations/{cid}/voice-sessions")).json()
                 session = app.state.voice.sessions[issued["voice_session_id"]]
                 call = RoomCall(app.state.voice, None, session)
+                call.sent_private_content = private_context
                 call.inputs.update(True)
                 call.inputs.update(False)
                 results = asyncio.Queue()
@@ -138,14 +145,15 @@ async def test_room_delegation_executes_and_settles_once(
                         assert json.loads(content[content.index("{"):])["search"] == "finished"
                     assert requests == expected_urls
                     assert call.calls.empty()
+                    if transcript:
+                        call.transcript_finished(SimpleNamespace(is_final=True, transcript=transcript))
+                        events = [call.outgoing.get_nowait() for _ in range(call.outgoing.qsize())]
+                        assert [e["payload"]["text"] for e in events if e["type"] == "portal.transcript.done"] == [transcript]
                     if expected_tool:
                         rows = (await client.get(f"/api/v1/conversations/{cid}/messages")).json()["items"]
                         assert len(rows) == 1 and rows[0]["selected_tool"] == expected_tool
-                        if transcript:
-                            assert rows[0]["user_text"] == transcript
-                            assert "request_origin" not in rows[0]
-                        else:
-                            assert rows[0]["request_origin"] == "delegation"
+                        assert rows[0]["user_text"] == task_text.split(":", 1)[1].strip()
+                        assert rows[0]["request_origin"] == "delegation"
                 finally:
                     worker.cancel()
                     await asyncio.gather(worker, return_exceptions=True)

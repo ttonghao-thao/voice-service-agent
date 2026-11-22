@@ -18,6 +18,6 @@
 
 升级沿用现有门户。浏览器用 WebRTC 加入 LiveKit Room，后端签发限定 Room、身份和时效的 Token，LiveKit AgentSession 通过 `/v1/live/sessions` 与独立部署的 Sophon 进行全双工对话。Sophon 自主决定何时委派。普通闲聊由 Sophon 直接回答。
 
-委派处理只对存在可靠用户输入归属的任务运行一次 Router，选择 WEATHER、CUEKB、WEB_SEARCH 或请求澄清。天气复用现有 WeatherAdapter，企业检索复用现有 CueKB 证据 query/validate 与服务端授权，公网搜索由单一供应商适配。优先使用可归属的用户转写。转写缺失时，明确且可归属的委派文本支持只读查询。发送前重新核对输入归属，按原委派 ID 回传 Commentary。单工具、短时有界的委派状态保存在会话内存，已存在的会话身份和知识权限继续由后端维护。
+Sophon 模型直接理解音频并生成委派 `task`。ASR 仅供字幕展示。委派处理只对存在可靠音频归属的任务运行一次 Router，按 `task` 校验 WEATHER、CUEKB、WEB_SEARCH 的参数或请求澄清。天气复用现有 WeatherAdapter，企业检索复用现有 CueKB 证据 query/validate 与服务端授权，公网搜索由单一供应商适配。发送前重新核对输入归属，按原委派 ID 回传 Commentary。单工具、短时有界的委派状态保存在会话内存，已存在的会话身份和知识权限继续由后端维护。
 
-依次验证官方 GPT-Live 兼容性、迁移门户语音、接入三个工具、回归多轮与打断。放行须验证真实 Sophon、各工具的实际供应商与门户听音。缺少 ASR 时单独验证委派文本和输入归属。阶段状态见[任务板](TASK_BOARD.md)，探针、结果及放行条件见[验收](validation.md#livekit-sophon-phase-0)。
+依次验证官方 GPT-Live 兼容性、迁移门户语音、接入三个工具、回归多轮与打断。放行须验证真实 Sophon、各工具的实际供应商与门户听音。委派按 `task`、音频归属与工具结果验收，ASR 按字幕准确性和呈现单独验收。阶段状态见[任务板](TASK_BOARD.md)，探针、结果及放行条件见[验收](validation.md#livekit-sophon-phase-0)。

@@ -20,7 +20,7 @@ FRAME_SAMPLES = RATE // 50
 
 
 class ProbeAgent(Agent):
-    def __init__(self, language, expected_transcript, expected_reply):
+    def __init__(self, language, expected_task, expected_transcript, expected_reply):
         instructions = {
             "zh": "你是语音接口测试助手。用户询问校验码时发起客户端委派，收到结果后口述校验码。其他问题简短回答。",
             "en": "You are testing a voice interface. Delegate requests for a verification code to the client, "
@@ -31,8 +31,10 @@ class ProbeAgent(Agent):
             "zh": "本次语音测试的校验码是六四二九。请口述校验码。",
             "en": "The verification code for this voice test is six four two nine. Say the code aloud.",
         }[language]
+        self.expected_task = expected_task
         self.expected_transcript = expected_transcript
         self.expected_reply = expected_reply
+        self.input_tail = ""
         self.output_tail = ""
         self.started_at = time.monotonic()
         self.ready = asyncio.Event()
@@ -46,6 +48,8 @@ class ProbeAgent(Agent):
         }
         if expected_reply:
             self.report["output_transcript_matches"] = False
+        if expected_transcript:
+            self.report["input_transcript_matches"] = False
 
     def elapsed_ms(self):
         return round((time.monotonic() - self.started_at) * 1000)
@@ -65,6 +69,10 @@ class ProbeAgent(Agent):
                 self.ready.set()
             elif kind == "session.input_transcript.delta":
                 self.report["input_transcript_events"] += 1
+                if self.expected_transcript and not self.report["input_transcript_matches"]:
+                    text = self.input_tail + event["delta"]
+                    self.report["input_transcript_matches"] = self.expected_transcript in text
+                    self.input_tail = text[-len(self.expected_transcript):]
             elif kind == "session.output_transcript.delta":
                 self.report["output_transcript_events"] += 1
                 if self.expected_reply and not self.report["output_transcript_matches"]:
@@ -76,7 +84,8 @@ class ProbeAgent(Agent):
                 task = delegation.get("task")
                 self.wire_delegations[delegation["id"]] = {
                     "task_on_wire": bool(task),
-                    "task_matches": isinstance(task, str) and self.expected_transcript in task,
+                    "task_matches": isinstance(task, str) and bool(task.strip())
+                    and (not self.expected_task or self.expected_task in task),
                 }
             elif kind == "session.commentary.appended":
                 delivery = self.commentary_events.get(event.get("client_event_id"))
@@ -103,7 +112,6 @@ class ProbeAgent(Agent):
                 "id": delegation.id,
                 "received_ms": self.elapsed_ms(),
                 "transcript_chars": len(delegation.pending_transcript),
-                "transcript_matches": self.expected_transcript in delegation.pending_transcript,
                 **self.wire_delegations.get(delegation.id, {}),
                 "task_on_sdk_object": hasattr(delegation, "task"),
             }
@@ -144,7 +152,7 @@ async def room_probe(args, model, pcm, barge):
     source = rtc.AudioSource(RATE, 1, queue_size_ms=100)
     # The caller publishes WAV frames directly. There is no acoustic echo path.
     session = AgentSession(llm=model, aec_warmup_duration=None)
-    agent = ProbeAgent(args.language, args.expected_transcript, args.expected_reply)
+    agent = ProbeAgent(args.language, args.expected_task, args.expected_transcript, args.expected_reply)
     report = agent.report
     output = bytearray()
     post_receipt_output = asyncio.Event()
@@ -206,14 +214,15 @@ async def room_probe(args, model, pcm, barge):
             recording.setparams((1, 2, RATE, 0, "NONE", "not compressed"))
             recording.writeframes(output)
     report["room_output_samples"] = len(output) // 2
-    print(json.dumps(report, ensure_ascii=False, indent=2))
-    return (
+    report["delegation_passed"] = (
         report["audio_rate"] == RATE and report.get("client_delegation") and report.get("store_disabled")
         and post_receipt_output.is_set() and report["close_confirmed"] and not report["errors"]
         and "probe_error_type" not in report and "audio_reader_error_type" not in report
         and report.get("output_transcript_matches", True)
-        and any(item["transcript_matches"] and "gateway_receipt_ms" in item for item in report["delegations"])
+        and any(item.get("task_matches") and "gateway_receipt_ms" in item for item in report["delegations"])
     )
+    print(json.dumps(report, ensure_ascii=False, indent=2))
+    return report["delegation_passed"] and report.get("input_transcript_matches", True)
 
 
 if __name__ == "__main__":
@@ -222,10 +231,12 @@ if __name__ == "__main__":
     parser.add_argument("--barge-wav", type=Path)
     parser.add_argument("--output", type=Path, help="Write room audio to a new WAV file.")
     parser.add_argument("--language", choices=("zh", "en"), default="zh")
-    parser.add_argument("--expected-transcript", required=True, help="Expected fragment of the input ASR.")
+    parser.add_argument("--expected-task", help="Expected fragment of the model-generated delegation task.")
+    parser.add_argument("--expected-transcript", help="Also require this fragment in the displayed input ASR.")
     parser.add_argument("--observe-seconds", type=int, choices=range(1, 16), default=8)
     parser.add_argument("--expected-reply", help="Expected fragment of the provider output transcript.")
     args = parser.parse_args()
-    if not args.expected_transcript.strip():
-        parser.error("--expected-transcript must be nonempty.")
+    for name in ("expected_task", "expected_transcript"):
+        if (value := getattr(args, name)) is not None and not value.strip():
+            parser.error(f"--{name.replace('_', '-')} must be nonempty.")
     raise SystemExit(0 if asyncio.run(probe(args)) else 1)

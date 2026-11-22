@@ -1060,11 +1060,18 @@ export default function App() {
                 );
                 const unverifiedReply = t?.answer ? spokenReplyUnverified(t.answer) : false;
                 const candidateSpeech = speechParts.some((part) => part.candidate);
+                const delegated = t?.request_origin === "delegation";
                 return (
                   <article className="turn" key={key}>
                     <div className="user-message">
+                      {delegated && input?.text && (
+                        <>
+                          <span className="message-label">You · Live transcript</span>
+                          <p aria-live="polite">{input.text}</p>
+                        </>
+                      )}
                       <span className="message-label">
-                        {t?.request_origin === "delegation" ? "Delegated request" : t?.channel === "text" ? "You · Text" : "You · Voice request"}
+                        {delegated ? "Delegated request" : t?.channel === "text" ? "You · Text" : "You · Voice request"}
                       </span>
                       <p aria-live={t ? undefined : "polite"}>
                         {t?.user_text || input?.text || "…"}

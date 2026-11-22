@@ -1,4 +1,4 @@
-"""Relay continuous Live audio and bind a read-only delegation to user ASR."""
+"""Relay continuous Live audio and bind client delegations to observed audio."""
 
 import asyncio
 import base64
@@ -58,8 +58,7 @@ class InputTurn:
     asr_start: int = -1
     asr_end: int = -1
     asr_at: float = 0
-    final: bool = False
-    ambiguous: bool = False
+    caption_done: bool = False
     delegated: bool = False
     settled_without_evidence: bool = False
     delegations: int = 0
@@ -75,7 +74,7 @@ class InputTurnAssembler:
 
     def speech(self, clock):
         turn = self.latest
-        if not turn or turn.final or clock - turn.end >= INPUT_GAP_MS:
+        if not turn or turn.delegations or clock - turn.end >= INPUT_GAP_MS:
             if len(self.turns) >= 512:
                 raise DomainError("VOICE_SESSION_ROTATION_REQUIRED", "Reconnect to continue voice.", 409, True)
             turn = InputTurn(uid(), clock, clock)
@@ -86,18 +85,14 @@ class InputTurnAssembler:
     def transcript(self, text, start, end):
         candidates = [turn for turn in self.turns if
                       start < turn.end + 200 and end > turn.start - 200]
-        # Prefer real overlap over timestamp jitter. If audio has no unique
-        # owner, refuse the delegation rather than attach a different input.
+        # Prefer real overlap over timestamp jitter for display attribution.
         overlaps = [turn for turn in candidates if start < turn.end and end > turn.start]
         candidates = overlaps or candidates
         if len(candidates) != 1:
-            for turn in candidates:
-                turn.ambiguous = True
             return None
         turn = candidates[0]
         if start == turn.asr_end or (not turn.text and turn.asr_end < 0):
-            if turn.final or len(turn.text) + len(text) > 2000:
-                turn.ambiguous = True
+            if turn.caption_done or len(turn.text) + len(text) > 2000:
                 return None
             if not turn.text:
                 turn.asr_start = start
@@ -105,7 +100,6 @@ class InputTurnAssembler:
             turn.text += text
             turn.asr_at = time.monotonic()
             return turn
-        turn.ambiguous = True
         return None
 
     def at_delegation(self, offset):
@@ -116,9 +110,8 @@ class InputTurnAssembler:
         return candidates[0] if len(candidates) == 1 and candidates[0] is self.latest else None
 
     @staticmethod
-    def stable(turn, clock):
-        return (bool(turn.text.strip()) and not turn.ambiguous
-                and clock - turn.end >= 320 and time.monotonic() - turn.asr_at >= ASR_SETTLE)
+    def audio_settled(turn, clock):
+        return clock - turn.end >= 320
 
 
 @dataclass
@@ -196,19 +189,13 @@ async def sophon_relay(gateway, ws, session, provider):
         except asyncio.QueueFull as exc:
             raise DomainError("AUDIO_BACKPRESSURE", "Playback fell behind. Restart voice.", 409, True) from exc
 
-    async def finalize_input(turn):
-        if turn.final:
-            return
-        # Set before the first await. Both the receiver and tool worker can
-        # observe the same stable transcript.
-        turn.final = True
-        await store.utterance(session.principal, cid, epoch, turn.id, text=turn.text.strip())
+    async def finalize_caption(turn):
+        turn.caption_done = True
         await store.record(cid, epoch, "sophon_input", turn.id, {
             "audio_start_ms": turn.start, "audio_end_ms": turn.end,
             "asr_start_ms": turn.asr_start, "asr_end_ms": turn.asr_end,
         })
         emit("transcript.done", {"item_id": turn.id, "text": turn.text.strip()})
-        input_changed.set()
 
     def response_body(response):
         owner = response.owner
@@ -240,7 +227,7 @@ async def sophon_relay(gateway, ws, session, provider):
                 "input_to_candidate_audio_ms": response.start - operation.call.owner.end,
                 "_authorized_kb_ids": sorted(session.principal.knowledge_base_ids),
             }, turn_id, operation.turn.request_revision)
-        elif (not interrupted_delivery and response.owner and response.owner.final and not response.owner.delegated
+        elif (not interrupted_delivery and response.owner and not response.owner.delegated
               and response.start >= response.owner.end - 100 and response.text.strip()):
             await store.utterance(session.principal, cid, epoch, response.owner.id, answer=AnswerBundle(
                 status="answered", display_text=response.text.strip(), speech_text="",
@@ -349,7 +336,6 @@ async def sophon_relay(gateway, ws, session, provider):
                 turn = inputs.transcript(body["text"], body["start"], body["end"])
                 if turn:
                     emit("transcript.delta", {"item_id": turn.id, "text": body["text"]})
-                input_changed.set()
             elif event.kind == "delegation":
                 did, task = body["id"], body["task"]
                 if did in seen:
@@ -462,33 +448,31 @@ async def sophon_relay(gateway, ws, session, provider):
             versions = {}
             owner = call.owner
             tool = (session.tool_catalog or {}).get(TOOL)
+            question = call.task[6:].strip()
             if not tool or tool.kind != "cuekb" or call.task.startswith("UNSUPPORTED:"):
                 code = "UNSUPPORTED"
-            elif not call.task.startswith("CUEKB:") or not call.task[6:].strip():
+            elif not call.task.startswith("CUEKB:") or not any(char.isalnum() for char in question):
                 code = "ROUTE_UNDECLARED"
             elif owner is None or owner is not inputs.latest:
                 code = "INPUT_UNCERTAIN"
             else:
                 try:
                     async with asyncio.timeout_at(call.received + 1.25):
-                        while owner is inputs.latest and not InputTurnAssembler.stable(owner, clock):
+                        while owner is inputs.latest and not inputs.audio_settled(owner, clock):
                             input_changed.clear()
                             await input_changed.wait()
                 except TimeoutError:
                     pass
-                if (owner is not inputs.latest or not InputTurnAssembler.stable(owner, clock)
-                    or owner.asr_end > call.offset + 200 or owner.end > call.offset + 200):
+                if (owner is not inputs.latest or not inputs.audio_settled(owner, clock)
+                    or owner.end > call.offset + 200):
                     code = "INPUT_UNCERTAIN"
                 elif owner.delegations >= settings.sophon_live_max_delegations_per_input:
                     code = "DUPLICATE"
-                elif not chinese and not printable_ascii(owner.text):
+                elif not chinese and not printable_ascii(question):
                     code = "INPUT_UNCERTAIN"
                 else:
                     owner.delegations += 1
-                    await finalize_input(owner)
-                    # The model's task selects a single read-only operation.
-                    # Only the captured user ASR supplies the actual question.
-                    decision = ExecutionDecision(tool, SophonQuestion(query=owner.text))
+                    decision = ExecutionDecision(tool, SophonQuestion(query=question))
                     search = NativeInputSearch(1)
                     versions = {name: await store.tool_revision(name) for name in tool.required_tools}
                     await current()
@@ -496,8 +480,9 @@ async def sophon_relay(gateway, ws, session, provider):
                     retrieval_started = time.monotonic()
                     try:
                         turn, task = await coordinator.submit(
-                            session.principal, cid, f"sophon:{epoch}:{call.id}", owner.text.strip(),
+                            session.principal, cid, f"sophon:{epoch}:{call.id}", question,
                             "voice", epoch, call.id, owner.id, decision, voice_relay=True, native_search=search,
+                            delegated_text=True,
                         )
                         session.request_revision = turn.request_revision
                         result = await task if task else None
@@ -563,8 +548,9 @@ async def sophon_relay(gateway, ws, session, provider):
             await asyncio.sleep(.25)
             await current()
             for owner in inputs.turns:
-                if not owner.final and InputTurnAssembler.stable(owner, clock):
-                    await finalize_input(owner)
+                if (not owner.caption_done and owner.text.strip() and inputs.audio_settled(owner, clock)
+                        and time.monotonic() - owner.asr_at >= ASR_SETTLE):
+                    await finalize_caption(owner)
             input_changed.set()
             for event_id, receipt in list(receipts.items()):
                 if time.monotonic() - receipt.sent_at >= settings.voice_native_answer_timeout_seconds:
@@ -634,7 +620,7 @@ async def sophon_relay(gateway, ws, session, provider):
 
 
 class SophonQuestion(StrictModel):
-    """Only used after binding transcript from the configured Sophon connection."""
+    """Question supplied by a bound read-only Sophon delegation."""
 
     # The session's locale decides whether Unicode is accepted. NVIDIA's tool
     # schema and validation remain unchanged.
@@ -667,6 +653,8 @@ def disposition(code, chinese):
                       "This input already has a delegation. Do not repeat the lookup."),
         "SUPERSEDED_AUDIO": ("用户已经开始新一轮输入。不要播报旧问题的结果。",
                              "The user started a new input. Do not speak the old result."),
+        "PRIVATE_WEB_SEARCH": ("本会话已处理企业资料，无法执行公开搜索。请让用户开启新会话后再试。",
+                               "This call has used company documents. Ask the user to start a new call for public search."),
         "TIMEOUT": ("知识库查询超时，请告知用户无法确认答案。",
                     "The documentation search timed out. Tell the user the answer could not be confirmed."),
     }

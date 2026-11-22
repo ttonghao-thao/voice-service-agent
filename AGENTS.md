@@ -15,6 +15,7 @@
 
 - NVIDIA VoiceChat、Sophon Live、CueKB 独立部署；保持 Gateway → Coordinator → Runtime → Registry。供应商结构归 app/voice，Agents SDK 归 app/agent_runtime。
 - tools/instructions 原生选工具，不加 WS tool_choice、分类模型、独立 Nano 或子 Agent 调度。一般回答不是企业证据；mock 不证明真实能力，real 失败不回退 mock。
+- Sophon ASR 仅供字幕展示。模型直接理解音频，原生委派 `task` 提供工具意图与参数，音频窗口校验委派归属。
 - 全局后台目录决定原生工具数量/描述，不能把初始工具数当上限；执行另验权限。涉及注册/刷新时读[工具契约](docs/interfaces/voice-tools.md)。
 - Coordinator 唯一提交；提交/交付复核 epoch/revision/Turn/租约/权限。普通发声和停止播放不取消查询；旧调用结清或关闭连接，unknown 不自动重发。
 - 身份、KB、凭据由服务端控制；模型/浏览器不得扩大权限。依赖沿用固定 requirements/package-lock，数据库用 Alembic；不提交密钥、票据、录音、数据库或产物。

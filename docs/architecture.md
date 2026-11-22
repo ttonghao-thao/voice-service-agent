@@ -16,24 +16,24 @@ Python 3.12/FastAPI、React/TypeScript/AudioWorklet、PostgreSQL/Redis。NVIDIA 
 | Gateway / Relay | 票据与 epoch、持续收发、input/call/batch/response 关联、单输入预算 | apps/api/app/voice/gateway.py、relay.py、batches.py |
 | Coordinator | 唯一业务提交；revision、租约、等待口述和取消 | apps/api/app/sessions/coordinator.py |
 | Runtime / Registry | 可信工具分派、权限、执行审计、问题/证据投影 | apps/api/app/agent_runtime/native_cuekb.py、native_input.py；app/tools/registry.py |
-| CueKB Adapter | 最终 ASR、facets、授权实体目录；query 后 validate | apps/api/app/tools/adapters.py、entity_context.py |
+| CueKB Adapter | 问题文本、facets、授权实体目录；query 后 validate | apps/api/app/tools/adapters.py、entity_context.py |
 | 最终语音预算 | 实际 tokenizer 对整个 NeMo 包计数；整组准入、记录省略 | apps/api/app/agent_runtime/voice_budget.py |
 | VoiceChat 快照 | 原生工具提取/注入，显示 ASR、音频位置、响应结束 | docs/voicechat/s2s/audio_server.py；快照 backend/model.py、data_types.py |
 
 调用方向保持 Gateway → Coordinator → Runtime → Registry → CueKB。音频保持单条 VoiceChat 连接；供应商结构仅在 voice 边界解释，业务不能凭模型参数扩大 KB/权限。
 
-未配置 LiveKit 时，Sophon Live 使用原门户 WebSocket 音频协议和业务链。Adapter 通过 `session.start` 建连，relay 在 24 kHz PCM 上处理连续音频、字幕和打断。客户端委托必须明确请求企业资料，并与一次稳定、无竞争的用户 ASR 输入关联，才能执行已注册并授权的 `search_knowledge_base`。CueKB 2.1 完成 query 和 validate 后发一次 Commentary。Gateway 回执只结清消息接收状态。候选语音以 `phase=candidate` 播放和显示字幕，业务记录保留授权来源和语音未核实状态。只有具备输入、委托和回答的可验证关联，才能进一步认证完整口述。
+未配置 LiveKit 时，Sophon Live 使用原门户 WebSocket 音频协议和业务链。Adapter 通过 `session.start` 建连，relay 在 24 kHz PCM 上处理连续音频、字幕和打断。客户端委派的 `task` 须明确请求企业资料，并能归属到唯一稳定的语音输入，才能执行已注册并授权的 `search_knowledge_base`。CueKB 2.1 完成 query 和 validate 后发一次 Commentary。Gateway 回执只结清消息接收状态。候选语音以 `phase=candidate` 播放和显示字幕，业务记录保留授权来源和语音未核实状态。只有具备输入、委派和回答的可验证关联，才能进一步认证完整口述。
 
 配置 LIVEKIT_URL 后，Gateway 继续从现有会话入口鉴权，并签发仅限当前 Room 的短时 Token。浏览器以 WebRTC 收发音频，门户 WebSocket 只传状态与字幕。API 每 Room 启动一个官方 AgentSession，由 GPTLiveModel 连接独立 Sophon Live。Sophon 负责语音打断，门户的 Stop playback 即时静音并在新输入的字幕到达后恢复播放。
 
-LiveKit 路径根据官方 SDK 已发送的 PCM 观察输入窗口，短停顿归入同一个输入。Router 校验委派的路由和参数，现有 Coordinator、Registry 和 CueKB 负责授权、证据校验及业务提交。只有唯一候选输入时才执行每轮一次的检索。结果回传前复核输入及权限。独立的模型任务文本可用于搜索，标为委派来源，不进入已确认产品、版本或用户转写历史。已发送企业证据的 Room 要求有当前用户转写才能公开搜索。
+LiveKit 路径根据官方 SDK 已发送的 PCM 观察输入窗口，短停顿归入同一个输入。Router 校验委派的路由和参数，现有 Coordinator、Registry 和 CueKB 负责授权、证据校验及业务提交。只有唯一候选输入时才执行每轮一次的检索。结果回传前复核输入及权限。两条 Sophon 路径均使用模型生成的 `task` 提供查询参数，业务记录标为委派来源，ASR 仅作为门户字幕。已回传企业资料的 Room 拒绝向公网发送后续搜索，用户可在新通话请求公开搜索。
 
 口述字幕标为候选。Gateway 回执用于确认消息收到，真实口述归属和听音另验。
 
 ## 3. 知识执行
 
 1. 模型原生 call 触发；相同 call_id 幂等，冲突身份严格拒绝；不同 input 不凭文字相似合并。
-2. NVIDIA 和 Sophon WebSocket 等最终 ASR，创建业务 Turn。原始 ASR 作为 `question`；受控上下文进入 `search_query/filters/context_bindings`。模型 query 保留审计，不覆盖原问题。
+2. NVIDIA VoiceChat 使用最终 ASR 作为 `question` 创建业务 Turn；受控上下文进入 `search_query/filters/context_bindings`，模型 query 保留审计。Sophon 在核对音频归属后使用 `task` 中的完整问题创建业务 Turn。
 3. 每 input 最多一次 `/v2/evidence/query`，合法成功包再一次 `/v2/evidence/validate`；服务内部补召回归 CueKB。目录 GET 和 tokenizer 预检不属于第二次证据查询。失败不自动重试或回退旧 search。
 4. 严格消费 facets/decision/完整来源。CueKB canonical model_view 默认 120 tokens；最终 NeMo 包另由运行 VoiceChat 精确计数，默认上限 256。超过预算仅整组省略并降级决策，不能截断条件。
 5. 每原生批次一份回填，未执行成员显式结清。结果终态后新 call 不查库、不新建 Turn，返回小型 settlement 并抑制冗余 ACK；仍不能保证模型一定遵从停止指令。

@@ -18,6 +18,7 @@ from websockets.asyncio.server import serve
 VOICE = base64.b64encode(struct.pack("<1920h", *[1800] * 1920)).decode()
 QUIET = base64.b64encode(bytes(3840)).decode()
 QUESTION = "企业资料里 AX 网关经常离线是什么原因？"
+TASK_QUESTION = "请查询 AX 网关离线故障的排查步骤。"
 ANSWER = "AX 网关可能因网线松动离线。"
 
 
@@ -31,7 +32,7 @@ def test_sophon_voice_to_evidence_and_commentary(tmp_path, scenario):
                              voice_native_answer_timeout_seconds=1 if scenario == "unmatched_ack" else 60)
     app = create_app(settings)
     calls, results, validated = [], [], []
-    expected = "CUEKB: deliberately different model text"
+    expected = "CUEKB: " + TASK_QUESTION
     greeting = []
     query_started = Event()
 
@@ -173,24 +174,30 @@ def test_sophon_voice_to_evidence_and_commentary(tmp_path, scenario):
                         append(seq, QUIET)
                         time.sleep(.055)
                 events = []
+                caption_expected = scenario not in {"missing_asr", "ambiguous_input", "unsupported", "missing_task", "barge_after_ack"}
+                caption_received = False
                 segment_count = 0
                 for _ in range(50):
                     event = ws.receive_json()
                     assert event["type"] != "portal.error", event
                     events.append(event)
+                    if event["type"] == "portal.transcript.done":
+                        caption_received = True
                     if event["type"] == "portal.audio.done":
                         segment_count += 1
-                        if segment_count == (2 if scenario == "progress_then_answer" else 1):
-                            break
+                    if segment_count == (2 if scenario == "progress_then_answer" else 1) and (caption_received or not caption_expected):
+                        break
                 assert any(event["type"] == "portal.playback.clear" for event in events)
-                assert events[-1]["type"] == "portal.audio.done"
-                assert events[-1]["payload"]["response_id"] != greeting[0]
+                finished = [event for event in events if event["type"] == "portal.audio.done"]
+                assert finished and finished[-1]["payload"]["response_id"] != greeting[0]
                 cutoff = next(i for i, event in enumerate(events) if event["type"] == "portal.playback.clear")
                 assert all(event["payload"].get("response_id") != greeting[0] for event in events[cutoff:])
                 assert len(results) == 1 and results[0]["delegation_id"] == "item_first"
-                if scenario in {"missing_asr", "ambiguous_input"}:
+                if scenario == "ambiguous_input":
                     assert not calls and "重述" in results[0]["content"]
-                elif scenario not in {"unsupported", "missing_task", "barge_after_ack"}:
+                elif scenario == "missing_asr":
+                    assert not any(event["type"].startswith("portal.transcript.") for event in events)
+                elif caption_expected:
                     assert [event["payload"]["text"] for event in events if event["type"] == "portal.transcript.done"] == [QUESTION]
                 if scenario == "unsupported":
                     assert not calls and "不受支持" in results[0]["content"]
@@ -201,11 +208,12 @@ def test_sophon_voice_to_evidence_and_commentary(tmp_path, scenario):
                     captions = [e["payload"] for e in events if e["type"] == "portal.speech_text.done"]
                     assert [(p["text"], p["phase"]) for p in captions] == [("不客气。", "candidate")]
                     assert history["items"][0]["answer"]["reason_code"] == "VOICE_ANSWER_UNVERIFIED"
-                if scenario in {"answer", "progress_then_answer", "unmatched_ack", "insufficient", "stale_evidence", "superseded"}:
+                if scenario in {"answer", "progress_then_answer", "unmatched_ack", "insufficient", "stale_evidence", "superseded", "missing_asr"}:
                     assert len(calls) == len(validated) == 1
-                    assert calls[0]["question"] == QUESTION
-                    assert calls[0]["search_query"].startswith(QUESTION)
-                    assert "deliberately" not in results[0]["content"]
+                    assert calls[0]["question"] == TASK_QUESTION
+                    assert calls[0]["search_query"] == TASK_QUESTION
+                    request = client.get(f"/api/v1/conversations/{cid}/messages").json()["items"][0]
+                    assert request["user_text"] == TASK_QUESTION and request["request_origin"] == "delegation"
                 if scenario in {"answer", "progress_then_answer", "unmatched_ack", "insufficient"}:
                     packet = json.loads(results[0]["content"].split("\n", 1)[1])
                     assert packet["decision"] == ("insufficient" if scenario == "insufficient" else "answer")
@@ -235,7 +243,7 @@ def test_sophon_voice_to_evidence_and_commentary(tmp_path, scenario):
                         assert all(e["payload"]["phase"] == "candidate" for e in events
                                    if e["type"] in {"portal.speech_text.done", "portal.audio.done"})
                 if scenario == "answer":
-                    rid = events[-1]["payload"]["response_id"]
+                    rid = finished[-1]["payload"]["response_id"]
                     played = [event for event in events if event["type"] == "portal.audio.delta"
                               and event["payload"]["response_id"] == rid]
                     ws.send_json({"type": "portal.playback.ack", "epoch": epoch, "payload": {

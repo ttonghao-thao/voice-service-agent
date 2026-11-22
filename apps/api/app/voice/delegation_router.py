@@ -26,7 +26,7 @@ class DelegationRouter:
             )
         }
 
-    def select(self, task, transcript, catalog):
+    def select(self, task, catalog):
         route, sep, arguments = task.replace("：", ":", 1).partition(":")
         route, arguments = route.strip().upper(), arguments.strip()
         if not sep or not arguments:
@@ -35,12 +35,11 @@ class DelegationRouter:
             tool = catalog.get("search_knowledge_base")
             if not tool or tool.kind != "cuekb":
                 return None, ""
-            question = transcript or arguments
-            if len(question) > 2000 or not any(char.isalnum() for char in question):
+            if len(arguments) > 2000 or not any(char.isalnum() for char in arguments):
                 return None, ""
-            return ExecutionDecision(tool, SophonQuestion(query=question)), question
+            return ExecutionDecision(tool, SophonQuestion(query=arguments)), arguments
         tool = self.tools.get(route)
-        if tool is None or INTERNAL.search(arguments) or INTERNAL.search(transcript):
+        if tool is None or INTERNAL.search(arguments):
             return None, ""
         argument, _, qualifier = arguments.partition("|")
         try:
@@ -50,7 +49,7 @@ class DelegationRouter:
                 parsed = WebSearchInput(query=argument.strip(), freshness=qualifier.strip() or None)
         except ValidationError:
             return None, ""
-        return ExecutionDecision(tool, parsed), transcript or arguments
+        return ExecutionDecision(tool, parsed), arguments
 
     async def run_external(self, name, request, ctx, history, progress):
         output = await self.registry.invoke(name, ctx.tool_arguments, ctx)

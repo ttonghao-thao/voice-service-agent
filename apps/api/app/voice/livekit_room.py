@@ -209,7 +209,7 @@ class RoomCall:
                 text = event.get("delta")
                 if (not isinstance(text, str) or timestamp(event.get("start_ms")) >= timestamp(event.get("end_ms"))):
                     raise ValueError("invalid input transcript")
-                if owner and not owner.claimed and len(owner.transcript) + len(text) <= 2000:
+                if owner and len(owner.transcript) + len(text) <= 2000:
                     owner.transcript += text
                     self.emit("transcript.delta", {"item_id": owner.id, "text": text})
             elif kind == "session.output_transcript.delta" and isinstance(event.get("delta"), str):
@@ -281,12 +281,7 @@ class RoomCall:
             if owner is not self.inputs.latest or owner.ended is None:
                 self.duplex.append_commentary(disposition("INPUT_UNCERTAIN", self.chinese), delegation_id=event.id)
                 continue
-            transcript = owner.transcript.strip()
-            decision, question = self.router.select(task, transcript, self.session.tool_catalog or {})
-            # A model-derived public query must not forward knowledge excerpts
-            # from earlier commentary. Use user ASR after private delivery.
-            if decision and decision.tool.name == "web_search" and self.sent_private_content:
-                decision, question = self.router.select("WEB_SEARCH: " + transcript if transcript else "", transcript, {})
+            decision, question = self.router.select(task, self.session.tool_catalog or {})
             if owner.claimed or not decision:
                 if owner.claimed:
                     content = disposition("DUPLICATE", self.chinese)
@@ -296,14 +291,17 @@ class RoomCall:
                 self.duplex.append_commentary(content, delegation_id=event.id)
                 continue
             owner.claimed = True
+            if decision.tool.name == "web_search" and self.sent_private_content:
+                self.duplex.append_commentary(disposition("PRIVATE_WEB_SEARCH", self.chinese), delegation_id=event.id)
+                continue
             try:
-                await self.execute(event.id, owner, decision, question, bool(transcript), received)
+                await self.execute(event.id, owner, decision, question, received)
             except DomainError as exc:
                 if exc.code not in {"AGENT_CAPACITY_EXCEEDED", "SERVICE_DRAINING"}:
                     raise
                 self.duplex.append_commentary(disposition("FAILED", self.chinese), delegation_id=event.id)
 
-    async def execute(self, call_id, owner, decision, question, transcribed, received):
+    async def execute(self, call_id, owner, decision, question, received):
         registry = self.coordinator.runtime.registry
         versions = {name: await self.store.tool_revision(name) for name in decision.tool.required_tools}
         if owner is not self.inputs.latest:
@@ -312,11 +310,9 @@ class RoomCall:
         turn, pending = await self.coordinator.submit(
             self.session.principal, self.cid, f"sophon-room:{self.epoch}:{call_id}", question, "voice",
             self.epoch, call_id, owner.id, decision, voice_relay=True, native_search=native_search,
-            delegated_text=not transcribed,
+            delegated_text=True,
         )
         self.session.request_revision = turn.request_revision
-        if transcribed:
-            self.emit("transcript.done", {"item_id": owner.id, "text": question})
 
         result = await pending if pending else None
         receipt = asyncio.Event()

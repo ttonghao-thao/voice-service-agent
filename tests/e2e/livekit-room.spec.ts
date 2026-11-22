@@ -1,6 +1,7 @@
 import { expect, test } from "../../apps/web/node_modules/@playwright/test";
 
 const sample = process.env.LIVEKIT_E2E_WAV;
+const transcript = process.env.LIVEKIT_E2E_TRANSCRIPT;
 test.skip(!sample, "Requires the local LiveKit and Sophon Gateway fixture from docs/validation.md");
 
 test("Two rooms deliver a delegated request without uploading PCM over the control socket", async ({ browser }) => {
@@ -22,6 +23,12 @@ test("Two rooms deliver a delegated request without uploading PCM over the contr
       await page.getByRole("button", { name: "Start file call" }).click();
       await expect(page.getByRole("main").getByText("Voice ready", { exact: true })).toBeVisible();
       await expect(page.getByText("Delegated request", { exact: true })).toBeVisible();
+      if (transcript) {
+        const request = page.locator(".user-message").filter({ hasText: "Delegated request" });
+        await expect(request.getByText("You · Live transcript", { exact: true })).toBeVisible();
+        await expect(request.getByText(transcript, { exact: true })).toBeVisible();
+        await expect(request.getByText("Find the integration sample.", { exact: true })).toBeVisible();
+      }
       await expect(page.locator(".assistant-message")).toContainText("Spoken reply unverified");
       const audio = page.locator("audio");
       await expect(audio).toHaveCount(1);
