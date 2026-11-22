@@ -6,8 +6,8 @@ import json
 import logging
 import re
 
-from app.config import ROOT
 from app.contracts import DomainError, uid
+from app.voice.profiles import default_profile, instructions
 from app.voice.provider import VoiceEvent, decode_event
 from websockets.asyncio.client import connect
 
@@ -39,10 +39,10 @@ class SophonLiveAdapter:
         self.session_id = None
         self.close_confirmed = False
         self.unknown_events = set()
+        self.instructions = None
 
     async def connect(self):
-        language = "zh" if self.settings.sophon_live_locale == "zh-CN" else "en"
-        instructions = (ROOT / "config" / f"sophon-live-prompt-{language}.txt").read_text(encoding="utf-8")
+        prompt = self.instructions or instructions(default_profile(), self.settings.sophon_live_locale, livekit=False)
         key = self.settings.sophon_live_api_key.get_secret_value()
         try:
             async with asyncio.timeout(15):
@@ -52,7 +52,7 @@ class SophonLiveAdapter:
                     proxy=None, max_size=32768, max_queue=8, close_timeout=1,
                 )
                 await self.send("session.start", session={
-                    "model": "gpt-live-1", "instructions": instructions,
+                    "model": "gpt-live-1", "instructions": prompt,
                     "audio": {"format": {"type": "audio/pcm", "rate": RATE}, "output": {"voice": "chelsie"}},
                     "delegation": {"type": "client"}, "store": False,
                 })
@@ -108,6 +108,8 @@ class SophonLiveAdapter:
                 yield VoiceEvent("audio", {"pcm": pcm, "audio": event["delta"]})
             elif kind in ("session.input_transcript.delta", "session.output_transcript.delta"):
                 text = event.get("delta")
+                if kind.startswith("session.input") and (not isinstance(text, str) or not text):
+                    continue
                 start, end = timestamp(event.get("start_ms")), timestamp(event.get("end_ms"))
                 if (not isinstance(text, str) or not 0 < len(text) <= 2000
                     or any(not char.isprintable() and char not in "\r\n\t" for char in text) or end <= start):

@@ -467,7 +467,7 @@ LIVEKIT_E2E_WAV="$probe_dir/room.wav" npm --prefix apps/web run test:e2e -- live
 
 对照与补测没有替换正式结果：使用官方 persona 直连同一 Sophon，上海天气收到自然语言 task 的原生委派；明确 native delegate 参数的直连对照也收到 WEATHER task。Web 单次天气补测得到一次真实 QWeather 执行（325 ms）、匹配 Commentary 回执及候选口述，但正式重跑又漏调。两条额外的 macOS Tingting 合成输入（公开产品参数、F7005 参数，均非官方录音）各发出一次原生委派，仍因任务路由未识别而澄清，未执行 Tavily。不能将 API 冒烟或格式正确的受控集成当作这些语音请求已经通过。
 
-当前阻塞为两类委派问题：模型可能只说等待话术/工具标签而不调用 native delegate；实际 native task 也可能不符合本项目严格前缀契约，导致 Router 澄清。还需核对部署的原生 delegate 描述/参数约束与真实调用输出，并修复输入 ASR 的部署配置和初始化。没有启用 ASR 补调、分类模型、工具强制选择或伪造调用。现有协议仍不能认证某段口述属于某次结果的最终答案，所有候选保持 unverified。英文长回答可能在观察窗口结束时仍在输出，报告保存已观察部分，不宣称完整回答结束。
+该次正式测试阻塞为两类委派问题：模型可能只说等待话术/工具标签而不调用 native delegate；实际 native task 也可能不符合本项目严格前缀契约，导致 Router 澄清。当时还需核对部署的原生 delegate 描述/参数约束与真实调用输出，以及输入 ASR 的部署配置和初始化。没有启用 ASR 补调、分类模型、工具强制选择或伪造调用。现有协议仍不能认证某段口述属于某次结果的最终答案，所有候选保持 unverified。英文长回答可能在观察窗口结束时仍在输出，报告保存已观察部分，不宣称完整回答结束。
 
 复跑入口是 `scripts/validate_sophon_web.mjs`，需要已启动的真实 API/Web/LiveKit、项目 Web 开发依赖、Chrome/Playwright 和 ffmpeg。按部署文档配置公网工具与未接入 CueKB 状态。server-log 为该次 API 实例的当前日志文件，用 conversation_id 关联，报告不保存请求票据或 Room Token。中文/英文运行时必须分别配套 SOPHON_LIVE_LOCALE，输出到不同目录：
 
@@ -492,3 +492,87 @@ node scripts/validate_sophon_web.mjs \
 ```
 
 本次原始材料保存在仓库外 `/tmp/sophon-web-14.aENraE`：`run-manifest.json`、`final-14.json`、`results/final-zh`、`results/final-en`、`results/native-zh`、`results/supplement`；目录含每条截图、浏览器返回 PCM WAV 和 JSON。现场测试结束后，LiveKit 查询为 0 Room、0 participant。开发检查：118 项定向 Python、13 项浏览器文件入口回归、42 项 Web 单测、Web 构建、Ruff、契约导出及 shell/JS 语法通过；这些不改变真实语音工具验收失败的结论。
+
+## 原生委派与 Router 分项修复复测
+
+本轮基于 `06aafd936fca6f6f2fe90768ceaf59e9c0e6d386`，修改前 local、origin/main、GitHub 实际 main 一致。正式失败基线仍是上节的 1/7：只有 zh_news 原生委派且无法路由，其余六条无原生事件；不能覆盖该事实。所有新报告包含各源码 SHA256、录音 SHA256、原始原生 ID、task、解析方式、工具执行日志、回执和候选字幕；不是将期望值写成结果。
+
+### A：模型没有产生原生委派
+
+核对当前 SDK 的 `session.start` 构造和固定上游 `6b1713518eb75f8495415662870f682357372d09`：GPTLiveModel 使用 client delegation，Gateway 为引擎注册唯一 `delegate(task)`，引擎 Bridge 的 tool_call 经 Gateway 转成 session.delegation.created。Gateway 的 task schema 本来就是自然语言一句话，不要求本项目的三种前缀。[固定上游定义](https://github.com/adventists-ai/sophon-realtime/blob/6b1713518eb75f8495415662870f682357372d09/live/sophon_live/gateway.py)。这次未访问部署引擎进程、权重或最终工具模板，不能将源码核对说成部署身份审计。
+
+缩减格式负担，将 Persona 与固定规则分开，明确等待话术后必须实际调用原生函数。中文先复测 5/5 触发；英文首轮仍是 en_time 只说 “I'll check” 而无事件，完整 14 项当时为 6/7。使用同一官方 en_time WAV 直连，原指令再次漏委派；官方短 persona 和明确函数名、task 字符串参数、同一响应实际调用要求的候选规则各产生一次原生事件。采用候选英文规则后，Web en_time 正式复跑和独立重复均产生原生事件。对照保留在 native-current.json、native-official.json、native-candidate.json；没有用 ASR、等待话术、客户端关键词或假事件补调用。
+
+### B：已经委派但 Router 无法解析
+
+保留结构化优先，新增原生 task 自然语言规则。实测 task 包括“明天上海会下雨吗”“今天有什么科技新闻”“把客厅的灯关掉”“用户上次说喜欢吃什么”，分别进入 WEATHER、WEB_SEARCH、UNSUPPORTED、UNSUPPORTED。天气地点/日期不明和多路匹配则 CLARIFY；CueKB 仍走原 query/validate 与权限路径。任务只有在原生事件存在且音频窗口可靠时执行，ASR 文本不进入解析接口。
+
+早期关灯和记忆的两种真实表述曾落入 CLARIFY，已根据上述 task 补规则并在后续官方录音中复验为 UNSUPPORTED；未调用 Tavily 伪装执行。公网回退只允许 CueKB 地址与凭据都为空、task 明确公开且无敏感信息；内部信息、账号、客户、日志、SN、邮箱/IP/电话均阻止外发。CueKB 配置存在或服务失败不触发公网回退。
+
+### 官方 14 项分项结果
+
+最后一轮完整中文、英文均为整组重跑（delivery-zh、delivery-en），汇总 delivered-14.json：官方预期委派 **7/7**，无需委派 **7/7** 未误调，ASR 可见 **14/14**，已原生委派且属于三工具范围的路由 **3/3**。三次真实工具调用和工具结果回执均收到，天气/新闻中文两例有可用业务结果；英文天气返回地点澄清，不能算第三个天气答案。14 条均观察到音轨和候选输出，最终口述认证仍为 0。这些数据没有将时间、灯光、记忆的“不支持”结清计成业务执行成功。
+
+| 样例 | 原生委派数 | Router | 工具执行数 | 业务结果 | 匹配 Commentary 回执 | 首段候选音频 ms |
+| --- | ---: | --- | ---: | --- | --- | ---: |
+| zh_time | 1 | UNSUPPORTED | 0 | 不支持时间查询 | 是 | 2881 |
+| zh_weather | 1 | WEATHER | 1 | answered，口述未认证 | 是 | 3061 |
+| zh_light | 1 | UNSUPPORTED | 0 | 不支持设备动作 | 是 | 3108 |
+| zh_memory | 1 | UNSUPPORTED | 0 | 不支持个人记忆 | 是 | 3223 |
+| zh_news | 1 | WEB_SEARCH | 1 | answered，口述未认证 | 是 | 2720 |
+| zh_chat1 | 0 | 直接回答 | 0 | 一般候选语音 | 不适用 | 2145 |
+| zh_chat2 | 0 | 直接回答 | 0 | 一般候选语音 | 不适用 | 67 |
+| zh_chat3 | 0 | 直接回答 | 0 | 一般候选语音 | 不适用 | 2188 |
+| zh_know | 0 | 直接回答 | 0 | 一般候选语音 | 不适用 | 2075 |
+| zh_joke | 0 | 直接回答 | 0 | 一般候选语音 | 不适用 | 1896 |
+| en_time | 1 | UNSUPPORTED | 0 | 不支持时间查询 | 是 | 1828 |
+| en_weather | 1 | WEATHER | 1 | needs_clarification，同名地点 | 是 | 2639 |
+| en_chat | 0 | 直接回答 | 0 | 一般候选语音 | 不适用 | 4532 |
+| en_know | 0 | 直接回答 | 0 | 一般候选语音 | 不适用 | 2062 |
+
+首段候选音频可能是等待语或全双工重叠输出，不是最终答案端到端时延。中文、英文的 Provider/Router/指令源码与交付内容一致；中文整组后仅 App.tsx 的角色设置准备增加取消/互斥保护，该路径未在官方清单中使用，已单独纳入最终 15 项浏览器回归。每组实际源码 hash 均保留，不把它们伪称为同一全仓快照或生产部署通过。前面的 initial-zh、official-zh、final-zh、final-en、final-en-v2 及 repeat-en-time 仍保留，包括英文首次失败，未挑选同组内的成功案例替换失败。
+
+### ASR、角色与验收边界
+
+真实新测试已观察到中文与英文输入字幕，不能再用旧环境 0/14 描述当前状态。ASR 延迟导致无法唯一关联时仅产生 association=unbound 展示字幕，不生成音频输入或授权。正常、迟到、空、错误和关闭五种状态的同一合法 task 本地测试保持同一选择，ASR 本身不会将任务入队。未改动独立 Gateway 的 ASR 开关，真实开启/关闭对照仍需部署方提供两种环境；asr_enabled 不能确认时报告为 null，是否实际收到字幕单列。
+
+角色 API 按 owner_id 持久化，validation 使用 `?conversation_id=<当前通话>` 加原 Bearer token。覆盖 CRUD、跨用户 401/404、禁止提交固定 instructions、损坏/删除角色回退默认、两条传输的快照不被修改。数据库 0006 → head(0011) → 0007/0006 → head 及 Alembic check 保留已有历史；PostgreSQL 现场迁移未执行。真实 WebSocket 接入已分别用闹闹和小狗回答“你叫什么名字”，均有对应输出字幕、PCM 音频、输入字幕且无错误；这些是网络与候选文本证据，未做人耳听音认证。
+
+LiveKit 默认闹闹和自定义小狗的名字也在真实候选自我介绍中出现；小狗配置下北京天气、公开语音模型检索均有原生事件、正确路由、真实工具执行和匹配回执（profile-xiaogou/summary.json 的 2/2）。小狗介绍额外自称“AI2 的语音伙伴”，该归属不在配置中，不能认证完整 Persona 遵循或把这句话当事实；仅确认选定名字已生效。门户 CRUD 和语言风格修改经真实本地 API 的浏览器测试，活动会话快照不变；首次实现曾复用文件重跑的通话，已修复并以 14 项浏览器回归确认新 owner/token 和历史清理。
+
+真实 CueKB 尚未接入，不能以受控 evidence query/validate 测试替代私有知识验收。Melbourne 同名地点仍要求国家/地区澄清：Registry 的 status=ok 表示供应商调用正常，不表示返回了可用天气答案。报告另列 business_outcomes/business_answered_cases，不能将工具 HTTP 成功、Commentary 回执或首段等待语音当作最终回答成功。所有 final_answer_verified 保持 false。完整多轮打断的真实模型与最终口述归属仍需验收。
+
+补充的七条 Tingting 合成输入不是官方录音。北京实况、开源语音模型和明确公开产品查询均产生真实工具执行及回执；不明确的 F7005 参数请求返回 CLARIFY，未知地点天气返回 CLARIFY，内部客户日志被模型直接拒绝，均未据此外发敏感内容。缺地点样例发生了原生委派后再澄清，内部日志未委派而直接拒绝，分别不符合该补充清单最初的 native 标签；业务边界与 native 标签独立报告，没有将标签差异藏掉。F7005 在两次 task 中变成 F705，包括公开搜索 task：这是模型生成参数的保真失败，不能因 Tavily status=ok 就认为检索了正确产品。原 task 在 Router 中保留，ASR 未被用来修正工具参数；此项仍未解决，需模型侧核查和真实型号金标。
+
+### 当前运行与回传入口
+
+原始资料在仓库外 `/var/folders/1x/568sjwqd64z3p8prx9d5338w0000gn/T/sophon-implementation-6oiitmvq`，便捷路径记录在 `/tmp/sophon-implementation-path`。官方材料仍固定为 `6b1713518eb75f8495415662870f682357372d09/live/cases`。每次正式运行使用对应 locale 的真实 API/Web/LiveKit，server-log 必须是该实例日志；报告目录相互独立，不能用挑选成功样本替换同轮失败。
+
+```bash
+# 先按 deployment.md 启动本版本 API/Web/LiveKit 和真实 Sophon、公网工具。
+# 角色表需先通过现有迁移流程升级到 0011。
+SOPHON_CASES_DIR=/absolute/path/to/pinned-sophon/live/cases
+SOPHON_REPORT_DIR=/absolute/path/to/new-report
+node scripts/validate_sophon_web.mjs \
+  --cases "$SOPHON_CASES_DIR/cases.json" \
+  --source-revision 6b1713518eb75f8495415662870f682357372d09 \
+  --language zh --base-url http://localhost:5173 \
+  --server-log /absolute/path/to/current-api-zh.log \
+  --output "$SOPHON_REPORT_DIR/zh"
+# 使用 en-US 实例及它自己的日志，再运行 --language en，输出至 /en。
+# 仅在独立 Gateway 的配置已获确认时增加 --asr-state enabled 或 disabled。
+# 角色语音回归可加 --profile-json /absolute/path/to/profile.json；
+# JSON 仅包含 name、description、language_style，通过真实门户创建/选择。
+.venv/bin/python -m pytest -q tests/contract/test_delegation_router.py \
+  tests/contract/test_public_tools.py tests/integration/test_voice_profiles.py \
+  tests/integration/test_sophon_live.py tests/integration/test_livekit_delegation.py \
+  tests/integration/test_auth.py tests/integration/test_native_tool_catalog.py \
+  tests/contract/test_qa_migration.py
+npm --prefix apps/web test
+npm --prefix apps/web run build
+(cd apps/web && npx playwright test voice-file.spec.ts voice-profiles.spec.ts)
+PYTHONPATH=apps/api .venv/bin/python scripts/export_contracts.py
+git diff --check
+```
+
+本轮定向 Python 152 项通过、Web 单测 42 项、浏览器文件与角色 15 项通过（包含设置准备与开始/结束通话的竞争取消），TypeScript/Web 构建、Ruff、契约导出、JS 语法、迁移和 diff 检查通过。构建保留 LiveKit chunk >500 kB 提示与 Starlette 既有弃用告警。全量首次 853 通过、28 失败，其中新增迁移版本断言已修正并复验；余下 27 个失败节点全部在原始 main 的隔离 git archive 中复现（27 失败、1 通过），含 NVIDIA/旧 CueKB 及 followup 路径，未顺带修改这些系统。全量日志 pytest-all.log、baseline-failures.log 与最终定向 final-scoped.log 均保留；不能将定向全绿说成全仓全绿。

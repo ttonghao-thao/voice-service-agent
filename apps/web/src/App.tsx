@@ -31,6 +31,7 @@ import {
 } from "./audio/VoiceClient";
 import { prepareRecording, PreparedRecording } from "./audio/recordedAudio";
 import { answerLabel, sourceNotice, spokenReplyUnverified } from "./answerPresentation";
+import { VoiceProfiles } from "./VoiceProfiles";
 
 const stateLabels: Record<VoiceState, string> = {
   closed: "Voice disconnected",
@@ -87,17 +88,19 @@ export default function App() {
     useState<RecordingProgress | null>(null);
   const [recordingLoading, setRecordingLoading] = useState(false);
   const [startingCall, setStartingCall] = useState(false);
+  const [voiceProfileId, setVoiceProfileId] = useState("default-naonao");
   const recordingFile = useRef<HTMLInputElement>(null);
   const recordingSelection = useRef(0);
   const callStarting = useRef(false);
   const callAttempt = useRef(0);
+  const profileSetupConversation = useRef("");
   const textSending = useRef(false);
   const [selected, setSelected] = useState<Answer | null>(null),
     [sidebar, setSidebar] = useState(false),
     [sourcesOpen, setSourcesOpen] = useState(false),
     [before, setBefore] = useState<string | null>(null);
   const [inputs, setInputs] = useState<
-    Record<string, { text: string; done: boolean }>
+    Record<string, { text: string; done: boolean; unbound?: boolean }>
   >({});
   const [spoken, setSpoken] = useState<
     Record<string, { turnId: string; inputKey?: string; relatedInputKeys?: string[]; answerKind?: string; candidate?: boolean; text: string; done: boolean }>
@@ -377,6 +380,7 @@ export default function App() {
                 ? old[key].text
                 : (old[key]?.text || "") + String(event.payload.text || ""),
             done: done || !!old[key]?.done,
+            unbound: event.payload.association === "unbound" || !!old[key]?.unbound,
           },
         }));
         setTimeline((old) =>
@@ -620,15 +624,17 @@ export default function App() {
     setMicrophone(null);
     setRecordingProgress(null);
     try {
-      const id = await newConversation(attempt);
+      const id = active.current && profileSetupConversation.current === active.current
+        ? active.current : await newConversation(attempt);
+      profileSetupConversation.current = "";
       if (!id || attempt !== callAttempt.current) return;
       if (voiceInput === "file" && recording) {
         setMuted(false);
         voice.current?.setMuted(false);
         setSentRecording(recording);
-        await voice.current?.start(id, { kind: "file", recording });
+        await voice.current?.start(id, { kind: "file", recording }, voiceProfileId);
       } else {
-        await voice.current?.start(id);
+        await voice.current?.start(id, { kind: "microphone" }, voiceProfileId);
       }
       if (attempt !== callAttempt.current) await voice.current?.stop();
     } finally {
@@ -1076,7 +1082,7 @@ export default function App() {
                         </>
                       )}
                       <span className="message-label">
-                        {delegated ? "Delegated request" : t?.channel === "text" ? "You · Text" : "You · Voice request"}
+                        {input?.unbound ? "You · Unassociated caption" : delegated ? "Delegated request" : t?.channel === "text" ? "You · Text" : "You · Voice request"}
                       </span>
                       <p aria-live={t ? undefined : "polite"}>
                         {t?.user_text || input?.text || (candidateSpeech ? "Voice input · Transcript unavailable" : "…")}
@@ -1246,6 +1252,25 @@ export default function App() {
               </button>
             )}
             <div className="composer">
+              {caps?.provider === "sophon_live" && (
+                <VoiceProfiles cid={cid} selected={voiceProfileId} onSelect={setVoiceProfileId}
+                  ensureConversation={async () => {
+                    if (callStarting.current || textSending.current) return "";
+                    const attempt = ++callAttempt.current;
+                    callStarting.current = true;
+                    setStartingCall(true);
+                    try {
+                      const id = active.current || await newConversation(attempt);
+                      if (!id || attempt !== callAttempt.current) return "";
+                      if (voiceState === "closed") profileSetupConversation.current = id;
+                      return id;
+                    } finally {
+                      callStarting.current = false;
+                      setStartingCall(false);
+                    }
+                  }}
+                  disabled={startingCall || sending} />
+              )}
               <div className="voice-controls">
                 <Radio.Group
                   aria-label="Voice input source"

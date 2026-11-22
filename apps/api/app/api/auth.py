@@ -34,6 +34,9 @@ class Auth:
         if s.auth_mode == "fixture":
             return self.fixture_principal()
         cid = request.path_params.get("cid")
+        if request.url.path.startswith("/api/v1/voice-profiles"):
+            # validation identities are per-call, never a shared browser user.
+            cid = request.query_params.get("conversation_id")
         authorization = request.headers.get("authorization", "")
         scheme, _, token = authorization.partition(" ")
         if request.url.path.startswith("/api/v1/admin/"):

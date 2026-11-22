@@ -154,6 +154,15 @@ export interface Conversation {
   request_revision: number;
   access_token?: string;
 }
+export interface VoiceProfile {
+  id: string;
+  name: string;
+  description: string;
+  language_style: string;
+  persona_instructions: string;
+  is_default: boolean;
+  instructions?: string;
+}
 export interface PortalEvent {
   type: string;
   event_id: string;

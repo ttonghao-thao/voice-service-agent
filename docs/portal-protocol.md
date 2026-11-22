@@ -4,7 +4,9 @@
 
 ## 1. 通话与界面
 
-点击 Start call 才创建新的 conversation/owner/token，再申请语音 session；token 只在当前标签页内存中，刷新不能恢复历史。Voice ready 表示握手/格式就绪；静默时允许模型主动欢迎语，首次无输入回复之后的自说话被抑制，具体三秒时机依赖真实模型。门户申请麦克风，ready 后持续发送含静音的音频；设备 capture Hz 与 sent Hz 分开显示。
+点击 Start call 创建新的 conversation/owner/token，再申请语音 session。Sophon 的 Voice settings 可以先创建临时通话身份以保存角色，首次 Start call 使用该准备好的身份；文件错误/轮换后的显式重跑仍创建独立 owner/token，不重放录音或复用旧历史。token 只在当前标签页内存中，刷新不能恢复历史。Voice ready 表示握手/格式就绪；静默时允许模型主动欢迎语，首次无输入回复之后的自说话被抑制，具体三秒时机依赖真实模型。门户申请麦克风，ready 后持续发送含静音的音频；设备 capture Hz 与 sent Hz 分开显示。
+
+Sophon 角色 API 是 `/api/v1/voice-profiles` 的 GET/POST 和 `/{profile_id}` 的 PATCH/DELETE。validation 模式必须传 conversation_id 查询参数和该通话原 Bearer token；默认闹闹由服务端提供，用户角色按 owner_id 存储。语音 session POST 可选 voice_profile_id，服务端快照 Persona 并追加固定业务规则；不存在、被删除或损坏时回默认，不修改活动会话。麦克风自动重连保留所选 ID，文件显式新通话遵守新的身份边界。
 
 用户转写以 `(epoch,item_id)` 更新右侧气泡，持久 Turn 用 input_item_id 原位接管；不凭文本相同合并。答案阶段实际口述按 response/segment 进入左侧正文，结束后保留；固定 ACK 只显示状态。完整业务答案和引用展开显示，文字输入直接显示业务答案。一般无工具回答按 input_item_id 关联，标明 Model general answer / No company sources were checked，不创建假知识 Turn。
 
@@ -70,7 +72,7 @@ finished=true 只在该 response 收到 audio.done 且 Worklet 对应队列排�
 | 事件 | 通道 | payload / 客户端行为 |
 | --- | --- | --- |
 | `portal.session.ready` | WS | 确认音频格式后开始采集发送 |
-| `portal.transcript.delta` / `done` | WS | item_id、text；首个非空文本更新右侧气泡，done 定稿，Turn 以 `input_item_id` 接管 |
+| `portal.transcript.delta` / `done` | WS | item_id、text、association（默认 bound）；首个非空文本更新右侧气泡，done 定稿。Sophon unbound 是独立展示字幕，不绑定业务输入或授权，不让 Turn 接管；其余 Turn 按真实 `input_item_id` 接管 |
 | `portal.speech_text.delta` / `done` | WS | response_id、segment_index、phase、text，Q07 可选 input_item_id/answer_kind；知识回答关联 turn_id，一般回答 turn_id 可空；状态阶段不进正文 |
 | `portal.audio.delta` / `done` | WS | response_id、delta 的 audio；done 的 phase 区分状态提示和答案，表示服务端发完，客户端仍须排空缓冲；过期 epoch 一律丢弃 |
 | `portal.input.state` | WS | state=speaking/quiet；仅输入状态，不自动等于取消业务 |

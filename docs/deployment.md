@@ -44,7 +44,9 @@ WEATHER_API_KEY=<weather-key>
 WEB_SEARCH_API_KEY=<tavily-search-key>
 ```
 
-沿用 AGENT_PROVIDER=disabled、QA_EXECUTION_MODE=dual_tools、QA_ANSWER_POLICY=general_qa 及 Sophon 配置。接入 CueKB 后再填写 CUEKB_BASE_URL/CUEKB_API_KEY，并将 search_knowledge 加入 ENABLED_TOOLS；未接入时，CUEKB 意图按公开问题转 Tavily。已配置私有服务出错不会切换。凭据只写部署主机受保护的 `.env`，不放前端或镜像。更新这些值后重新创建 API 容器；不得仅 restart。原有 `WEATHER_PROVIDER=http_contract` 仅用于显式旧代理兼容，QWeather 失败不会回退。未配置的天气或公开搜索从 ENABLED_TOOLS 省略。按现有 scripts/deploy-cloud.sh 部署。切回 Sophon WebSocket 时清空 LiveKit 三项并恢复 ENABLED_TOOLS=search_knowledge。 [LiveKit 验收](validation.md#livekit-门户与工具验收)
+沿用 AGENT_PROVIDER=disabled、QA_EXECUTION_MODE=dual_tools、QA_ANSWER_POLICY=general_qa 及 Sophon 配置。接入 CueKB 后再填写 CUEKB_BASE_URL/CUEKB_API_KEY，并将 search_knowledge 加入 ENABLED_TOOLS；未接入时，仅明确为公开且无敏感信息的独立问题可转 Tavily，裸型号或资料范围不明则澄清。已配置私有服务出错不会切换。凭据只写部署主机受保护的 `.env`，不放前端或镜像。更新这些值后重新创建 API 容器；不得仅 restart。原有 `WEATHER_PROVIDER=http_contract` 仅用于显式旧代理兼容，QWeather 失败不会回退。未配置的天气或公开搜索从 ENABLED_TOOLS 省略。按现有 scripts/deploy-cloud.sh 部署。切回 Sophon WebSocket 时清空 LiveKit 三项并恢复 ENABLED_TOOLS=search_knowledge。 [LiveKit 验收](validation.md#livekit-门户与工具验收)
+
+角色管理需要 Alembic `0011` 的 voice_profiles 表，按现有部署迁移流程升级后再启动新 API；仅开发/隔离测试使用 auto_create_schema。默认闹闹由服务端固定配置提供，不向每个账号重复插入。修改角色仅影响新语音会话。validation 模式保持临时通话身份，门户刷新/结束通话后不跨身份恢复角色。Sophon ASR 的启停由独立 Gateway 管理，本服务不启动或切换 ASR 模型；真实开关对照见 validation.md。
 
 ## 问答模式与预算（Q07）
 

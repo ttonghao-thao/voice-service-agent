@@ -22,9 +22,27 @@ from app.contracts import (
     now,
     uid,
 )
-from app.storage.models import AdminAudit, Conversation, Event, Record, ToolConfig, ToolRun, Turn
-from fastapi import APIRouter, Depends, Header, Query, Request, WebSocket
+from app.storage.models import (
+    AdminAudit,
+    Conversation,
+    Event,
+    Record,
+    ToolConfig,
+    ToolRun,
+    Turn,
+    VoiceProfile,
+)
+from app.voice.profiles import (
+    VoiceProfileInput,
+    VoiceProfilePatch,
+    VoiceSessionInput,
+    default_profile,
+    instructions,
+    profile_view,
+)
+from fastapi import APIRouter, Body, Depends, Header, Query, Request, WebSocket
 from fastapi.responses import StreamingResponse
+from pydantic import ValidationError
 from sqlalchemy import select
 
 router = APIRouter(prefix="/api/v1")
@@ -123,7 +141,7 @@ def _record_for_principal(record, user, settings):
     scope = payload.pop("_authorized_kb_ids", None)
     if record.kind in ("voicechat_transcript", "speech_validation", "native_cuekb_result", "native_answer_check",
                        "sophon_delegation", "sophon_commentary", "sophon_commentary_ack",
-                       "sophon_audio_candidate", "sophon_answer_observed"):
+                       "sophon_audio_candidate", "sophon_answer_observed", "sophon_route"):
         current = set(user.knowledge_base_ids)
         configured = _configured_kbs(settings)
         if (scope is None and ("customer" in user.roles or current != configured)) or (
@@ -442,9 +460,65 @@ async def stop_playback(cid: str, body: StopPlaybackInput, request: Request, use
 
 
 @router.post("/conversations/{cid}/voice-sessions", status_code=201)
-async def voice_session(cid: str, request: Request, user: User):
+async def voice_session(cid: str, request: Request, user: User, body: VoiceSessionInput = Body(default=VoiceSessionInput())):
     await limited(request, user)
-    return await request.app.state.voice.issue(user, cid)
+    return await request.app.state.voice.issue(user, cid, voice_profile_id=body.voice_profile_id)
+
+
+@router.get("/voice-profiles")
+async def voice_profiles(request: Request, user: User, conversation_id: str | None = Query(default=None, max_length=36)):
+    async with request.app.state.store.sessions() as db:
+        rows = (await db.execute(select(VoiceProfile).where(VoiceProfile.owner_id == user.user_id)
+                                 .order_by(VoiceProfile.created_at, VoiceProfile.id))).scalars()
+        settings = request.app.state.settings
+        profiles = [default_profile()]
+        for row in rows:
+            try:
+                profiles.append(profile_view(row))
+            except ValidationError:
+                continue
+        return [{**profile, "instructions": instructions(profile, settings.sophon_live_locale, livekit=bool(settings.livekit_url))}
+                for profile in profiles]
+
+
+@router.post("/voice-profiles", status_code=201)
+async def add_voice_profile(body: VoiceProfileInput, request: Request, user: User,
+                            conversation_id: str | None = Query(default=None, max_length=36)):
+    await limited(request, user)
+    async with request.app.state.store.transaction() as db:
+        row = VoiceProfile(owner_id=user.user_id, **body.model_dump())
+        db.add(row)
+        await db.flush()
+        return profile_view(row)
+
+
+async def owned_profile(db, profile_id, user):
+    row = (await db.execute(select(VoiceProfile).where(
+        VoiceProfile.id == profile_id, VoiceProfile.owner_id == user.user_id).with_for_update())).scalar_one_or_none()
+    if row is None:
+        raise DomainError("NOT_FOUND", "Voice profile not found", 404)
+    return row
+
+
+@router.patch("/voice-profiles/{profile_id}")
+async def edit_voice_profile(profile_id: str, body: VoiceProfilePatch, request: Request, user: User,
+                             conversation_id: str | None = Query(default=None, max_length=36)):
+    await limited(request, user)
+    async with request.app.state.store.transaction() as db:
+        row = await owned_profile(db, profile_id, user)
+        for key, value in body.model_dump(exclude_unset=True).items():
+            setattr(row, key, value)
+        row.updated_at = now()
+        return profile_view(row)
+
+
+@router.delete("/voice-profiles/{profile_id}")
+async def delete_voice_profile(profile_id: str, request: Request, user: User,
+                               conversation_id: str | None = Query(default=None, max_length=36)):
+    await limited(request, user)
+    async with request.app.state.store.transaction() as db:
+        await db.delete(await owned_profile(db, profile_id, user))
+    return {"status": "deleted"}
 
 
 @router.delete("/conversations/{cid}/voice-sessions/{sid}")

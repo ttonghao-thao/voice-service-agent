@@ -66,6 +66,8 @@ class VoiceSession:
     response_turns: dict | None = None
     suppressed_turns: set | None = None
     capabilities: ProviderCapabilities = ProviderCapabilities()
+    voice_profile: dict | None = None
+    instructions: str | None = None
 
 
 class VoiceGateway:
@@ -81,13 +83,27 @@ class VoiceGateway:
             if not s.used and time.monotonic() > s.expires:
                 self.sessions.pop(sid, None)
 
-    async def issue(self, principal, cid):
+    async def issue(self, principal, cid, *, voice_profile_id=None):
         self.expire()
         async with self.coordinator.lock(cid):
             await self.coordinator.ensure_owner(principal, cid)
             if self.coordinator.draining:
                 raise DomainError("SERVICE_DRAINING", "Voice service is under maintenance", 503)
             s = self.settings
+            from app.storage.models import VoiceProfile
+            from app.voice.profiles import default_profile, instructions, profile_view
+            from pydantic import ValidationError
+            from sqlalchemy import select
+            profile = default_profile()
+            if voice_profile_id and voice_profile_id != profile["id"]:
+                async with self.store.sessions() as db:
+                    row = (await db.execute(select(VoiceProfile).where(
+                        VoiceProfile.id == voice_profile_id, VoiceProfile.owner_id == principal.user_id))).scalar_one_or_none()
+                    if row:
+                        try:
+                            profile = profile_view(row)
+                        except ValidationError:
+                            logger.warning("voice_profile_invalid using_default=true")
             if s.voice_provider == "disabled":
                 raise DomainError("VOICE_UNAVAILABLE", "Voice is disabled in this deployment. Use text.", 503)
             async with self.store.transaction() as db:
@@ -156,6 +172,9 @@ class VoiceGateway:
                     tool_catalog=tool_catalog,
                     catalog_revision=catalog_revision,
                     capabilities=capabilities,
+                    voice_profile=profile,
+                    instructions=instructions(profile, s.sophon_live_locale, livekit=bool(s.livekit_url))
+                    if s.voice_provider == "sophon_live" else None,
                 )
             self.sessions[sid] = session
             response = {
@@ -227,6 +246,7 @@ class VoiceGateway:
             return
         provider = self.provider_factory(self.settings)
         if self.settings.voice_provider == "sophon_live":
+            provider.instructions = session.instructions
             from app.voice.sophon_relay import sophon_relay
             await sophon_relay(self, ws, session, provider)
             return

@@ -12,7 +12,6 @@ from datetime import timedelta
 import anyio
 from app.agent_runtime.direct import EvidenceReady
 from app.agent_runtime.native_input import NativeInputSearch
-from app.config import ROOT
 from app.contracts import (
     DomainError,
     PortalEvent,
@@ -22,8 +21,9 @@ from app.contracts import (
 )
 from app.sessions.coordinator import SophonEvidenceOutcome
 from app.voice.delegation_router import DelegationRouter
+from app.voice.profiles import default_profile, instructions
 from app.voice.sophon_gpt_live import sophon_gpt_live
-from app.voice.sophon_live import identifier, timestamp
+from app.voice.sophon_live import identifier
 from app.voice.sophon_relay import commentary, disposition, voiced
 from livekit import api, rtc
 from livekit.agents import Agent, AgentSession, room_io
@@ -137,6 +137,8 @@ class RoomCall:
         self.caption_id = uid()
         self.caption_input = None
         self.caption_text = ""
+        self.unbound_caption_id = uid()
+        self.unbound_caption_chars = 0
         self.started = time.monotonic()
 
     def end(self, error=None):
@@ -176,6 +178,7 @@ class RoomCall:
             return
         if active:
             self.finish_caption()
+            self.unbound_caption_id, self.unbound_caption_chars = uid(), 0
         self.inputs.update(active)
         self.emit("input.state", {"state": "speaking" if active else "quiet"})
         if active:
@@ -214,12 +217,19 @@ class RoomCall:
             elif kind == "session.input_transcript.delta":
                 owner = self.inputs.at_delegation(time.monotonic(), exclude_settled=False)
                 text = event.get("delta")
-                if (not isinstance(text, str) or timestamp(event.get("start_ms")) >= timestamp(event.get("end_ms"))):
-                    raise ValueError("invalid input transcript")
+                # ASR is optional presentation data. Missing/empty/malformed
+                # captions must not close the native audio/delegation path.
+                if not isinstance(text, str) or not text or len(text) > 2000:
+                    return
                 logger.info("sophon_room_input_transcript conversation_id=%s chars=%s", self.cid, len(text))
                 if owner and len(owner.transcript) + len(text) <= 2000:
                     owner.transcript += text
                     self.emit("transcript.delta", {"item_id": owner.id, "text": text})
+                elif not owner and self.unbound_caption_chars + len(text) <= 2000:
+                    self.unbound_caption_chars += len(text)
+                    self.emit("transcript.delta", {
+                        "item_id": self.unbound_caption_id, "text": text, "association": "unbound",
+                    })
             elif kind == "session.output_transcript.delta" and isinstance(event.get("delta"), str):
                 if not self.caption_text:
                     self.caption_input = self.inputs.latest
@@ -234,6 +244,7 @@ class RoomCall:
                 call_id = self.receipt_ids.pop(event.get("client_event_id"), None)
                 if receipt := self.receipts.get(call_id):
                     receipt.set()
+                    logger.info("sophon_room_commentary_ack conversation_id=%s delegation_id=%s", self.cid, call_id)
             elif kind == "session.closed":
                 self.confirmed = bool(self.upstream_id and event["session"].get("id") == self.upstream_id)
                 self.end()
@@ -289,16 +300,25 @@ class RoomCall:
             if owner is not self.inputs.latest or owner.ended is None:
                 await self.respond(event.id, disposition("INPUT_UNCERTAIN", self.chinese), None)
                 continue
-            decision, question = self.router.select(task, self.session.tool_catalog or {})
-            logger.info("sophon_room_route conversation_id=%s delegation_id=%s tool=%s elapsed_ms=%s",
-                        self.cid, event.id, decision.tool.name if decision else "clarify",
+            parsed = self.router.parse(task, self.session.tool_catalog or {})
+            decision, question = parsed.decision, parsed.question
+            logger.info("sophon_room_route conversation_id=%s delegation_id=%s route=%s parse_method=%s tool=%s reason=%s elapsed_ms=%s",
+                        self.cid, event.id, parsed.route, parsed.parse_method, decision.tool.name if decision else "none", parsed.reason or "ok",
                         round((time.monotonic() - received) * 1000))
+            await self.store.record(self.cid, self.epoch, "sophon_route", event.id, {
+                "delegation_task": task, "route": parsed.route, "parse_method": parsed.parse_method,
+                "source": parsed.source, "reason": parsed.reason,
+                "_authorized_kb_ids": sorted(self.session.principal.knowledge_base_ids),
+            })
             if owner.claimed or not decision:
                 if owner.claimed:
                     content = disposition("DUPLICATE", self.chinese)
                 else:
-                    content = ("请向用户澄清查询对象或缺失条件。请勿声称已经查询。" if self.chinese
-                               else "Ask the caller to clarify the request or missing details. No search was performed.")
+                    content = (("此功能尚未接入，未执行任何操作，请明确告诉用户。" if self.chinese
+                                else "This operation is unsupported. Tell the caller no action was performed.")
+                               if parsed.route == "UNSUPPORTED" else
+                               ("请向用户澄清查询对象、公开资料范围或缺失条件。请勿声称已经查询。" if self.chinese
+                                else "Clarify the target, public information scope or missing details. No search was performed."))
                 owner.claimed = True
                 await self.respond(event.id, content, owner)
                 continue
@@ -463,13 +483,13 @@ class RoomCall:
             if state.old_state == "speaking":
                 self.finish_caption()
 
-        instructions = (ROOT / "config" / f"sophon-livekit-prompt-{'zh' if self.chinese else 'en'}.txt").read_text()
+        prompt = self.session.instructions or instructions(default_profile(), self.settings.sophon_live_locale, livekit=True)
         async with asyncio.timeout(15):
             await self.current()
             await self.room.connect(self.settings.livekit_url, room_token(self.settings, self.session.id, AGENT))
             if CALLER not in self.room.remote_participants:
                 raise DomainError("VOICE_UNAVAILABLE", "The caller did not join the audio room.", 503, True)
-            await agent_session.start(agent=RoomAgent(self, instructions),
+            await agent_session.start(agent=RoomAgent(self, prompt),
                 room=self.room, room_options=room_io.RoomOptions(participant_identity=CALLER),
                 session_host=False, record=False)
             ready, closed = asyncio.create_task(self.ready.wait()), asyncio.create_task(self.closed.wait())

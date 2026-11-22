@@ -336,6 +336,8 @@ async def sophon_relay(gateway, ws, session, provider):
                 turn = inputs.transcript(body["text"], body["start"], body["end"])
                 if turn:
                     emit("transcript.delta", {"item_id": turn.id, "text": body["text"]})
+                else:
+                    emit("transcript.delta", {"item_id": uid(), "text": body["text"], "association": "unbound"})
             elif event.kind == "delegation":
                 did, task = body["id"], body["task"]
                 if did in seen:
@@ -347,7 +349,7 @@ async def sophon_relay(gateway, ws, session, provider):
                 seen[did] = task
                 call = Delegation(did, task, body["offset"], time.monotonic(),
                                   inputs.at_delegation(body["offset"]))
-                if call.owner and task.startswith("CUEKB:"):
+                if call.owner and knowledge_task(task):
                     call.owner.delegated = True
                 calls.put_nowait(call)
             elif event.kind == "ack":
@@ -448,10 +450,10 @@ async def sophon_relay(gateway, ws, session, provider):
             versions = {}
             owner = call.owner
             tool = (session.tool_catalog or {}).get(TOOL)
-            question = call.task[6:].strip()
+            question = knowledge_task(call.task)
             if not tool or tool.kind != "cuekb" or call.task.startswith("UNSUPPORTED:"):
                 code = "UNSUPPORTED"
-            elif not call.task.startswith("CUEKB:") or not any(char.isalnum() for char in question):
+            elif not question or not any(char.isalnum() for char in question):
                 code = "ROUTE_UNDECLARED"
             elif owner is None or owner is not inputs.latest:
                 code = "INPUT_UNCERTAIN"
@@ -617,6 +619,16 @@ async def sophon_relay(gateway, ws, session, provider):
                         await ws.close()
                     except Exception:
                         pass
+
+
+def knowledge_task(task):
+    # Lazy import keeps the shared rule parser and existing SophonQuestion
+    # contract in their current modules without changing the WS tool scope.
+    from app.voice.delegation_router import natural_task
+    route, sep, question = task.replace("：", ":", 1).partition(":")
+    if not sep:
+        route, question = natural_task(task)
+    return question.strip() if route.strip().upper() == "CUEKB" else ""
 
 
 class SophonQuestion(StrictModel):

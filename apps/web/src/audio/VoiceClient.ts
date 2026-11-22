@@ -53,6 +53,7 @@ export class VoiceClient {
   private activeResponse = "";
   private stoppedResponses = new Set<string>();
   private input: VoiceInput = { kind: "microphone" };
+  private voiceProfileId?: string;
   private fileId = 0;
   private fileArmed = false;
   private diagnosticAudio = new Set<string>();
@@ -208,11 +209,12 @@ export class VoiceClient {
     void this.stop();
     this.onError("The network disconnected and voice playback stopped.");
   };
-  async start(cid: string, input: VoiceInput = { kind: "microphone" }) {
+  async start(cid: string, input: VoiceInput = { kind: "microphone" }, voiceProfileId?: string) {
     await this.stop();
     const generation = ++this.generation;
     this.cid = cid;
     this.input = input;
+    this.voiceProfileId = voiceProfileId;
     this.fileArmed = false;
     this.diagnosticAudio.clear();
     this.knownFileInputs.clear();
@@ -274,7 +276,7 @@ export class VoiceClient {
         livekit?: RoomCredentials;
       }>(`/conversations/${cid}/voice-sessions`, {
         method: "POST",
-        body: "{}",
+        body: JSON.stringify({ voice_profile_id: voiceProfileId }),
       });
       if (generation !== this.generation) {
         await api(
@@ -581,7 +583,7 @@ export class VoiceClient {
     }
     this.onState("reconnecting");
     await this.stop();
-    await this.start(cid);
+    await this.start(cid, { kind: "microphone" }, this.voiceProfileId);
   }
   clear() {
     this.suppressed = true;

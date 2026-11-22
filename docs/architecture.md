@@ -28,7 +28,13 @@ Python 3.12/FastAPI、React/TypeScript/AudioWorklet、PostgreSQL/Redis。NVIDIA 
 
 LiveKit 路径根据官方 SDK 已发送的 PCM 观察输入窗口，短停顿归入同一个输入。Router 校验委派的路由和参数，现有 Coordinator、Registry 和 CueKB 负责授权、证据校验及业务提交。只有唯一候选输入时才执行每轮一次的检索。已收到工具结果或澄清回执、且在新发声前结清的输入退出后续委派竞争；处理中、回执未知和重叠输入仍按歧义拒绝，字幕归属不使用这个排除规则。同一请求的重复 ID 不执行，新输入允许主动重复同一查询。此本地生命周期修复不补足上游缺少输入 ID 的协议，延迟旧任务使用新 ID 时仍不能作可靠归属认证。结果回传前复核输入及权限。两条 Sophon 路径均使用模型生成的 `task` 提供查询参数，业务记录标为委派来源，ASR 仅作为门户字幕。已回传企业资料的 Room 拒绝向公网发送后续搜索，用户可在新通话请求公开搜索。
 
-CueKB 未配置地址和凭据时，LiveKit Router 将 CUEKB 意图交给 Tavily，继续使用公开查询的参数/权限/隐私检查。后台没有启用 web_search 时执行被 Registry 拒绝；CueKB 已配置或仅部分配置时不自动外发，私有服务失败也不切换。公开结果保持 general/public_web 来源，不冒充私有证据。
+CueKB 未配置地址和凭据时，只有明确公开、独立且不含内部或个人信息的 CUEKB 任务才能转 Tavily；裸产品型号、资料范围不明和敏感内容均澄清。后台没有启用 web_search 时执行被 Registry 拒绝；CueKB 已配置或仅部分配置时不自动外发，私有服务失败也不切换。公开结果保持 general/public_web 来源，不冒充私有证据。
+
+DelegationRouter 优先解析 WEATHER/CUEKB/WEB_SEARCH 前缀，否则只对原生 task 做确定性自然语言规则解析，输出 route、parse_method、source 和原因；没有原生事件不运行 Router。天气缺地点或日期不明、多个工具同时匹配时澄清；不支持的动作明确结清，不搜索伪装执行。原 task 和解析结果在按权限过滤的 sophon_route 记录中关联原 delegation ID。触发、路由、执行、回执和候选语音独立统计。
+
+两种 Sophon 传输统一通过 voice/profiles.py 组合 Persona 与服务端固定业务指令。voice_profiles 按 owner_id 持久化，默认闹闹保持精确 Persona；创建语音会话时读取并快照，后续编辑/删除不修改活动会话。验证身份仍是每通话独立身份，角色 API 必须携带该 conversation_id 和原 call token，不引入跨通话或跨用户共享访问。麦克风重连保留选择；角色不修改 delegation.type=client、工具目录或 Registry 权限。原 WebSocket 仍只执行 CueKB。
+
+ASR 无法唯一关联音频输入时，字幕使用独立展示 ID 和 association=unbound，不生成业务输入、权限或工具调用。字幕缺失、延迟、空值或错误不参与 task 解析与音频归属；门户明确标识未关联字幕。
 
 QWeather Adapter 使用 GeoAPI 和 Weather v1，将供应商响应映射到既有天气契约。唯一精确名称/Location ID 可从行政区候选中确定地点，多个同名地点仍澄清。实况返回 `temperature`，预报返回 `temperature_min/temperature_max`，不将最高温误作实况。GeoAPI 未提供 ISO 国家代码时留空，完整国家名称保留在地点显示中；来源保留 attribution。Tavily Adapter 使用固定 HTTPS endpoint、Bearer 请求头、最多三条摘要和链接。两者无自动重试，继续由 Registry 控制超时、权限及审计。
 

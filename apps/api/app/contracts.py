@@ -243,6 +243,7 @@ class SessionReadyPayload(StrictModel):
 
 class TranscriptPayload(StrictModel):
     item_id: str = Field(min_length=1, max_length=128)
+    association: Literal["bound", "unbound"] = "bound"
     response_id: str | None = Field(default=None, min_length=1, max_length=128)
     text: str = Field(max_length=100000)
 

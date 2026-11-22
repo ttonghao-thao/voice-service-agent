@@ -27,6 +27,35 @@ def settings(tmp_path):
     )
 
 
+@pytest.mark.parametrize("asr_mode", ["normal", "delayed", "empty", "wrong", "disabled"])
+async def test_asr_presentation_does_not_authorize_or_change_native_task(tmp_path, monkeypatch, asr_mode):
+    app = create_app(settings(tmp_path))
+    async with app.router.lifespan_context(app):
+        async with httpx.AsyncClient(transport=httpx.ASGITransport(app=app), base_url="http://test") as client:
+            cid = (await client.post("/api/v1/conversations", json={})).json()["id"]
+            issued = (await client.post(f"/api/v1/conversations/{cid}/voice-sessions")).json()
+            call = RoomCall(app.state.voice, None, app.state.voice.sessions[issued["voice_session_id"]])
+            call.inputs.update(True)
+            call.inputs.update(False)
+            owner = call.inputs.latest
+            before = (owner.started, owner.ended, owner.claimed)
+            if asr_mode == "delayed":
+                monkeypatch.setattr("app.voice.livekit_room.time.monotonic", lambda: owner.ended + 20)
+            if asr_mode != "disabled":
+                call.receive({"type": "session.input_transcript.delta", "start_ms": 0, "end_ms": 900,
+                    "delta": "" if asr_mode == "empty" else "WEATHER: London | today" if asr_mode == "wrong" else "北京天气"})
+            assert call.calls.empty() and not call.closed.is_set()
+            assert (owner.started, owner.ended, owner.claimed) == before
+            result = call.router.parse("WEATHER: Beijing | tomorrow", {})
+            assert result.route == "WEATHER" and result.decision.arguments.place == "Beijing"
+            assert result.decision.arguments.date == "tomorrow"
+            if asr_mode == "delayed":
+                caption = call.outgoing.get_nowait()["payload"]
+                assert caption["association"] == "unbound" and caption["item_id"] != owner.id
+                assert owner.transcript == ""
+            await call.room.disconnect()
+
+
 def test_room_token_allows_audio_only_in_its_own_room(tmp_path):
     config = settings(tmp_path)
     credentials = browser_credentials(config, "session-a")

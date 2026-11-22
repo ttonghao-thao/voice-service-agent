@@ -2142,6 +2142,15 @@
           "title": "Item Id",
           "type": "string"
         },
+        "association": {
+          "default": "bound",
+          "enum": [
+            "bound",
+            "unbound"
+          ],
+          "title": "Association",
+          "type": "string"
+        },
         "response_id": {
           "anyOf": [
             {
