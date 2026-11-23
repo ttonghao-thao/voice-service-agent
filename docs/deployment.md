@@ -1,174 +1,138 @@
-# 部署与运行
+# 容器制作与部署手册
 
-> 本页维护一期原生 Function Calling 的配置、构建、迁移及运行操作。VoiceChat 决定直接回答或调用唯一工具 search_knowledge_base，不配置额外答案模型；服务端仍通过 CueKB 执行检索。真实语音验收见 [单工具验证](validation.md)。
+类型：当前可用操作与明确的发布限制。产品同时提供天气、通用知识、专业知识库，通用知识受控兜底；不存在仅启用 search_knowledge 的产品场景。需求见 [delivery.md](delivery.md)，未实施的容器验收/部署检查改造见 [implementation-plan.md](implementation-plan.md)，所有业务验证与结果只在 [validation.md](validation.md)。
 
-## 部署方式边界
+## 1. 部署范围与当前门禁
 
-使用 `.env.example` 和 `deploy/compose.production.yaml` 配置部署。默认 `VOICE_PROVIDER=nvidia`，可切换到 `sophon_live` 连接独立 Sophon 服务。两个 Provider 都采用模型原生工具选择与独立 CueKB。
+| 组成 | 当前交付 | 数据 / 网络 |
+| --- | --- | --- |
+| Web | deploy/Dockerfile.web；React 构建 + Nginx TLS/CSP/WS/SSE | 对外 HTTPS 8087，证书只读挂载 |
+| API | deploy/Dockerfile.api；FastAPI、Router、Runtime、内置 LiveKit AgentSession | 8000 仅容器网络；非 root、只读文件系统、临时 /tmp |
+| migrate | 复用 API 镜像执行 Alembic | 当前 head=0011，新增 voice_profiles |
+| PostgreSQL / Redis | deploy/compose.production.yaml，镜像 digest 见 deploy/images.lock.json | 独立持久卷，宿主不暴露数据库端口 |
+| LiveKit / Sophon / CueKB | 独立部署，应用通过服务接口连接 | 真实凭据留服务端；GPU/ASR 归独立 Sophon |
+| Sophon 验收容器 | 尚未交付；API 镜像没有浏览器验收运行时 | 设计在实施方案，不能用宿主开发测试冒充生产容器验收 |
 
-Sophon 验证部署使用以下配置，其余 CueKB、PostgreSQL、Redis 和门户配置沿用同一模板。
+当前 API/Web Dockerfile 和 Compose 可用于镜像制作与配置完整后的启动，Compose 不构建或自动拉取应用镜像。默认 Provider、ENABLED_TOOLS、configure_native_cuekb 和 --expect-cuekb-native 检查仍有旧 NVIDIA 假设；这些代码事实不是产品模式，不能当三类查询放行门禁。已自定义全局目录时须先审查部署脚本的覆盖动作。Sophon 生产容器验收入口、真实 CueKB 和完整三类闭环未完成，缺项不得以裁剪工具或填假 KB/凭据放行。
+
+单机首版一个 API 容器、一个 Uvicorn worker；AgentSession 已在 API 内。多副本前必须提供 HTTPS/SSE/WSS（含 ticket 申请）的粘性路由，不能直接增加 workers。validation 身份仍按临时通话隔离，不等于正式账号服务。
+
+## 2. 镜像制作与发布包
+
+在仓库根目录、干净的目标提交上构建；API/Web 共用唯一版本标签。以下 linux/amd64 是目标示例，须与部署主机一致。Dockerfile 按固定 requirements/package-lock 安装，基础镜像使用已锁 digest，不自动升级上游 HEAD。
+
+```bash
+release_tag=$(git rev-parse --short=12 HEAD)
+docker buildx build --platform linux/amd64 --load \
+  -f deploy/Dockerfile.api -t "voice-service-agent-api:$release_tag" .
+docker buildx build --platform linux/amd64 --load \
+  -f deploy/Dockerfile.web -t "voice-service-agent-web:$release_tag" .
+docker save -o "voice-service-agent-$release_tag.tar" \
+  "voice-service-agent-api:$release_tag" "voice-service-agent-web:$release_tag"
+```
+
+当前 API Dockerfile 引用的 artifacts/native-cuekb/cases.json 和 WAV 是已跟踪固定测试夹具，普通 Git 克隆可取得；现场录音、报告、.env、密钥、数据库不加入镜像/仓库。发布包同时提供相同提交的 Compose/部署脚本/模板、commit、架构、镜像 ID/digest 与包 SHA256；不要只交一个没有版本对应关系的 tar。
+
+构建使用 BuildKit，复用同一 builder 缓存；业务源码变化应复用依赖安装层。不要日常 --no-cache 或 prune。需要代理 CA 时，两次构建分别增加 `--secret id=proxy_ca,src=/absolute/path/to/ca-bundle.crt`，pip/npm 使用临时 secret，保持 TLS 校验；不要把 CA 密钥或代理凭据写进镜像。
+
+## 3. 完整三类查询配置
+
+从 .env.example 复制并改为三类交付配置；模板的旧默认不等于目标范围。IMAGE_TAG 与两镜像标签相同，PUBLIC_ORIGIN 必须与浏览器实际 HTTPS 域名/端口一致，证书/私钥使用部署机上的可读绝对路径。PG/Redis 密码用 URL-safe 字符，不把 @、冒号、空格等未经编码拼入连接 URL。
+
+### 启用 LiveKit 音频和三类工具
+
+以下是完整发布目标；所有“实际”值必须来自已部署服务，未完成接入不能凭占位值启动或宣称交付：
 
 ```dotenv
 VOICE_PROVIDER=sophon_live
-SOPHON_LIVE_WS_URL=wss://sx.ppy8.xyz:14080/v1/live/sessions
+AGENT_PROVIDER=disabled
+QA_EXECUTION_MODE=dual_tools
+QA_ANSWER_POLICY=general_qa
+ENABLED_TOOLS=search_knowledge,weather,web_search
+SOPHON_LIVE_WS_URL=wss://实际Sophon主机/v1/live/sessions
 SOPHON_LIVE_API_KEY=
 SOPHON_LIVE_LOCALE=zh-CN
 SOPHON_LIVE_TOOL_TIMEOUT_SECONDS=12
 SOPHON_LIVE_MAX_DELEGATIONS_PER_INPUT=1
-AGENT_PROVIDER=disabled
-QA_EXECUTION_MODE=dual_tools
-QA_ANSWER_POLICY=general_qa
-```
-
-上游启用 Bearer 认证时，在部署 API 的环境填入密钥。公网使用 WSS，隔离内网无密钥时可用 WS。上游须确认 24 kHz PCM、客户端委托和 `store=false`。更新配置后重建 API 容器并新建通话。切回 NVIDIA 时设置 `VOICE_PROVIDER=nvidia`、`VOICECHAT_WS_URL` 和 `VOICECHAT_API_KEY`。复测步骤见 [Sophon Live 验证](validation.md#sophon-live-验证)。
-
-### 启用 LiveKit 音频和三类工具
-
-独立部署 LiveKit Server，按官方单机文档开放 TLS 和 WebRTC 端口。浏览器和 API 容器均需访问同一 WSS origin。本机夹具可用 ws://127.0.0.1:7880。API 内置每 Room 一个 AgentSession。 [LiveKit 自托管文档](https://docs.livekit.io/transport/self-hosting/)
-
-配置以下值后重新构建 API、Web 镜像。密钥只交给 API。Web 容器从 LIVEKIT_URL 生成 CSP，浏览器获得短时 Room Token。天气使用 QWeather（和风天气）：GeoAPI 解析地点，Weather v1 查询实况或未来十日内的单日预报。API Key 通过 `X-QW-Api-Key` 请求头发送，`WEATHER_BASE_URL` 必须是控制台分配的专属 HTTPS API Host。公开搜索使用 Tavily `POST /search`，只取最多三条来源，不请求生成答案。 [QWeather API Host](https://dev.qweather.com/en/docs/configuration/api-host/) · [Tavily Search](https://docs.tavily.com/documentation/api-reference/endpoint/search)
-
-```dotenv
-VOICE_PROVIDER=sophon_live
-LIVEKIT_URL=wss://livekit.example.com
-LIVEKIT_API_KEY=<server-key>
-LIVEKIT_API_SECRET=<server-secret>
-# CueKB is not connected yet; keep its registry entry but do not enable execution.
-ENABLED_TOOLS=weather,web_search
-CUEKB_BASE_URL=
-CUEKB_API_KEY=
+LIVEKIT_URL=wss://实际LiveKit域名
+LIVEKIT_API_KEY=实际Key
+LIVEKIT_API_SECRET=实际Secret
+CUEKB_BASE_URL=https://实际CueKB主机
+CUEKB_API_KEY=实际scopedKey
+KNOWLEDGE_BASE_IDS=实际授权KB的UUID
 WEATHER_PROVIDER=qweather
 WEATHER_MODE=real
-WEATHER_BASE_URL=https://your-account.re.qweatherapi.com
-WEATHER_API_KEY=<weather-key>
-WEB_SEARCH_API_KEY=<tavily-search-key>
+WEATHER_BASE_URL=https://控制台分配的专属API主机
+WEATHER_API_KEY=实际QWeatherKey
+WEB_SEARCH_API_KEY=实际TavilyKey
 ```
 
-沿用 AGENT_PROVIDER=disabled、QA_EXECUTION_MODE=dual_tools、QA_ANSWER_POLICY=general_qa 及 Sophon 配置。接入 CueKB 后再填写 CUEKB_BASE_URL/CUEKB_API_KEY，并将 search_knowledge 加入 ENABLED_TOOLS；未接入时，仅明确为公开且无敏感信息的独立问题可转 Tavily，裸型号或资料范围不明则澄清。已配置私有服务出错不会切换。凭据只写部署主机受保护的 `.env`，不放前端或镜像。更新这些值后重新创建 API 容器；不得仅 restart。原有 `WEATHER_PROVIDER=http_contract` 仅用于显式旧代理兼容，QWeather 失败不会回退。未配置的天气或公开搜索从 ENABLED_TOOLS 省略。按现有 scripts/deploy-cloud.sh 部署。切回 Sophon WebSocket 时清空 LiveKit 三项并恢复 ENABLED_TOOLS=search_knowledge。 [LiveKit 验收](validation.md#livekit-门户与工具验收)
+Sophon 使用完整 Live sessions endpoint；匿名服务允许空 Key，有 Key 必须 WSS。LIVEKIT_URL 是同一浏览器/API 都能访问的 WSS origin，不含 API 路径。LiveKit 需可信 TLS、正确公网 RTC 地址及 WebRTC 媒体端口；不能只开放信令 HTTPS。独立节点的端口/镜像按已审核配置固定，参考 [LiveKit 自托管](https://docs.livekit.io/transport/self-hosting/)。API/Web Compose 不会自动创建它。
 
-角色管理需要 Alembic `0011` 的 voice_profiles 表，按现有部署迁移流程升级后再启动新 API；仅开发/隔离测试使用 auto_create_schema。默认闹闹由服务端固定配置提供，不向每个账号重复插入。修改角色仅影响新语音会话。validation 模式保持临时通话身份，门户刷新/结束通话后不跨身份恢复角色。Sophon ASR 的启停由独立 Gateway 管理，本服务不启动或切换 ASR 模型；真实开关对照见 validation.md。
+QWeather 必须使用控制台专属 API Host，服务端通过 X-QW-Api-Key 调用 GeoAPI / Weather v1；Tavily 使用服务端 Key 调用固定 Search endpoint。CueKB 基地址不附加 evidence 路径，Key 只授予配置的 KB 范围；HTTP 仅用于受控隔离内网，公网必须 HTTPS/WSS。配置来源以 config.py / config/tools.yaml 为准，不能从 Key 或门户域名猜主机。
 
-## 问答模式与预算（Q07）
+NVIDIA/旧 Sophon WS 的实际限制见 [架构](architecture.md#2-数据流与代码入口) / [接入](integration.md)，不另列仅知识库部署方案。不得用它们的局部能力替代三类查询的发布标准。
 
-一期配置：
+## 4. 迁移、目录与启动
 
-```dotenv
-AGENT_PROVIDER=disabled
-QA_EXECUTION_MODE=dual_tools
-QA_ANSWER_POLICY=general_qa
-QA_TOOLSET_VERSION=cuekb-native-v1
-QA_EXTERNAL_FALLBACK_ENABLED=false
-QA_MAX_RETRIEVAL_CALLS=1
-VOICE_MAX_RETRIEVALS_PER_INPUT=1
-AGENT_DEADLINE_MS=60000
-QA_PROVIDER_ANSWER_TIMEOUT_MS=30000
-```
+部署机使用与镜像匹配的仓库发布目录和真实 .env；宿主只需 Docker Engine/Compose v2，应用依赖在镜像内。下列 release_tag 取制作包记录的同一值。
 
-不需要 AGENT_MODEL、OPENAI_API_KEY 或 AGENT_BASE_URL。disabled 表示关闭独立文本答案模型，不能用 mock 代替。`/health/ready` 允许 text_configured=false；页面关闭文字提交，但仍提供麦克风和 WAV 语音通话。
-
-`dual_tools` 为兼容模式名称；实际只注册 `search_knowledge_base(query)`，目录和可信 implementation 使用同一个名称。后台通过 Registry 的内部 `search_knowledge` 为每个稳定语音输入调用一次 CueKB `/v2/evidence/query`，并在注入模型前调用 `/v2/evidence/validate`；`/v2/search`只保留给非语音旧路径和检索诊断。KB UUID、凭据、访问范围和可信过滤条件只在服务端设置。工具参数用于选择和审计，问题级请求以最终完整 ASR 及受控会话上下文为准。
-
-| 配置 | 一期值 / 用途 |
-| --- | --- |
-| VOICECHAT_WS_URL / VOICECHAT_API_KEY | 现有 VoiceChat 完整 /v1/realtime 地址及服务凭据 |
-| CUEKB_BASE_URL / CUEKB_API_KEY | 独立 CueKB 基地址和授权检索凭据 |
-| KNOWLEDGE_BASE_IDS | 服务端允许的真实 KB UUID；不下放给模型 |
-| CUEKB_TOP_K | 默认 5；原生语音检索数量及证据项上限，仍受字节预算限制 |
-| CUEKB_VOICE_TOKEN_BUDGET | 默认 120；CueKB 以部署登记的 VoiceChat tokenizer 精确限制 `model_view` |
-| QA_DIRECT_MAX_HITS | 默认 3；仅旧 direct 执行器使用，一期 native CueKB 不使用 |
-| QA_DIRECT_EVIDENCE_MAX_BYTES | 默认 6000；完整 ASCII 证据包上限 |
-| VOICE_MAX_RETRIEVALS_PER_INPUT | 固定 1；同一输入只有一个问题级 evidence query。CueKB 在请求内有界补召回；终态后的模型调用只返回 `not_executed/search_finished`，不访问 CueKB、不创建 Turn、不断开会话 |
-| AGENT_DEADLINE_MS | 示例 60000；检索执行期限，一期 relay 的模型续答不共用该期限 |
-| QA_PROVIDER_ANSWER_TIMEOUT_MS | 示例 30000；仅旧工作流使用，一期 relay 按连接生命周期观察回答 |
-
-### 更新已有工具目录
-
-工具目录首次保存后持久化在数据库，改 YAML 不会覆盖旧的 lookup/reason 配置。部署脚本在 Alembic 0010 之后、API 启动之前，运行：
-
-```sh
-python /app/scripts/configure_native_cuekb.py --apply
-```
-
-该命令使用既有 CAS/revision 和 AdminAudit，把当前原生目录替换为仓库的一期单工具目录；不删除历史 Turn/证据。重复执行不产生无意义 revision。省略 --apply 只预览名称和 revision，不写数据库，也不运行应用恢复或模型。正常部署无需管理员 API Key。
-
-手工 docker 部署在迁移完成后，先用新 API 镜像的相同数据库环境运行这条命令，再启动 API。已有旧目录且 AGENT_PROVIDER=disabled 时，API 会明确提示先应用目录，而不是静默注册双工具。
-
-验证步骤和版本核对统一在 [验证操作手册](validation.md)。
-
-## 镜像构建与部署
-
-本项目发布 API/Web。NVIDIA 部署先同步 [完整 VoiceChat 文件](../deploy/voicechat/README.md) 并按该版本重建独立语音服务。Sophon 由现有外部服务提供 Live WebSocket，通过环境变量切换后新建通话验证。
-
-当前实际门户若通过另一 HTTPS 入口暴露，应核对 PUBLIC_ORIGIN、证书和同源 API 路由，不据截图修改默认端口。记录 API/Web/VoiceChat 镜像及挂载 hash；按 [验收标准](validation.md) 分别确认当前单轮和后续多轮能力。
-
-API/Web 镜像在构建机独立构建，同一发布使用唯一标签；云端 Compose 只消费预构建镜像，迁移复用 API 镜像：
-
-```sh
-release_tag=$(git rev-parse --short=12 HEAD)
-docker build -f deploy/Dockerfile.api -t "voice-service-agent-api:$release_tag" .
-docker build -f deploy/Dockerfile.web -t "voice-service-agent-web:$release_tag" .
-```
-
-构建使用 BuildKit。在需要代理 CA 的云环境中，将含系统根证书和代理 CA 的可信 bundle 作为临时 secret 传入两次构建：
-
-```sh
-docker build --secret id=proxy_ca,src=/etc/ssl/certs/ca-certificates.crt \
-  -f deploy/Dockerfile.api -t "voice-service-agent-api:$release_tag" .
-docker build --secret id=proxy_ca,src=/etc/ssl/certs/ca-certificates.crt \
-  -f deploy/Dockerfile.web -t "voice-service-agent-web:$release_tag" .
-```
-
-该 secret 只在依赖安装的 RUN 中可见；pip 使用 PIP_CERT，npm 使用 NODE_EXTRA_CA_CERTS 且保持 strict-ssl=true，不写入镜像。没有自定义代理 CA 时省略 --secret；不要关闭 TLS 校验。API 构建还会规范应用源码、配置和迁移文件的读取/目录访问权限，防止构建机的 600/700 权限导致镜像内 UID 10001 无法启动；这些文件保持 root 所有，服务用户没有写权限。
-
-API 镜像只使用 Python 基础镜像自带的 `pip`，按 `requirements.txt` 中的精确版本安装生产依赖。仓库不使用额外的 Python 包管理器或独立锁文件；`requirements-dev.txt` 引用相同生产依赖并追加测试/Lint 工具。修改依赖时直接更新这两份 requirements，并在全新 Python 3.12 虚拟环境中完成安装和回归：
-
-```sh
-python3.12 -m venv .venv
-. .venv/bin/activate
-python -m pip install --disable-pip-version-check -r requirements-dev.txt
-```
-
-Docker 先复制 `requirements.txt` 再复制应用源码，因此在同一个保留缓存的 builder 上，仅修改业务代码、配置或镜像标签不会重新安装依赖；安装步骤应显示 `CACHED`。API 的 pip 下载/构建缓存另存于 BuildKit cache mount，不进入最终镜像。依赖清单变化而安装层重跑时，可以复用该 builder 已缓存的兼容包；仍需解析依赖并安装，新包和未缓存的索引响应仍可能访问网络。
-
-排查每次下载时，用 `docker build --progress=plain -f deploy/Dockerfile.api -t "voice-service-agent-api:$release_tag" .` 查看依赖层是否命中。日常构建不使用 `--no-cache`，不在构建间执行 `docker builder prune`，并复用同一个 builder；换机器、重建临时 builder 或缓存被回收后仍是冷构建。`--no-cache` 会强制重跑安装层，但不会自行清空 cache mount，两者不能混为一谈。需要代理 CA 时继续传入前述 secret。
-
-当前 slim 镜像没有安装编译工具链或 VoiceChat/GPU 模型。换成完整版 Python 系统镜像不会预装本项目锁定的 FastAPI、Agents SDK、数据库驱动等 Python 包，反而增加基础镜像拉取量。若构建机经常更换，应在构建基础设施中导入/导出 BuildKit 层缓存，或维护按 Python/平台/requirements 版本发布的依赖基础镜像；仅依赖本地 pip cache mount 不能跨机器复用，普通层缓存导出也不自动携带 cache mount 内容。
-
-把相同标签的镜像和仓库发布目录送到部署机，填写 `.env` 的单个 `IMAGE_TAG`，然后部署：
-
-```sh
-cp .env.example .env
-# 填写全部真实值
+```bash
+docker load -i "voice-service-agent-$release_tag.tar"
 chmod 600 .env
+export DEPLOY_ENV_FILE="$PWD/.env"
+dc() { docker compose --env-file "$DEPLOY_ENV_FILE" -f deploy/compose.production.yaml "$@"; }
+dc config --quiet
+dc pull postgres redis
+```
+
+已有环境先按 §6 drain/备份。当前启动入口为：
+
+```bash
 ./scripts/deploy-cloud.sh .env
 ```
 
-脚本检查必需值、HTTPS 公网入口、TLS 文件、本地镜像和 Compose 配置，等待 PostgreSQL/Redis 健康，用 API 镜像执行 Alembic，再启动 API、核验容器内 `/health/ready`，最后启动 Web。配置错误会在 API 启动时失败；镜像不会由部署脚本构建或自动拉取。readiness 只证明容器和启用工具的配置就绪，不能证明 CueKB、VoiceChat、文字答案或英语口述质量。当前依赖镜像固定为 `postgres:17.6-alpine` 和 `redis:7-alpine` 对应 digest；已有 PostgreSQL 数据卷在更换镜像前须备份并验证目标版本兼容，不把切换标签视为无风险降级。
+它依次检查真实配置/HTTPS/TLS/本地镜像，等待 PG/Redis，复用新 API 镜像执行 migrate，应用默认目录，再启动 API、检查 readiness、启动 Web。API 拒绝自动建表、fixture 身份、mock 和缺失依赖；Compose 固定 AUTH_MODE=validation、CUEKB_MODE=real，数据库连接串由容器配置构造。
 
-Web 的容器内健康探针用 wget -Y off 直接访问 127.0.0.1，避免继承代理导致误报不健康。探针对本机 IP 不核对证书；正式 HTTPS 客户端仍须验证证书链与域名，不能沿用该探针作为 TLS 验收证据。
+**目录动作须单独审查**：脚本目前调用 configure_native_cuekb.py --apply，把已有数据库目录切到 config/voice-tools.yaml 的默认知识工具；不等于只部署一个业务能力，也不应无审查覆盖自定义目录。可用同镜像/数据库先预览（省略 --apply 不写入、不运行应用恢复或模型）：
 
-`AGENT_MODEL` 是 BusinessRuntime 后台文本 Agent 调用的模型标识，用于理解任务、选择 `search_knowledge` 并组织有依据的答案；它不是 VoiceChat 的实时语音模型。`AGENT_PROVIDER=openai` 时使用官方端点，无需 `AGENT_BASE_URL`；只有接 OpenAI-compatible 服务时才改为 `compatible` 并填写该 HTTP/HTTPS 基地址，两者不需要同时独立部署。`CUEKB_BASE_URL` 是独立 CueKB HTTP/HTTPS 基地址，语音链路附加 `/v2/evidence/query` 和 `/v2/evidence/validate`；HTTP 仅用于已隔离、受控的内部网络。`VOICECHAT_WS_URL` 是 API 到独立语音服务的 WS/WSS endpoint，不由门户域名推断；WS 仅用于同主机或受控隔离内网，且对应端口不得公网暴露。浏览器公网入口仍强制 HTTPS/WSS。本期固定只开放 `search_knowledge`，无需天气配置。数据库/Redis 凭据使用 URL 安全字符，容器内连接串由 Compose 构造。
+```bash
+dc run --rm --no-deps api python /app/scripts/configure_native_cuekb.py
+```
 
-本期部署直接开放已配置的英文全双工链路，不再用人工填写的“已验证”布尔值阻止启动。部署后只按 [统一验证手册](validation.md) 执行和采集；运行配置只负责连接服务，真实失败不回退 mock。Web Nginx 直接终止 HTTPS，并处理 SSE buffering、WS upgrade、请求大小和安全头；不得记录凭据或语音票据。
+该目录已保存时以数据库 revision/CAS 为准，文件修改不自动覆盖。原生入口/后台能力/用户权限的差异见 [工具契约](interfaces/voice-tools.md)。当前脚本使用 --expect-cuekb-native 检查知识目录，完整三类业务检查与 Sophon 容器验收仍按实施方案补齐，不能仅因脚本退出 0 就放行。
 
-## 副本、容量与故障恢复
+正常启动预期：migrate exit=0、head=0011、API/Web healthy。角色配置存于 PostgreSQL，默认闹闹是服务端配置；仅新语音会话读取新快照，删除不破坏旧快照。生产不得依赖 auto_create_schema。
 
-默认每个应用容器一个 Uvicorn worker。多副本部署必须由负载均衡提供浏览器粘性路由，覆盖 HTTPS/SSE/WSS（包括 ticket 申请及后续握手）；不能简单使用无粘性的多 worker 参数。
+## 5. 运行检查与容量
 
-Redis 持有每个 conversation 的独占租约，15 秒 TTL、4 秒续约。未触碰的空闲租约 60 秒后释放。新 owner 取得租约后，先在 PostgreSQL 行事务递增 epoch、取消旧轮次，才接受新输出；旧 worker 在接收、提交以及单写入器前检查租约与 epoch。其他 worker 上的请求返回 `SESSION_OWNED_BY_OTHER`，不迁移隐藏音频状态。
+```bash
+dc ps
+dc exec -T api alembic -c apps/api/alembic.ini current
+dc exec -T api python /app/scripts/verify_deployment.py \
+  --base-url http://127.0.0.1:8000 --expect-autonomous-voice
+dc logs --tail=100 api web migrate
+```
 
-`MAX_VOICE_SESSIONS`、`MAX_AGENT_RUNS` 是**每副本**的容量边界，按总供应商配额在各副本之间划分预算；不能每副本都配置全量云端额度。票据预留占用语音容量，60 秒过期释放。取消中的本地业务 task 仍计入任务容量，防止反复替换绕过上限。
+/health/live 仅表示应用存活，/health/ready 检查数据库、协调/drain、配置和容量；text_configured=false 在 AGENT_PROVIDER=disabled 时正常。上述检查不是 QWeather/Tavily/CueKB 实际检索、原生触发、GPU 或听音通过，业务操作和回传只在 [统一验证手册](validation.md)。
 
-已测试租约命令契约与新 owner 的数据库 epoch fence；真实 Redis 租约失效、网络分区、PostgreSQL 行锁与负载均衡粘性切换仍待部署集成验证，不保证生产 HA 已通过。
+API 只加入 app/data/egress 网络，PG/Redis 无宿主映射，Web 暴露 HTTPS 8087。Web TLS 检查须用真实域名/证书链；容器本地 wget 的忽略 IP 证书校验只用于内部健康探针。配置、镜像、LIVEKIT_URL/CSP 变化须重建对应 API/Web 容器，不能仅 restart；角色数据库编辑不热改活动会话。
 
-## 升级、drain、回滚
+MAX_VOICE_SESSIONS / MAX_AGENT_RUNS 是每副本容量，须按供应商总配额分配。Redis conversation 租约默认 15 秒 TTL、4 秒续约，空闲 60 秒可释放；新 owner 取得租约后经数据库 epoch fence 隔离旧任务。真实分区/行锁/粘性切换尚未验收，不声明 HA 已通过。
 
-1. 备份数据库及 API/Web/VoiceChat 镜像与配置版本，保存三者匹配关系和源码 hash，检查 Alembic 迁移。
-2. 对将升级的副本调用管理员 `POST /api/v1/admin/drain`。readiness 返回不可用，拒绝新业务/语音；活跃业务在预算内结束，语音在应用会话上限内结束。
-3. 停止进程前给活跃会话留出窗口。SIGTERM 的 Uvicorn graceful timeout 为 20 秒，容器 stop grace 30 秒；到期关闭连接，客户端需重新开始，不自动重放录音。
-4. 单独执行 `alembic upgrade head`，再启动新副本。标准 `./scripts/deploy-cloud.sh .env` 在 PG/Redis 就绪后运行 Compose 的 migrate 服务，再启动 API/Web；仅推送 Git 代码不会修改部署数据库。0010 是本项目数据库表结构迁移版本，新增全局工具目录表并保留现有业务记录。
-5. 回滚按已记录的 API/Web/VoiceChat 组合执行；恢复已知整场 response 缺陷的旧 VoiceChat 时语音仍不能放行。数据库回滚与镜像回滚分开；当前迁移到 **0010**：0005 为每通话 capability，0006 为输入关联，0007 为问答策略/执行字段、Utterance 和 DeliveryAttempt，0008 为来源上下文/任务快照，0009 为交付/口述/播放审计，0010 为全局工具目录。旧数据迁移默认 legacy/knowledge_required，nullable 字段不伪造已验证关联或已播放，旧 slots 不伪造确认来源。0010 downgrade 删除工具目录配置，0009 downgrade 删除新增审计字段，均不是无损回滚；需要破坏式回滚时用已验证备份恢复。
+## 6. 升级、备份与回滚
 
-当前没有等待期语音的部署开关：NVIDIA ProviderCapabilities 全部保持 false。门户进度可用；未来只有可信 Adapter 对四项真实能力完成验证后才启用工具的 operation 扩展，见 [全双工边界](architecture.md#4-全双工与生命周期)。正常上游关闭、发送完成和播放排空估计分开记录；真实 PG/Redis、长会话轮换/断线仍须按 [验收要求](validation.md) 单独验证。
+1. 保存旧 API/Web 与独立语音服务的匹配标签/digest、配置和挂载 hash。使用已有管理员 POST /api/v1/admin/drain，停止新业务并等待活动通话结束；管理员 Key 未配置时该接口不可用，须先维护入口并安排窗口。
+2. 停止将升级的 API/Web 后备份数据库；不删除数据卷。当前 stop grace=30 秒、Uvicorn graceful=20 秒，到期连接关闭，客户端需显式重开，不自动重放未知结果。
 
-健康接口：`/health/live` 为应用存活；`/health/ready` 检查数据库、归属协调和 drain，分别返回文字配置、语音配置和本地容量。管理页健康端点探测只说明可达，不冒充真实推理/工具调用成功。
+```bash
+dc stop web api
+umask 077
+mkdir -p backups
+dc exec -T postgres pg_dump -U voice_service -d voice_service -Fc \
+  > "backups/pre-$release_tag.dump"
+```
+
+3. 确认备份有效，再用新 API 镜像执行 Alembic upgrade head。0011 只新增 voice_profiles；0010 是已有全局工具目录，不能误认为当前 head。推送代码不会修改部署数据库。
+4. 迁移失败停止发布，不启动新 API；启动失败恢复已核对兼容性的旧 API/Web 镜像组合。优先保留新增表做应用回滚；不要自动 downgrade 0011 删除角色，0010/0009 downgrade 也有配置/审计数据损失，需要时用已验证备份恢复。
+5. 新版本重新创建容器并执行 §5 与 validation.md 的对应环境验收。NVIDIA 外部文件/镜像/GPU/挂载变更仍遵守 [VoiceChat 专用运行手册](voicechat/docker-run.md)，不因本次文档整理重建或升级它。

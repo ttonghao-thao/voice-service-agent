@@ -1,23 +1,19 @@
 # Voice Service Agent · 全双工知识客服
 
-本系统提供实时全双工语音客服与连接内多轮对话。NVIDIA VoiceChat 负责英文口述，Sophon Live 按配置提供中文或英文口述。Sophon 可使用 LiveKit WebRTC，并通过客户端委派选择授权 CueKB、天气及公开搜索。身份、会话、证据与业务提交由本项目维护。部署范围见 [交付说明](docs/delivery.md)。
+系统同时提供天气查询（QWeather）、通用知识查询（Tavily）和专业知识库查询（CueKB）；通用知识检索承担受控兜底。Sophon Live 负责语音理解和原生委派，Router 解析 task，Coordinator / Runtime / Registry 维护提交、权限与执行边界。ASR 仅展示字幕。
 
-门户界面沿用英文。Sophon LiveKit 的语言、Room 与工具配置见 [部署文档](docs/deployment.md#启用-livekit-音频和三类工具)。
+当前三类查询接入路径是 Sophon Live + LiveKit。门户沿用英文，语音语言按 Provider 配置。NVIDIA 和旧 WebSocket 代码的范围限制记录在架构中，不代表系统提供仅知识库的产品模式。
 
-后续开发统一在 `main` 演进，基线来自 `codex/q1003`。
+从 [AGENTS.md](AGENTS.md) 开始，按任务只选一个文档入口：
 
-Codex 从 [AGENTS](AGENTS.md) 开始，按任务查 [文档索引](docs/README.md)；跨模块关系见 [架构](docs/architecture.md)。当前任务归 [任务板](docs/TASK_BOARD.md)，已执行测试及真实服务边界归 [验收](docs/validation.md)。
+| 要做什么 | 入口 |
+| --- | --- |
+| 查确认需求 | [交付边界](docs/delivery.md) |
+| 查当前实现、调用链 | [架构](docs/architecture.md) |
+| 查后续设计与实施顺序 | [待实施方案](docs/implementation-plan.md) |
+| 制作镜像、部署、迁移、回滚 | [容器部署手册](docs/deployment.md) |
+| 查未完成事项 | [任务板](docs/TASK_BOARD.md) |
+| 执行验证或查看真实结果 | [唯一验证与执行记录](docs/validation.md) |
+| 定位具体接口、Provider 或维护规则 | [按需索引](docs/README.md) |
 
-## 验证
-
-当前工具等待、Golden Yolk 首问及回答完整性按 [最新验证手册](docs/validation.md) 执行当前文件与麦克风用例；过期方法仅由 Git 追溯。操作者按顺序执行即可；采集自动关联会话并输出精简证据，不需要选取全量日志或判断故障。
-
-## 云端部署
-
-API/Web 独立镜像；仅一套验证 env/Compose。按 [部署](docs/deployment.md) 准备镜像、TLS、真实服务配置和数据库备份后运行：
-
-```sh
-./scripts/deploy-cloud.sh .env
-```
-
-脚本先运行数据库 migrate 再启动应用；推送 Git 代码不升级部署数据库。端口、当前迁移版本、模式切换、drain/回滚只在部署文档维护。真实供应商/GPU/听音放行仍须执行验收；模拟验证不替代它们。
+发布目标为 origin/main。API/Web 使用同一版本标签的预构建镜像，migrate 复用 API 镜像；LiveKit、Sophon、CueKB 独立部署。推送代码不等于已构建、迁移或完成容器/语音验收，部署前先核对手册中的阻塞项。

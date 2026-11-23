@@ -1,10 +1,10 @@
 # CueKB 问题级证据接口契约
 
-更新：2026-11-06。当前语音接入基线为 CueKB `main@30970e9`，公开契约修订为 `cuekb.evidence/2.1`。本项目的原生语音路径使用 `POST /v2/evidence/query`，注入 VoiceChat 前使用 `POST /v2/evidence/validate` 校验证据包；`/v2/search` 仅保留给非语音兼容路径和检索诊断。已实现接口取代旧提案；当前缺口见[任务板](../TASK_BOARD.md)，操作与现场回传见[验证手册](../validation.md)。
+类型：专业知识库消费契约 `cuekb.evidence/2.1`。原生路径使用 `POST /v2/evidence/query`，注入模型前用 `POST /v2/evidence/validate` 校验证据包；`/v2/search` 仅保留给非语音兼容路径/诊断。历史联调 CueKB `30970e9` 不是当前部署身份，须现场核对。此页只定义三类能力中的专业库接入，不定义产品仅启用知识库。缺口见[任务板](../TASK_BOARD.md)，操作/结果见[验证手册](../validation.md)。
 
 ## 1. 请求与可信边界
 
-VoiceChat 仍只看到 `search_knowledge_base(query)`，不能选择 KB、凭据、实体 UUID 或扩大权限。API 使用最终稳定 ASR 作为 `question`；服务器解析后的确认上下文只进入 `search_query`、可信过滤字段或已确认的实体 binding。模型给出的泛化 query 仅用于工具选择和审计，不替换原问题。
+模型/浏览器不能选择 KB、凭据、实体 UUID 或扩大权限。question 的来源必须区分 Provider：Sophon 使用已原生委派且经音频窗口绑定的 task，ASR 仅展示；NVIDIA 兼容路径看到 search_knowledge_base(query)，API 使用最终稳定 ASR 作为 question，模型泛化 query 仅供选择/审计。服务端确认上下文只进入 search_query、可信过滤或已确认实体 binding，不能偷换问题或外发内部上下文。
 
 ```json
 {

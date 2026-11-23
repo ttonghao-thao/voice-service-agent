@@ -16,7 +16,7 @@ Stop playback 保留查询和正文；Cancel search 使当前任务失效；End 
 
 ## 2. HTTP 与 SSE
 
-业务路径前缀 `/api/v1`。创建会话不需要登录，返回仅展示一次的 access_token；后续会话请求使用 Bearer token。客户 capability 不能调用管理 API；身份/KB/历史撤权的完整规则归 [接入 §6](integration.md#6-独立通话与知识范围d02d13)。
+业务路径前缀 `/api/v1`。创建会话不需要登录，返回仅展示一次的 access_token；后续会话请求使用 Bearer token。客户 capability 不能调用管理 API；身份/KB/历史撤权的完整规则归 [接入 §5](integration.md#5-独立通话与知识范围)。
 
 | 方法和路径 | 用途/关键返回 |
 | --- | --- |
@@ -97,7 +97,7 @@ finished=true 只在该 response 收到 audio.done 且 Worklet 对应队列排�
 
 页面静音只影响上行麦克风，音量只影响本地播放。播放环有界、短尾帧须可排空；积压显式报错，不以无限缓冲掩盖延迟。Worklet 的内部 done 转为公开 finished ACK，按响应独立处理；不能因 ACK 提示播完而让业务答案提前完成。
 
-普通 speech_started/quiet 不取消查询。工具只有绑定最终 ASR 后才执行；一期输出按当前 input/response 关联，ACK 不作为最终答案完成。精确上游时序归 [接入 §3](integration.md#3-voicechat-接入与能力门槛)。轮换/重连和无确认状态归 [生命周期](architecture.md#4-全双工与生命周期)，不能把 audio.done 当作设备已经播放完。
+普通 speech_started/quiet 不取消查询。NVIDIA 知识调用绑定该输入最终 ASR；Sophon 绑定音频窗口并使用原生 task，ASR 仅展示。输出按 Provider 可验证的 input/response 关联，ACK 不作为最终答案完成。上游差异见 [Sophon 接入](integration.md#2-sophon-与原生委派) / [NVIDIA 接入](integration.md#3-voicechat-接入与能力门槛)，轮换和 unknown 见 [生命周期](architecture.md#4-全双工与生命周期)；audio.done 不证明设备已播放完。
 
 ## 4. 兼容与错误
 

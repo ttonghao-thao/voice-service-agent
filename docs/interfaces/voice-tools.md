@@ -1,12 +1,14 @@
-# 全局 VoiceChat 工具目录
+# 原生入口与全局 VoiceChat 工具目录
 
-2026-11-06 按 `2a8ba8b` 核对。入口：`agent_runtime/tool_catalog.py`、`dispatch.py`、`api/routes.py`、`voice/provider.py`/`gateway.py`。一期默认目录的公开名称和可信 implementation 都是 search_knowledge_base；旧 lookup/reason 实现仅保留兼容覆盖。`dual_tools` 保留为兼容模式名称，含义是原生可配置多工具；`legacy` 仍是显式单 bridge 兼容路径。配置与迁移命令见 [部署](../deployment.md)，执行规则见 [知识执行](../architecture.md#3-知识执行)。
+类型：Provider 注册/执行契约。产品固定提供天气、通用知识、专业知识库；三类能力不等于三个原生函数。Sophon 注册 client delegate(task)，再由 DelegationRouter 选择 WEATHER/CUEKB/WEB_SEARCH；不是把 NVIDIA 的函数清单套到 Sophon。Sophon 的事件/音频归属见 [接入 §2](../integration.md#2-sophon-与原生委派)。
+
+以下目录、session.update、batch 和 NeMo 注入描述适用于 NVIDIA 兼容 Provider。入口是 agent_runtime/tool_catalog.py、dispatch.py、api/routes.py、voice/provider.py/gateway.py。当前默认公开名称和可信 implementation 是 search_knowledge_base，旧 lookup/reason 仅兼容；这一实现限制不定义仅知识库产品模式。dual_tools 是可配置多工具的兼容名称，不是数量上限。配置操作见 [部署](../deployment.md)，执行规则见 [知识执行](../architecture.md#3-知识执行)。
 
 ## 1. 信息归属与注册契约
 
 可信代码注册 `NativeTool` 的参数模型、执行器、执行种类、后台依赖和权限 scope。后台全局目录决定哪些名称启用，以及 description、examples、output_description、ack_messages；可用不同名称引用同一个可信 implementation。配置不能指定 Python import、任意 URL/凭据或覆盖参数 schema。新业务 API 需要先接入可信执行器；仅添加名称不会凭空产生执行能力。
 
-初始目录来自 `config/voice-tools.yaml`；一期部署用 `configure_native_cuekb.py --apply` 显式将已保存旧目录切换为单工具（CAS 更新并审计）。首次管理员保存后，以数据库 `native_tool_config` 单行配置及 revision 为准，多副本共享同一数据库；文件不会自动覆盖已保存配置。目录对所有客户可见，不按客户 scope 隐藏。部署或管理员关闭后台依赖时，对应原生工具全局不可用；执行仍检查当前 scope、KB 范围、epoch/revision、租约及依赖版本，可见不授予额外数据权限。
+初始目录来自 `config/voice-tools.yaml`；当前部署脚本仍调用 configure_native_cuekb.py --apply，将已保存目录切为该默认知识工具（CAS 更新并审计）。这是需审查的部署行为，不是三类能力已覆盖或可无条件覆盖自定义目录的保证。首次管理员保存后，以数据库 native_tool_config 单行配置及 revision 为准，多副本共享；文件不自动覆盖已保存配置。目录对所有客户可见，不按 scope 隐藏；后台依赖关闭时对应原生工具不可用，执行仍复核 scope、KB、epoch/revision、租约及依赖版本。
 
 注册顺序：`session.created → session.update → session.updated → portal.session.ready → 用户音频`。`session.update.session` 提供 audio、instructions、tools；每个工具提供 name、description、parameters、ack_messages。参数 schema 从可信模型生成，examples 先通过该模型校验，再附于 description；output_description 说明结果语义，不是协议新增的输出 schema。工具调用和回填使用供应商原始 call_id，不发送 tool_choice。
 
