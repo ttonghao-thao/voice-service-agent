@@ -39,7 +39,7 @@ class ToolSpec(StrictModel):
 
 class ToolRegistry:
     def __init__(self, settings, client, store):
-        self.settings, self.store = settings, store
+        self.settings, self.store, self.client = settings, store, client
         self.adapters = {
             "cuekb_http": CueKBAdapter(settings, client),
             "weather_http": (QWeatherAdapter if settings.weather_provider == "qweather" else WeatherAdapter)(settings, client),

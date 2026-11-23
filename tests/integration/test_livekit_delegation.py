@@ -11,6 +11,7 @@ from app.config import Settings
 from app.main import create_app
 from app.voice.livekit_room import RoomCall, RoomInputs, browser_credentials
 from livekit import api
+from pydantic import SecretStr
 from test_native_cuekb import evidence_v21, validate_v21
 
 
@@ -29,8 +30,23 @@ def settings(tmp_path):
 
 @pytest.mark.parametrize("asr_mode", ["normal", "delayed", "empty", "wrong", "disabled"])
 async def test_asr_presentation_does_not_authorize_or_change_native_task(tmp_path, monkeypatch, asr_mode):
-    app = create_app(settings(tmp_path))
+    config = settings(tmp_path)
+    config.delegation_router_provider = "openai_compatible"
+    config.delegation_router_base_url = "https://intent.fixture/v1"
+    config.delegation_router_api_key = SecretStr("test-intent-key")
+    config.delegation_router_model = "test-model"
+    app = create_app(config)
+    requests = []
+
+    def intent_backend(request):
+        requests.append(json.loads(request.content))
+        return httpx.Response(200, json={"choices": [{"finish_reason": "stop", "message": {"content": json.dumps({
+            "route": "WEATHER", "place": "Beijing", "date": "tomorrow", "units": "metric", "query": None, "freshness": None,
+        })}}]})
+
     async with app.router.lifespan_context(app):
+        intent_client = httpx.AsyncClient(transport=httpx.MockTransport(intent_backend))
+        app.state.registry.client = intent_client
         async with httpx.AsyncClient(transport=httpx.ASGITransport(app=app), base_url="http://test") as client:
             cid = (await client.post("/api/v1/conversations", json={})).json()["id"]
             issued = (await client.post(f"/api/v1/conversations/{cid}/voice-sessions")).json()
@@ -46,14 +62,19 @@ async def test_asr_presentation_does_not_authorize_or_change_native_task(tmp_pat
                     "delta": "" if asr_mode == "empty" else "WEATHER: London | today" if asr_mode == "wrong" else "北京天气"})
             assert call.calls.empty() and not call.closed.is_set()
             assert (owner.started, owner.ended, owner.claimed) == before
-            result = call.router.parse("WEATHER: Beijing | tomorrow", {})
+            assert requests == []
+            result = await call.router.parse_native("Check weather in Beijing tomorrow", {})
             assert result.route == "WEATHER" and result.decision.arguments.place == "Beijing"
             assert result.decision.arguments.date == "tomorrow"
+            assert result.parse_method == "llm" and len(requests) == 1
+            assert requests[0]["messages"][1] == {"role": "user", "content": "Check weather in Beijing tomorrow"}
+            assert "London" not in json.dumps(requests)
             if asr_mode == "delayed":
                 caption = call.outgoing.get_nowait()["payload"]
                 assert caption["association"] == "unbound" and caption["item_id"] != owner.id
                 assert owner.transcript == ""
             await call.room.disconnect()
+        await intent_client.aclose()
 
 
 def test_room_token_allows_audio_only_in_its_own_room(tmp_path):
@@ -266,6 +287,66 @@ async def test_two_fast_turns_can_repeat_query_without_reexecuting_duplicate_ids
                     assert len(requests) == 2 and call.calls.empty()
                     rows = (await client.get(f"/api/v1/conversations/{cid}/messages")).json()["items"]
                     assert len(rows) == 2 and {row["selected_tool"] for row in rows} == {"web_search"}
+                finally:
+                    worker.cancel()
+                    await asyncio.gather(worker, return_exceptions=True)
+                    await call.room.disconnect()
+
+
+@pytest.mark.parametrize("merge_input", [True, False])
+async def test_speech_during_llm_wait_cannot_execute_the_old_task(tmp_path, merge_input):
+    config = settings(tmp_path)
+    config.delegation_router_provider = "openai_compatible"
+    config.delegation_router_base_url = "https://intent.fixture/v1"
+    config.delegation_router_api_key = SecretStr("test-intent-key")
+    config.delegation_router_model = "test-model"
+    app = create_app(config)
+    started, release = asyncio.Event(), asyncio.Event()
+    executed, replies = [], asyncio.Queue()
+
+    async def backend(request):
+        started.set()
+        await release.wait()
+        return httpx.Response(200, json={"choices": [{"finish_reason": "stop", "message": {"content": json.dumps({
+            "route": "WEATHER", "place": "Beijing", "date": "tomorrow", "units": "metric", "query": None, "freshness": None,
+        })}}]})
+
+    async with app.router.lifespan_context(app):
+        async with httpx.AsyncClient(transport=httpx.MockTransport(backend)) as intent_client:
+            app.state.registry.client = intent_client
+            async with httpx.AsyncClient(transport=httpx.ASGITransport(app=app), base_url="http://test") as client:
+                cid = (await client.post("/api/v1/conversations", json={})).json()["id"]
+                issued = (await client.post(f"/api/v1/conversations/{cid}/voice-sessions")).json()
+                call = RoomCall(app.state.voice, None, app.state.voice.sessions[issued["voice_session_id"]])
+
+                async def execute(*args):
+                    executed.append(args)
+
+                def append(content, *, delegation_id):
+                    call.receipts[delegation_id].set()
+                    replies.put_nowait((delegation_id, content))
+
+                call.execute = execute
+                call.duplex = SimpleNamespace(append_commentary=append)
+                call.inputs.update(True)
+                call.inputs.update(False)
+                owner = call.inputs.latest
+                call.receive({"type": "session.delegation.created", "delegation": {
+                    "id": "old-task", "type": "delegation", "target": "client", "task": "Check weather in Beijing tomorrow",
+                }})
+                call.delegate(SimpleNamespace(id="old-task", pending_transcript=""))
+                worker = asyncio.create_task(call.run_tools())
+                try:
+                    await asyncio.wait_for(started.wait(), 2)
+                    if not merge_input:
+                        owner.ended -= 2
+                    call.inputs.update(True)
+                    call.inputs.update(False)
+                    assert (call.inputs.latest is owner) == merge_input
+                    release.set()
+                    call_id, _ = await asyncio.wait_for(replies.get(), 2)
+                    assert call_id == "old-task" and executed == []
+                    assert not call.inputs.latest.claimed
                 finally:
                     worker.cancel()
                     await asyncio.gather(worker, return_exceptions=True)

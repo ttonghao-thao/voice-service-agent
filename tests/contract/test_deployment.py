@@ -53,12 +53,15 @@ def test_cloud_compose_is_a_production_only_container_topology():
     assert config["redis"]["db"] == 1
     assert config["redis"]["password"].startswith("${REDIS_PASSWORD:?")
     assert services["api"]["environment"]["REDIS_URL"].endswith("@redis:6379/0")
-    assert config["rtc"]["node_ip"].startswith("${LIVEKIT_NODE_IP:?")
+    assert config["rtc"]["node_ip"] == "${LIVEKIT_NODE_IP:-}"
     assert config["rtc"]["use_external_ip"] is False
     assert config["rtc"]["udp_port"] == 7882 and config["rtc"]["tcp_port"] == 7881
     assert livekit["ports"] == ["0.0.0.0:7881:7881/tcp", "0.0.0.0:7882:7882/udp"]
     assert livekit["depends_on"]["redis"]["condition"] == "service_healthy"
     assert services["api"]["depends_on"]["livekit"]["condition"] == "service_healthy"
+    assert services["api"]["depends_on"]["livekit"]["required"] is False
+    assert livekit["profiles"] == ["sophon"]
+    assert services["web"]["environment"]["VOICE_PROVIDER"] == "${VOICE_PROVIDER:-sophon_live}"
     assert set(livekit["networks"]) == {"data", "app", "edge"}
     assert "--dev" not in str(livekit)
     assert images["postgres"].startswith("postgres:17.6-alpine@sha256:")
@@ -97,14 +100,14 @@ def test_cloud_environment_template_cannot_enable_development_fallbacks():
         "CUEKB_VOICE_TOKEN_BUDGET",
         "CUEKB_VOICE_TOKENIZER_ID",
         "VOICE_TOOL_RESULT_MAX_TOKENS",
-        "VOICECHAT_WS_URL",
-        "VOICECHAT_API_KEY",
         "VOICE_PROVIDER",
         "SOPHON_LIVE_WS_URL",
         "SOPHON_LIVE_API_KEY",
         "SOPHON_LIVE_LOCALE",
         "SOPHON_LIVE_TOOL_TIMEOUT_SECONDS",
         "SOPHON_LIVE_MAX_DELEGATIONS_PER_INPUT",
+        "DELEGATION_ROUTER_PROVIDER", "DELEGATION_ROUTER_BASE_URL", "DELEGATION_ROUTER_MODEL",
+        "DELEGATION_ROUTER_API_KEY", "DELEGATION_ROUTER_TIMEOUT_SECONDS",
         "QA_EXECUTION_MODE",
         "QA_ANSWER_POLICY",
         "QA_TOOLSET_VERSION",
@@ -133,10 +136,13 @@ def test_cloud_environment_template_cannot_enable_development_fallbacks():
     assert "REPLACE_" in values["WEATHER_BASE_URL"]
     assert values["WEATHER_API_KEY"].startswith("REPLACE_")
     assert values["VOICE_PROVIDER"] == "sophon_live"
+    assert values["DELEGATION_ROUTER_PROVIDER"] == "openai_compatible"
+    assert values["DELEGATION_ROUTER_MODEL"] == "qwen3.7-flash"
     assert urlparse(values["LIVEKIT_URL"]).scheme == "wss"
     assert urlparse(values["LIVEKIT_URL"]).port == 7880
     assert values["LIVEKIT_NODE_IP"].startswith("REPLACE_")
-    assert values["VOICECHAT_WS_URL"].startswith("REPLACE_")
+    assert not {"VOICECHAT_WS_URL", "VOICECHAT_API_KEY"} & values.keys()
+    assert "# VOICECHAT_WS_URL=" in (ROOT / ".env.example").read_text()
     origin = urlparse(values["PUBLIC_ORIGIN"])
     assert origin.scheme == "https" and origin.port == 8087 and origin.path == ""
     assert values["WEB_TLS_CERT_FILE"].startswith("/")
@@ -147,10 +153,10 @@ def test_cloud_environment_template_cannot_enable_development_fallbacks():
         "POSTGRES_PASSWORD",
         "REDIS_PASSWORD",
         "CUEKB_API_KEY",
-        "VOICECHAT_API_KEY",
         "LIVEKIT_API_KEY",
         "LIVEKIT_API_SECRET",
         "WEB_SEARCH_API_KEY",
+        "DELEGATION_ROUTER_API_KEY",
     ):
         assert values[key].startswith("REPLACE_")
     assert "CUEKB_TOP_K" not in values and "MAX_VOICE_SESSIONS" not in values
@@ -161,7 +167,7 @@ def test_cloud_deployment_uses_prebuilt_images():
     script = (ROOT / "scripts/deploy-cloud.sh").read_text()
     assert "compose build" not in script
     assert 'docker image inspect "$image"' in script
-    assert script.count("compose up -d --no-build") == 3
+    assert script.count("compose up -d --no-build") == 4
     assert "IMAGE_TAG" in script
     assert "LOCAL_USERS_JSON" not in script and "API_BIND_ADDRESS" not in script
     assert "APP_ENV" not in script
@@ -192,7 +198,10 @@ def test_cloud_deployment_uses_prebuilt_images():
     nginx = (ROOT / "deploy/nginx.conf").read_text()
     assert "listen 8087 ssl;" in nginx
     assert "listen 7880 ssl;" in nginx
-    assert "proxy_pass http://livekit:7880;" in nginx
+    assert "proxy_pass http://$livekit_upstream;" in nginx
+    assert "set $livekit_upstream livekit:7880;" in nginx
+    assert "resolver 127.0.0.11" in nginx
+    assert "if ($selected_voice != sophon_live) { return 404; }" in nginx
     assert "proxy_set_header Upgrade $http_upgrade;" in nginx
     assert "access_log off;" in nginx.split("listen 7880 ssl;", 1)[1]
     assert "ssl_certificate /etc/nginx/tls/tls.crt;" in nginx
@@ -203,6 +212,9 @@ def test_cloud_deployment_uses_prebuilt_images():
 
 def test_cloud_template_loads_real_settings_from_environment_strings(tmp_path, monkeypatch):
     from app.config import Settings
+    from app.voice.gateway import VoiceGateway
+    from app.voice.provider import NvidiaVoiceChatAdapter
+    from app.voice.sophon_live import SophonLiveAdapter
     from pydantic import ValidationError
 
     values = dict(
@@ -220,6 +232,8 @@ def test_cloud_template_loads_real_settings_from_environment_strings(tmp_path, m
         SOPHON_LIVE_WS_URL="wss://sophon.test/v1/live/sessions",
         WEATHER_BASE_URL="https://fixture.qweatherapi.com", WEATHER_API_KEY="test-weather-key",
         WEB_SEARCH_API_KEY="test-search-key",
+        DELEGATION_ROUTER_BASE_URL="https://intent.fixture/v1",
+        DELEGATION_ROUTER_API_KEY="test-intent-key",
     )
     for name in values:
         monkeypatch.delenv(name, raising=False)
@@ -234,10 +248,25 @@ def test_cloud_template_loads_real_settings_from_environment_strings(tmp_path, m
         with pytest.raises(ValidationError):
             Settings(_env_file=env_file, sophon_live_max_delegations_per_input=invalid)
 
+    # Backend selection is a startup contract, without connecting to NVIDIA.
+    nvidia = Settings(_env_file=env_file, voice_provider="nvidia",
+        voicechat_ws_url="wss://voicechat.test/ws", voicechat_api_key="test-voice-key",
+        sophon_live_ws_url="inactive", livekit_url="inactive",
+        livekit_api_key="", livekit_api_secret="", delegation_router_base_url="inactive",
+        delegation_router_api_key="", delegation_router_model="")
+    nvidia.validate_deployment()
+    assert not nvidia.livekit_enabled
+    assert settings.livekit_enabled
+    assert VoiceGateway(settings, None, None).provider_factory is SophonLiveAdapter
+    assert VoiceGateway(nvidia, None, None).provider_factory is NvidiaVoiceChatAdapter
+    for invalid in ("sophon_live,nvidia", "nvidia,sophon_live", "", "both"):
+        with pytest.raises(ValidationError):
+            Settings(_env_file=env_file, voice_provider=invalid)
+
 
 def test_deployment_rejects_incomplete_config_before_starting_containers(tmp_path):
     docker = tmp_path / "docker"
-    docker.write_text('#!/bin/sh\nprintf "%s\\n" "$*" >> "$DOCKER_CALLS"\nexit 0\n')
+    docker.write_text('#!/bin/sh\nprintf "%s | profiles=%s\\n" "$*" "$COMPOSE_PROFILES" >> "$DOCKER_CALLS"\nexit 0\n')
     docker.chmod(0o755)
     calls = tmp_path / "docker-calls"
     env = {**os.environ, "PATH": f"{tmp_path}:{os.environ['PATH']}", "DOCKER_CALLS": str(calls)}
@@ -259,6 +288,10 @@ def test_deployment_rejects_incomplete_config_before_starting_containers(tmp_pat
         "WEATHER_BASE_URL": "https://weather.test",
         "WEATHER_API_KEY": "weather-key",
         "WEB_SEARCH_API_KEY": "public-search-key",
+        "DELEGATION_ROUTER_PROVIDER": "openai_compatible",
+        "DELEGATION_ROUTER_BASE_URL": "https://intent.test/v1",
+        "DELEGATION_ROUTER_MODEL": "qwen3.7-flash",
+        "DELEGATION_ROUTER_API_KEY": "test-intent-key",
         "PUBLIC_ORIGIN": "https://voice.test:8087",
         "CUEKB_BASE_URL": "https://cuekb.test",
         "CUEKB_API_KEY": "cuekb-key",
@@ -304,7 +337,8 @@ def test_deployment_rejects_incomplete_config_before_starting_containers(tmp_pat
     values["PUBLIC_ORIGIN"] = "https://voice.test:8087"
     accepted_https = check()
     assert accepted_https.returncode == 0
-    commands = calls.read_text().splitlines()
+    assert all(line.endswith(" | profiles=sophon") for line in calls.read_text().splitlines()[1:])
+    commands = [line.split(" | profiles=", 1)[0] for line in calls.read_text().splitlines()]
     infrastructure = next(i for i, command in enumerate(commands) if command.endswith("postgres redis livekit"))
     migration = next(i for i, command in enumerate(commands) if command.endswith("run --rm --no-deps migrate"))
     api = next(i for i, command in enumerate(commands) if " up " in command and command.endswith("--no-deps api"))
@@ -328,8 +362,11 @@ def test_deployment_rejects_incomplete_config_before_starting_containers(tmp_pat
         ("ENABLED_TOOLS", "search_knowledge,web_search", "include weather"),
         ("WEATHER_API_KEY", "", "real value for WEATHER_API_KEY"),
         ("WEB_SEARCH_API_KEY", "", "real value for WEB_SEARCH_API_KEY"),
+        ("DELEGATION_ROUTER_API_KEY", "", "real value for DELEGATION_ROUTER_API_KEY"),
+        ("DELEGATION_ROUTER_PROVIDER", "rule", "DELEGATION_ROUTER_PROVIDER=openai_compatible"),
         ("WEATHER_MODE", "mock", "WEATHER_MODE=real"),
-        ("VOICE_PROVIDER", "nvidia", "VOICE_PROVIDER=sophon_live"),
+        ("VOICE_PROVIDER", "sophon_live,nvidia", "select exactly one backend"),
+        ("VOICE_PROVIDER", "", "select exactly one backend"),
     ):
         original = values[key]
         values[key] = bad_value
@@ -338,6 +375,24 @@ def test_deployment_rejects_incomplete_config_before_starting_containers(tmp_pat
         assert message in rejected.stderr, (key, rejected.stderr)
         assert not any(" up " in command or " run " in command for command in calls.read_text().splitlines())
         values[key] = original
+
+    values["VOICE_PROVIDER"] = "nvidia"
+    # Neither dormant Sophon fields nor a caller's inherited profile may start SFU.
+    for name in list(values):
+        if name.startswith(("SOPHON_", "LIVEKIT_", "DELEGATION_ROUTER_")):
+            values.pop(name)
+    env["COMPOSE_PROFILES"] = "sophon"
+    accepted_nvidia = check()
+    assert accepted_nvidia.returncode == 0, accepted_nvidia.stderr
+    commands = calls.read_text().splitlines()[1:]
+    assert all(command.endswith(" | profiles=") for command in commands)
+    assert any("--profile sophon stop livekit" in command for command in commands)
+    assert any("postgres redis | profiles=" in command for command in commands)
+    assert not any(" up " in command and "livekit" in command for command in commands)
+    values["VOICECHAT_API_KEY"] = ""
+    rejected_nvidia = check()
+    assert rejected_nvidia.returncode != 0
+    assert "real value for VOICECHAT_API_KEY" in rejected_nvidia.stderr
 
 
 def test_deployment_readiness_verifier_requires_real_matching_configuration():

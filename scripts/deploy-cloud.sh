@@ -37,7 +37,6 @@ require_values \
   IMAGE_TAG POSTGRES_PASSWORD REDIS_PASSWORD KNOWLEDGE_BASE_IDS \
   WEB_TLS_CERT_FILE WEB_TLS_KEY_FILE \
   PUBLIC_ORIGIN AGENT_PROVIDER \
-  LIVEKIT_URL LIVEKIT_API_KEY LIVEKIT_API_SECRET LIVEKIT_NODE_IP \
   CUEKB_BASE_URL CUEKB_API_KEY WEATHER_BASE_URL WEATHER_API_KEY WEB_SEARCH_API_KEY
 
 for tool in search_knowledge weather web_search; do
@@ -47,32 +46,47 @@ for tool in search_knowledge weather web_search; do
   esac
 done
 
-case "$(environment_value VOICE_PROVIDER)" in
-  sophon_live) require_values SOPHON_LIVE_WS_URL ;;
-  *) echo "Three-query deployment requires VOICE_PROVIDER=sophon_live; NVIDIA compatibility has its own runbook." >&2; exit 1 ;;
+voice_provider=$(environment_value VOICE_PROVIDER)
+case "$voice_provider" in
+  sophon_live)
+    require_values SOPHON_LIVE_WS_URL LIVEKIT_URL LIVEKIT_API_KEY LIVEKIT_API_SECRET LIVEKIT_NODE_IP \
+      DELEGATION_ROUTER_BASE_URL DELEGATION_ROUTER_MODEL DELEGATION_ROUTER_API_KEY
+    if [ "$(environment_value DELEGATION_ROUTER_PROVIDER)" != "openai_compatible" ]; then
+      echo "Sophon deployment requires DELEGATION_ROUTER_PROVIDER=openai_compatible for native task parsing." >&2
+      exit 1
+    fi
+    if ! grep -Eq '^LIVEKIT_URL=wss://[A-Za-z0-9.-]+(:[0-9]+)?/?$' "$environment_file"; then
+      echo "LIVEKIT_URL must be a WSS origin routed to this Compose Web port 7880." >&2
+      exit 1
+    fi
+    livekit_secret=$(environment_value LIVEKIT_API_SECRET)
+    if [ "${#livekit_secret}" -lt 32 ]; then
+      echo "LIVEKIT_API_SECRET must contain at least 32 characters." >&2
+      exit 1
+    fi
+    if ! environment_value LIVEKIT_NODE_IP | awk -F. '
+      NF != 4 { exit 1 }
+      { for (i=1; i<=4; i++) if ($i !~ /^[0-9]+$/ || $i > 255) exit 1 }
+    '; then
+      echo "LIVEKIT_NODE_IP must be the deployment host IPv4 reachable by clients and the API." >&2
+      exit 1
+    fi
+    export COMPOSE_PROFILES=sophon
+    secret_keys="REDIS_PASSWORD LIVEKIT_API_KEY LIVEKIT_API_SECRET"
+    ;;
+  nvidia)
+    require_values VOICECHAT_WS_URL VOICECHAT_API_KEY
+    export COMPOSE_PROFILES=
+    secret_keys=REDIS_PASSWORD
+    ;;
+  *) echo "VOICE_PROVIDER must select exactly one backend: sophon_live or nvidia." >&2; exit 1 ;;
 esac
 
-if ! grep -Eq '^LIVEKIT_URL=wss://[A-Za-z0-9.-]+(:[0-9]+)?/?$' "$environment_file"; then
-  echo "LIVEKIT_URL must be a WSS origin routed to this Compose Web port 7880." >&2
-  exit 1
-fi
-for key in REDIS_PASSWORD LIVEKIT_API_KEY LIVEKIT_API_SECRET; do
+for key in $secret_keys; do
   case "$(environment_value "$key")" in
     *[!A-Za-z0-9._~-]*) echo "$key must use URL-safe letters, digits, dot, underscore, tilde or hyphen." >&2; exit 1 ;;
   esac
 done
-livekit_secret=$(environment_value LIVEKIT_API_SECRET)
-if [ "${#livekit_secret}" -lt 32 ]; then
-  echo "LIVEKIT_API_SECRET must contain at least 32 characters." >&2
-  exit 1
-fi
-if ! environment_value LIVEKIT_NODE_IP | awk -F. '
-  NF != 4 { exit 1 }
-  { for (i=1; i<=4; i++) if ($i !~ /^[0-9]+$/ || $i > 255) exit 1 }
-'; then
-  echo "LIVEKIT_NODE_IP must be the deployment host IPv4 reachable by clients and the API." >&2
-  exit 1
-fi
 if [ "$(environment_value WEATHER_PROVIDER)" != "qweather" ] || \
    [ "$(environment_value WEATHER_MODE)" != "real" ]; then
   echo "Complete deployment requires WEATHER_PROVIDER=qweather and WEATHER_MODE=real." >&2
@@ -117,7 +131,7 @@ api_image="voice-service-agent-api:$image_tag"
 web_image="voice-service-agent-web:$image_tag"
 export IMAGE_TAG="$image_tag"
 export PUBLIC_ORIGIN="$(environment_value PUBLIC_ORIGIN)"
-export VOICE_PROVIDER="$(environment_value VOICE_PROVIDER)"
+export VOICE_PROVIDER="$voice_provider"
 export WEB_TLS_CERT_FILE="$(environment_value WEB_TLS_CERT_FILE)"
 export WEB_TLS_KEY_FILE="$(environment_value WEB_TLS_KEY_FILE)"
 export POSTGRES_PASSWORD="$(environment_value POSTGRES_PASSWORD)"
@@ -133,7 +147,13 @@ for image in "$api_image" "$web_image"; do
     exit 1
   fi
 done
-compose up -d --no-build --wait --wait-timeout 180 postgres redis livekit
+if [ "$voice_provider" = sophon_live ]; then
+  compose up -d --no-build --wait --wait-timeout 180 postgres redis livekit
+else
+  # Switching this deployment to NVIDIA also stops its previous Sophon SFU.
+  compose --profile sophon stop livekit
+  compose up -d --no-build --wait --wait-timeout 180 postgres redis
+fi
 compose run --rm --no-deps migrate
 compose up -d --no-build --wait --wait-timeout 180 --no-deps api
 compose exec -T api python /app/scripts/verify_deployment.py --base-url http://127.0.0.1:8000 --expect-autonomous-voice

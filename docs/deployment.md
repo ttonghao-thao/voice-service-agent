@@ -12,9 +12,10 @@
 | PostgreSQL / Redis | deploy/compose.production.yaml，镜像 digest 见 deploy/images.lock.json | 独立持久卷，宿主不暴露数据库端口 |
 | LiveKit | 与 Redis 同一 deploy/compose.production.yaml，镜像 tag+digest 锁定 | 复用 redis:6379/DB1，API 用 DB0；媒体 7881/TCP、7882/UDP 直接发布 |
 | Sophon / CueKB | 独立部署，应用通过服务接口连接 | 真实凭据留服务端；GPU/ASR 归独立 Sophon |
+| Qwen 意图解析 | API 共享 HTTP client 连接用户配置的云端模型 | 只接收已委派的非敏感 task；不新增容器或 Agent Runtime |
 | Sophon 验收容器 | 尚未交付；API 镜像没有浏览器验收运行时 | 设计在实施方案，不能用宿主开发测试冒充生产容器验收 |
 
-六个服务由同一份 Compose 管理：postgres、redis、livekit、migrate、api、web。API/Web 只使用预构建镜像；LiveKit 与数据库一样按锁定 digest 拉取，不另起独立 Compose。主部署默认 Sophon 和三类工具，启动脚本要求完整配置，不再应用/覆盖 NVIDIA 工具目录。
+六个服务由同一份 Compose 定义：postgres、redis、livekit、migrate、api、web。API/Web 只使用预构建镜像；LiveKit 与数据库一样按锁定 digest 拉取，不另起独立 Compose。VOICE_PROVIDER 是唯一选择：sophon_live（默认）或 nvidia，每次只启用一个后端。主部署默认只配置 Sophon 和三类工具，不再应用/覆盖 NVIDIA 工具目录。本期仅验证 Sophon。
 
 仓库部署定义已更新，不等于部署机已升级。真实镜像构建、LiveKit 公网媒体/NAT、PostgreSQL 迁移、三类服务闭环和听音仍需现场验收；Sophon 浏览器验收容器入口尚未交付，不能用占位凭据或部分工具放行。
 
@@ -57,6 +58,11 @@ SOPHON_LIVE_API_KEY=
 SOPHON_LIVE_LOCALE=zh-CN
 SOPHON_LIVE_TOOL_TIMEOUT_SECONDS=12
 SOPHON_LIVE_MAX_DELEGATIONS_PER_INPUT=1
+DELEGATION_ROUTER_PROVIDER=openai_compatible
+DELEGATION_ROUTER_BASE_URL=https://实际工作空间域名/compatible-mode/v1
+DELEGATION_ROUTER_MODEL=qwen3.7-flash
+DELEGATION_ROUTER_API_KEY=实际意图模型Key
+DELEGATION_ROUTER_TIMEOUT_SECONDS=4
 LIVEKIT_URL=wss://实际门户域名:7880
 LIVEKIT_NODE_IP=实际部署机可达IPv4
 LIVEKIT_API_KEY=实际Key
@@ -77,7 +83,13 @@ LIVEKIT_NODE_IP 是浏览器与 API 可到达的部署机 IPv4，不是容器的
 
 QWeather 必须使用控制台专属 API Host，服务端通过 X-QW-Api-Key 调用 GeoAPI / Weather v1；Tavily 使用服务端 Key 调用固定 Search endpoint。CueKB 基地址不附加 evidence 路径，Key 只授予配置的 KB 范围；HTTP 仅用于受控隔离内网，公网必须 HTTPS/WSS。配置来源以 config.py / config/tools.yaml 为准，不能从 Key 或门户域名猜主机。
 
-NVIDIA/旧 Sophon WS 的实际限制见 [架构](architecture.md#2-数据流与代码入口) / [接入](integration.md)，不另列仅知识库部署方案。不得用它们的局部能力替代三类查询的发布标准。
+DELEGATION_ROUTER_* 与 AGENT_* 分开：前者只解析原生 task，后者仍 disabled，不增加答案模型。使用受信 HTTPS Chat Completions base URL，代码追加 /chat/completions；本次百炼接口使用 JSON Schema、enable_thinking=false 和有界期限。依据 [百炼 Chat API](https://help.aliyun.com/zh/model-studio/qwen-api-via-openai-chat-completions)。Key 只在服务端 .env，不能传浏览器；API 错误/超时不回退规则执行，不把接口连通当语音工具已成功。模型配置变化须重建 API 并新建通话。
+
+### 单选后端与切换
+
+.env.example 只启用 Sophon 配置，VOICECHAT_* 为注释。需要选择 NVIDIA 时，将 VOICE_PROVIDER 改为 nvidia，并填写 VOICECHAT_WS_URL / VOICECHAT_API_KEY；Sophon、LiveKit、DELEGATION_ROUTER_* 可以移除或保留为未启用字段，均不激活该后端。三类工具及其服务配置仍保留，不能把兼容能力限制改成单知识库产品。NVIDIA 现有路径未实现天气/Tavily 闭环，配置可启动不代表三类能力验收，详见 [架构](architecture.md#2-数据流与代码入口)。本期不运行其服务/GPU 验证。
+
+统一执行 §4 启动脚本，脚本覆盖外部 COMPOSE_PROFILES：Sophon 派生 sophon profile 并等待 LiveKit 健康；NVIDIA 派生空 profile、停止本 Compose 的旧 LiveKit，仅启动 PostgreSQL/Redis，再迁移并重建应用。不要并行启动两套后端、另设独立后端开关或只 restart。切换前 drain，切换后新建通话。Web 在 NVIDIA 选择下拒绝 7880 信令请求；不会因未启动 LiveKit 的 DNS 阻止门户启动。
 
 ## 4. 迁移、目录与启动
 
@@ -87,6 +99,8 @@ NVIDIA/旧 Sophon WS 的实际限制见 [架构](architecture.md#2-数据流与�
 docker load -i "voice-service-agent-$release_tag.tar"
 chmod 600 .env
 export DEPLOY_ENV_FILE="$PWD/.env"
+# 以下手工命令用于默认 Sophon；部署脚本会按 VOICE_PROVIDER 自动设置。
+export COMPOSE_PROFILES=sophon
 dc() { docker compose --env-file "$DEPLOY_ENV_FILE" -f deploy/compose.production.yaml "$@"; }
 dc config --quiet
 dc pull postgres redis livekit
@@ -98,7 +112,7 @@ dc pull postgres redis livekit
 ./scripts/deploy-cloud.sh .env
 ```
 
-它依次检查三类真实配置、Sophon/LiveKit、IPv4/凭据、HTTPS/TLS/本地应用镜像，等待 PG/Redis/LiveKit 健康，复用新 API 镜像执行 migrate，再启动 API、检查 readiness、重新创建 Web。Web 最后重建以解析新 LiveKit 容器地址。Compose 固定 AUTH_MODE=validation、CUEKB_MODE=real，数据库连接串由容器配置构造。离线主机须预先载入 images.lock.json 中三种依赖镜像；拉取失败停止发布，不改用 latest。
+默认 Sophon 下，它依次检查三类配置、Sophon/LiveKit/意图模型配置、IPv4/凭据、HTTPS/TLS/本地应用镜像，等待 PG/Redis/LiveKit 健康，复用新 API 镜像执行 migrate，再启动 API、检查 readiness、重新创建 Web。另一选择仅改变 §3 说明的后端依赖，不启动 Sophon SFU。Compose 固定 AUTH_MODE=validation、CUEKB_MODE=real，数据库连接串由容器配置构造。离线主机须预先载入 images.lock.json 中选用的依赖镜像；拉取失败停止发布，不改用 latest。
 
 Sophon client delegate 不使用 NVIDIA 原生函数清单作为三类能力门禁；部署脚本不再调用 configure_native_cuekb.py --apply 或 --expect-cuekb-native。既有全局目录仍以数据库 revision/CAS 为准，手工维护规则见 [工具契约](interfaces/voice-tools.md)。readiness 与实际业务验收分开，脚本退出 0 不表示三类检索和语音已经通过。
 

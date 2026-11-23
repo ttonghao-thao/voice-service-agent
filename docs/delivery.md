@@ -16,9 +16,11 @@
 
 ## 2. 语音、角色与权限
 
-浏览器支持麦克风和 PCM WAV 的全双工、多轮、停顿与打断。门户沿用英文；Sophon 按 SOPHON_LIVE_LOCALE 验证中文或英文。Sophon、NVIDIA VoiceChat、CueKB 保持独立部署，主交付链路使用 Sophon Live + LiveKit 支持三类查询。
+浏览器支持麦克风和 PCM WAV 的全双工、多轮、停顿与打断。门户沿用英文；Sophon 按 SOPHON_LIVE_LOCALE 验证中文或英文。Sophon、NVIDIA VoiceChat、CueKB 保持独立部署。VOICE_PROVIDER 必须单选 sophon_live 或 nvidia，默认只配置 Sophon；本期只验证 Sophon，不要求 NVIDIA 服务/GPU 验收。主交付链路使用 Sophon Live + LiveKit 支持三类查询。
 
-Sophon 直接理解音频并原生 delegate(task)，Router 只解析已收到的 task，音频活动/窗口确认输入归属。ASR 只用于字幕、记录和诊断；关闭、迟到、空或错误 ASR 不参与授权、触发、选工具或必需参数提取。未关联字幕可以显示，不能绑定成业务输入。禁止客户端关键词补调、伪造事件、强制 WS tool_choice、第二个路由 LLM 或另建 Agent Runtime。
+Sophon 直接理解音频并原生 delegate(task)，Router 只解析已收到的 task，音频活动/窗口确认输入归属。2026-11-23 用户确认使用 qwen3.7-flash 替代自然语言规则解析，结构化任务仍直接校验；模型只能返回受限意图/参数，不能生成业务答案或扩大权限。ASR 只用于字幕、记录和诊断；关闭、迟到、空或错误 ASR 不参与授权、触发、选工具或必需参数提取。未关联字幕可以显示，不能绑定成业务输入。禁止关键词补调、伪造事件、强制 WS tool_choice 或另建 Agent Runtime。
+
+外部意图模型只接收当前原生 task，不读取 ASR、历史、证据、身份或凭据。私有/敏感 task 和已回填企业资料的 Room 不自动发给该模型。模型错误、超时、改写关键参数或输出不合约时不执行工具，不静默回退规则。模型等待结束及提交前复核输入窗口，新增/补充发声不能误用旧意图。
 
 默认角色“闹闹”的 Persona 精确为：
 

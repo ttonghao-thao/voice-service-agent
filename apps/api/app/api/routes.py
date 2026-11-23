@@ -165,7 +165,7 @@ def capabilities(s):
     )
     return {
         "provider": s.voice_provider,
-        "voice_transport": "livekit" if s.livekit_url else "websocket",
+        "voice_transport": "livekit" if s.livekit_enabled else "websocket",
         "is_mock": s.mock,
         "agent_provider": s.agent_provider,
         "cuekb_mode": s.cuekb_mode,
@@ -477,7 +477,7 @@ async def voice_profiles(request: Request, user: User, conversation_id: str | No
                 profiles.append(profile_view(row))
             except ValidationError:
                 continue
-        return [{**profile, "instructions": instructions(profile, settings.sophon_live_locale, livekit=bool(settings.livekit_url))}
+        return [{**profile, "instructions": instructions(profile, settings.sophon_live_locale, livekit=settings.livekit_enabled)}
                 for profile in profiles]
 
 

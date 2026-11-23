@@ -1,6 +1,6 @@
 # 原生入口与全局 VoiceChat 工具目录
 
-类型：Provider 注册/执行契约。产品固定提供天气、通用知识、专业知识库；三类能力不等于三个原生函数。Sophon 注册 client delegate(task)，再由 DelegationRouter 选择 WEATHER/CUEKB/WEB_SEARCH；不是把 NVIDIA 的函数清单套到 Sophon。Sophon 的事件/音频归属见 [接入 §2](../integration.md#2-sophon-与原生委派)。
+类型：Provider 注册/执行契约。产品固定提供天气、通用知识、专业知识库；三类能力不等于三个原生函数。Sophon 注册 client delegate(task)，再由 DelegationRouter 对结构化任务直接校验、对自然语言使用批准的 Qwen 解析，选择受限意图后由服务器授权；不是把 NVIDIA 的函数清单套到 Sophon。Sophon 的事件/音频归属见 [接入 §2](../integration.md#2-sophon-与原生委派)。
 
 以下目录、session.update、batch 和 NeMo 注入描述适用于 NVIDIA 兼容 Provider。入口是 agent_runtime/tool_catalog.py、dispatch.py、api/routes.py、voice/provider.py/gateway.py。当前默认公开名称和可信 implementation 是 search_knowledge_base，旧 lookup/reason 仅兼容；这一实现限制不定义仅知识库产品模式。dual_tools 是可配置多工具的兼容名称，不是数量上限。配置操作见 [部署](../deployment.md)，执行规则见 [知识执行](../architecture.md#3-知识执行)。
 

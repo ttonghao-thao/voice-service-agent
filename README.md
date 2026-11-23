@@ -1,8 +1,8 @@
 # Voice Service Agent · 全双工知识客服
 
-系统同时提供天气查询（QWeather）、通用知识查询（Tavily）和专业知识库查询（CueKB）；通用知识检索承担受控兜底。Sophon Live 负责语音理解和原生委派，Router 解析 task，Coordinator / Runtime / Registry 维护提交、权限与执行边界。ASR 仅展示字幕。
+系统同时提供天气查询（QWeather）、通用知识查询（Tavily）和专业知识库查询（CueKB）；通用知识检索承担受控兜底。Sophon Live 负责语音理解和原生委派，Qwen Router 解析已委派的自然语言 task，Coordinator / Runtime / Registry 维护提交、权限与执行边界。ASR 仅展示字幕。
 
-当前三类查询接入路径是 Sophon Live + LiveKit。门户沿用英文，语音语言按 Provider 配置。NVIDIA 和旧 WebSocket 代码的范围限制记录在架构中，不代表系统提供仅知识库的产品模式。
+当前三类查询接入路径是 Sophon Live + LiveKit。VOICE_PROVIDER 单选 sophon_live 或 nvidia，模板默认只配置 Sophon，本期仅验证 Sophon。门户沿用英文，语音语言按 Provider 配置；各兼容路径限制见架构。
 
 从 [AGENTS.md](AGENTS.md) 开始，按任务只选一个文档入口：
 

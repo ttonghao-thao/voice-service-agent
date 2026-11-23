@@ -21,7 +21,7 @@ CueKB 的专业资料不能因查询失败转成公网问题。通用知识兜�
 
 session.start 包含已快照的 instructions、24 kHz PCM、delegation.type=client、store=false。LiveKit 通过官方 GPTLiveModel；直接 WS 通过 SophonLiveAdapter。未配置上游 Key 时省略占位 Authorization，有 Key 时保持 TLS 校验并由服务端发送。
 
-LiveKit 使用公开的原始 server event 按 delegation ID 读取 task；SDK 的 pending_transcript 不是查询参数来源。音频窗口确认唯一输入后，DelegationRouter 解析结构化/自然语言 task，再经 Coordinator → Runtime → Registry。原始 task、解析方式、执行、发送、回执和候选语音分别记录；空/冲突/重复 ID 和过期归属不猜测执行。
+LiveKit 使用公开的原始 server event 按 delegation ID 读取 task；SDK 的 pending_transcript 不是查询参数来源。音频窗口确认唯一输入后，DelegationRouter 直接校验结构化 task，或使用用户批准的 Qwen 解析自然语言，再经 Coordinator → Runtime → Registry。LLM 只输出受限结构，不调用工具，不接收 ASR/历史/证据；私有任务不自动外发，失败不回退规则。等待模型后复核输入归属。原始 task、解析方式/model、执行、发送、回执和候选语音分别记录。
 
 Sophon ASR 仅展示。字幕正常、迟到、空、错或关闭不得改变合法 task 的业务选择；unbound 字幕不创造输入授权。收到 session.commentary.appended 只匹配本次 client_event_id 的接收状态，不证明引擎消费或完整回答；候选语音和最终答案关联仍受上游协议限制。
 
@@ -45,7 +45,7 @@ ProviderCapabilities 的等待进度/修订能力未获生产验证；SimulatedW
 
 ## 4. SDK 与第三方扩展
 
-legacy、reasoned 和外置文本 Agent 兼容代码仍存在；三类查询主交付使用 AGENT_PROVIDER=disabled，不要求再部署一个答案/分类模型。兼容 Responses/Chat Completions 的 required/auto 是后台 SDK 行为，不是前台语音原生工具已调用的证据，不能用于补救 Sophon 漏委派。
+legacy、reasoned 和外置文本 Agent 兼容代码仍存在；三类查询主交付使用 AGENT_PROVIDER=disabled。新增 DELEGATION_ROUTER_* 只用于已委派 task 的解析，不能填入 AGENT_* 来启动额外答案模型。兼容 Responses/Chat Completions 的 required/auto 是后台 SDK 行为，不是前台语音原生工具已调用的证据，不能用于补救 Sophon 漏委派。
 
 扩展现有 ToolSpec + trusted adapter + Registry：参数/返回类型、实现、endpoint/凭据引用、权限、超时、版本、错误和审计由可信代码定义。新增 YAML 名称不会自动生成服务；后台只能在部署白名单内启停，工具失效时旧 run 不得继续提交。/capabilities 是配置/可用性快照，/health/ready 是启动门禁，二者均非实际查询或听音验收。
 

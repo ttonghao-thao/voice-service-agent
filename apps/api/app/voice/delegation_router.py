@@ -1,15 +1,19 @@
 """Validate Sophon client tasks and choose one permitted read-only operation."""
 
+import asyncio
 import re
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from functools import partial
+from typing import Literal
 
 from app.agent_runtime.dispatch import ExecutionDecision, NativeTool
-from app.contracts import AnswerBundle, Citation, uid
+from app.config import ROOT
+from app.contracts import AnswerBundle, Citation, DomainError, StrictModel, uid
+from app.tools.adapters import bounded_json
 from app.tools.schemas import WeatherInput
 from app.tools.web_search import WebSearchInput
 from app.voice.sophon_relay import SophonQuestion
-from pydantic import ValidationError
+from pydantic import Field, ValidationError
 
 INTERNAL = re.compile(r"内部|私有|保密|公司资料|企业资料|\b(?:internal|confidential|private|intranet|proprietary)\b", re.I)
 SENSITIVE = re.compile(
@@ -34,6 +38,23 @@ class RouteResult:
     parse_method: str = "rule"
     source: str = "delegation"
     reason: str = ""
+
+
+class IntentResult(StrictModel):
+    route: Literal["WEATHER", "CUEKB", "WEB_SEARCH", "CLARIFY", "UNSUPPORTED"]
+    place: str | None = Field(max_length=200)
+    date: str | None = Field(max_length=32)
+    units: Literal["metric", "imperial"] | None
+    query: str | None = Field(max_length=2000)
+    freshness: Literal["pd", "pw", "pm", "py"] | None
+
+
+def task_parts(task):
+    route, sep, arguments = task.replace("：", ":", 1).partition(":")
+    route, arguments = route.strip().upper(), arguments.strip()
+    structured = bool(sep and (route in {"WEATHER", "CUEKB", "WEB_SEARCH", "CLARIFY", "UNSUPPORTED"}
+                              or re.fullmatch(r"[A-Z_]{2,40}", route)))
+    return route, arguments, structured
 
 
 def natural_task(task):
@@ -75,6 +96,7 @@ def natural_task(task):
 class DelegationRouter:
     def __init__(self, registry):
         self.registry = registry
+        self.prompt = (ROOT / "config/delegation-router-prompt.txt").read_text()
         self.tools = {
             route: NativeTool(
                 name, registry.specs[name].description, schema, partial(self.run_external, name),
@@ -89,15 +111,98 @@ class DelegationRouter:
         result = self.parse(task, catalog)
         return result.decision, result.question
 
+    async def parse_native(self, task, catalog, *, private_context=False):
+        """Only received native tasks enter the LLM; never ASR/history/evidence."""
+        settings = self.registry.settings
+        if (not isinstance(task, str) or not task.strip() or len(task) > 2000
+            or any(not char.isprintable() and char not in "\r\n\t" for char in task)
+            or task_parts(task)[2] or settings.delegation_router_provider == "rule"):
+            return self.parse(task, catalog)
+        if private_context or INTERNAL.search(task) or SENSITIVE.search(task):
+            return RouteResult("CLARIFY", parse_method="policy", reason="private_task_not_sent_to_llm")
+        task = task.strip()
+        try:
+            async with asyncio.timeout(settings.delegation_router_timeout_seconds):
+                data = await bounded_json(
+                    self.registry.client, "POST", settings.delegation_router_base_url.rstrip("/") + "/chat/completions",
+                    retry=False, limit=16384, timeout=settings.delegation_router_timeout_seconds,
+                    headers={"Authorization": "Bearer " + settings.delegation_router_api_key.get_secret_value()},
+                    json={"model": settings.delegation_router_model,
+                          "messages": [{"role": "system", "content": self.prompt}, {"role": "user", "content": task}],
+                          "response_format": {"type": "json_schema", "json_schema": {
+                              "name": "delegation_intent", "strict": True, "schema": IntentResult.model_json_schema()}},
+                          "enable_thinking": False, "stream": False, "max_tokens": 512},
+                )
+            if not isinstance(data, dict) or not isinstance(data.get("choices"), list) or not data["choices"]:
+                raise ValueError("Invalid intent envelope")
+            choice = data["choices"][0]
+            if not isinstance(choice, dict) or not isinstance(choice.get("message"), dict):
+                raise ValueError("Invalid intent message")
+            if choice.get("finish_reason") != "stop" or choice["message"].get("refusal"):
+                raise ValueError("Incomplete intent result")
+            intent = IntentResult.model_validate_json(choice["message"]["content"])
+        except (TimeoutError, DomainError):
+            return RouteResult("CLARIFY", parse_method="llm", reason="llm_unavailable")
+        except (ValidationError, ValueError, TypeError, KeyError, IndexError):
+            return RouteResult("CLARIFY", parse_method="llm", reason="llm_invalid_output")
+        return replace(self.from_intent(intent, task, catalog), parse_method="llm")
+
+    def from_intent(self, intent, task, catalog):
+        unused = (intent.place, intent.date, intent.units, intent.query, intent.freshness)
+        if intent.route in {"CLARIFY", "UNSUPPORTED"}:
+            if any(value is not None for value in unused):
+                return RouteResult("CLARIFY", reason="llm_invalid_parameters")
+            return RouteResult(intent.route)
+        if intent.route in {"CUEKB", "WEB_SEARCH"}:
+            if (intent.query != task or any(value is not None for value in (intent.place, intent.date, intent.units))
+                or (intent.route == "CUEKB" and intent.freshness is not None)):
+                return RouteResult("CLARIFY", reason="llm_parameter_mismatch")
+            if (intent.route == "WEB_SEARCH" and KNOWLEDGE.search(task) and not PUBLIC.search(task)
+                and not re.search(r"开源|\bopen.source\b", task, re.I)):
+                return RouteResult("CLARIFY", reason="public_scope_unconfirmed")
+            if intent.route == "CUEKB":
+                result = self.knowledge_result(task, catalog)
+                if result is not None:
+                    return result
+            try:
+                parsed = WebSearchInput(query=task, freshness=intent.freshness)
+            except ValidationError:
+                return RouteResult("CLARIFY", reason="llm_invalid_parameters")
+            return RouteResult("WEB_SEARCH", ExecutionDecision(self.tools["WEB_SEARCH"], parsed), task)
+        date = intent.date or "today"
+        hinted = re.findall(r"\d{4}-\d{2}-\d{2}|今天|明天|\btoday\b|\btomorrow\b", task, re.I)
+        date_matches = (date in task if date not in {"today", "今天", "tomorrow", "明天"}
+                        else bool(re.search(r"明天|\btomorrow\b", task, re.I)) if date in {"tomorrow", "明天"}
+                        else not hinted or bool(re.search(r"今天|\btoday\b", task, re.I)))
+        if (not intent.place or intent.place.casefold() not in task.casefold() or not date_matches
+            or intent.query is not None or intent.freshness is not None
+            or (intent.units == "imperial" and not re.search(r"华氏|fahrenheit|°F", task, re.I))):
+            return RouteResult("CLARIFY", reason="llm_parameter_mismatch")
+        try:
+            parsed = WeatherInput(place=intent.place, date=date, units=intent.units or "metric")
+        except ValidationError:
+            return RouteResult("CLARIFY", reason="llm_invalid_parameters")
+        return RouteResult("WEATHER", ExecutionDecision(self.tools["WEATHER"], parsed), task)
+
+    def knowledge_result(self, arguments, catalog, method="structured"):
+        settings = self.registry.settings
+        if not settings.cuekb_base_url and not settings.cuekb_api_key.get_secret_value():
+            if not PUBLIC.search(arguments) or INTERNAL.search(arguments) or SENSITIVE.search(arguments):
+                return RouteResult("CLARIFY", parse_method=method, reason="public_scope_unconfirmed")
+            return None  # Only the existing explicitly public, unconfigured-KB fallback.
+        tool = catalog.get("search_knowledge_base")
+        if not tool or tool.kind != "cuekb":
+            return RouteResult("CLARIFY", parse_method=method, reason="knowledge_unavailable")
+        if len(arguments) > 2000 or not any(char.isalnum() for char in arguments):
+            return RouteResult("CLARIFY", parse_method=method, reason="invalid_arguments")
+        return RouteResult("CUEKB", ExecutionDecision(tool, SophonQuestion(query=arguments)), arguments, method)
+
     def parse(self, task, catalog):
         if not isinstance(task, str) or not task.strip() or len(task) > 2000:
             return RouteResult("CLARIFY", reason="invalid_task")
         if any(not char.isprintable() and char not in "\r\n\t" for char in task):
             return RouteResult("CLARIFY", reason="invalid_task")
-        route, sep, arguments = task.replace("：", ":", 1).partition(":")
-        route, arguments = route.strip().upper(), arguments.strip()
-        structured = bool(sep and (route in {"WEATHER", "CUEKB", "WEB_SEARCH", "CLARIFY", "UNSUPPORTED"}
-                                  or re.fullmatch(r"[A-Z_]{2,40}", route)))
+        route, arguments, structured = task_parts(task)
         method = "structured" if structured else "rule"
         if not structured:
             route, arguments = natural_task(task.strip())
@@ -106,18 +211,10 @@ class DelegationRouter:
         if not arguments:
             return RouteResult("CLARIFY", parse_method=method, reason="missing_arguments")
         if route == "CUEKB":
-            settings = self.registry.settings
-            if not settings.cuekb_base_url and not settings.cuekb_api_key.get_secret_value():
-                if not PUBLIC.search(arguments) or INTERNAL.search(arguments) or SENSITIVE.search(arguments):
-                    return RouteResult("CLARIFY", parse_method=method, reason="public_scope_unconfirmed")
-                route = "WEB_SEARCH"
-            else:
-                tool = catalog.get("search_knowledge_base")
-                if not tool or tool.kind != "cuekb":
-                    return RouteResult("CLARIFY", parse_method=method, reason="knowledge_unavailable")
-                if len(arguments) > 2000 or not any(char.isalnum() for char in arguments):
-                    return RouteResult("CLARIFY", parse_method=method, reason="invalid_arguments")
-                return RouteResult(route, ExecutionDecision(tool, SophonQuestion(query=arguments)), arguments, method)
+            result = self.knowledge_result(arguments, catalog, method)
+            if result is not None:
+                return result
+            route = "WEB_SEARCH"
         tool = self.tools.get(route)
         if tool is None or INTERNAL.search(arguments) or SENSITIVE.search(arguments):
             return RouteResult("CLARIFY", parse_method=method, reason="unsafe_or_unknown_task")

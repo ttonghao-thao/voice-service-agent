@@ -300,7 +300,16 @@ class RoomCall:
             if owner is not self.inputs.latest or owner.ended is None:
                 await self.respond(event.id, disposition("INPUT_UNCERTAIN", self.chinese), None)
                 continue
-            parsed = self.router.parse(task, self.session.tool_catalog or {})
+            if owner.claimed:
+                await self.respond(event.id, disposition("DUPLICATE", self.chinese), owner)
+                continue
+            input_ended = owner.ended
+            parsed = await self.router.parse_native(task, self.session.tool_catalog or {},
+                private_context=self.sent_private_content)
+            await self.current()
+            if owner is not self.inputs.latest or owner.ended != input_ended or self.inputs.speaking:
+                await self.respond(event.id, disposition("INPUT_UNCERTAIN", self.chinese), owner)
+                continue
             decision, question = parsed.decision, parsed.question
             logger.info("sophon_room_route conversation_id=%s delegation_id=%s route=%s parse_method=%s tool=%s reason=%s elapsed_ms=%s",
                         self.cid, event.id, parsed.route, parsed.parse_method, decision.tool.name if decision else "none", parsed.reason or "ok",
@@ -308,11 +317,18 @@ class RoomCall:
             await self.store.record(self.cid, self.epoch, "sophon_route", event.id, {
                 "delegation_task": task, "route": parsed.route, "parse_method": parsed.parse_method,
                 "source": parsed.source, "reason": parsed.reason,
+                "router_model": self.settings.delegation_router_model if parsed.parse_method == "llm" else None,
                 "_authorized_kb_ids": sorted(self.session.principal.knowledge_base_ids),
             })
+            if owner is not self.inputs.latest or owner.ended != input_ended or self.inputs.speaking:
+                await self.respond(event.id, disposition("INPUT_UNCERTAIN", self.chinese), owner)
+                continue
             if owner.claimed or not decision:
                 if owner.claimed:
                     content = disposition("DUPLICATE", self.chinese)
+                elif parsed.reason.startswith("llm_"):
+                    content = ("意图解析暂不可用或结果不可靠，未执行查询。请向用户说明并请其澄清或重试。" if self.chinese
+                               else "Intent parsing is unavailable or unreliable. No lookup was performed. Ask the caller to clarify or retry.")
                 else:
                     content = (("此功能尚未接入，未执行任何操作，请明确告诉用户。" if self.chinese
                                 else "This operation is unsupported. Tell the caller no action was performed.")

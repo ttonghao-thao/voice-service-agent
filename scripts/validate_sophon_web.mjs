@@ -18,24 +18,32 @@ const { values } = parseArgs({ options: {
   "observe-seconds": { type: "string", default: "20" },
   "asr-state": { type: "string", default: "unknown" },
   "profile-json": { type: "string" },
+  "local-ice": { type: "boolean", default: false },
 } });
 if (!values.cases || !values.output) throw new Error("Provide --cases cases.json and --output /absolute/report/directory");
 const output = resolve(values.output);
 const observe = Number(values["observe-seconds"]);
 if (!["unknown", "enabled", "disabled"].includes(values["asr-state"])) throw new Error("Invalid --asr-state");
 if (!Number.isFinite(observe) || observe < 14 || observe > 80) throw new Error("Observation must be 14–80 seconds");
+if (values["local-ice"] && !["localhost", "127.0.0.1", "[::1]"].includes(new URL(values["base-url"]).hostname)) {
+  throw new Error("--local-ice is only permitted for a loopback test application");
+}
 await mkdir(join(output, "inputs"), { recursive: true });
 let cases = JSON.parse(await readFile(resolve(values.cases), "utf8"));
 if (values.language) cases = cases.filter((c) => c.lang === values.language);
 if (values.only) cases = cases.filter((c) => values.only.split(",").includes(c.id));
 if (!cases.length) throw new Error("No cases selected");
+const browserArgs = ["--autoplay-policy=no-user-gesture-required", ...(values["local-ice"]
+  ? ["--allow-loopback-in-peer-connection", "--disable-features=WebRtcHideLocalIpsWithMdns",
+    "--force-webrtc-ip-handling-policy=default"] : [])];
 const browser = await chromium.launch({ headless: true,
-  args: ["--autoplay-policy=no-user-gesture-required"],
+  args: browserArgs,
   ...(process.env.PLAYWRIGHT_CHROMIUM_EXECUTABLE ? { executablePath: process.env.PLAYWRIGHT_CHROMIUM_EXECUTABLE } : {}),
 });
 const results = [];
 const voiceProfile = values["profile-json"] ? JSON.parse(await readFile(resolve(values["profile-json"]), "utf8")) : null;
 const sourceFiles = ["apps/api/app/voice/livekit_room.py", "apps/api/app/voice/delegation_router.py",
+  "apps/api/app/config.py", "apps/api/app/tools/registry.py", "config/delegation-router-prompt.txt",
   "apps/api/app/voice/profiles.py", "apps/api/app/voice/sophon_gpt_live.py",
   "apps/api/app/voice/gateway.py", "apps/api/app/api/routes.py", "apps/web/src/App.tsx", "apps/web/src/VoiceProfiles.tsx",
   "apps/web/src/audio/VoiceClient.ts", "apps/web/src/audio/LiveKitMedia.ts",
@@ -56,7 +64,11 @@ try {
       input_sha256: createHash("sha256").update(await readFile(input)).digest("hex"),
       events: [], diagnostics: [], page_errors: [], control_pcm_frames: 0,
       observation_complete: false, answer_complete: "unverified" };
-    const context = await browser.newContext({ viewport: { width: 1440, height: 1000 } });
+    const context = await browser.newContext({ viewport: { width: 1440, height: 1000 },
+      // File input still uses the selected WAV. This local-only permission lets
+      // Chromium expose LAN ICE candidates when a host VPN owns the default route.
+      permissions: values["local-ice"] ? ["microphone"] : [],
+    });
     const page = await context.newPage();
     let accessToken = ""; // In memory only; never put call credentials in a report.
     await page.addInitScript(() => {
@@ -226,6 +238,8 @@ try {
 } finally { await browser.close(); }
 await writeFile(join(output, "summary.json"), JSON.stringify({ application_commit: execFileSync("git", ["rev-parse", "HEAD"], { cwd: root, encoding: "utf8" }).trim(),
   application_files_sha256: fileHashes,
+  browser_args: browserArgs, local_ice: values["local-ice"],
+  browser_permissions: values["local-ice"] ? ["microphone"] : [],
   source_revision: values["source-revision"] || null,
   metrics: {
     expected_native_cases: results.filter((r) => r.expected_delegation === "delegate").length,
@@ -234,6 +248,8 @@ await writeFile(join(output, "summary.json"), JSON.stringify({ application_commi
     unexpected_native_cases: results.filter((r) => r.expected_delegation === "none" && r.native_delegation === true).map((r) => r.id),
     supported_native_cases: results.filter((r) => r.expected_route && r.native_delegation).length,
     correctly_routed_supported_cases: results.filter((r) => r.route_matches === true).length,
+    llm_parsed_cases: results.filter((r) => r.parse_method === "llm").length,
+    llm_failure_cases: results.filter((r) => r.delegation_tasks?.some((task) => task.reason?.startsWith("llm_"))).map((r) => r.id),
     tools_executed: results.filter((r) => r.tool_executed).length,
     tools_succeeded: results.filter((r) => r.tool_executed && r.tool_status.every((s) => s === "ok")).length,
     business_answered_cases: results.filter((r) => r.business_outcomes?.some((item) => item.status === "answered")).length,

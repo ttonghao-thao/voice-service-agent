@@ -67,6 +67,11 @@ class Settings(BaseSettings):
     sophon_live_locale: Literal["zh-CN", "en-US"] = "zh-CN"
     sophon_live_tool_timeout_seconds: float = Field(default=12, ge=1, le=30)
     sophon_live_max_delegations_per_input: int = Field(default=1, ge=1, le=1)
+    delegation_router_provider: Literal["rule", "openai_compatible"] = "rule"
+    delegation_router_base_url: str = ""
+    delegation_router_api_key: SecretStr = SecretStr("")
+    delegation_router_model: str = ""
+    delegation_router_timeout_seconds: float = Field(default=4, ge=0.1, le=8)
     # Pending optimization: retain the 105s connection limit and relay's fixed
     # 30s active-answer grace. Coverage/streaming changes must not raise these.
     voice_session_max_seconds: int = 105
@@ -117,9 +122,11 @@ class Settings(BaseSettings):
             raise ValueError("External tracing requires a reviewed redaction exporter; currently disabled")
         if self.qa_execution_mode == "legacy" and self.qa_answer_policy == "general_qa":
             raise ValueError("General answers require dual_tools mode")
-        if self.livekit_url or self.livekit_api_key.get_secret_value() or self.livekit_api_secret.get_secret_value():
+        if self.voice_provider == "sophon_live" and (
+            self.livekit_url or self.livekit_api_key.get_secret_value() or self.livekit_api_secret.get_secret_value()
+        ):
             room_url = urlparse(self.livekit_url)
-            if (self.voice_provider != "sophon_live" or self.qa_execution_mode != "dual_tools"
+            if (self.qa_execution_mode != "dual_tools"
                 or self.answer_policy != "general_qa" or not self.livekit_api_key.get_secret_value()
                 or not self.livekit_api_secret.get_secret_value() or room_url.scheme not in {"ws", "wss"}
                 or not room_url.hostname or room_url.username or room_url.password or room_url.query
@@ -127,8 +134,11 @@ class Settings(BaseSettings):
                 raise ValueError("LiveKit requires an origin URL, key and secret, and Sophon dual_tools/general_qa")
             if room_url.scheme == "ws" and room_url.hostname not in {"localhost", "127.0.0.1", "::1"}:
                 raise ValueError("Remote LiveKit requires WSS")
-        if "web_search" in self.enabled_tool_names and (not self.livekit_url or not self.web_search_api_key.get_secret_value()):
-            raise ValueError("Web search requires LiveKit and WEB_SEARCH_API_KEY")
+        if "web_search" in self.enabled_tool_names and (
+            not self.web_search_api_key.get_secret_value()
+            or (self.voice_provider == "sophon_live" and not self.livekit_enabled)
+        ):
+            raise ValueError("Web search requires WEB_SEARCH_API_KEY and Sophon requires LiveKit")
         if self.voice_provider == "sophon_live":
             url = urlparse(self.sophon_live_ws_url)
             if (url.scheme not in ("ws", "wss") or not url.hostname
@@ -136,6 +146,12 @@ class Settings(BaseSettings):
                 raise ValueError("SOPHON_LIVE_WS_URL must be a WS or WSS Live sessions endpoint without credentials")
             if self.sophon_live_api_key.get_secret_value() and url.scheme != "wss":
                 raise ValueError("SOPHON_LIVE_API_KEY requires WSS")
+        if self.voice_provider != "nvidia" and self.delegation_router_provider == "openai_compatible":
+            url = urlparse(self.delegation_router_base_url)
+            if (not url.hostname or url.username or url.password or url.query or url.fragment
+                or (url.scheme != "https" and not (url.scheme == "http" and url.hostname in {"localhost", "127.0.0.1", "::1"}))
+                or not self.delegation_router_model.strip() or not self.delegation_router_api_key.get_secret_value()):
+                raise ValueError("Delegation LLM requires a trusted HTTPS base URL, model and API key")
         if self.weather_provider == "qweather" and self.weather_base_url:
             url = urlparse(self.weather_base_url)
             if (url.scheme != "https" or not url.hostname or not url.hostname.endswith(".qweatherapi.com")
@@ -145,9 +161,13 @@ class Settings(BaseSettings):
         return self
 
     @property
+    def livekit_enabled(self):
+        return self.voice_provider == "sophon_live" and bool(self.livekit_url)
+
+    @property
     def customer_scopes(self):
         scopes = {"knowledge:read"}
-        if self.livekit_url:
+        if self.livekit_enabled:
             scopes.update({"weather:read", "web_search:read"})
         return frozenset(scopes)
 
@@ -169,7 +189,8 @@ class Settings(BaseSettings):
             raise ValueError("Deployment requires a configured text model")
         if self.agent_provider == "disabled" and (
             self.qa_execution_mode != "dual_tools" or self.answer_policy != "general_qa"
-            or (not ({"search_knowledge", "web_search"} & self.enabled_tool_names) if self.livekit_url
+            or ("search_knowledge" not in self.enabled_tool_names if self.voice_provider == "nvidia"
+                else not ({"search_knowledge", "web_search"} & self.enabled_tool_names) if self.livekit_enabled
                 else self.enabled_tool_names != {"search_knowledge"})
         ):
             raise ValueError("Native CueKB deployment requires dual_tools, general_qa and search_knowledge")

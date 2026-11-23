@@ -173,7 +173,7 @@ class VoiceGateway:
                     catalog_revision=catalog_revision,
                     capabilities=capabilities,
                     voice_profile=profile,
-                    instructions=instructions(profile, s.sophon_live_locale, livekit=bool(s.livekit_url))
+                    instructions=instructions(profile, s.sophon_live_locale, livekit=s.livekit_enabled)
                     if s.voice_provider == "sophon_live" else None,
                 )
             self.sessions[sid] = session
@@ -184,7 +184,7 @@ class VoiceGateway:
                 "wait_interaction": capabilities.wait_interaction,
                 "ws_url": f"/api/v1/voice-sessions/{sid}/stream?ticket={ticket}",
             }
-            if s.livekit_url:
+            if s.livekit_enabled:
                 from app.voice.livekit_room import browser_credentials
                 response["livekit"] = browser_credentials(s, sid)
             return response
@@ -240,7 +240,7 @@ class VoiceGateway:
             return
         session.used, session.task = True, asyncio.current_task()
         await ws.accept()
-        if self.settings.livekit_url:
+        if self.settings.livekit_enabled:
             from app.voice.livekit_room import run_room
             await run_room(self, ws, session)
             return

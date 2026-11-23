@@ -13,9 +13,10 @@
 
 ## 不变边界
 
+- VOICE_PROVIDER 单选 sophon_live 或 nvidia，部署模板默认只配置 Sophon；两后端不能同时启用。本期仅验证 Sophon，NVIDIA 只检查必要的启动选择契约，不运行其服务/GPU 回归。
 - NVIDIA VoiceChat、Sophon Live、CueKB 独立部署；保持 Gateway → Coordinator → Runtime → Registry。供应商结构归 app/voice，Agents SDK 归 app/agent_runtime。
 - LiveKit 与 Redis/PostgreSQL/API/Web 由同一份 deploy/compose.production.yaml 管理，复用 Redis；不再另行部署 LiveKit。已解决问题只在 validation.md 的已解决章节保留，不反复列为当前待办。
-- tools/instructions 原生选工具，不加 WS tool_choice、分类模型、独立 Nano 或子 Agent 调度。一般回答不是企业证据；mock 不证明真实能力，real 失败不回退 mock。
+- Sophon tools/instructions 原生触发委派；已收到的 task 使用批准的 Qwen LLM Router 解析（结构化任务直接校验），不加 ASR 分类/补调、WS tool_choice、独立 Nano 或子 Agent 调度。一般回答不是企业证据；mock 不证明真实能力，real/LLM 失败不回退 mock/规则执行。
 - Sophon ASR 仅供字幕展示。模型直接理解音频，原生委派 `task` 提供工具意图与参数，音频窗口校验委派归属。
 - 三类查询是业务能力，不是固定的原生函数数量。旧 Provider/传输的能力限制和依赖尚未接入是实现缺口，不能改写为产品模式。兜底只处理获准公开发送的独立问题，私有失败、未知意图、无原生委派不自动转公网。
 - 全局后台目录决定原生工具数量/描述，不能把初始工具数当上限；执行另验权限。涉及注册/刷新时读[工具契约](docs/interfaces/voice-tools.md)。

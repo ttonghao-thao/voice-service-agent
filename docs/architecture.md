@@ -1,6 +1,6 @@
 # 当前系统架构
 
-类型：当前代码事实。业务调用链基于 b60028d；2026-11-23 更新仓库部署拓扑，未据此宣称实例已升级。部署实例的镜像/权重/挂载身份必须现场核对。需求见 [delivery.md](delivery.md)，未实施设计见 [implementation-plan.md](implementation-plan.md)，证据见 [validation.md](validation.md)。
+类型：当前代码事实。2026-11-23 在 6a3d198 上接入 Qwen 原生 task 解析器；仓库已包含 LiveKit/Redis 同 Compose。授权的本机验证不代表生产升级，部署镜像/权重/挂载身份仍须现场核对。需求见 [delivery.md](delivery.md)，未实施设计见 [implementation-plan.md](implementation-plan.md)，当前证据见 [validation §8](validation.md#8-qwen-原生-task-接入与本轮本机整体验证)。
 
 ## 1. 产品与部署边界
 
@@ -8,7 +8,9 @@
 
 Python 3.12/FastAPI、React/TypeScript/AudioWorklet、PostgreSQL/Redis。API/Web 独立镜像，迁移复用 API 镜像。LiveKit 与 PostgreSQL/Redis/API/Web 同属生产 Compose，使用同一 Redis 实例的 DB1，应用使用 DB0；Web 终止 7880/TCP 的 LiveKit TLS，7881/TCP、7882/UDP 由 LiveKit 直接发布。Sophon、NVIDIA VoiceChat、CueKB 独立部署；每 Room 的官方 AgentSession 已在 API 内，不另设业务 Agent 服务。
 
-主路径使用 `dual_tools/general_qa` 和 `AGENT_PROVIDER=disabled`。dual_tools 是兼容配置名，不表示只有两个工具；三类业务能力也不等于三个原生函数。模型原生决定直接回答或委派，不启用独立分类 LLM、ASR 关键词路由、强制 tool_choice 或子 Agent 调度。
+VOICE_PROVIDER 是唯一后端选择，生产只接受 sophon_live 或 nvidia，模板默认只配置 Sophon。工厂每次创建一个 Provider；livekit_enabled 同时检查选择为 Sophon 和 URL，避免残留字段让 NVIDIA 会话误走 Room。启动脚本据选择派生 Compose profile：Sophon 启动同 Compose 的 LiveKit，NVIDIA 停止该实例且不要求 Sophon/LiveKit/Qwen 凭据；Web 对未选择的 LiveKit 入口返回 404，并延迟 DNS 解析以允许 SFU 缺席。保留的未选后端字段不会激活服务。本期仅验证 Sophon；双后端配置契约不认证 NVIDIA 的业务能力。
+
+主路径使用 `dual_tools/general_qa` 和 `AGENT_PROVIDER=disabled`。dual_tools 是兼容配置名，不表示只有两个工具；三类业务能力也不等于三个原生函数。Sophon 原生决定直接回答或委派，收到 task 后使用用户批准的 qwen3.7-flash 解析自然语言。该 HTTP 解析器不是业务 Agent/答案模型；不读取 ASR、不补造委派、不加 tool_choice 或子 Agent 调度。
 
 ## 2. 数据流与代码入口
 
@@ -19,7 +21,7 @@ Python 3.12/FastAPI、React/TypeScript/AudioWorklet、PostgreSQL/Redis。API/Web
 | Gateway | 身份、Origin、票据、epoch、目录快照、Room Token | [gateway](../apps/api/app/voice/gateway.py) |
 | Sophon LiveKit | AgentSession、音频窗口、原始 task、回执、候选字幕 | [livekit_room](../apps/api/app/voice/livekit_room.py)、[sophon_gpt_live](../apps/api/app/voice/sophon_gpt_live.py) |
 | Sophon WS 兼容 | Live 协议、24 kHz PCM、输入/委派/候选片段 | [sophon_live](../apps/api/app/voice/sophon_live.py)、[sophon_relay](../apps/api/app/voice/sophon_relay.py) |
-| Router | 结构化优先/自然语言规则、参数校验、澄清/不支持 | [delegation_router](../apps/api/app/voice/delegation_router.py) |
+| Router | 结构化优先/异步 LLM 自然语言解析、参数校验、澄清/不支持 | [delegation_router](../apps/api/app/voice/delegation_router.py)、[固定解析指令](../config/delegation-router-prompt.txt) |
 | Coordinator | 唯一业务提交、revision、租约、执行与交付复核 | [coordinator](../apps/api/app/sessions/coordinator.py) |
 | Runtime / Registry | 可信分派、权限、版本、预算和执行审计 | [agent_runtime](../apps/api/app/agent_runtime)、[registry](../apps/api/app/tools/registry.py) |
 | 三类 Adapter | CueKB evidence、QWeather、Tavily 的供应商边界 | [adapters](../apps/api/app/tools/adapters.py)、[qweather](../apps/api/app/tools/qweather.py)、[web_search](../apps/api/app/tools/web_search.py)、[tools.yaml](../config/tools.yaml) |
@@ -41,7 +43,9 @@ LiveKit 根据 SDK 已发送的 PCM 观察输入，短停顿合并。只有唯�
 | WEB_SEARCH | Tavily，独立公开 query，可选 freshness；最多三条标题/URL/摘要，不冒充企业证据 |
 | CLARIFY / UNSUPPORTED | 按原 delegation ID 明确结清，不查询猜测地点，不用公网搜索伪装执行动作 |
 
-Router 优先解析 WEATHER/CUEKB/WEB_SEARCH 前缀，否则对原生 task 做确定性规则解析，返回内部 route、arguments/decision、parse_method、source、reason。它不读取 ASR、输出字幕或猜测的用户位置。原 task 和结果写入按权限过滤的 sophon_route 记录，原生触发和 Router 成功分开统计。
+生产配置 DELEGATION_ROUTER_PROVIDER=openai_compatible。Router.parse_native 优先校验结构化前缀，否则经共享 HTTP client 调用配置的 Chat Completions，使用 JSON Schema 限制 WEATHER/CUEKB/WEB_SEARCH/CLARIFY/UNSUPPORTED 及参数；不依赖新 Agent Runtime。rule 仅保留旧版本/受控兼容，不是 LLM 失败后的执行兜底。请求关闭重试/重定向，默认总期限 4 秒、响应上限 16 KiB；错误/超时/截断/拒绝/越界输出均不执行工具。
+
+query 必须与完整原 task 一致；天气地点必须出现在原 task，日期/单位和参数 schema 另验。私有/敏感 task 或私有 Room 不发外部 LLM，结构化专业库任务仍按原授权路径执行。模型不接收 ASR、历史或证据，不能纠正 Sophon 已写错的型号。模型等待后的 epoch/输入窗口和提交前归属再次复核，防止补充发声或换题时执行旧意图。原 task、parse_method、配置 model 与结果写入按权限过滤的 sophon_route；原生触发、模型解析、真实工具和口述分别统计。
 
 当前受控兜底分支：仅在 CueKB 地址和凭据均为空、CUEKB task 明确公开且无敏感内容时转 Tavily；裸型号、资料属性不明先澄清。CueKB 已配置/部分配置、服务失败或权限拒绝不自动外发。已回填企业资料的 Room 不再向公网发送后续搜索。此分支描述未完整接入环境的代码行为，不是关闭专业知识库的部署方案；完整交付仍要求三类服务。
 

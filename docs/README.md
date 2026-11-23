@@ -6,10 +6,11 @@
 | --- | --- | --- |
 | 系统应该提供什么、兜底边界 | [delivery.md](delivery.md) §1–3 | 不先读旧 Provider 的工具数量 |
 | 谁调用谁、ASR/权限归谁 | [architecture.md](architecture.md) §1–5 | 按表定位源码；参数再查 interfaces |
+| 意图 LLM、超时、输入/数据边界 | [architecture.md](architecture.md) §3、[deployment.md](deployment.md) §3 | 使用 DELEGATION_ROUTER_*，不是 AGENT_*；新验收见 validation §8 |
 | 下一步怎么实现 | [implementation-plan.md](implementation-plan.md) | 状态只查 TASK_BOARD，不能当实现事实 |
-| 镜像、配置、迁移、启动、回滚 | [deployment.md](deployment.md) §1–6 | 先看发布阻塞；业务验收转 validation |
+| 镜像、单选后端配置、迁移、启动、回滚 | [deployment.md](deployment.md) §1–6 | 默认 Sophon；本期只验证 Sophon，业务验收转 validation |
 | 现在还缺什么 | [TASK_BOARD.md](TASK_BOARD.md) | 原因再查方案/证据，不默认整读审查 |
-| 真实结果或复跑 | [validation.md](validation.md) §1 状态、§2–4 执行、§6 待验、§7 检查 | §5 是已解决历史，仅追溯相关问题时读 |
+| 真实结果或复跑 | [validation.md](validation.md) §1/§8 当前、§2 Sophon 方法、§6 待验 | §3 NVIDIA、§5 已解决历史、§7 旧检查按需跳过 |
 | Sophon/外部工具/身份接入 | [integration.md](integration.md) §1–2、§5 | CueKB 参数查 [interfaces/cuekb.md](interfaces/cuekb.md) |
 | NVIDIA 注册、batch、注入边界 | [interfaces/voice-tools.md](interfaces/voice-tools.md)、[integration.md](integration.md) §3 | 仅本类任务读 VoiceChat 快照 |
 | 门户事件、文件音频、角色 API | [portal-protocol.md](portal-protocol.md) | VoiceClient、LiveKitMedia、App |

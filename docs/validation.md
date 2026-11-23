@@ -1,18 +1,18 @@
 # 验证方法与执行记录
 
-类型：唯一验证入口。先查 §1，再按 Provider 只读 §2 或 §3；通用放行见 §4，其他能力待验项见 §6，开发/部署检查见 §7。§5 是已解决故障的修复前后证据，仅追溯时读取。部署操作只看 [deployment.md](deployment.md)，未实施的验收容器看 [方案](implementation-plan.md)。
+类型：唯一验证入口。先查 §1；本轮 Qwen 接入与用户授权的本机验证见 §8，复跑按 Provider 读 §2 或 §3。通用放行见 §4，其他能力待验项见 §6，旧开发/部署检查见 §7。§5 是已解决历史，仅追溯时读取。部署操作只看 [deployment.md](deployment.md)，未实施的验收容器看 [方案](implementation-plan.md)。
 
 ## 1. 当前结论与证据边界
 
-产品同时提供天气、通用知识、专业知识库，通用知识受控兜底。业务代码基线 b60028d 的两类委派故障已按固定录音集关闭，详见 §5；更大范围稳定性和其他能力仍单独验收。2026-11-23 的 Compose 改动未重跑真实语音，不刷新原测试日期。
+产品同时提供天气、通用知识、专业知识库，通用知识受控兜底。b60028d 的两类历史委派故障已关闭，详见 §5。2026-11-23 用户确认接入 qwen3.7-flash 解析原生 task，并授权本机验证、本轮不接真实 CueKB；补充要求单选后端、默认 Sophon，本期仅验 Sophon。本轮数据在 §8，不修改历史测试日期，也不据此放行完整生产三类/容器部署。
 
 | 检查 | 最近已执行事实 | 尚不能证明 |
 | --- | --- | --- |
-| 已解决委派故障的官方 14 项复测 | b60028d：预期原生 7/7、无需工具 7/7 未误调，三类范围已委派路由 3/3；两类原故障关闭 | 大样本稳定性、三类实际结果都成功、完整口述或容器发布通过 |
-| 专业知识库 | evidence query/validate、权限与失败有受控回归 | 最新 Sophon 场景真实 CueKB 尚未接入，不属于可放行的完整交付 |
-| 天气/通用知识 | 真实 QWeather/Tavily 执行和回执，公开来源保留 | Melbourne 同名地点仅澄清；F7005 → F705 的错误 task 不算正确产品检索 |
+| 当前 Qwen 原生任务链 | 接入、官方录音重复、角色/同 Room 两问及回归结果见 §8 | 不等于真实 CueKB、完整口述或生产容器放行 |
+| 专业知识库 | 问题/权限/失败有受控回归；本轮按用户要求排除真实服务 | 不以契约/部分服务代表真实 query/validate 或完整三类交付 |
+| 天气/通用知识 | 真实 QWeather/Tavily 执行和回执，公开来源保留 | Melbourne 同名地点仅澄清；§6 的语音型号保真缺口仍需独立验收 |
 | 角色/ASR | 名字、快照、隔离、五种 ASR 状态的业务独立性有证据 | 完整 Persona 遵循、真实 ASR 开关对照、人耳听音 |
-| 容器 | LiveKit/Redis 同 Compose，三类模板/启动检查已更新；静态展开和契约见 §7 | 无 Docker Engine，未实际构建/部署本版；WSS/媒体/NAT 与 Sophon 容器验收单入口仍待验 |
+| 容器 | LiveKit/Redis 同 Compose、三类/模型模板和启动检查已更新 | 本轮本机例外不替代镜像构建、生产 WSS/媒体/NAT 或容器验收单入口 |
 
 原生触发和 Router 解析分别验收，已关闭的录音故障不继续列作当前待修。Gateway 回执、音轨/字幕、播放排空、实际听到、问题覆盖和事实正确分别记录。既有 Sophon 记录的 final_answer_verified 均为 false；未知或观察不足的样本不算通过。
 
@@ -24,6 +24,7 @@
 
 ```bash
 export DEPLOY_ENV_FILE="$PWD/.env"
+export COMPOSE_PROFILES=sophon # 本节只验证已选择的 Sophon
 dc() { docker compose --env-file "$DEPLOY_ENV_FILE" -f deploy/compose.production.yaml "$@"; }
 dc ps
 dc exec -T api python /app/scripts/verify_deployment.py \
@@ -59,7 +60,7 @@ PYTHON
 
 ### LiveKit 门户与工具验收
 
-以下是已存在的开发复现入口，需项目 Web 开发依赖、Chromium、ffmpeg，以及对应 locale 的真实 API/Web/LiveKit。不得用纯音/替身引擎结果替代本节真实业务录音。固定官方源，不自动升级 HEAD：
+以下是开发复现入口，需 Web 开发依赖、Chromium、ffmpeg，以及对应 locale 的真实 API/Web/LiveKit。默认生产验收仍在容器执行；本轮用户明确允许本机且排除真实 CueKB，范围见 §8。不得用纯音/替身引擎替代真实录音。固定官方源，不升级 HEAD：
 
 ```bash
 SOPHON_OFFICIAL_DIR=$(mktemp -d /tmp/sophon-official-XXXXXX)
@@ -78,6 +79,9 @@ node scripts/validate_sophon_web.mjs \
 # 仅在 Gateway 的 ASR 配置获确认时增加 --asr-state enabled 或 disabled。
 # --profile-json /absolute/path/to/profile.json 可通过真实门户创建/选择角色；
 # JSON 只含 name、description、language_style，不包含固定业务规则或凭据。
+# 仅 localhost/127.0.0.1 的本机测试遇到 TUN/ICE 问题时可加 --local-ice；
+# 该选项允许枚举本地 ICE 接口并在独立浏览器 context 授予 microphone 权限，
+# 文件路径仍只发送所选官方 WAV，不打开/采集实际麦克风。参数写入 summary.json。
 ```
 
 每次整组运行保存应用/source/WAV hash、原 delegation ID/task、route/parse_method、工具次数/status、business_outcomes、回执、ASR/候选语音和时间。asr_enabled 不能确认时为 null，字幕是否可见单列；Registry status=ok 只是调用正常，business_answered_cases 才区分可用结果/澄清，但依然不证明最终口述。
@@ -281,3 +285,66 @@ PYTHONPATH=apps/api .venv/bin/python scripts/export_contracts.py
 ```
 
 2026-11-06 NVIDIA 审查与 11-07 F1/F2/F3/F4 限定修复的详细方法/流水由 Git 追溯，审查边界见 [review](reviews/duplex-tool-audit.md)，剩余事项见 TASK_BOARD。历史 70 项定向通过/未部署事实不认证 b60028d 的 GPU 或语义；删除重复步骤不代表旧兼容代码或未解决项已消失。
+
+
+## 8. Qwen 原生 task 接入与本轮本机整体验证
+
+### 范围、版本与实际实现
+
+2026-11-23 用户确认：启用 qwen3.7-flash 解析 Sophon 已产生的原生 task，替代自然语言规则解析；允许本机验证，本次不接真实 CueKB。补充确认：Sophon/NVIDIA 互斥，默认只配置 Sophon，本期仅验 Sophon；NVIDIA 只检查必要的启动选择契约，不运行服务/GPU 回归。产品仍是三类能力，生产仍按容器发布；本轮不是关闭专业库的产品方案，也不是生产三类放行。
+
+基于 6a3d198 实现。实际链路为门户文件音轨 → LiveKit 1.13.11 → 真实 Sophon → 原生 delegation ID/task → Qwen → 服务端参数/权限校验 → QWeather/Tavily → Commentary 回执。ASR 不进入意图请求。API 使用隔离 SQLite/内存协调、validation 身份，本机回环 HTTP/WS；未运行生产 Docker/PostgreSQL/Redis/CueKB。Qwen Key 存仓库外私密配置，未进入 Git、报告或浏览器。
+
+复用 DelegationRouter、共享 HTTP client、Coordinator/Runtime/Registry。结构化任务不调用模型；自然语言使用 JSON Schema，默认总期限 4 秒、16 KiB 响应、无重试/重定向。query 必须保留完整 task，私有/敏感 task 不自动外发；模型不能把未确认公开范围的专业问题改成公网查询。错误/超时/越界不执行、不回退规则；等待模型后复核 epoch 与输入窗口。
+
+### 本轮检查结果
+
+| 层次 | 实际证据 | 边界 |
+| --- | --- | --- |
+| Qwen 接口 / JSON Schema | HTTP 200；独立合成 6/6、真实 DelegationRouter 6/6；正常解析约 0.7–1.1 秒 | 仅文本/接口不算语音已委派；未接入专业库时的澄清不是 CueKB 成功 |
+| Sophon 核心回归 | 单选续办后 156 passed，覆盖结构化快速路径、三类参数、ASR 五态、超时/恶意/错误输出、不外发私有任务、公开范围、权限/角色、模型等待期间新/补充发声及启动选择 | 受控测试不代替真实服务；保留 Starlette 既有弃用警告；未运行 NVIDIA 服务/GPU |
+| 单选启动契约 | 模板只启用 Sophon；必要配置测试确认两个枚举选择各用一个 factory，双选拒绝，NVIDIA 不要求/激活 Sophon 字段。官方 Compose v2.39.4 静态展开 Sophon 6 服务、另一选择 5 服务且无 LiveKit | 仅合成配置/脚本桩检查，未运行 Docker Engine/Nginx；可选 depends_on 在 config 中仍保留，required=false，不等于启动被排除的服务 |
+| Web / 静态检查 | Web 42 passed，TypeScript/生产构建通过，文件输入 13 + 角色 2 个浏览器测试通过；Ruff、JS/Shell、契约导出核对通过，contracts 无差异；12 个 Markdown、116 个链接/锚点、12 段 Shell/1 段内嵌 Python 检查通过，历史两张 14 项表逐字保留 | 文件输入 13 项使用受控 WS；角色测试使用真实本机 API。保留 LiveKit chunk >500 kB 警告 |
+| 真实 Adapter 与会话 | QWeather 今日实况 ok 且未过期；Tavily 返回 3 个来源；Sophon session.start/close 成功 | 单次探测不证明原生触发、最终听音或生产实例身份 |
+| 官方固定集两轮 + 角色 | 30 次播放：原生 16/16，无需工具 14/14 未误调，LLM 解析 16 次、失败 0；范围内路由 8/8，真实调用/回执 8/8 | 只测试天气/公开搜索实服务；6 个 answered，2 个 Melbourne 同名地点澄清，不算天气答案 |
+| 语音/字幕与归属 | 30/30 有候选音轨和输入字幕，控制 WS PCM 为 0，无观察窗口缺失 | Gateway 回执/字幕/网络音轨不认证完整口述；final_answer_verified 均为 false，未人耳听音或真实 ASR 开关对照 |
+| 公网门禁阶段同 Room 两问 | 一次 conversation、一次 voice session，天气 → 新闻，均 parse_method=llm、真实执行/answered；Stop playback 1 次未取消查询，第二问音轨恢复，实际麦克风调用/控制 WS PCM 均为 0 | 只证明本组基本连续两问与停止播放；不代表真实重叠发声/所有快速打断或口述语义均通过 |
+| 单选续办最新源码实测 | 官方 zh_weather 再播放 1 次，Sophon 原生触发 1/1、LLM 正确路由 1/1、真实 QWeather 执行/回执 1/1、answered 和候选音轨各 1；控制 WS PCM 0 | 独立于此前 30 次统计；仍未人耳听音，final_answer_verified=false |
+
+单选续办的 Ruff、部署 Shell/验收 JS 语法、契约导出核对及 diff 检查通过，contracts 无变化；最终 12 个 Markdown、115 个链接/锚点、12 段 Shell/1 段内嵌 Python 检查通过，两张历史 14 项表逐字保留。提供的模型 Key 未出现在 27 个变更文件或 104 个报告/日志等文本文件中。
+
+全量回归和 30 次正式播放后，额外加了“模型不得把未确认公开的专业问题改为 WEB_SEARCH”的服务端门禁；随后 187 项较广核心回归及同 Room 两问通过，没有复跑全量。后续单选配置修改 config/gateway/routes/部署定义，未改 Router/原生音频指令；此阶段仅执行上表的 156 项定向回归和最新源码天气语音复测。各阶段源码 hash 分开保存，不伪称所有记录来自同一文件快照。
+
+| 实服务录音组 | 样例数 | 预期原生 / 实际 | 范围内正确路由 | 真实工具 / 回执 | 可用结果 / 澄清 |
+| --- | ---: | --- | --- | --- | --- |
+| official-zh | 10 | 5 / 5 | 2 / 2 | 2 / 2 | 2 / 0 |
+| official-en | 4 | 2 / 2 | 1 / 1 | 1 / 1 | 0 / 1 |
+| official-zh-repeat | 10 | 5 / 5 | 2 / 2 | 2 / 2 | 2 / 0 |
+| official-en-repeat | 4 | 2 / 2 | 1 / 1 | 1 / 1 | 0 / 1 |
+| profile-xiaogou-public | 2 | 2 / 2 | 2 / 2 | 2 / 2 | 2 / 0 |
+
+两组官方 14 项均完整执行，源为 6b1713518eb75f8495415662870f682357372d09；全部原始 WAV 的 SHA256 与既有官方输入逐条一致，未替换难例。时间、灯光和个人记忆原生委派后明确 UNSUPPORTED，不算三类业务成功。角色两项重用官方天气/新闻，不是新增两种独立语料。
+
+### 范围外历史旁证（默认跳过）
+
+明确本期仅验 Sophon 前，曾误纳入全仓旧兼容回归：修改前 862 passed / 27 failed，接入后 893 passed / 26 failed，无新增失败节点；26 个均在修改前存在。一条旧 deadline 用例未失败，不声称已修复。失败按文件分组：test_continuous_dialogue 5、test_delivery_lifecycle 1、test_live_agent_interactions 4、test_native_cuekb 1、test_qa_routing 1、test_simulated_full_flow 14；属于旧 VoiceChat/兼容链路，保留失败日志但不作为本期 Sophon 阻塞，不再复跑。没有将新 Router 通过解释为这些失败已解决或全仓全绿。
+
+### 证据、采集修正与复跑
+
+本轮原始目录：`/var/folders/1x/568sjwqd64z3p8prx9d5338w0000gn/T/vsa-qwen-validation-3sql4n1q`，定位文件 `/tmp/vsa-qwen-validation-path`。formal-30-summary.json、official-run1-14.json、official-run2-14.json、五组 summary/逐条 JSON/WAV/截图、runtime-source-manifest.json、multi-turn-real.json、基线/最终 pytest 日志和模型探测均保留；凭据在独立私密目录，不在报告目录中。临时证据不在 Git，丢失时必须复跑，不能引用为现存原始材料。
+
+publication-source-manifest.json 标记公网门禁阶段 hash，同 Room 复测的 Router hash 与交付文件一致。单选续办追加 selector-source-manifest.json、selector-compose-config.json、selector-sophon-smoke/summary.json；后者逐文件 hash 与此次交付运行源码一致。两阶段结束均检查专用 LiveKit 的 Room/participant 为 0，临时 API、Web、LiveKit 及端口关闭，见 cleanup.json / selector-cleanup.json。
+
+预检遇到本机 TUN 只暴露默认 ICE 接口、UDP 回程不通，以及 API 重启未就绪；失败均保留在 smoke-*，未送到模型的音频不计原生漏调。--local-ice 限 localhost，允许枚举回环/LAN，独立浏览器 context 授予 microphone 权限但仍只播放选定 WAV；本轮没有实际麦克风采集，没有更改系统 VPN/路由或生产默认。浏览器参数写入各 summary。多轮首次采集保存了第二问 running 旧快照，服务端日志已确认两次成功；原始 multi-turn-real-initial 保留，等待终态后在新通话重新采集通过。
+
+当前核心复跑命令如下；实服务录音使用 §2 的现有入口，按需要为 localhost 增加 --local-ice，并分别启动 zh-CN/en-US 的服务。不能用这里的本机例外替代正式容器验收。
+
+```bash
+.venv/bin/python -m pytest -q tests/contract/test_delegation_llm.py \
+  tests/contract/test_delegation_router.py tests/contract/test_public_tools.py \
+  tests/contract/test_deployment.py tests/integration/test_livekit_delegation.py \
+  tests/integration/test_voice_profiles.py tests/integration/test_auth.py \
+  tests/integration/test_sophon_live.py
+```
+
+真实 CueKB、生产迁移/公网媒体、更多表达/真实交错打断、型号语音保真、完整 Persona、最终口述关联及听音仍按任务板分别验收；本轮结果不重新打开 §5 已解决的原问题，也不覆盖这些未验范围。

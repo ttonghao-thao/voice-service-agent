@@ -46,6 +46,7 @@ services:
     logging: *default-logging
 
   livekit:
+    profiles: [sophon]
     image: livekit/livekit-server:v1.13.11@sha256:25cd902de7cacbd5f1f779f6a6ac1eae20ba8f56b0935934ce6b0ab80d1e3d20
     environment:
       LIVEKIT_CONFIG: |
@@ -54,14 +55,14 @@ services:
         rtc:
           tcp_port: 7881
           udp_port: 7882
-          node_ip: "${LIVEKIT_NODE_IP:?Set the reachable deployment host IPv4 in .env}"
+          node_ip: "${LIVEKIT_NODE_IP:-}"
           use_external_ip: false
         redis:
           address: redis:6379
           password: "${REDIS_PASSWORD:?Set REDIS_PASSWORD in .env}"
           db: 1
         keys:
-          "${LIVEKIT_API_KEY:?Set LIVEKIT_API_KEY in .env}": "${LIVEKIT_API_SECRET:?Set LIVEKIT_API_SECRET in .env}"
+          "${LIVEKIT_API_KEY:-}": "${LIVEKIT_API_SECRET:-}"
     ports:
       - "0.0.0.0:7881:7881/tcp"
       - "0.0.0.0:7882:7882/udp"
@@ -113,7 +114,7 @@ services:
     depends_on:
       migrate: {condition: service_completed_successfully}
       redis: {condition: service_healthy}
-      livekit: {condition: service_healthy}
+      livekit: {condition: service_healthy, required: false}
     healthcheck:
       test:
         - CMD
@@ -138,7 +139,8 @@ services:
     pull_policy: never
     environment:
       LIVEKIT_URL: ${LIVEKIT_URL:-}
-      NGINX_ENVSUBST_FILTER: '^LIVEKIT_URL$'
+      VOICE_PROVIDER: ${VOICE_PROVIDER:-sophon_live}
+      NGINX_ENVSUBST_FILTER: '^(LIVEKIT_URL|VOICE_PROVIDER)$'
     ports:
       - "0.0.0.0:8087:8087"
       - "0.0.0.0:7880:7880"

@@ -2,6 +2,12 @@
 
 类型：方案，非实现或通过记录。需求以 [delivery.md](delivery.md) 为准，实际行为看 [architecture.md](architecture.md)，状态只在 [TASK_BOARD.md](TASK_BOARD.md)，操作和证据只在 [validation.md](validation.md)。
 
+本轮目标（2026-11-23 用户确认）：启用 qwen3.7-flash 解析 Sophon 已产生的原生 task，替代自然语言规则解析；结构化任务仍快速解析，ASR 仅展示，原生触发与服务端授权保持不变。用户明确允许本机验证，本次不接入真实 CueKB；这只是本轮验收范围，不改变产品三类交付或正式容器发布要求。真实凭据只留服务端私密配置，不入 Git/报告。
+
+本轮上述接入与验证已完成，当前实现看 architecture，实际结果与未验边界只看 validation §8；不再重复列作待编码任务。接口冒烟不代替原生语音测试，固定集通过不代替完整生产放行。剩余正式交付顺序如下。
+
+续办补充（2026-11-23）：Sophon/NVIDIA 是互斥语音后端，VOICE_PROVIDER 必须单选，默认 Sophon；本期只验证 Sophon。已完成配置/工厂/Compose 选择边界、按所选后端检查和启动依赖（Sophon 的 LiveKit 仍在同一 Compose）、模板/手册同步；必要的双后端配置契约、Sophon 定向回归和最新源码真实天气语音复测见 validation §8。此前误纳入的跨后端全量结果只作为历史旁证，不列为本期验收阻塞；续办未运行 NVIDIA 服务/GPU 验证。
+
 ## 1. 容器发布剩余实施
 
 2026-11-23 确认：系统同时提供天气、通用知识、专业知识库查询，通用知识检索承担受控兜底；不存在仅启用 search_knowledge 的产品部署场景。尚未接入某个依赖是交付缺口，旧 Provider 能力限制是兼容事实，均不能改写成另一个产品模式。
@@ -16,7 +22,7 @@ LiveKit/Redis 同 Compose、完整三类模板/启动检查和停止覆盖 NVIDI
 
 API/Web 发布独立镜像，migrate 复用 API 镜像；LiveKit 与 PostgreSQL/Redis 同属一份 Compose，Sophon/CueKB 保持独立部署。AgentSession 已在 API 内，不另建第二套 Agent Runtime。验收容器是一次性任务，不是新增业务服务。
 
-不新增第二个 LLM、ASR 关键词补调、强制 tool_choice、通用失败后无条件外发或猜测协议字段。当前 Router 的公开兜底约束按架构记录，不因部署调整而扩展。
+仅引入本轮批准的原生 task 意图解析 LLM，不增加 ASR 分类模型、第二套 Agent Runtime、强制 tool_choice、通用失败后无条件外发或猜测协议字段。原有公开兜底约束保持；LLM 不读取 ASR、历史、证据或权限，私有/敏感 task 不自动发给外部模型。
 
 ## 2. 模型与验收缺口
 
