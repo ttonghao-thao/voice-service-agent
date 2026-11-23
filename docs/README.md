@@ -9,7 +9,7 @@
 | 下一步怎么实现 | [implementation-plan.md](implementation-plan.md) | 状态只查 TASK_BOARD，不能当实现事实 |
 | 镜像、配置、迁移、启动、回滚 | [deployment.md](deployment.md) §1–6 | 先看发布阻塞；业务验收转 validation |
 | 现在还缺什么 | [TASK_BOARD.md](TASK_BOARD.md) | 原因再查方案/证据，不默认整读审查 |
-| 真实结果或复跑 | [validation.md](validation.md) §1 状态、§2–4 执行、§5–7 证据 | 按 Provider 选择章节；旧 1/7 与新结果分开 |
+| 真实结果或复跑 | [validation.md](validation.md) §1 状态、§2–4 执行、§6 待验、§7 检查 | §5 是已解决历史，仅追溯相关问题时读 |
 | Sophon/外部工具/身份接入 | [integration.md](integration.md) §1–2、§5 | CueKB 参数查 [interfaces/cuekb.md](interfaces/cuekb.md) |
 | NVIDIA 注册、batch、注入边界 | [interfaces/voice-tools.md](interfaces/voice-tools.md)、[integration.md](integration.md) §3 | 仅本类任务读 VoiceChat 快照 |
 | 门户事件、文件音频、角色 API | [portal-protocol.md](portal-protocol.md) | VoiceClient、LiveKitMedia、App |

@@ -66,7 +66,7 @@ class Settings(BaseSettings):
     sophon_live_api_key: SecretStr = SecretStr("")
     sophon_live_locale: Literal["zh-CN", "en-US"] = "zh-CN"
     sophon_live_tool_timeout_seconds: float = Field(default=12, ge=1, le=30)
-    sophon_live_max_delegations_per_input: Literal[1] = 1
+    sophon_live_max_delegations_per_input: int = Field(default=1, ge=1, le=1)
     # Pending optimization: retain the 105s connection limit and relay's fixed
     # 30s active-answer grace. Coverage/streaming changes must not raise these.
     voice_session_max_seconds: int = 105

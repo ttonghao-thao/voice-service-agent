@@ -14,13 +14,13 @@ def test_cloud_compose_is_a_production_only_container_topology():
     compose = yaml.safe_load((ROOT / "deploy/compose.production.yaml").read_text())
     services = compose["services"]
 
-    assert set(services) == {"postgres", "redis", "migrate", "api", "web"}
+    assert set(services) == {"postgres", "redis", "livekit", "migrate", "api", "web"}
     assert "APP_ENV" not in services["api"]["environment"]
     assert services["api"]["environment"]["AUTO_CREATE_SCHEMA"] == "false"
     assert services["api"]["environment"]["AUTH_MODE"] == "validation"
     assert services["api"]["environment"]["CUEKB_MODE"] == "real"
-    assert services["api"]["environment"]["ENABLED_TOOLS"] == "${ENABLED_TOOLS:-search_knowledge}"
-    assert services["api"]["environment"]["VOICE_PROVIDER"] == "${VOICE_PROVIDER:-nvidia}"
+    assert services["api"]["environment"]["ENABLED_TOOLS"] == "${ENABLED_TOOLS:-search_knowledge,weather,web_search}"
+    assert services["api"]["environment"]["VOICE_PROVIDER"] == "${VOICE_PROVIDER:-sophon_live}"
     assert services["api"]["env_file"] == "${DEPLOY_ENV_FILE:-../.env}"
     assert services["api"]["image"] == services["migrate"]["image"]
     assert (
@@ -35,7 +35,7 @@ def test_cloud_compose_is_a_production_only_container_topology():
     assert services["migrate"]["command"][-2:] == ["upgrade", "head"]
     assert services["api"]["depends_on"]["migrate"]["condition"] == "service_completed_successfully"
     assert "ports" not in services["postgres"] and "ports" not in services["redis"]
-    assert services["web"]["ports"] == ["0.0.0.0:8087:8087"]
+    assert services["web"]["ports"] == ["0.0.0.0:8087:8087", "0.0.0.0:7880:7880"]
     assert "ports" not in services["api"]
     assert services["web"]["volumes"] == [
         "${WEB_TLS_CERT_FILE:?Set the TLS certificate path in .env}:/etc/nginx/tls/tls.crt:ro",
@@ -45,6 +45,22 @@ def test_cloud_compose_is_a_production_only_container_topology():
     images = json.loads((ROOT / "deploy/images.lock.json").read_text())
     assert services["postgres"]["image"] == images["postgres"]
     assert services["redis"]["image"] == images["redis"]
+    assert services["livekit"]["image"] == images["livekit"]
+    assert images["livekit"].startswith("livekit/livekit-server:v1.13.11@sha256:")
+    livekit = services["livekit"]
+    config = yaml.safe_load(livekit["environment"]["LIVEKIT_CONFIG"])
+    assert config["redis"]["address"] == "redis:6379"
+    assert config["redis"]["db"] == 1
+    assert config["redis"]["password"].startswith("${REDIS_PASSWORD:?")
+    assert services["api"]["environment"]["REDIS_URL"].endswith("@redis:6379/0")
+    assert config["rtc"]["node_ip"].startswith("${LIVEKIT_NODE_IP:?")
+    assert config["rtc"]["use_external_ip"] is False
+    assert config["rtc"]["udp_port"] == 7882 and config["rtc"]["tcp_port"] == 7881
+    assert livekit["ports"] == ["0.0.0.0:7881:7881/tcp", "0.0.0.0:7882:7882/udp"]
+    assert livekit["depends_on"]["redis"]["condition"] == "service_healthy"
+    assert services["api"]["depends_on"]["livekit"]["condition"] == "service_healthy"
+    assert set(livekit["networks"]) == {"data", "app", "edge"}
+    assert "--dev" not in str(livekit)
     assert images["postgres"].startswith("postgres:17.6-alpine@sha256:")
     assert images["redis"].startswith("redis:7-alpine@sha256:")
     assert not (ROOT / "deploy/compose.yaml").exists()
@@ -63,7 +79,7 @@ def test_cloud_environment_template_cannot_enable_development_fallbacks():
             values[key] = value
 
     assert set(values) == {
-        "LIVEKIT_URL", "LIVEKIT_API_KEY", "LIVEKIT_API_SECRET", "WEB_SEARCH_API_KEY",
+        "LIVEKIT_URL", "LIVEKIT_NODE_IP", "LIVEKIT_API_KEY", "LIVEKIT_API_SECRET", "WEB_SEARCH_API_KEY",
         "WEATHER_PROVIDER", "WEATHER_MODE", "WEATHER_BASE_URL", "WEATHER_API_KEY",
         "IMAGE_TAG",
         "PUBLIC_ORIGIN",
@@ -73,6 +89,7 @@ def test_cloud_environment_template_cannot_enable_development_fallbacks():
         "REDIS_PASSWORD",
         "KNOWLEDGE_BASE_IDS",
         "AGENT_PROVIDER",
+        "ENABLED_TOOLS",
         "AGENT_DEADLINE_MS",
         "CUEKB_BASE_URL",
         "CUEKB_API_KEY",
@@ -110,11 +127,15 @@ def test_cloud_environment_template_cannot_enable_development_fallbacks():
     assert values["QA_EXECUTION_MODE"] == "dual_tools"
     assert values["QA_ANSWER_POLICY"] == "general_qa"
     assert "CUEKB_MODE" not in values
-    assert "ENABLED_TOOLS" not in values
+    assert values["ENABLED_TOOLS"] == "search_knowledge,weather,web_search"
     assert values["WEATHER_PROVIDER"] == "qweather"
     assert values["WEATHER_MODE"] == "real"
-    assert values["WEATHER_BASE_URL"] == values["WEATHER_API_KEY"] == ""
-    assert values["VOICE_PROVIDER"] == "nvidia"
+    assert "REPLACE_" in values["WEATHER_BASE_URL"]
+    assert values["WEATHER_API_KEY"].startswith("REPLACE_")
+    assert values["VOICE_PROVIDER"] == "sophon_live"
+    assert urlparse(values["LIVEKIT_URL"]).scheme == "wss"
+    assert urlparse(values["LIVEKIT_URL"]).port == 7880
+    assert values["LIVEKIT_NODE_IP"].startswith("REPLACE_")
     assert values["VOICECHAT_WS_URL"].startswith("REPLACE_")
     origin = urlparse(values["PUBLIC_ORIGIN"])
     assert origin.scheme == "https" and origin.port == 8087 and origin.path == ""
@@ -127,6 +148,9 @@ def test_cloud_environment_template_cannot_enable_development_fallbacks():
         "REDIS_PASSWORD",
         "CUEKB_API_KEY",
         "VOICECHAT_API_KEY",
+        "LIVEKIT_API_KEY",
+        "LIVEKIT_API_SECRET",
+        "WEB_SEARCH_API_KEY",
     ):
         assert values[key].startswith("REPLACE_")
     assert "CUEKB_TOP_K" not in values and "MAX_VOICE_SESSIONS" not in values
@@ -163,26 +187,78 @@ def test_cloud_deployment_uses_prebuilt_images():
     assert "bash scripts/validate_deployment.sh web-end" in selection_runbook
     assert "COPY scripts/collect_validation_summary.py scripts/collect_validation_summary.py" in dockerfile
     assert "COPY scripts/inspect_input_prefix.py scripts/inspect_input_prefix.py" in dockerfile
-    assert "configure_native_cuekb.py --apply" in script
+    assert "configure_native_cuekb.py --apply" not in script
+    assert "--expect-cuekb-native" not in script
     nginx = (ROOT / "deploy/nginx.conf").read_text()
     assert "listen 8087 ssl;" in nginx
+    assert "listen 7880 ssl;" in nginx
+    assert "proxy_pass http://livekit:7880;" in nginx
+    assert "proxy_set_header Upgrade $http_upgrade;" in nginx
+    assert "access_log off;" in nginx.split("listen 7880 ssl;", 1)[1]
     assert "ssl_certificate /etc/nginx/tls/tls.crt;" in nginx
     assert "/api/v1/auth/login" not in nginx
     assert "login_limit" not in nginx
     assert "proxy_set_header X-Forwarded-For $remote_addr;" in nginx
 
 
-def test_deployment_requires_https_and_readable_tls_files(tmp_path):
+def test_cloud_template_loads_real_settings_from_environment_strings(tmp_path, monkeypatch):
+    from app.config import Settings
+    from pydantic import ValidationError
+
+    values = dict(
+        line.split("=", 1) for line in (ROOT / ".env.example").read_text().splitlines()
+        if line and not line.startswith("#")
+    )
+    values.update(
+        AUTO_CREATE_SCHEMA="false", AUTH_MODE="validation", CUEKB_MODE="real",
+        PUBLIC_ORIGIN="https://voice.test:8087",
+        DATABASE_URL="postgresql+asyncpg://voice_service:test-postgres@postgres/voice_service",
+        REDIS_URL="redis://:test-redis@redis:6379/0",
+        LIVEKIT_URL="wss://voice.test:7880", LIVEKIT_NODE_IP="203.0.113.7",
+        LIVEKIT_API_KEY="test-key", LIVEKIT_API_SECRET="test-secret-with-at-least-32-characters",
+        CUEKB_BASE_URL="https://cuekb.test", CUEKB_API_KEY="test-cuekb-key",
+        SOPHON_LIVE_WS_URL="wss://sophon.test/v1/live/sessions",
+        WEATHER_BASE_URL="https://fixture.qweatherapi.com", WEATHER_API_KEY="test-weather-key",
+        WEB_SEARCH_API_KEY="test-search-key",
+    )
+    for name in values:
+        monkeypatch.delenv(name, raising=False)
+    env_file = tmp_path / ".env"
+    env_file.write_text("\n".join(f"{key}={value}" for key, value in values.items()) + "\n")
+    settings = Settings(_env_file=env_file)
+    settings.validate_deployment()
+    assert settings.enabled_tool_names == {"search_knowledge", "weather", "web_search"}
+    assert settings.sophon_live_max_delegations_per_input == 1
+    assert settings.livekit_api_secret.get_secret_value() == values["LIVEKIT_API_SECRET"]
+    for invalid in ("0", "2", "1.5", "invalid"):
+        with pytest.raises(ValidationError):
+            Settings(_env_file=env_file, sophon_live_max_delegations_per_input=invalid)
+
+
+def test_deployment_rejects_incomplete_config_before_starting_containers(tmp_path):
     docker = tmp_path / "docker"
-    docker.write_text("#!/bin/sh\nexit 0\n")
+    docker.write_text('#!/bin/sh\nprintf "%s\\n" "$*" >> "$DOCKER_CALLS"\nexit 0\n')
     docker.chmod(0o755)
-    env = {**os.environ, "PATH": f"{tmp_path}:{os.environ['PATH']}"}
+    calls = tmp_path / "docker-calls"
+    env = {**os.environ, "PATH": f"{tmp_path}:{os.environ['PATH']}", "DOCKER_CALLS": str(calls)}
     values = {
         "IMAGE_TAG": "test",
         "POSTGRES_PASSWORD": "postgres-pass",
         "REDIS_PASSWORD": "redis-pass",
         "KNOWLEDGE_BASE_IDS": "00000000-0000-4000-8000-000000000001",
         "AGENT_PROVIDER": "disabled",
+        "ENABLED_TOOLS": "search_knowledge,weather,web_search",
+        "VOICE_PROVIDER": "sophon_live",
+        "SOPHON_LIVE_WS_URL": "wss://sophon.test/v1/live/sessions",
+        "LIVEKIT_URL": "wss://voice.test:7880",
+        "LIVEKIT_NODE_IP": "203.0.113.7",
+        "LIVEKIT_API_KEY": "test-key",
+        "LIVEKIT_API_SECRET": "test-secret-with-at-least-32-characters",
+        "WEATHER_PROVIDER": "qweather",
+        "WEATHER_MODE": "real",
+        "WEATHER_BASE_URL": "https://weather.test",
+        "WEATHER_API_KEY": "weather-key",
+        "WEB_SEARCH_API_KEY": "public-search-key",
         "PUBLIC_ORIGIN": "https://voice.test:8087",
         "CUEKB_BASE_URL": "https://cuekb.test",
         "CUEKB_API_KEY": "cuekb-key",
@@ -196,6 +272,7 @@ def test_deployment_requires_https_and_readable_tls_files(tmp_path):
     env_file = tmp_path / ".env"
 
     def check():
+        calls.write_text("")
         env_file.write_text("\n".join(f"{key}={value}" for key, value in values.items()) + "\n")
         return subprocess.run(
             ["sh", str(ROOT / "scripts/deploy-cloud.sh"), str(env_file)],
@@ -227,10 +304,40 @@ def test_deployment_requires_https_and_readable_tls_files(tmp_path):
     values["PUBLIC_ORIGIN"] = "https://voice.test:8087"
     accepted_https = check()
     assert accepted_https.returncode == 0
+    commands = calls.read_text().splitlines()
+    infrastructure = next(i for i, command in enumerate(commands) if command.endswith("postgres redis livekit"))
+    migration = next(i for i, command in enumerate(commands) if command.endswith("run --rm --no-deps migrate"))
+    api = next(i for i, command in enumerate(commands) if " up " in command and command.endswith("--no-deps api"))
+    verification = next(i for i, command in enumerate(commands) if "--expect-autonomous-voice" in command)
+    web = next(i for i, command in enumerate(commands) if command.endswith("--force-recreate web"))
+    assert infrastructure < migration < api < verification < web
+    assert not any("configure_native_cuekb.py" in command for command in commands)
     values["QA_ANSWER_POLICY"] = "knowledge_required"
     rejected_strict = check()
     assert rejected_strict.returncode != 0
     assert "QA_ANSWER_POLICY=general_qa" in rejected_strict.stderr
+    values["QA_ANSWER_POLICY"] = "general_qa"
+
+    for key, bad_value, message in (
+        ("LIVEKIT_URL", "ws://voice.test:7880", "WSS origin"),
+        ("LIVEKIT_NODE_IP", "203.0.113.999", "host IPv4"),
+        ("LIVEKIT_API_KEY", 'key\": injected', "URL-safe"),
+        ("LIVEKIT_API_SECRET", "too-short", "at least 32"),
+        ("LIVEKIT_API_SECRET", "", "real value for LIVEKIT_API_SECRET"),
+        ("REDIS_PASSWORD", 'bad\"password', "URL-safe"),
+        ("ENABLED_TOOLS", "search_knowledge,web_search", "include weather"),
+        ("WEATHER_API_KEY", "", "real value for WEATHER_API_KEY"),
+        ("WEB_SEARCH_API_KEY", "", "real value for WEB_SEARCH_API_KEY"),
+        ("WEATHER_MODE", "mock", "WEATHER_MODE=real"),
+        ("VOICE_PROVIDER", "nvidia", "VOICE_PROVIDER=sophon_live"),
+    ):
+        original = values[key]
+        values[key] = bad_value
+        rejected = check()
+        assert rejected.returncode != 0, (key, rejected.stdout)
+        assert message in rejected.stderr, (key, rejected.stderr)
+        assert not any(" up " in command or " run " in command for command in calls.read_text().splitlines())
+        values[key] = original
 
 
 def test_deployment_readiness_verifier_requires_real_matching_configuration():

@@ -7,7 +7,7 @@
 | 系统 | 入口与职责 | 服务器控制项 |
 | --- | --- | --- |
 | Sophon Live | `/v1/live/sessions`，语音理解、直接回复、原生 delegate(task) | URL、凭据、Locale、固定委派规则 |
-| LiveKit | 浏览器与 API AgentSession 的 WebRTC Room | WSS origin、API Key/Secret、短时 Room Token |
+| LiveKit | 同一生产 Compose 内的 WebRTC Room 服务，复用 Redis DB1 | Web 7880 TLS、媒体 7881/TCP 与 7882/UDP、API Key/Secret、短时 Room Token |
 | QWeather | GeoAPI 地点解析 + Weather v1 实况/预报 | 专属 HTTPS API Host、API Key、超时与来源 |
 | Tavily | `https://api.tavily.com/search` 的公开知识检索/受控兜底 | API Key、独立 query、可公开范围、来源 URL |
 | CueKB | `/v2/evidence/query` 后 `/v2/evidence/validate` | KB UUID、scoped Key、证据与权限修订、tokenizer/预算 |

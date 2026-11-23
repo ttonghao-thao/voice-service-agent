@@ -13,6 +13,7 @@
 | 完整组 + Provider 对应预算 | 不截断条件、不猜 tokenizer；NVIDIA 精确最终 NeMo 包，Sophon 独立 Commentary 边界 |
 | 输入/播放/业务分离，回答认证分层 | 普通发声停止播放不取消查询；ASR/发送/回执/排空不证明理解、完整覆盖或事实正确 |
 | API/Web 配套镜像，数据库独立迁移 | 推送不等于部署；持久卷、权限和角色数据不能随容器替换删除 |
+| LiveKit 与 Redis 同一 Compose | 统一生命周期和凭据，复用 Redis 的 DB1；Web 提供 TLS 信令，媒体端口直达，不因此证明 NAT/通话已验收 |
 | 外部 VoiceChat 配套快照 | model/data/audio_server/模板及 API 必须匹配；不热换单文件后宣称通过 |
 
 NVIDIA 的重复检索、终态立即循环断连、model query 替代其最终 ASR、related-input 自动视作回答等已替代方案不得重引入。该 Provider 的逐 token 消费、复验到写入窗口和固定连接寿命仍是实现约束，不能当作长期已验收设计。

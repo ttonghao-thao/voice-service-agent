@@ -32,10 +32,10 @@ Sophon 直接理解音频并原生 delegate(task)，Router 只解析已收到的
 
 ## 3. 发布与验收要求
 
-系统按容器发布：API/Web 独立镜像、migrate 复用 API 镜像、PostgreSQL/Redis 持久卷，LiveKit/Sophon/CueKB 保持边界。配置变化重建相应容器，推送 Git 不等于部署完成。详见 [部署手册](deployment.md)。
+系统按容器发布：LiveKit 与 Redis/PostgreSQL/API/Web 在同一 Compose，API/Web 独立镜像、migrate 复用 API 镜像、PostgreSQL/Redis 持久卷；Sophon/CueKB 独立部署。配置变化重建相应容器，推送 Git 不等于部署完成。详见 [部署手册](deployment.md)。
 
 验收分别记录原生触发、Router 解析、工具真实结果、Commentary 回执、后续候选音频、实际听音与语义/问题覆盖。Gateway 接收、首段等待语、字幕、audio.done 和播放器排空均不能独立证明最终回答正确。
 
-必须保留 2026-11-22 正式基线：14 项中 7 个预期委派仅 zh_news 产生原生委派且 Router 未识别，工具执行为 0；另六条没有原生事件。“模型未触发”与“已委派但 Router 未解析”必须分别修复和统计，不能只改 Router 就声称调用解决。固定官方分类与时间/灯光/记忆等超出三类查询的范围分开统计；真实失败不回退 mock，不以模拟或成功个例替代整组语音复测。
+原生触发与 Router 解析必须分别统计，不能只改 Router 就声称工具调用解决。两类历史故障已在固定官方录音集分别修复并复测，原始失败与修复后两张 14 项表保留在 [已解决记录](validation.md#5-已解决原生委派触发与-router-解析)，不列作当前待修复任务。官方分类与时间/灯光/记忆等超出三类查询的范围分开统计；真实失败不回退 mock，不以模拟或成功个例替代整组语音复测。
 
 三类真实服务、角色、ASR 开关对照、固定录音重复、多轮打断、隐私兜底、来源与实际听音均需证据。原始失败和后续复测事实只维护在 [验证记录](validation.md)。后台持续播报暂缓；旧 legacy/SDK/NVIDIA 兼容代码的存在不是完整能力或无限连续通话承诺。

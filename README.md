@@ -16,4 +16,4 @@
 | 执行验证或查看真实结果 | [唯一验证与执行记录](docs/validation.md) |
 | 定位具体接口、Provider 或维护规则 | [按需索引](docs/README.md) |
 
-发布目标为 origin/main。API/Web 使用同一版本标签的预构建镜像，migrate 复用 API 镜像；LiveKit、Sophon、CueKB 独立部署。推送代码不等于已构建、迁移或完成容器/语音验收，部署前先核对手册中的阻塞项。
+发布目标为 origin/main。API/Web 使用同一版本标签的预构建镜像，migrate 复用 API 镜像；LiveKit 与 Redis/PostgreSQL 同一 Compose，Sophon/CueKB 独立部署。推送代码不等于已构建、迁移或完成容器/语音验收，部署前先核对手册中的阻塞项。

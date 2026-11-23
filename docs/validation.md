@@ -1,26 +1,26 @@
 # 验证方法与执行记录
 
-类型：唯一验证入口。先查 §1，再按 Provider 只读 §2 或 §3；通用放行见 §4，原始基线/最新复测/开发检查分别在 §5–7。部署制作/迁移/回滚只看 [deployment.md](deployment.md)，未实施的验收容器看 [方案](implementation-plan.md)。不默认读取旧流水、快照或整个文档。
+类型：唯一验证入口。先查 §1，再按 Provider 只读 §2 或 §3；通用放行见 §4，其他能力待验项见 §6，开发/部署检查见 §7。§5 是已解决故障的修复前后证据，仅追溯时读取。部署操作只看 [deployment.md](deployment.md)，未实施的验收容器看 [方案](implementation-plan.md)。
 
 ## 1. 当前结论与证据边界
 
-产品同时提供天气、通用知识、专业知识库，通用知识受控兜底；某次环境缺少依赖不是另一种产品模式。当前代码基线 b60028d 的完整三类接入为 Sophon Live + LiveKit，后续文档提交不算新的应用版本测试。
+产品同时提供天气、通用知识、专业知识库，通用知识受控兜底。业务代码基线 b60028d 的两类委派故障已按固定录音集关闭，详见 §5；更大范围稳定性和其他能力仍单独验收。2026-11-23 的 Compose 改动未重跑真实语音，不刷新原测试日期。
 
 | 检查 | 最近已执行事实 | 尚不能证明 |
 | --- | --- | --- |
-| 官方 14 项真实 Web 录音 | 原生预期 7/7、无需工具 7/7 未误调，三类范围已委派路由 3/3，ASR 可见 14/14 | 大样本稳定性、三类实际结果都成功、完整口述或容器发布通过 |
+| 已解决委派故障的官方 14 项复测 | b60028d：预期原生 7/7、无需工具 7/7 未误调，三类范围已委派路由 3/3；两类原故障关闭 | 大样本稳定性、三类实际结果都成功、完整口述或容器发布通过 |
 | 专业知识库 | evidence query/validate、权限与失败有受控回归 | 最新 Sophon 场景真实 CueKB 尚未接入，不属于可放行的完整交付 |
 | 天气/通用知识 | 真实 QWeather/Tavily 执行和回执，公开来源保留 | Melbourne 同名地点仅澄清；F7005 → F705 的错误 task 不算正确产品检索 |
 | 角色/ASR | 名字、快照、隔离、五种 ASR 状态的业务独立性有证据 | 完整 Persona 遵循、真实 ASR 开关对照、人耳听音 |
-| 容器 | Dockerfile/Compose/迁移/健康脚本已有实现 | 本机无 Docker CLI，未实际构建/部署本版；Sophon 容器验收单入口仍缺 |
+| 容器 | LiveKit/Redis 同 Compose，三类模板/启动检查已更新；静态展开和契约见 §7 | 无 Docker Engine，未实际构建/部署本版；WSS/媒体/NAT 与 Sophon 容器验收单入口仍待验 |
 
-原生触发和 Router 解析分别是独立问题，不能互相替代验收。Gateway 回执、音轨/字幕、播放排空、实际听到、问题覆盖和事实正确分别记录。所有 Sophon final_answer_verified 保持 false；未知或观察不足的样本不算通过。
+原生触发和 Router 解析分别验收，已关闭的录音故障不继续列作当前待修。Gateway 回执、音轨/字幕、播放排空、实际听到、问题覆盖和事实正确分别记录。既有 Sophon 记录的 final_answer_verified 均为 false；未知或观察不足的样本不算通过。
 
 ## 2. Sophon 执行入口
 
 ### Sophon Live 验证
 
-生产在部署机项目根目录操作，先按 deployment.md 配置完整三类服务并部署。API 内单次握手检查如下，只证明会话控制，不发送录音、不验证原生任务/工具/听音：
+生产在部署机项目根目录操作，先按 deployment.md 部署同一 Compose 和三类依赖。API 内单次检查以下 LiveKit WSS/TLS/API 凭据及 Sophon 会话控制，不发送录音、不验证媒体/NAT、原生任务或听音；禁止打印完整 compose config，其中包含凭据：
 
 ```bash
 export DEPLOY_ENV_FILE="$PWD/.env"
@@ -33,17 +33,23 @@ import asyncio
 import json
 from app.config import Settings
 from app.voice.sophon_live import SophonLiveAdapter
+from livekit import api
 
 async def run():
     settings = Settings()
     assert settings.voice_provider == "sophon_live"
+    async with api.LiveKitAPI(
+        settings.livekit_url, settings.livekit_api_key.get_secret_value(),
+        settings.livekit_api_secret.get_secret_value(),
+    ) as livekit:
+        await livekit.room.list_rooms(api.ListRoomsRequest())
     provider = SophonLiveAdapter(settings)
     try:
         await provider.connect()
         started = bool(provider.session_id)
     finally:
         closed = await provider.close()
-    print(json.dumps({"started": started, "close_confirmed": closed}))
+    print(json.dumps({"livekit_api_authenticated": True, "started": started, "close_confirmed": closed}))
 
 asyncio.run(run())
 PYTHON
@@ -160,7 +166,16 @@ SH
 
 时延分段记录 query/validate → 构包/预算/锁 → 供应商接收 → ACK/注入 → PCM 追赶 → 候选音频/实际完整回答；API/Docker/浏览器时钟不直接混算。首段等待语不能当最终答案时延，不创造未经确认的秒数达标线。普通一般回答不伪造企业来源。
 
-## 5. 原始正式失败基线
+## 5. 已解决：原生委派触发与 Router 解析
+
+状态：两类原故障均在 b60028d 修复，固定官方 14 录音及 en_time 独立重复复测通过；不再作为当前待办。两张表分别是**同一组 14 项的修复前和修复后**，不是两个尚待执行的测试任务，也不是两轮修复后验收。
+
+| 原问题 | 修复和对应证据 | 关闭范围 |
+| --- | --- | --- |
+| 模型没有触发原生委派 | 简化 task 格式负担、分离 Persona 与固定规则，明确同响应实际调用；预期委派从 1/7 到 7/7，无需工具的 7/7 均未误调 | 固定官方样本集的漏委派故障已解决；不认证所有语音表达的稳定性 |
+| 已委派 task 无法被 Router 识别 | 保留结构化优先并加入自然语言规则；天气/新闻成功解析，三类业务范围内 3/3 路由正确，其余明确 UNSUPPORTED | 已观察到的原生 task 格式故障已解决；不代表已实现时间、关灯或个人记忆业务 |
+
+下面保留原始失败、改动原因和完整对照，以便回归追溯；其他待验项在 §6 / TASK_BOARD。部署静态检查不刷新这些历史语音结果。
 
 ### 官方 14 录音的 Web 全流程验证（2026-11-22）
 
@@ -186,8 +201,6 @@ SH
 官方清单包含时间、关灯、记忆等三类工具之外操作，保持原生触发分母，业务执行另计。原始目录 `/tmp/sophon-web-14.aENraE` 包含 run-manifest.json、final-14.json、results/final-zh、results/final-en、原始截图/WAV/JSON；会话结束时 Room/participant 均为 0。该轮 118 Python、13 浏览器、42 Web 通过，不代表真实语音工具通过。
 
 同版本的直连/天气单次成功和两条额外合成产品输入没有替换正式失败；前者不稳定复现，后者虽委派仍未路由。早期超时/HTTP 502 后，2026-11-22 14:48 同一 WSS 的 TLS/Upgrade/session.start/close 成功，只证明该主机当时传输控制。不可据此推断真实引擎身份或所有时段可用。
-
-## 6. 最近原生修复与真实记录
 
 ### 原生委派与 Router 分项修复复测
 
@@ -220,7 +233,11 @@ SH
 
 首段候选可能是等待语/重叠输出，不是完整答案时延。Provider/Router/指令源码与交付一致；中文整组后仅 App.tsx 的角色设置准备增加取消/互斥，该路径不在官方清单中，纳入最终 15 项浏览器回归。每组实际 hash 均保存，不伪称同一全仓快照。initial-zh、official-zh、final-zh、final-en、final-en-v2、repeat-en-time 全部保留，包括中间失败，未挑同组成功替换失败。
 
-#### 角色、ASR 与三类依赖
+## 6. 其余能力的证据与待验项
+
+本节是独立的剩余范围，不改变 §5 两类故障在固定录音集上的关闭状态。
+
+### 角色、ASR 与三类依赖
 
 真实 WebSocket 的闹闹/小狗，以及 LiveKit 的闹闹/小狗均在候选自我介绍中出现所选名字；有输入字幕和 PCM、无协议错误。小狗下北京天气/公开语音模型检索 2/2 有原生、正确路由、真实执行和回执（profile-xiaogou/summary.json）。小狗额外自称 AI2 的语音伙伴，不在配置中，不能认证完整 Persona 或该归属。角色 CRUD、跨用户 401/404、拒绝修改固定规则、快照/删除/损坏回退、重连与文件新身份有受控及真实本地 API 浏览器回归。
 
@@ -230,7 +247,7 @@ SH
 
 两次产品 task 把 **F7005 写成 F705**，包括一次公开检索；Router 保留了该错误，未用 ASR 猜改。Tavily status=ok 不证明搜了正确产品。当前受控公开兜底和配置分支测试不能证明真实 CueKB 成功；最新 Sophon 环境 CueKB 尚未接入，不能据此宣布完整三类交付。
 
-#### 证据位置与未验项
+### 证据位置与未验项
 
 原始目录：`/var/folders/1x/568sjwqd64z3p8prx9d5338w0000gn/T/sophon-implementation-6oiitmvq`，定位文件 `/tmp/sophon-implementation-path`。包括 delivered-14.json、各整组 summary、原生直连对照、supplement-zh、profile-xiaogou、ws-role-闹闹/小狗、room-cleanup.json 和 publication.json；这些是当时本机临时路径，缺失时从保存的原始材料恢复或按 §2 复跑，不能声称 Git 保存了 WAV/报告。清理前 Room/participant 为 0；生产未部署。
 
@@ -243,12 +260,15 @@ SQLite 0006→head(0011)→0007/0006→head 与 Alembic check 保留旧历史；
 | b60028d 实现交付 | 定向 Python 152、Web 单测 42、浏览器 15 通过；TypeScript/Web 构建、Ruff、契约、JS/Shell/迁移/diff 检查通过 | 未把它们当 GPU/容器/听音通过；LiveKit chunk >500 kB、Starlette 既有弃用警告保留 |
 | 同轮全量与隔离基线 | 首次 853 passed、28 failed；迁移版本断言更新后复验通过，余 27 个节点在原始 main 的 git archive 中全部复现（27 failed、1 passed） | 包括 NVIDIA/旧 CueKB/followup，未修复；不宣称当前全仓全绿。pytest-all.log / baseline-failures.log / final-scoped.log 留原目录 |
 | 2026-11-23 容器方案只读核查 | 12 项部署契约、两部署脚本语法通过 | 当时无 Docker CLI；未构建/部署，也未实现新验收镜像或修改代码 |
-| 2026-11-23 本轮文档整理 | 16 个 Markdown；145 个本地链接/锚点（含入链）、12 段 Shell、1 段内嵌 Python 语法检查通过；源码链接可定位，原始/最新两张官方 14 项表逐字保留，术语与 diff 检查通过 | 未运行应用、Docker、GPU、供应商、浏览器或听音回归，不刷新上表测试日期 |
+| f20b1c2 文档整理 | 16 个 Markdown；145 个本地链接/锚点（含入链）、12 段 Shell、1 段内嵌 Python 语法检查通过；原始/最新两张官方 14 项表逐字保留 | 当时只改文档，未运行应用、Docker、GPU、供应商、浏览器或听音回归 |
+| 2026-11-23 LiveKit 同 Compose 与故障归档 | 部署/Router/LiveKit 定向 66 项通过，Ruff、Shell/diff 通过；官方 Compose v2.39.4 静态展开 6 服务，LiveKit YAML/Redis DB1/API 凭据一致；13 个 Markdown、116 个链接/锚点、11 段 Shell/1 段内嵌 Python 检查通过；保存的 delivered-14 JSON 重核 7/7、无需工具 7/7、路由 3/3，两张表逐字保留于已解决章节 | 未使用 Docker Engine，未构建/启动镜像、验证 Nginx 实际运行或媒体/NAT；未重跑供应商/浏览器/听音；保留 Starlette 既有弃用警告 |
 
-本地代码变更时按范围使用现有测试，下面是 b60028d 定向集合的开发复跑入口（需要项目开发环境，非生产容器验收）：
+本轮发现并修复部署配置阻塞：SOPHON_LIVE_MAX_DELEGATIONS_PER_INPUT 的环境字符串 1 被 Literal[1] 拒绝；改为整数且上下界均为 1，仍拒绝 0/2/非整数。新增测试从实际模板读取字符串配置并执行 Settings.validate_deployment，不连接服务。主部署脚本拒绝缺少任一查询能力、假值、非 WSS、非法 IPv4、过短/不安全 LiveKit 凭据及 mock 天气；这些检查不证明真实依赖可用。
+
+本地代码变更时按范围选择以下开发复跑入口（需要项目开发环境，非生产容器验收；本轮实际选择见上表，不表示整段都已执行）：
 
 ```bash
-.venv/bin/python -m pytest -q tests/contract/test_delegation_router.py \
+.venv/bin/python -m pytest -q tests/contract/test_deployment.py tests/contract/test_delegation_router.py \
   tests/contract/test_public_tools.py tests/integration/test_voice_profiles.py \
   tests/integration/test_sophon_live.py tests/integration/test_livekit_delegation.py \
   tests/integration/test_auth.py tests/integration/test_native_tool_catalog.py \
@@ -256,7 +276,7 @@ SQLite 0006→head(0011)→0007/0006→head 与 Alembic check 保留旧历史；
 npm --prefix apps/web test
 npm --prefix apps/web run build
 (cd apps/web && npx playwright test voice-file.spec.ts voice-profiles.spec.ts)
-# 仅契约实现变化时导出，本次纯文档未执行：
+# 仅公开契约变化时导出；本轮未改公开契约，未执行：
 PYTHONPATH=apps/api .venv/bin/python scripts/export_contracts.py
 ```
 

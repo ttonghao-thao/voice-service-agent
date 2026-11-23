@@ -11,4 +11,4 @@ RUN mkdir -p /etc/nginx/tls
 COPY --from=build /web/dist /usr/share/nginx/html
 RUN chmod -R u=rwX,go=rX /usr/share/nginx/html
 COPY deploy/nginx.conf /etc/nginx/templates/default.conf.template
-EXPOSE 8087
+EXPOSE 8087 7880

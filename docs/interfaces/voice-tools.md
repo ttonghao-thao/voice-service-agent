@@ -8,7 +8,7 @@
 
 可信代码注册 `NativeTool` 的参数模型、执行器、执行种类、后台依赖和权限 scope。后台全局目录决定哪些名称启用，以及 description、examples、output_description、ack_messages；可用不同名称引用同一个可信 implementation。配置不能指定 Python import、任意 URL/凭据或覆盖参数 schema。新业务 API 需要先接入可信执行器；仅添加名称不会凭空产生执行能力。
 
-初始目录来自 `config/voice-tools.yaml`；当前部署脚本仍调用 configure_native_cuekb.py --apply，将已保存目录切为该默认知识工具（CAS 更新并审计）。这是需审查的部署行为，不是三类能力已覆盖或可无条件覆盖自定义目录的保证。首次管理员保存后，以数据库 native_tool_config 单行配置及 revision 为准，多副本共享；文件不自动覆盖已保存配置。目录对所有客户可见，不按 scope 隐藏；后台依赖关闭时对应原生工具不可用，执行仍复核 scope、KB、epoch/revision、租约及依赖版本。
+初始目录来自 `config/voice-tools.yaml`；configure_native_cuekb.py --apply 仍是手工管理 NVIDIA 兼容目录的操作（CAS 更新并审计），当前 Sophon 主部署脚本不再调用或覆盖它。首次管理员保存后，以数据库 native_tool_config 单行配置及 revision 为准，多副本共享；文件不自动覆盖已保存配置。目录对所有客户可见，不按 scope 隐藏；后台依赖关闭时对应原生工具不可用，执行仍复核 scope、KB、epoch/revision、租约及依赖版本。
 
 注册顺序：`session.created → session.update → session.updated → portal.session.ready → 用户音频`。`session.update.session` 提供 audio、instructions、tools；每个工具提供 name、description、parameters、ack_messages。参数 schema 从可信模型生成，examples 先通过该模型校验，再附于 description；output_description 说明结果语义，不是协议新增的输出 schema。工具调用和回填使用供应商原始 call_id，不发送 tool_choice。
 

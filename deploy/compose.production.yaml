@@ -45,6 +45,44 @@ services:
     networks: [data]
     logging: *default-logging
 
+  livekit:
+    image: livekit/livekit-server:v1.13.11@sha256:25cd902de7cacbd5f1f779f6a6ac1eae20ba8f56b0935934ce6b0ab80d1e3d20
+    environment:
+      LIVEKIT_CONFIG: |
+        port: 7880
+        bind_addresses: ["0.0.0.0"]
+        rtc:
+          tcp_port: 7881
+          udp_port: 7882
+          node_ip: "${LIVEKIT_NODE_IP:?Set the reachable deployment host IPv4 in .env}"
+          use_external_ip: false
+        redis:
+          address: redis:6379
+          password: "${REDIS_PASSWORD:?Set REDIS_PASSWORD in .env}"
+          db: 1
+        keys:
+          "${LIVEKIT_API_KEY:?Set LIVEKIT_API_KEY in .env}": "${LIVEKIT_API_SECRET:?Set LIVEKIT_API_SECRET in .env}"
+    ports:
+      - "0.0.0.0:7881:7881/tcp"
+      - "0.0.0.0:7882:7882/udp"
+    depends_on:
+      redis: {condition: service_healthy}
+    healthcheck:
+      test: ["CMD-SHELL", "wget -q -O /dev/null http://127.0.0.1:7880/"]
+      interval: 5s
+      timeout: 3s
+      retries: 20
+      start_period: 5s
+    read_only: true
+    tmpfs:
+      - /tmp:size=16m,mode=1777
+    stop_grace_period: 30s
+    restart: unless-stopped
+    security_opt: ["no-new-privileges:true"]
+    cap_drop: [ALL]
+    networks: [data, app, edge]
+    logging: *default-logging
+
   migrate:
     image: voice-service-agent-api:${IMAGE_TAG:?Set the prebuilt IMAGE_TAG in .env}
     pull_policy: never
@@ -53,8 +91,8 @@ services:
       AUTO_CREATE_SCHEMA: "false"
       AUTH_MODE: validation
       CUEKB_MODE: real
-      ENABLED_TOOLS: ${ENABLED_TOOLS:-search_knowledge}
-      VOICE_PROVIDER: ${VOICE_PROVIDER:-nvidia}
+      ENABLED_TOOLS: ${ENABLED_TOOLS:-search_knowledge,weather,web_search}
+      VOICE_PROVIDER: ${VOICE_PROVIDER:-sophon_live}
       DATABASE_URL: postgresql+asyncpg://voice_service:${POSTGRES_PASSWORD}@postgres/voice_service
       REDIS_URL: redis://:${REDIS_PASSWORD}@redis:6379/0
     command: ["alembic", "-c", "apps/api/alembic.ini", "upgrade", "head"]
@@ -75,6 +113,7 @@ services:
     depends_on:
       migrate: {condition: service_completed_successfully}
       redis: {condition: service_healthy}
+      livekit: {condition: service_healthy}
     healthcheck:
       test:
         - CMD
@@ -102,6 +141,7 @@ services:
       NGINX_ENVSUBST_FILTER: '^LIVEKIT_URL$'
     ports:
       - "0.0.0.0:8087:8087"
+      - "0.0.0.0:7880:7880"
     volumes:
       - "${WEB_TLS_CERT_FILE:?Set the TLS certificate path in .env}:/etc/nginx/tls/tls.crt:ro"
       - "${WEB_TLS_KEY_FILE:?Set the TLS private key path in .env}:/etc/nginx/tls/tls.key:ro"

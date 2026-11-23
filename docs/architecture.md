@@ -1,12 +1,12 @@
 # 当前系统架构
 
-类型：当前代码事实。2026-11-23 对照 b60028d 调用链整理；部署实例的镜像/权重/挂载身份必须现场核对。需求见 [delivery.md](delivery.md)，未实施设计见 [implementation-plan.md](implementation-plan.md)，证据见 [validation.md](validation.md)。
+类型：当前代码事实。业务调用链基于 b60028d；2026-11-23 更新仓库部署拓扑，未据此宣称实例已升级。部署实例的镜像/权重/挂载身份必须现场核对。需求见 [delivery.md](delivery.md)，未实施设计见 [implementation-plan.md](implementation-plan.md)，证据见 [validation.md](validation.md)。
 
 ## 1. 产品与部署边界
 
 产品固定提供天气、通用知识和专业知识库三类查询，通用知识检索受控兜底。当前完整接入路径是 Sophon Live + LiveKit；NVIDIA/旧 WebSocket 的局部能力限制是兼容实现事实，不是仅知识库的产品模式。
 
-Python 3.12/FastAPI、React/TypeScript/AudioWorklet、PostgreSQL/Redis。API/Web 独立镜像，迁移复用 API 镜像。Sophon、NVIDIA VoiceChat、CueKB 独立部署，LiveKit 单独运行；每 Room 的官方 AgentSession 已在 API 内，不另设业务 Agent 服务。
+Python 3.12/FastAPI、React/TypeScript/AudioWorklet、PostgreSQL/Redis。API/Web 独立镜像，迁移复用 API 镜像。LiveKit 与 PostgreSQL/Redis/API/Web 同属生产 Compose，使用同一 Redis 实例的 DB1，应用使用 DB0；Web 终止 7880/TCP 的 LiveKit TLS，7881/TCP、7882/UDP 由 LiveKit 直接发布。Sophon、NVIDIA VoiceChat、CueKB 独立部署；每 Room 的官方 AgentSession 已在 API 内，不另设业务 Agent 服务。
 
 主路径使用 `dual_tools/general_qa` 和 `AGENT_PROVIDER=disabled`。dual_tools 是兼容配置名，不表示只有两个工具；三类业务能力也不等于三个原生函数。模型原生决定直接回答或委派，不启用独立分类 LLM、ASR 关键词路由、强制 tool_choice 或子 Agent 调度。
 

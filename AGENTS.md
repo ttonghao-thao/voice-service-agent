@@ -14,6 +14,7 @@
 ## 不变边界
 
 - NVIDIA VoiceChat、Sophon Live、CueKB 独立部署；保持 Gateway → Coordinator → Runtime → Registry。供应商结构归 app/voice，Agents SDK 归 app/agent_runtime。
+- LiveKit 与 Redis/PostgreSQL/API/Web 由同一份 deploy/compose.production.yaml 管理，复用 Redis；不再另行部署 LiveKit。已解决问题只在 validation.md 的已解决章节保留，不反复列为当前待办。
 - tools/instructions 原生选工具，不加 WS tool_choice、分类模型、独立 Nano 或子 Agent 调度。一般回答不是企业证据；mock 不证明真实能力，real 失败不回退 mock。
 - Sophon ASR 仅供字幕展示。模型直接理解音频，原生委派 `task` 提供工具意图与参数，音频窗口校验委派归属。
 - 三类查询是业务能力，不是固定的原生函数数量。旧 Provider/传输的能力限制和依赖尚未接入是实现缺口，不能改写为产品模式。兜底只处理获准公开发送的独立问题，私有失败、未知意图、无原生委派不自动转公网。

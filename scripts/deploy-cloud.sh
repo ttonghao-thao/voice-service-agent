@@ -36,24 +36,47 @@ export DEPLOY_ENV_FILE=$environment_file
 require_values \
   IMAGE_TAG POSTGRES_PASSWORD REDIS_PASSWORD KNOWLEDGE_BASE_IDS \
   WEB_TLS_CERT_FILE WEB_TLS_KEY_FILE \
-  PUBLIC_ORIGIN AGENT_PROVIDER
+  PUBLIC_ORIGIN AGENT_PROVIDER \
+  LIVEKIT_URL LIVEKIT_API_KEY LIVEKIT_API_SECRET LIVEKIT_NODE_IP \
+  CUEKB_BASE_URL CUEKB_API_KEY WEATHER_BASE_URL WEATHER_API_KEY WEB_SEARCH_API_KEY
 
-case ",$(environment_value ENABLED_TOOLS)," in
-  ,,|*,search_knowledge,*) require_values CUEKB_BASE_URL CUEKB_API_KEY ;;
-esac
+for tool in search_knowledge weather web_search; do
+  case ",$(environment_value ENABLED_TOOLS)," in
+    *,$tool,*) ;;
+    *) echo "Complete deployment requires ENABLED_TOOLS to include $tool." >&2; exit 1 ;;
+  esac
+done
 
 case "$(environment_value VOICE_PROVIDER)" in
-  nvidia|'') require_values VOICECHAT_WS_URL VOICECHAT_API_KEY ;;
   sophon_live) require_values SOPHON_LIVE_WS_URL ;;
-  *) echo "VOICE_PROVIDER must be nvidia or sophon_live." >&2; exit 1 ;;
+  *) echo "Three-query deployment requires VOICE_PROVIDER=sophon_live; NVIDIA compatibility has its own runbook." >&2; exit 1 ;;
 esac
 
-if [ -n "$(environment_value LIVEKIT_URL)" ]; then
-  require_values LIVEKIT_URL LIVEKIT_API_KEY LIVEKIT_API_SECRET
-  if ! grep -Eq '^LIVEKIT_URL=wss://[A-Za-z0-9.-]+(:[0-9]+)?/?$' "$environment_file"; then
-    echo "LIVEKIT_URL must be a WSS origin." >&2
-    exit 1
-  fi
+if ! grep -Eq '^LIVEKIT_URL=wss://[A-Za-z0-9.-]+(:[0-9]+)?/?$' "$environment_file"; then
+  echo "LIVEKIT_URL must be a WSS origin routed to this Compose Web port 7880." >&2
+  exit 1
+fi
+for key in REDIS_PASSWORD LIVEKIT_API_KEY LIVEKIT_API_SECRET; do
+  case "$(environment_value "$key")" in
+    *[!A-Za-z0-9._~-]*) echo "$key must use URL-safe letters, digits, dot, underscore, tilde or hyphen." >&2; exit 1 ;;
+  esac
+done
+livekit_secret=$(environment_value LIVEKIT_API_SECRET)
+if [ "${#livekit_secret}" -lt 32 ]; then
+  echo "LIVEKIT_API_SECRET must contain at least 32 characters." >&2
+  exit 1
+fi
+if ! environment_value LIVEKIT_NODE_IP | awk -F. '
+  NF != 4 { exit 1 }
+  { for (i=1; i<=4; i++) if ($i !~ /^[0-9]+$/ || $i > 255) exit 1 }
+'; then
+  echo "LIVEKIT_NODE_IP must be the deployment host IPv4 reachable by clients and the API." >&2
+  exit 1
+fi
+if [ "$(environment_value WEATHER_PROVIDER)" != "qweather" ] || \
+   [ "$(environment_value WEATHER_MODE)" != "real" ]; then
+  echo "Complete deployment requires WEATHER_PROVIDER=qweather and WEATHER_MODE=real." >&2
+  exit 1
 fi
 
 # The configured voice model chooses direct replies or tool calls.
@@ -99,6 +122,9 @@ export WEB_TLS_CERT_FILE="$(environment_value WEB_TLS_CERT_FILE)"
 export WEB_TLS_KEY_FILE="$(environment_value WEB_TLS_KEY_FILE)"
 export POSTGRES_PASSWORD="$(environment_value POSTGRES_PASSWORD)"
 export REDIS_PASSWORD="$(environment_value REDIS_PASSWORD)"
+for key in ENABLED_TOOLS LIVEKIT_URL LIVEKIT_NODE_IP LIVEKIT_API_KEY LIVEKIT_API_SECRET; do
+  export "$key=$(environment_value "$key")"
+done
 compose config --quiet
 for image in "$api_image" "$web_image"; do
   if ! docker image inspect "$image" >/dev/null 2>&1; then
@@ -107,10 +133,9 @@ for image in "$api_image" "$web_image"; do
     exit 1
   fi
 done
-compose up -d --no-build --wait --wait-timeout 180 postgres redis
+compose up -d --no-build --wait --wait-timeout 180 postgres redis livekit
 compose run --rm --no-deps migrate
-compose run --rm --no-deps api python /app/scripts/configure_native_cuekb.py --apply
 compose up -d --no-build --wait --wait-timeout 180 --no-deps api
-compose exec -T api python /app/scripts/verify_deployment.py --base-url http://127.0.0.1:8000 --expect-cuekb-native
-compose up -d --no-build --wait --wait-timeout 60 --no-deps web
+compose exec -T api python /app/scripts/verify_deployment.py --base-url http://127.0.0.1:8000 --expect-autonomous-voice
+compose up -d --no-build --wait --wait-timeout 60 --no-deps --force-recreate web
 compose ps
