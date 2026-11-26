@@ -8,7 +8,7 @@ x-logging: &default-logging
 
 services:
   postgres:
-    image: postgres:17.6-alpine@sha256:ef257d85f76e48da1c64832459b59fcaba1a4dac97bf5d7450c77753542eee94
+    image: postgres:17.6-alpine
     environment:
       POSTGRES_DB: voice_service
       POSTGRES_USER: voice_service
@@ -26,7 +26,7 @@ services:
     logging: *default-logging
 
   redis:
-    image: redis:7-alpine@sha256:858f009f9709ce576febc734aa78b8f6d624b82571f9ddb6bda4377c833b3499
+    image: redis:7-alpine
     environment:
       REDIS_PASSWORD: ${REDIS_PASSWORD:?Set REDIS_PASSWORD in .env}
     command:
@@ -47,7 +47,7 @@ services:
 
   livekit:
     profiles: [sophon]
-    image: livekit/livekit-server:v1.13.11@sha256:25cd902de7cacbd5f1f779f6a6ac1eae20ba8f56b0935934ce6b0ab80d1e3d20
+    image: livekit/livekit-server:v1.13.11
     environment:
       LIVEKIT_CONFIG: |
         port: 7880

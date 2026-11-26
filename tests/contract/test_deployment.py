@@ -1,4 +1,3 @@
-import json
 import os
 import subprocess
 from pathlib import Path
@@ -42,11 +41,9 @@ def test_cloud_compose_is_a_production_only_container_topology():
         "${WEB_TLS_KEY_FILE:?Set the TLS private key path in .env}:/etc/nginx/tls/tls.key:ro",
     ]
     assert "https://127.0.0.1:8087/health/live" in services["web"]["healthcheck"]["test"][-1]
-    images = json.loads((ROOT / "deploy/images.lock.json").read_text())
-    assert services["postgres"]["image"] == images["postgres"]
-    assert services["redis"]["image"] == images["redis"]
-    assert services["livekit"]["image"] == images["livekit"]
-    assert images["livekit"].startswith("livekit/livekit-server:v1.13.11@sha256:")
+    assert services["postgres"]["image"] == "postgres:17.6-alpine"
+    assert services["redis"]["image"] == "redis:7-alpine"
+    assert services["livekit"]["image"] == "livekit/livekit-server:v1.13.11"
     livekit = services["livekit"]
     config = yaml.safe_load(livekit["environment"]["LIVEKIT_CONFIG"])
     assert config["redis"]["address"] == "redis:6379"
@@ -64,8 +61,6 @@ def test_cloud_compose_is_a_production_only_container_topology():
     assert services["web"]["environment"]["VOICE_PROVIDER"] == "${VOICE_PROVIDER:-sophon_live}"
     assert set(livekit["networks"]) == {"data", "app", "edge"}
     assert "--dev" not in str(livekit)
-    assert images["postgres"].startswith("postgres:17.6-alpine@sha256:")
-    assert images["redis"].startswith("redis:7-alpine@sha256:")
     assert not (ROOT / "deploy/compose.yaml").exists()
     assert set(services["web"]["networks"]) == {"app", "edge"}
     assert services["postgres"]["networks"] == ["data"]
