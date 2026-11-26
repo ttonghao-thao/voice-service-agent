@@ -1,6 +1,6 @@
 # CueKB 问题级证据接口契约
 
-类型：专业知识库消费契约 `cuekb.evidence/2.1`。原生路径使用 `POST /v2/evidence/query`，注入模型前用 `POST /v2/evidence/validate` 校验证据包；`/v2/search` 仅保留给非语音兼容路径/诊断。历史联调 CueKB `30970e9` 不是当前部署身份，须现场核对。此页只定义三类能力中的专业库接入，不定义产品仅启用知识库。缺口见[任务板](../TASK_BOARD.md)，操作/结果见[验证手册](../validation.md)。
+专业知识库消费契约为 `cuekb.evidence/2.1`。原生路径使用 `POST /v2/evidence/query`，注入模型前用 `POST /v2/evidence/validate` 校验证据包。CueKB `30970e9` 已实现这两个路由。`/v2/search` 用于非语音兼容路径和诊断。本机契约核对见[验证记录](../validation.md#7-开发检查与文档执行记录)，部署填写见[部署手册](../deployment.md#cuekb-填写)。
 
 ## 1. 请求与可信边界
 

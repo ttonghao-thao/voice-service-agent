@@ -66,7 +66,9 @@ nano .env
 | `CUEKB_API_KEY` | CueKB 签发的业务 `api_key` 原值。为该 Key 关联的 `principal_id` 授予所填库的 `read` 权限。应用自动加 `Authorization: Bearer`。 |
 | `KNOWLEDGE_BASE_IDS` | 允许语音客户检索的库 UUID。从 CueKB 门户「知识库管理」复制，或用该业务 Key 调用 `GET /v2/knowledge-bases` 读取对应 `id`。支持 1–50 个不同 UUID，用英文逗号分隔。 |
 
-在目标 CueKB 实例确认业务 Key 能读取所填的每个库，且所需资料已发布。语音检索要求 `POST /v2/evidence/query` 和 `POST /v2/evidence/validate` 支持 `cuekb.evidence/2.1`。若目标版本只提供 `/v2/search`，专业知识语音查询无法通过该版本完成。接口细节见 [CueKB 契约](interfaces/cuekb.md)。
+在目标 CueKB 实例确认业务 Key 拥有所填库的 `read` 权限，且所需资料已发布。语音检索要求 `POST /v2/evidence/query` 和 `POST /v2/evidence/validate` 支持 `cuekb.evidence/2.1`。接口细节见 [CueKB 契约](interfaces/cuekb.md)。
+
+在 **CueKB 服务侧** 成对配置 `CUEKB_EVIDENCE_VOICE_TOKENIZER_PATH` 和 `CUEKB_EVIDENCE_VOICE_TOKENIZER_ID`。前者指向容器内可读的 `tokenizer.json`，后者标识该 tokenizer 的固定版本。语音服务发出 `delivery_profile=voice` 的请求，两项留空时 CueKB 返回 `409 VOICE_TOKENIZER_NOT_CONFIGURED`。
 
 ### 生产默认值
 
