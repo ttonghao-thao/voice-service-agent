@@ -7,7 +7,8 @@ environment_file=${1:-"$project_dir/.env"}
 compose_file="$project_dir/deploy/compose.production.yaml"
 
 environment_value() {
-  sed -n "s/^$1=//p" "$environment_file" | tail -n 1
+  value=$(sed -n "s/^$1=//p" "$environment_file" | tail -n 1)
+  printf '%s\n' "${value:-${2:-}}"
 }
 
 require_values() {
@@ -36,11 +37,12 @@ export DEPLOY_ENV_FILE=$environment_file
 require_values \
   IMAGE_TAG POSTGRES_PASSWORD REDIS_PASSWORD KNOWLEDGE_BASE_IDS \
   WEB_TLS_CERT_FILE WEB_TLS_KEY_FILE \
-  PUBLIC_ORIGIN AGENT_PROVIDER \
+  PUBLIC_ORIGIN \
   CUEKB_BASE_URL CUEKB_API_KEY WEATHER_BASE_URL WEATHER_API_KEY WEB_SEARCH_API_KEY
 
+enabled_tools=$(environment_value ENABLED_TOOLS search_knowledge,weather,web_search)
 for tool in search_knowledge weather web_search; do
-  case ",$(environment_value ENABLED_TOOLS)," in
+  case ",$enabled_tools," in
     *,$tool,*) ;;
     *) echo "Complete deployment requires ENABLED_TOOLS to include $tool." >&2; exit 1 ;;
   esac
@@ -51,7 +53,7 @@ case "$voice_provider" in
   sophon_live)
     require_values SOPHON_LIVE_WS_URL LIVEKIT_URL LIVEKIT_API_KEY LIVEKIT_API_SECRET LIVEKIT_NODE_IP \
       DELEGATION_ROUTER_BASE_URL DELEGATION_ROUTER_MODEL DELEGATION_ROUTER_API_KEY
-    if [ "$(environment_value DELEGATION_ROUTER_PROVIDER)" != "openai_compatible" ]; then
+    if [ "$(environment_value DELEGATION_ROUTER_PROVIDER openai_compatible)" != "openai_compatible" ]; then
       echo "Sophon deployment requires DELEGATION_ROUTER_PROVIDER=openai_compatible for native task parsing." >&2
       exit 1
     fi
@@ -87,21 +89,21 @@ for key in $secret_keys; do
     *[!A-Za-z0-9._~-]*) echo "$key must use URL-safe letters, digits, dot, underscore, tilde or hyphen." >&2; exit 1 ;;
   esac
 done
-if [ "$(environment_value WEATHER_PROVIDER)" != "qweather" ] || \
-   [ "$(environment_value WEATHER_MODE)" != "real" ]; then
+if [ "$(environment_value WEATHER_PROVIDER qweather)" != "qweather" ] || \
+   [ "$(environment_value WEATHER_MODE real)" != "real" ]; then
   echo "Complete deployment requires WEATHER_PROVIDER=qweather and WEATHER_MODE=real." >&2
   exit 1
 fi
 
 # The configured voice model chooses direct replies or tool calls.
 # Reject an old strict .env before starting or migrating any container.
-if [ "$(environment_value QA_EXECUTION_MODE)" != "dual_tools" ] || \
-   [ "$(environment_value QA_ANSWER_POLICY)" != "general_qa" ]; then
+if [ "$(environment_value QA_EXECUTION_MODE dual_tools)" != "dual_tools" ] || \
+   [ "$(environment_value QA_ANSWER_POLICY general_qa)" != "general_qa" ]; then
   echo "Autonomous voice replies require QA_EXECUTION_MODE=dual_tools and QA_ANSWER_POLICY=general_qa. Create a new conversation after deployment." >&2
   exit 1
 fi
 
-case "$(environment_value AGENT_PROVIDER)" in
+case "$(environment_value AGENT_PROVIDER disabled)" in
   disabled) ;;
   *) echo "Native voice routing requires AGENT_PROVIDER=disabled." >&2; exit 1 ;;
 esac
@@ -136,6 +138,9 @@ export WEB_TLS_CERT_FILE="$(environment_value WEB_TLS_CERT_FILE)"
 export WEB_TLS_KEY_FILE="$(environment_value WEB_TLS_KEY_FILE)"
 export POSTGRES_PASSWORD="$(environment_value POSTGRES_PASSWORD)"
 export REDIS_PASSWORD="$(environment_value REDIS_PASSWORD)"
+# Let Compose parse these settings from --env-file without inherited overrides.
+unset AGENT_PROVIDER AGENT_DEADLINE_MS QA_EXECUTION_MODE QA_ANSWER_POLICY QA_EXTERNAL_FALLBACK_ENABLED \
+  QA_MAX_RETRIEVAL_CALLS QA_PROVIDER_ANSWER_TIMEOUT_MS WEATHER_PROVIDER WEATHER_MODE DELEGATION_ROUTER_PROVIDER
 for key in ENABLED_TOOLS LIVEKIT_URL LIVEKIT_NODE_IP LIVEKIT_API_KEY LIVEKIT_API_SECRET; do
   export "$key=$(environment_value "$key")"
 done

@@ -48,15 +48,31 @@ nano .env
 
 | 修改位置 | 填写内容 |
 | --- | --- |
-| `PUBLIC_ORIGIN`、`LIVEKIT_URL` | 实际域名，例如 `https://voice.example.com:8087` 和 `wss://voice.example.com:7880` |
+| `PUBLIC_ORIGIN` | 浏览器访问门户的 HTTPS origin，例如 `https://voice.example.com:8087` |
 | `WEB_TLS_CERT_FILE`、`WEB_TLS_KEY_FILE` | 主机绝对路径。Certbot 默认为 `/etc/letsencrypt/live/voice.example.com/fullchain.pem` 和同目录的 `privkey.pem` |
+| `LIVEKIT_URL` | LiveKit 的 WSS origin，例如 `wss://voice.example.com:7880`。域名须被门户证书覆盖，浏览器和 API 容器都须可达 |
 | `LIVEKIT_NODE_IP` | 浏览器和 API 容器都能访问的服务器公网 IPv4 |
 | `SOPHON_LIVE_WS_URL`、`SOPHON_LIVE_API_KEY` | Sophon 的完整 WSS 地址，含 `/v1/live/sessions`。上游允许匿名时 Key 可留空 |
-| `DELEGATION_ROUTER_BASE_URL`、`DELEGATION_ROUTER_API_KEY` | Qwen 工作空间的 OpenAI 兼容 base URL（通常以 `/compatible-mode/v1` 结尾）及 Key |
-| `CUEKB_BASE_URL`、`CUEKB_API_KEY`、`KNOWLEDGE_BASE_IDS` | CueKB 根地址、授权查询 Key 和实际知识库 UUID |
+| `DELEGATION_ROUTER_BASE_URL`、`DELEGATION_ROUTER_MODEL`、`DELEGATION_ROUTER_API_KEY` | Qwen 工作空间的 OpenAI 兼容 base URL（通常以 `/compatible-mode/v1` 结尾）、已批准的模型名和对应 Key。应用自动追加 `/chat/completions` |
 | `WEATHER_BASE_URL`、`WEATHER_API_KEY`、`WEB_SEARCH_API_KEY` | 和风天气专属 HTTPS API Host、和风 Key、Tavily Search Key |
 
-其他默认值见 [配置模板](../.env.example)。Sophon 使用 `VOICE_PROVIDER=sophon_live`，启用天气、通用知识和专业知识库三类查询。检查模板占位值已换成实际配置。
+同一份 Compose 内，Web 的 Nginx 反代到 `livekit:7880`。API 按 `LIVEKIT_URL` 加入房间，并把同一地址随房间 Token 下发给浏览器。两端都需要访问该 WSS 入口。经 NAT 访问时，核对 API 容器的回环访问以及 `7881/TCP`、`7882/UDP` 原端口映射。
+
+### CueKB 填写
+
+| 配置 | 填写内容 |
+| --- | --- |
+| `CUEKB_BASE_URL` | API 容器可达的 CueKB API 根地址，例如 `https://cuekb.example.com`。受控内网可用 `http://cuekb.internal.example.com:8085`。应用会追加接口路径，填写时省略 `/portal/`、`/v2` 和具体接口名。 |
+| `CUEKB_API_KEY` | CueKB 签发的业务 `api_key` 原值。为该 Key 关联的 `principal_id` 授予所填库的 `read` 权限。应用自动加 `Authorization: Bearer`。 |
+| `KNOWLEDGE_BASE_IDS` | 允许语音客户检索的库 UUID。从 CueKB 门户「知识库管理」复制，或用该业务 Key 调用 `GET /v2/knowledge-bases` 读取对应 `id`。支持 1–50 个不同 UUID，用英文逗号分隔。 |
+
+在目标 CueKB 实例确认业务 Key 能读取所填的每个库，且所需资料已发布。语音检索要求 `POST /v2/evidence/query` 和 `POST /v2/evidence/validate` 支持 `cuekb.evidence/2.1`。若目标版本只提供 `/v2/search`，专业知识语音查询无法通过该版本完成。接口细节见 [CueKB 契约](interfaces/cuekb.md)。
+
+### 生产默认值
+
+生产 Compose 默认 `AGENT_PROVIDER=disabled`，关闭独立文本问答模型。`DELEGATION_ROUTER_PROVIDER=openai_compatible` 独立启用 Qwen 解析 Sophon 已发出的原生 `task`。结构化 task 由服务器直接校验，语音回答由 Sophon 生成。两项的默认值可直接使用。已有 `.env` 中与 Compose 默认相同的模式和预算项可省略。
+
+完整部署的默认工具清单包含 `weather`、`search_knowledge` 和 `web_search`。启动脚本要求填齐三类查询所需的地址和 Key，并拒绝显式移除任一工具的清单。公开查询与受控兜底的条件见 [知识执行](architecture.md#3-知识执行)。检查 [配置模板](../.env.example) 中的占位值都已换成实际配置。
 
 执行下列命令制作镜像。两张镜像共用写入 `.env` 的 `IMAGE_TAG`。
 
@@ -140,4 +156,4 @@ sudo env DEPLOY_ENV_FILE="$vsa_backup/.env" docker compose --env-file "$vsa_back
 install -m 600 "$vsa_backup/.env" .env
 ```
 
-需要单独使用 NVIDIA 时，在 `.env` 选择 `VOICE_PROVIDER=nvidia` 并填写 `VOICECHAT_WS_URL` 和 `VOICECHAT_API_KEY`，使用相同启动命令。Sophon 的 LiveKit 检查适用于本文默认配置。
+需要单独使用 NVIDIA 时，在 `.env` 选择 `VOICE_PROVIDER=nvidia`，填写含 `/v1/realtime` 的完整 `VOICECHAT_WS_URL` 和对应的服务端 Bearer Key `VOICECHAT_API_KEY`。使用同一启动命令。LiveKit 和 Qwen Router 配置适用于 Sophon。

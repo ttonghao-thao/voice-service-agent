@@ -47,7 +47,7 @@ LiveKit 根据 SDK 已发送的 PCM 观察输入，短停顿合并。只有唯�
 
 query 必须与完整原 task 一致；天气地点必须出现在原 task，日期/单位和参数 schema 另验。私有/敏感 task 或私有 Room 不发外部 LLM，结构化专业库任务仍按原授权路径执行。模型不接收 ASR、历史或证据，不能纠正 Sophon 已写错的型号。模型等待后的 epoch/输入窗口和提交前归属再次复核，防止补充发声或换题时执行旧意图。原 task、parse_method、配置 model 与结果写入按权限过滤的 sophon_route；原生触发、模型解析、真实工具和口述分别统计。
 
-当前受控兜底分支：仅在 CueKB 地址和凭据均为空、CUEKB task 明确公开且无敏感内容时转 Tavily；裸型号、资料属性不明先澄清。CueKB 已配置/部分配置、服务失败或权限拒绝不自动外发。已回填企业资料的 Room 不再向公网发送后续搜索。此分支描述未完整接入环境的代码行为，不是关闭专业知识库的部署方案；完整交付仍要求三类服务。
+获准公开检索的 `WEB_SEARCH` task 直接走 Tavily。对 `CUEKB` task，只有 `CUEKB_BASE_URL` 和 `CUEKB_API_KEY` 都为空，且该独立问题明确公开、未含敏感信息、当前 Room 及工具授权允许公开检索时，才可转 Tavily。只给出型号或资料属性不明时先澄清。任一 CueKB 连接字段已填写时，专业库停用、检索失败、无结果或权限拒绝均不触发此兜底。已回填企业资料的 Room 禁止后续公网搜索。完整部署要求三类服务，缺少 CueKB 配置会被启动脚本拒绝。
 
 每个工具结果经 Coordinator/Registry 复核身份、epoch/revision/Turn、租约、权限、工具版本及输入归属，再按原 ID 回传。unknown 不自动重发，real 失败不回退 mock。QWeather/Tavily 无自动重试；天气 provider 的调用正常与可用天气答案分开。
 

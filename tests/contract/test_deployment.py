@@ -7,6 +7,19 @@ import pytest
 import yaml
 
 ROOT = Path(__file__).resolve().parents[2]
+COMPOSE_DEFAULTS = {
+    "AGENT_PROVIDER": "disabled",
+    "AGENT_DEADLINE_MS": "60000",
+    "QA_EXECUTION_MODE": "dual_tools",
+    "QA_ANSWER_POLICY": "general_qa",
+    "QA_EXTERNAL_FALLBACK_ENABLED": "false",
+    "QA_MAX_RETRIEVAL_CALLS": "1",
+    "QA_PROVIDER_ANSWER_TIMEOUT_MS": "30000",
+    "WEATHER_PROVIDER": "qweather",
+    "WEATHER_MODE": "real",
+    "ENABLED_TOOLS": "search_knowledge,weather,web_search",
+    "DELEGATION_ROUTER_PROVIDER": "openai_compatible",
+}
 
 
 def test_cloud_compose_is_a_production_only_container_topology():
@@ -18,7 +31,8 @@ def test_cloud_compose_is_a_production_only_container_topology():
     assert services["api"]["environment"]["AUTO_CREATE_SCHEMA"] == "false"
     assert services["api"]["environment"]["AUTH_MODE"] == "validation"
     assert services["api"]["environment"]["CUEKB_MODE"] == "real"
-    assert services["api"]["environment"]["ENABLED_TOOLS"] == "${ENABLED_TOOLS:-search_knowledge,weather,web_search}"
+    for name, value in COMPOSE_DEFAULTS.items():
+        assert services["api"]["environment"][name] == f"${{{name}:-{value}}}"
     assert services["api"]["environment"]["VOICE_PROVIDER"] == "${VOICE_PROVIDER:-sophon_live}"
     assert services["api"]["env_file"] == "${DEPLOY_ENV_FILE:-../.env}"
     assert services["api"]["image"] == services["migrate"]["image"]
@@ -78,7 +92,7 @@ def test_cloud_environment_template_cannot_enable_development_fallbacks():
 
     assert set(values) == {
         "LIVEKIT_URL", "LIVEKIT_NODE_IP", "LIVEKIT_API_KEY", "LIVEKIT_API_SECRET", "WEB_SEARCH_API_KEY",
-        "WEATHER_PROVIDER", "WEATHER_MODE", "WEATHER_BASE_URL", "WEATHER_API_KEY",
+        "WEATHER_BASE_URL", "WEATHER_API_KEY",
         "IMAGE_TAG",
         "PUBLIC_ORIGIN",
         "WEB_TLS_CERT_FILE",
@@ -86,58 +100,23 @@ def test_cloud_environment_template_cannot_enable_development_fallbacks():
         "POSTGRES_PASSWORD",
         "REDIS_PASSWORD",
         "KNOWLEDGE_BASE_IDS",
-        "AGENT_PROVIDER",
-        "ENABLED_TOOLS",
-        "AGENT_DEADLINE_MS",
         "CUEKB_BASE_URL",
         "CUEKB_API_KEY",
-        "CUEKB_MAX_EVIDENCE_BYTES",
-        "CUEKB_VOICE_TOKEN_BUDGET",
-        "CUEKB_VOICE_TOKENIZER_ID",
-        "VOICE_TOOL_RESULT_MAX_TOKENS",
         "VOICE_PROVIDER",
         "SOPHON_LIVE_WS_URL",
         "SOPHON_LIVE_API_KEY",
         "SOPHON_LIVE_LOCALE",
-        "SOPHON_LIVE_TOOL_TIMEOUT_SECONDS",
-        "SOPHON_LIVE_MAX_DELEGATIONS_PER_INPUT",
-        "DELEGATION_ROUTER_PROVIDER", "DELEGATION_ROUTER_BASE_URL", "DELEGATION_ROUTER_MODEL",
-        "DELEGATION_ROUTER_API_KEY", "DELEGATION_ROUTER_TIMEOUT_SECONDS",
-        "QA_EXECUTION_MODE",
-        "QA_ANSWER_POLICY",
-        "QA_TOOLSET_VERSION",
-        "QA_EXTERNAL_FALLBACK_ENABLED",
-        "QA_MAX_RETRIEVAL_CALLS",
-        "QA_PROVIDER_ANSWER_TIMEOUT_MS",
-        "VOICE_MAX_RETRIEVALS_PER_INPUT",
+        "DELEGATION_ROUTER_BASE_URL",
+        "DELEGATION_ROUTER_MODEL",
+        "DELEGATION_ROUTER_API_KEY",
     }
-    assert "APP_ENV" not in values
-    assert "AUTH_MODE" not in values
-    assert values["AGENT_PROVIDER"] == "disabled"
-    assert values["AGENT_DEADLINE_MS"] == "60000"
-    assert values["QA_TOOLSET_VERSION"] == "cuekb-native-v1"
-    assert values["QA_EXTERNAL_FALLBACK_ENABLED"] == "false"
-    assert values["QA_MAX_RETRIEVAL_CALLS"] == "1"
-    assert values["VOICE_MAX_RETRIEVALS_PER_INPUT"] == "1"
-    assert values["CUEKB_MAX_EVIDENCE_BYTES"] == "24000"
-    assert values["CUEKB_VOICE_TOKEN_BUDGET"] == "120"
-    assert not {"AGENT_MODEL", "OPENAI_API_KEY", "AGENT_BASE_URL"} & values.keys()
-    assert values["QA_EXECUTION_MODE"] == "dual_tools"
-    assert values["QA_ANSWER_POLICY"] == "general_qa"
-    assert "CUEKB_MODE" not in values
-    assert values["ENABLED_TOOLS"] == "search_knowledge,weather,web_search"
-    assert values["WEATHER_PROVIDER"] == "qweather"
-    assert values["WEATHER_MODE"] == "real"
     assert "REPLACE_" in values["WEATHER_BASE_URL"]
     assert values["WEATHER_API_KEY"].startswith("REPLACE_")
     assert values["VOICE_PROVIDER"] == "sophon_live"
-    assert values["DELEGATION_ROUTER_PROVIDER"] == "openai_compatible"
     assert values["DELEGATION_ROUTER_MODEL"] == "qwen3.7-flash"
     assert urlparse(values["LIVEKIT_URL"]).scheme == "wss"
     assert urlparse(values["LIVEKIT_URL"]).port == 7880
     assert values["LIVEKIT_NODE_IP"].startswith("REPLACE_")
-    assert not {"VOICECHAT_WS_URL", "VOICECHAT_API_KEY"} & values.keys()
-    assert "# VOICECHAT_WS_URL=" in (ROOT / ".env.example").read_text()
     origin = urlparse(values["PUBLIC_ORIGIN"])
     assert origin.scheme == "https" and origin.port == 8087 and origin.path == ""
     assert values["WEB_TLS_CERT_FILE"].startswith("/")
@@ -148,13 +127,13 @@ def test_cloud_environment_template_cannot_enable_development_fallbacks():
         "POSTGRES_PASSWORD",
         "REDIS_PASSWORD",
         "CUEKB_API_KEY",
+        "KNOWLEDGE_BASE_IDS",
         "LIVEKIT_API_KEY",
         "LIVEKIT_API_SECRET",
         "WEB_SEARCH_API_KEY",
         "DELEGATION_ROUTER_API_KEY",
     ):
         assert values[key].startswith("REPLACE_")
-    assert "CUEKB_TOP_K" not in values and "MAX_VOICE_SESSIONS" not in values
     assert not (ROOT / ".env.production.example").exists()
 
 
@@ -216,6 +195,7 @@ def test_cloud_template_loads_real_settings_from_environment_strings(tmp_path, m
         line.split("=", 1) for line in (ROOT / ".env.example").read_text().splitlines()
         if line and not line.startswith("#")
     )
+    values.update(COMPOSE_DEFAULTS)
     values.update(
         AUTO_CREATE_SCHEMA="false", AUTH_MODE="validation", CUEKB_MODE="real",
         PUBLIC_ORIGIN="https://voice.test:8087",
@@ -224,6 +204,7 @@ def test_cloud_template_loads_real_settings_from_environment_strings(tmp_path, m
         LIVEKIT_URL="wss://voice.test:7880", LIVEKIT_NODE_IP="203.0.113.7",
         LIVEKIT_API_KEY="test-key", LIVEKIT_API_SECRET="test-secret-with-at-least-32-characters",
         CUEKB_BASE_URL="https://cuekb.test", CUEKB_API_KEY="test-cuekb-key",
+        KNOWLEDGE_BASE_IDS="00000000-0000-4000-8000-000000000001",
         SOPHON_LIVE_WS_URL="wss://sophon.test/v1/live/sessions",
         WEATHER_BASE_URL="https://fixture.qweatherapi.com", WEATHER_API_KEY="test-weather-key",
         WEB_SEARCH_API_KEY="test-search-key",
@@ -238,6 +219,9 @@ def test_cloud_template_loads_real_settings_from_environment_strings(tmp_path, m
     settings.validate_deployment()
     assert settings.enabled_tool_names == {"search_knowledge", "weather", "web_search"}
     assert settings.sophon_live_max_delegations_per_input == 1
+    assert settings.voice_max_retrievals_per_input == 1
+    assert settings.cuekb_max_evidence_bytes == 24000
+    assert settings.cuekb_voice_token_budget == 120
     assert settings.livekit_api_secret.get_secret_value() == values["LIVEKIT_API_SECRET"]
     for invalid in ("0", "2", "1.5", "invalid"):
         with pytest.raises(ValidationError):
@@ -261,29 +245,38 @@ def test_cloud_template_loads_real_settings_from_environment_strings(tmp_path, m
 
 def test_deployment_rejects_incomplete_config_before_starting_containers(tmp_path):
     docker = tmp_path / "docker"
-    docker.write_text('#!/bin/sh\nprintf "%s | profiles=%s\\n" "$*" "$COMPOSE_PROFILES" >> "$DOCKER_CALLS"\nexit 0\n')
+    docker.write_text(
+        '#!/bin/sh\n'
+        'printf "%s | profiles=%s\\n" "$*" "$COMPOSE_PROFILES" >> "$DOCKER_CALLS"\n'
+        'case "$*" in\n'
+        '  *" config --quiet") printf "%s,%s\\n" "${AGENT_PROVIDER-unset}" "${WEATHER_MODE-unset}" > "$COMPOSE_INPUTS" ;;\n'
+        'esac\nexit 0\n'
+    )
     docker.chmod(0o755)
     calls = tmp_path / "docker-calls"
-    env = {**os.environ, "PATH": f"{tmp_path}:{os.environ['PATH']}", "DOCKER_CALLS": str(calls)}
+    compose_inputs = tmp_path / "compose-inputs"
+    env = {
+        **os.environ,
+        "PATH": f"{tmp_path}:{os.environ['PATH']}",
+        "DOCKER_CALLS": str(calls),
+        "COMPOSE_INPUTS": str(compose_inputs),
+        "AGENT_PROVIDER": "mock",
+        "WEATHER_MODE": "mock",
+    }
     values = {
         "IMAGE_TAG": "test",
         "POSTGRES_PASSWORD": "postgres-pass",
         "REDIS_PASSWORD": "redis-pass",
         "KNOWLEDGE_BASE_IDS": "00000000-0000-4000-8000-000000000001",
-        "AGENT_PROVIDER": "disabled",
-        "ENABLED_TOOLS": "search_knowledge,weather,web_search",
         "VOICE_PROVIDER": "sophon_live",
         "SOPHON_LIVE_WS_URL": "wss://sophon.test/v1/live/sessions",
         "LIVEKIT_URL": "wss://voice.test:7880",
         "LIVEKIT_NODE_IP": "203.0.113.7",
         "LIVEKIT_API_KEY": "test-key",
         "LIVEKIT_API_SECRET": "test-secret-with-at-least-32-characters",
-        "WEATHER_PROVIDER": "qweather",
-        "WEATHER_MODE": "real",
         "WEATHER_BASE_URL": "https://weather.test",
         "WEATHER_API_KEY": "weather-key",
         "WEB_SEARCH_API_KEY": "public-search-key",
-        "DELEGATION_ROUTER_PROVIDER": "openai_compatible",
         "DELEGATION_ROUTER_BASE_URL": "https://intent.test/v1",
         "DELEGATION_ROUTER_MODEL": "qwen3.7-flash",
         "DELEGATION_ROUTER_API_KEY": "test-intent-key",
@@ -292,8 +285,6 @@ def test_deployment_rejects_incomplete_config_before_starting_containers(tmp_pat
         "CUEKB_API_KEY": "cuekb-key",
         "VOICECHAT_WS_URL": "wss://voicechat.test/ws",
         "VOICECHAT_API_KEY": "voice-key",
-        "QA_EXECUTION_MODE": "dual_tools",
-        "QA_ANSWER_POLICY": "general_qa",
         "WEB_TLS_CERT_FILE": "/missing/cert.pem",
         "WEB_TLS_KEY_FILE": "/missing/key.pem",
     }
@@ -314,7 +305,7 @@ def test_deployment_rejects_incomplete_config_before_starting_containers(tmp_pat
     rejected_model = check()
     assert rejected_model.returncode != 0
     assert "AGENT_PROVIDER=disabled" in rejected_model.stderr
-    values["AGENT_PROVIDER"] = "disabled"
+    del values["AGENT_PROVIDER"]
     rejected_cert = check()
     assert rejected_cert.returncode != 0
     assert "WEB_TLS_CERT_FILE must point to a readable file" in rejected_cert.stderr
@@ -332,6 +323,7 @@ def test_deployment_rejects_incomplete_config_before_starting_containers(tmp_pat
     values["PUBLIC_ORIGIN"] = "https://voice.test:8087"
     accepted_https = check()
     assert accepted_https.returncode == 0
+    assert compose_inputs.read_text().strip() == "unset,unset"
     assert all(line.endswith(" | profiles=sophon") for line in calls.read_text().splitlines()[1:])
     commands = [line.split(" | profiles=", 1)[0] for line in calls.read_text().splitlines()]
     infrastructure = next(i for i, command in enumerate(commands) if command.endswith("postgres redis livekit"))
@@ -345,16 +337,21 @@ def test_deployment_rejects_incomplete_config_before_starting_containers(tmp_pat
     rejected_strict = check()
     assert rejected_strict.returncode != 0
     assert "QA_ANSWER_POLICY=general_qa" in rejected_strict.stderr
-    values["QA_ANSWER_POLICY"] = "general_qa"
+    del values["QA_ANSWER_POLICY"]
 
     for key, bad_value, message in (
         ("LIVEKIT_URL", "ws://voice.test:7880", "WSS origin"),
+        ("LIVEKIT_URL", "", "real value for LIVEKIT_URL"),
         ("LIVEKIT_NODE_IP", "203.0.113.999", "host IPv4"),
         ("LIVEKIT_API_KEY", 'key\": injected', "URL-safe"),
         ("LIVEKIT_API_SECRET", "too-short", "at least 32"),
         ("LIVEKIT_API_SECRET", "", "real value for LIVEKIT_API_SECRET"),
         ("REDIS_PASSWORD", 'bad\"password', "URL-safe"),
         ("ENABLED_TOOLS", "search_knowledge,web_search", "include weather"),
+        ("ENABLED_TOOLS", "weather,web_search", "include search_knowledge"),
+        ("CUEKB_BASE_URL", "", "real value for CUEKB_BASE_URL"),
+        ("CUEKB_API_KEY", "", "real value for CUEKB_API_KEY"),
+        ("KNOWLEDGE_BASE_IDS", "REPLACE_WITH_CUEKB_KB_UUID", "real value for KNOWLEDGE_BASE_IDS"),
         ("WEATHER_API_KEY", "", "real value for WEATHER_API_KEY"),
         ("WEB_SEARCH_API_KEY", "", "real value for WEB_SEARCH_API_KEY"),
         ("DELEGATION_ROUTER_API_KEY", "", "real value for DELEGATION_ROUTER_API_KEY"),
@@ -363,13 +360,16 @@ def test_deployment_rejects_incomplete_config_before_starting_containers(tmp_pat
         ("VOICE_PROVIDER", "sophon_live,nvidia", "select exactly one backend"),
         ("VOICE_PROVIDER", "", "select exactly one backend"),
     ):
-        original = values[key]
+        original = values.get(key)
         values[key] = bad_value
         rejected = check()
         assert rejected.returncode != 0, (key, rejected.stdout)
         assert message in rejected.stderr, (key, rejected.stderr)
         assert not any(" up " in command or " run " in command for command in calls.read_text().splitlines())
-        values[key] = original
+        if original is None:
+            del values[key]
+        else:
+            values[key] = original
 
     values["VOICE_PROVIDER"] = "nvidia"
     # Neither dormant Sophon fields nor a caller's inherited profile may start SFU.
