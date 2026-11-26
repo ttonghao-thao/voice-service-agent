@@ -234,11 +234,11 @@ async def test_room_delegation_executes_and_settles_once(
 
 
 async def test_two_fast_turns_can_repeat_query_without_reexecuting_duplicate_ids(tmp_path):
-    from pydantic import SecretStr
-
     config = settings(tmp_path)
     config.cuekb_base_url, config.cuekb_api_key = "", SecretStr("")
-    config.enabled_tools = "weather,web_search"
+    config.weather_base_url, config.weather_api_key = "", SecretStr("")
+    config.knowledge_base_ids = ""
+    config.enabled_tools = "web_search"
     app = create_app(config)
     requests = []
 
@@ -266,19 +266,24 @@ async def test_two_fast_turns_can_repeat_query_without_reexecuting_duplicate_ids
                 call.duplex = SimpleNamespace(append_commentary=append)
                 worker = asyncio.create_task(call.run_tools())
                 try:
-                    for index in range(3):
+                    for index, (task, expected) in enumerate([
+                        ("WEB_SEARCH:", "澄清"),
+                        ("CUEKB: 查一下内部资料", "澄清"),
+                        ("CUEKB: public standards", "https://example.org/standard"),
+                        ("WEB_SEARCH: public standards | pm", "https://example.org/standard"),
+                    ]):
                         call.inputs.update(True)
                         call.inputs.update(False)
                         call_id = f"task-{index}"
                         call.receive({"type": "session.delegation.created", "delegation": {
                             "id": call_id, "type": "delegation", "target": "client",
-                            "task": ["WEB_SEARCH:", "CUEKB: public standards", "WEB_SEARCH: public standards | pm"][index],
+                            "task": task,
                         }})
                         event = SimpleNamespace(id=call_id, pending_transcript="")
                         call.delegate(event)
                         call.delegate(event)
                         _, content = await asyncio.wait_for(results.get(), 3)
-                        assert ("澄清" if index == 0 else "https://example.org/standard") in content
+                        assert expected in content
                         async with asyncio.timeout(3):
                             while call.inputs.latest.settled_at is None:
                                 call.inputs.changed.clear()

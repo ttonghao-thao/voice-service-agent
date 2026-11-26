@@ -10,15 +10,15 @@
 
 ## 1. 容器发布剩余实施
 
-2026-11-23 确认：系统同时提供天气、通用知识、专业知识库查询，通用知识检索承担受控兜底；不存在仅启用 search_knowledge 的产品部署场景。尚未接入某个依赖是交付缺口，旧 Provider 能力限制是兼容事实，均不能改写成另一个产品模式。
+2026-11-26 用户确认 Sophon 部署可省略专业知识库或天气，保留 Tavily 公开检索。模板显式填写 `ENABLED_TOOLS`，启动脚本按启用项核对依赖。部署手册包含固定公网 IPv4 加私有 CA 的签发、信任与验证步骤。目标容器和实际语音验收按下表继续。
 
-LiveKit/Redis 同 Compose、完整三类模板/启动检查和停止覆盖 NVIDIA 目录已实现，操作见 [deployment.md](deployment.md)，检查证据见 validation §7；不再列作待编码步骤。剩余顺序如下：
+LiveKit/Redis 同 Compose。部署配置和启动操作见 [deployment.md](deployment.md)，验证见 validation §7。生产验收剩余顺序如下。
 
 | 顺序 | 实施内容 | 涉及现有模块 | 完成条件 |
 | --- | --- | --- | --- |
 | 1 | 补齐 Sophon 容器验收运行时和宿主单入口 | 复用 scripts/validate_sophon_web.mjs；新增必要的验收 Dockerfile/Compose profile/宿主编排 | 浏览器、ffmpeg、固定官方材料在验收容器内；日志按窗口采集，输出有界摘要；不挂 Docker socket，不在宿主安装验收依赖 |
 | 2 | 执行真实容器构建、迁移与发布验证 | 现有 API/Web Dockerfile、Compose、LiveKit、Alembic 0011 | 镜像/source hash 可核对，WSS/媒体/NAT 实际可达，PostgreSQL 升级保留旧数据和角色；失败可恢复匹配的旧镜像/备份 |
-| 3 | 完成三类查询、受控兜底和语音闭环验收 | 现有 Provider → Coordinator → Runtime → Registry | 真实 CueKB、天气、Tavily、ASR 开关、多轮打断、参数保真和实际听音各有独立证据 |
+| 3 | 完成三类能力及可选配置的语音验收 | 现有 Provider → Coordinator → Runtime → Registry | 已启用的真实服务、可选服务停用、受控兜底、ASR 开关、多轮打断、参数保真和实际听音各有证据 |
 
 API/Web 发布独立镜像，migrate 复用 API 镜像；LiveKit 与 PostgreSQL/Redis 同属一份 Compose，Sophon/CueKB 保持独立部署。AgentSession 已在 API 内，不另建第二套 Agent Runtime。验收容器是一次性任务，不是新增业务服务。
 

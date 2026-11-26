@@ -4,7 +4,7 @@
 
 ## 1. 当前结论与证据边界
 
-产品同时提供天气、通用知识、专业知识库，通用知识受控兜底。b60028d 的两类历史委派故障已关闭，详见 §5。2026-11-23 用户确认接入 qwen3.7-flash 解析原生 task，并授权本机验证、本轮不接真实 CueKB；补充要求单选后端、默认 Sophon，本期仅验 Sophon。本轮数据在 §8，不修改历史测试日期，也不据此放行完整生产三类/容器部署。
+Sophon 部署保留通用知识及受控兜底，天气和专业知识库按 `ENABLED_TOOLS` 选择。配置矩阵与私有 CA 检查见 §7。b60028d 的两类历史委派故障已关闭，详见 §5。2026-11-23 用户确认接入 qwen3.7-flash 解析原生 task，并授权本机验证、该次验证不接真实 CueKB。固定录音和本机验证记录见 §8，启用的真实查询和容器部署仍需生产验收。
 
 | 检查 | 最近已执行事实 | 尚不能证明 |
 | --- | --- | --- |
@@ -20,7 +20,7 @@
 
 ### Sophon Live 验证
 
-生产在部署机项目根目录操作，先按 deployment.md 部署同一 Compose 和三类依赖。API 内单次检查以下 LiveKit WSS/TLS/API 凭据及 Sophon 会话控制，不发送录音、不验证媒体/NAT、原生任务或听音；禁止打印完整 compose config，其中包含凭据：
+生产在部署机项目根目录操作，先按 [部署手册](deployment.md) 部署同一 Compose 和已启用的依赖。以下命令在 API 容器内检查 LiveKit TLS、服务端 API 凭据和 Sophon 会话控制。使用私有 CA 时，API 从 `SSL_CERT_FILE` 加载合并后的 CA bundle。此检查不发送录音，媒体和工具查询按后续流程验证。完整 Compose 配置包含凭据，配置语法用 `config --quiet` 核对。
 
 ```bash
 export DEPLOY_ENV_FILE="$PWD/.env"
@@ -60,7 +60,7 @@ PYTHON
 
 ### 上线时的浏览器检查
 
-按[部署手册第四步](deployment.md#第四步访问-url-验证)打开实际 HTTPS 门户并点 **Start call**。默认 `zh-CN` 用下表中文问句。每项听完回复并记下结果，点击 **End call**，再点 **Start call** 开始下一项。测试专业知识库时用维护方事先交付的非敏感问题。
+按[部署手册第四步](deployment.md#第四步访问-url-验证)从客户端打开实际 HTTPS 门户并点 **Start call**。使用私有 CA 时，先在客户端建立根证书信任。默认 `zh-CN` 用下表中文问句。每项听完回复并记下结果，点击 **End call**，再点 **Start call** 开始下一项。测试专业知识库时用维护方事先交付的非敏感问题。按 `.env` 选择已启用的查询，停用项按[路由规则](architecture.md#3-知识执行)核对行为。
 
 | 顺序 | 对麦克风说 | 成功时看到或听到 |
 | --- | --- | --- |
@@ -283,8 +283,10 @@ SQLite 0006→head(0011)→0007/0006→head 与 Alembic check 保留旧历史；
 | 2026-11-26 四步部署命令 | 13 个 Shell 命令块语法、25 个链接及锚点通过。Compose v2.39.4 用示例配置核对部署与回滚的镜像标签、项目名和数据卷。§5 原样保留 | 仅文档和 Compose 静态检查，未运行云端部署 |
 | 2026-11-26 生产配置精简 | 208 项部署、Router、权限和 CueKB 契约检查通过。Compose v2.39.4 以合成配置对照旧模板，Sophon 的有效 Settings、WSS 与数据卷一致，已有引号包裹的超时覆盖生效，NVIDIA 选择排除 LiveKit。预检拒绝省略任一必需 CueKB 值或显式关闭 `search_knowledge` | 扩展回归 105 项通过、1 项 NVIDIA followup 归属失败，在隔离基线 `181fb4b` 复现。当时核对的 CueKB `8a5aacc` 缺少两个问题级证据路由。目标实例和生产容器未验证 |
 | 2026-11-26 本机 CueKB `30970e9` 契约复核 | 源码和 OpenAPI 均包含 `POST /v2/evidence/query`、`POST /v2/evidence/validate`，契约为 `cuekb.evidence/2.1`。CueKB 证据测试 14 项通过。语音服务 Adapter 通过进程内 ASGI 调用两个实际路由，均返回 HTTP 200，签名包复验 `valid`，语音证据通过 Adapter 校验 | 使用内存库、合成资料和 tokenizer。目标实例版本、实际业务 Key、库授权、生产容器和语音验收仍待验证 |
+| 2026-11-26 Sophon 可选查询依赖 | 语音项目定向回归 220 项、CueKB 证据测试 14 项通过。Compose v2.39.4 静态展开四种工具组合，Settings 均通过。启动脚本接受各可选组合并拒绝已启用工具缺少必填值。受控 `web_search` 单工具测试覆盖公开兜底和私有问题澄清 | 使用合成配置和受控上游。公网签证、真实服务和生产容器未运行 |
+| 2026-11-27 配置复核与公网 IPv4 私有 CA | 定向回归 290 项通过。审计模板 24 个生效字段和 19 个沿用的默认值。Compose v2.39.4 展开四种 Sophon 工具组合的两种证书配置，以及 NVIDIA 兼容配置，均通过应用启动校验。本机临时 CA 签发、续签、IP SAN 验证和 LiveKit SDK 的回环 WSS 信任通过 | 使用合成配置与证书。未运行生产 Docker、真实 LiveKit 房间及浏览器媒体，也未连接生产依赖 |
 
-2026-11-23 同 Compose 核查发现并修复配置阻塞：SOPHON_LIVE_MAX_DELEGATIONS_PER_INPUT 的环境字符串 1 被 Literal[1] 拒绝；改为整数且上下界均为 1，仍拒绝 0/2/非整数。新增测试从实际模板读取字符串配置并执行 Settings.validate_deployment，不连接服务。主部署脚本拒绝缺少任一查询能力、假值、非 WSS、非法 IPv4、过短/不安全 LiveKit 凭据及 mock 天气；这些检查不证明真实依赖可用。
+2026-11-23 同 Compose 核查发现并修复配置阻塞：SOPHON_LIVE_MAX_DELEGATIONS_PER_INPUT 的环境字符串 1 被 Literal[1] 拒绝；改为整数且上下界均为 1，仍拒绝 0/2/非整数。测试从实际模板读取字符串配置并执行 Settings.validate_deployment。当前生产启动时，脚本按启用的查询校验连接配置。[部署手册](deployment.md#查询服务的选择)
 
 本地代码变更时按范围选择以下开发复跑入口（需要项目开发环境，非生产容器验收；本轮实际选择见上表，不表示整段都已执行）：
 

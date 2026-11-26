@@ -112,7 +112,9 @@ class Settings(BaseSettings):
             raise ValueError("CueKB top_k must be between 1 and 20")
         try:
             knowledge_ids = [value.strip() for value in self.knowledge_base_ids.split(",") if value.strip()]
-            if not knowledge_ids or len(set(map(UUID, knowledge_ids))) != len(knowledge_ids):
+            if len(set(map(UUID, knowledge_ids))) != len(knowledge_ids) or (
+                "search_knowledge" in self.enabled_tool_names and not knowledge_ids
+            ):
                 raise ValueError
         except ValueError as exc:
             raise ValueError("KNOWLEDGE_BASE_IDS must contain unique UUID values") from exc

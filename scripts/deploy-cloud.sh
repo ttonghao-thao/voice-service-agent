@@ -23,6 +23,13 @@ require_values() {
   done
 }
 
+tool_enabled() {
+  case ",$enabled_tools," in
+    *,"$1",*) return 0 ;;
+    *) return 1 ;;
+  esac
+}
+
 if ! command -v docker >/dev/null 2>&1 || ! docker compose version >/dev/null 2>&1; then
   echo "Docker Engine with Docker Compose v2 is required." >&2
   exit 1
@@ -35,18 +42,26 @@ fi
 environment_file=$(CDPATH= cd -- "$(dirname -- "$environment_file")" && pwd)/$(basename -- "$environment_file")
 export DEPLOY_ENV_FILE=$environment_file
 require_values \
-  IMAGE_TAG POSTGRES_PASSWORD REDIS_PASSWORD KNOWLEDGE_BASE_IDS \
-  WEB_TLS_CERT_FILE WEB_TLS_KEY_FILE \
-  PUBLIC_ORIGIN \
-  CUEKB_BASE_URL CUEKB_API_KEY WEATHER_BASE_URL WEATHER_API_KEY WEB_SEARCH_API_KEY
+  IMAGE_TAG POSTGRES_PASSWORD REDIS_PASSWORD WEB_TLS_CERT_FILE WEB_TLS_KEY_FILE \
+  PUBLIC_ORIGIN WEB_SEARCH_API_KEY
 
-enabled_tools=$(environment_value ENABLED_TOOLS search_knowledge,weather,web_search)
-for tool in search_knowledge weather web_search; do
-  case ",$enabled_tools," in
-    *,$tool,*) ;;
-    *) echo "Complete deployment requires ENABLED_TOOLS to include $tool." >&2; exit 1 ;;
-  esac
-done
+enabled_tools=$(environment_value ENABLED_TOOLS search_knowledge,weather,web_search |
+  sed -E 's/^[[:space:]]+|[[:space:]]+$//g; s/[[:space:]]*,[[:space:]]*/,/g')
+if ! tool_enabled web_search; then
+  echo "Deployment requires ENABLED_TOOLS to include web_search." >&2
+  exit 1
+fi
+if tool_enabled search_knowledge; then
+  require_values CUEKB_BASE_URL CUEKB_API_KEY KNOWLEDGE_BASE_IDS
+fi
+if tool_enabled weather; then
+  require_values WEATHER_BASE_URL WEATHER_API_KEY
+  if [ "$(environment_value WEATHER_PROVIDER qweather)" != "qweather" ] || \
+     [ "$(environment_value WEATHER_MODE real)" != "real" ]; then
+    echo "Weather requires WEATHER_PROVIDER=qweather and WEATHER_MODE=real." >&2
+    exit 1
+  fi
+fi
 
 voice_provider=$(environment_value VOICE_PROVIDER)
 case "$voice_provider" in
@@ -77,6 +92,10 @@ case "$voice_provider" in
     secret_keys="REDIS_PASSWORD LIVEKIT_API_KEY LIVEKIT_API_SECRET"
     ;;
   nvidia)
+    if ! tool_enabled search_knowledge; then
+      echo "NVIDIA requires ENABLED_TOOLS to include search_knowledge." >&2
+      exit 1
+    fi
     require_values VOICECHAT_WS_URL VOICECHAT_API_KEY
     export COMPOSE_PROFILES=
     secret_keys=REDIS_PASSWORD
@@ -89,12 +108,6 @@ for key in $secret_keys; do
     *[!A-Za-z0-9._~-]*) echo "$key must use URL-safe letters, digits, dot, underscore, tilde or hyphen." >&2; exit 1 ;;
   esac
 done
-if [ "$(environment_value WEATHER_PROVIDER qweather)" != "qweather" ] || \
-   [ "$(environment_value WEATHER_MODE real)" != "real" ]; then
-  echo "Complete deployment requires WEATHER_PROVIDER=qweather and WEATHER_MODE=real." >&2
-  exit 1
-fi
-
 # The configured voice model chooses direct replies or tool calls.
 # Reject an old strict .env before starting or migrating any container.
 if [ "$(environment_value QA_EXECUTION_MODE dual_tools)" != "dual_tools" ] || \
@@ -140,8 +153,9 @@ export POSTGRES_PASSWORD="$(environment_value POSTGRES_PASSWORD)"
 export REDIS_PASSWORD="$(environment_value REDIS_PASSWORD)"
 # Let Compose parse these settings from --env-file without inherited overrides.
 unset AGENT_PROVIDER AGENT_DEADLINE_MS QA_EXECUTION_MODE QA_ANSWER_POLICY QA_EXTERNAL_FALLBACK_ENABLED \
-  QA_MAX_RETRIEVAL_CALLS QA_PROVIDER_ANSWER_TIMEOUT_MS WEATHER_PROVIDER WEATHER_MODE DELEGATION_ROUTER_PROVIDER
-for key in ENABLED_TOOLS LIVEKIT_URL LIVEKIT_NODE_IP LIVEKIT_API_KEY LIVEKIT_API_SECRET; do
+  QA_MAX_RETRIEVAL_CALLS QA_PROVIDER_ANSWER_TIMEOUT_MS KNOWLEDGE_BASE_IDS WEATHER_PROVIDER WEATHER_MODE DELEGATION_ROUTER_PROVIDER
+export ENABLED_TOOLS="$enabled_tools"
+for key in LIVEKIT_URL LIVEKIT_NODE_IP LIVEKIT_API_KEY LIVEKIT_API_SECRET; do
   export "$key=$(environment_value "$key")"
 done
 compose config --quiet

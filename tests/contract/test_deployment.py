@@ -15,6 +15,7 @@ COMPOSE_DEFAULTS = {
     "QA_EXTERNAL_FALLBACK_ENABLED": "false",
     "QA_MAX_RETRIEVAL_CALLS": "1",
     "QA_PROVIDER_ANSWER_TIMEOUT_MS": "30000",
+    "KNOWLEDGE_BASE_IDS": "",
     "WEATHER_PROVIDER": "qweather",
     "WEATHER_MODE": "real",
     "ENABLED_TOOLS": "search_knowledge,weather,web_search",
@@ -100,6 +101,7 @@ def test_cloud_environment_template_cannot_enable_development_fallbacks():
         "POSTGRES_PASSWORD",
         "REDIS_PASSWORD",
         "KNOWLEDGE_BASE_IDS",
+        "ENABLED_TOOLS",
         "CUEKB_BASE_URL",
         "CUEKB_API_KEY",
         "VOICE_PROVIDER",
@@ -113,6 +115,7 @@ def test_cloud_environment_template_cannot_enable_development_fallbacks():
     assert "REPLACE_" in values["WEATHER_BASE_URL"]
     assert values["WEATHER_API_KEY"].startswith("REPLACE_")
     assert values["VOICE_PROVIDER"] == "sophon_live"
+    assert values["ENABLED_TOOLS"] == COMPOSE_DEFAULTS["ENABLED_TOOLS"]
     assert values["DELEGATION_ROUTER_MODEL"] == "qwen3.7-flash"
     assert urlparse(values["LIVEKIT_URL"]).scheme == "wss"
     assert urlparse(values["LIVEKIT_URL"]).port == 7880
@@ -191,11 +194,10 @@ def test_cloud_template_loads_real_settings_from_environment_strings(tmp_path, m
     from app.voice.sophon_live import SophonLiveAdapter
     from pydantic import ValidationError
 
-    values = dict(
+    values = COMPOSE_DEFAULTS | dict(
         line.split("=", 1) for line in (ROOT / ".env.example").read_text().splitlines()
         if line and not line.startswith("#")
     )
-    values.update(COMPOSE_DEFAULTS)
     values.update(
         AUTO_CREATE_SCHEMA="false", AUTH_MODE="validation", CUEKB_MODE="real",
         PUBLIC_ORIGIN="https://voice.test:8087",
@@ -249,7 +251,7 @@ def test_deployment_rejects_incomplete_config_before_starting_containers(tmp_pat
         '#!/bin/sh\n'
         'printf "%s | profiles=%s\\n" "$*" "$COMPOSE_PROFILES" >> "$DOCKER_CALLS"\n'
         'case "$*" in\n'
-        '  *" config --quiet") printf "%s,%s\\n" "${AGENT_PROVIDER-unset}" "${WEATHER_MODE-unset}" > "$COMPOSE_INPUTS" ;;\n'
+        '  *" config --quiet") printf "%s,%s\\n%s\\n" "${AGENT_PROVIDER-unset}" "${WEATHER_MODE-unset}" "$ENABLED_TOOLS" > "$COMPOSE_INPUTS" ;;\n'
         'esac\nexit 0\n'
     )
     docker.chmod(0o755)
@@ -323,7 +325,7 @@ def test_deployment_rejects_incomplete_config_before_starting_containers(tmp_pat
     values["PUBLIC_ORIGIN"] = "https://voice.test:8087"
     accepted_https = check()
     assert accepted_https.returncode == 0
-    assert compose_inputs.read_text().strip() == "unset,unset"
+    assert compose_inputs.read_text().splitlines() == ["unset,unset", COMPOSE_DEFAULTS["ENABLED_TOOLS"]]
     assert all(line.endswith(" | profiles=sophon") for line in calls.read_text().splitlines()[1:])
     commands = [line.split(" | profiles=", 1)[0] for line in calls.read_text().splitlines()]
     infrastructure = next(i for i, command in enumerate(commands) if command.endswith("postgres redis livekit"))
@@ -347,11 +349,11 @@ def test_deployment_rejects_incomplete_config_before_starting_containers(tmp_pat
         ("LIVEKIT_API_SECRET", "too-short", "at least 32"),
         ("LIVEKIT_API_SECRET", "", "real value for LIVEKIT_API_SECRET"),
         ("REDIS_PASSWORD", 'bad\"password', "URL-safe"),
-        ("ENABLED_TOOLS", "search_knowledge,web_search", "include weather"),
-        ("ENABLED_TOOLS", "weather,web_search", "include search_knowledge"),
+        ("ENABLED_TOOLS", "search_knowledge,weather", "include web_search"),
         ("CUEKB_BASE_URL", "", "real value for CUEKB_BASE_URL"),
         ("CUEKB_API_KEY", "", "real value for CUEKB_API_KEY"),
         ("KNOWLEDGE_BASE_IDS", "REPLACE_WITH_CUEKB_KB_UUID", "real value for KNOWLEDGE_BASE_IDS"),
+        ("WEATHER_BASE_URL", "", "real value for WEATHER_BASE_URL"),
         ("WEATHER_API_KEY", "", "real value for WEATHER_API_KEY"),
         ("WEB_SEARCH_API_KEY", "", "real value for WEB_SEARCH_API_KEY"),
         ("DELEGATION_ROUTER_API_KEY", "", "real value for DELEGATION_ROUTER_API_KEY"),
@@ -371,6 +373,24 @@ def test_deployment_rejects_incomplete_config_before_starting_containers(tmp_pat
         else:
             values[key] = original
 
+    cuekb_fields = {"CUEKB_BASE_URL", "CUEKB_API_KEY", "KNOWLEDGE_BASE_IDS"}
+    weather_fields = {"WEATHER_BASE_URL", "WEATHER_API_KEY"}
+    full_values = values.copy()
+    for tools, normalized, omitted in (
+        ("weather, web_search", "weather,web_search", cuekb_fields),
+        ("search_knowledge,web_search", "search_knowledge,web_search", weather_fields),
+        ("web_search", "web_search", cuekb_fields | weather_fields),
+    ):
+        values.clear()
+        values.update({key: value for key, value in full_values.items() if key not in omitted})
+        values.update(ENABLED_TOOLS=tools, PUBLIC_ORIGIN="https://203.0.113.7:8087", LIVEKIT_URL="wss://203.0.113.7:7880")
+        accepted = check()
+        assert accepted.returncode == 0, accepted.stderr
+        assert compose_inputs.read_text().splitlines()[-1] == normalized
+        assert "--force-recreate web" in calls.read_text()
+    values.clear()
+    values.update(full_values)
+
     values["VOICE_PROVIDER"] = "nvidia"
     # Neither dormant Sophon fields nor a caller's inherited profile may start SFU.
     for name in list(values):
@@ -384,6 +404,11 @@ def test_deployment_rejects_incomplete_config_before_starting_containers(tmp_pat
     assert any("--profile sophon stop livekit" in command for command in commands)
     assert any("postgres redis | profiles=" in command for command in commands)
     assert not any(" up " in command and "livekit" in command for command in commands)
+    values["ENABLED_TOOLS"] = "web_search"
+    rejected_nvidia = check()
+    assert rejected_nvidia.returncode != 0
+    assert "NVIDIA requires ENABLED_TOOLS to include search_knowledge" in rejected_nvidia.stderr
+    del values["ENABLED_TOOLS"]
     values["VOICECHAT_API_KEY"] = ""
     rejected_nvidia = check()
     assert rejected_nvidia.returncode != 0

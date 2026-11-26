@@ -1,6 +1,6 @@
 # Codex 工作入口
 
-全双工知识客服，按容器部署。产品同时提供天气（QWeather）、通用知识（Tavily）和专业知识库（CueKB）查询；通用知识检索承担受控兜底，不存在仅启用 search_knowledge 的产品场景。门户 UI 和 NVIDIA VoiceChat 沿用英文（en-US），Sophon Live 按 `SOPHON_LIVE_LOCALE` 验证中文或英文语音。
+全双工知识客服，按容器部署。产品支持天气（QWeather）、通用知识（Tavily）和专业知识库（CueKB）查询。Sophon 部署保留 Tavily，可按需接入天气或专业知识库。门户 UI 和 NVIDIA VoiceChat 沿用英文（en-US），Sophon Live 按 `SOPHON_LIVE_LOCALE` 验证中文或英文语音。
 
 交付目标是 `origin/main`，完成验证后直接推送，不以任务分支替代。当前状态查[任务板](docs/TASK_BOARD.md)，不要把旧提交的通过记录当作本版本验收。
 
@@ -18,7 +18,7 @@
 - LiveKit 与 Redis/PostgreSQL/API/Web 由同一份 deploy/compose.production.yaml 管理，复用 Redis；不再另行部署 LiveKit。已解决问题只在 validation.md 的已解决章节保留，不反复列为当前待办。
 - Sophon tools/instructions 原生触发委派；已收到的 task 使用批准的 Qwen LLM Router 解析（结构化任务直接校验），不加 ASR 分类/补调、WS tool_choice、独立 Nano 或子 Agent 调度。一般回答不是企业证据；mock 不证明真实能力，real/LLM 失败不回退 mock/规则执行。
 - Sophon ASR 仅供字幕展示。模型直接理解音频，原生委派 `task` 提供工具意图与参数，音频窗口校验委派归属。
-- 三类查询是业务能力，不是固定的原生函数数量。旧 Provider/传输的能力限制和依赖尚未接入是实现缺口，不能改写为产品模式。兜底只处理获准公开发送的独立问题，私有失败、未知意图、无原生委派不自动转公网。
+- 查询依赖按 `ENABLED_TOOLS` 校验。Tavily 公开兜底只处理获准公开发送的独立问题，私有失败、未知意图、无原生委派不自动转公网。NVIDIA 兼容路径仍依赖 CueKB。
 - 全局后台目录决定原生工具数量/描述，不能把初始工具数当上限；执行另验权限。涉及注册/刷新时读[工具契约](docs/interfaces/voice-tools.md)。
 - Coordinator 唯一提交；提交/交付复核 epoch/revision/Turn/租约/权限。普通发声和停止播放不取消查询；旧调用结清或关闭连接，unknown 不自动重发。
 - 身份、KB、凭据由服务端控制；模型/浏览器不得扩大权限。依赖沿用固定 requirements/package-lock，数据库用 Alembic；不提交密钥、票据、录音、数据库或产物。
