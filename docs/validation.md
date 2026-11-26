@@ -60,7 +60,7 @@ PYTHON
 
 ### 上线时的浏览器检查
 
-按[部署手册第 8 步](deployment.md#8-打开-web-并核对三个查询)打开实际 HTTPS 门户并点 **Start call**。默认 `zh-CN` 用下表中文问句。每项听完回复并记下结果，点击 **End call**，再点 **Start call** 开始下一项。测试专业知识库时用维护方事先交付的非敏感问题。
+按[部署手册第四步](deployment.md#第四步访问-url-验证)打开实际 HTTPS 门户并点 **Start call**。默认 `zh-CN` 用下表中文问句。每项听完回复并记下结果，点击 **End call**，再点 **Start call** 开始下一项。测试专业知识库时用维护方事先交付的非敏感问题。
 
 | 顺序 | 对麦克风说 | 成功时看到或听到 |
 | --- | --- | --- |
@@ -280,6 +280,7 @@ SQLite 0006→head(0011)→0007/0006→head 与 Alembic check 保留旧历史；
 | f20b1c2 文档整理 | 16 个 Markdown；145 个本地链接/锚点（含入链）、12 段 Shell、1 段内嵌 Python 语法检查通过；原始/最新两张官方 14 项表逐字保留 | 当时只改文档，未运行应用、Docker、GPU、供应商、浏览器或听音回归 |
 | 2026-11-23 LiveKit 同 Compose 与故障归档 | 部署/Router/LiveKit 定向 66 项通过，Ruff、Shell/diff 通过；官方 Compose v2.39.4 静态展开 6 服务，LiveKit YAML/Redis DB1/API 凭据一致；13 个 Markdown、116 个链接/锚点、11 段 Shell/1 段内嵌 Python 检查通过；保存的 delivered-14 JSON 重核 7/7、无需工具 7/7、路由 3/3，两张表逐字保留于已解决章节 | 未使用 Docker Engine，未构建/启动镜像、验证 Nginx 实际运行或媒体/NAT；未重跑供应商/浏览器/听音；保留 Starlette 既有弃用警告 |
 | 2026-11-26 云端逐步部署手册和 Compose 镜像标签 | 部署契约 13 项通过。Compose v2.39.4 静态展开默认 Sophon 6 服务，回滚覆盖解析通过。Docker Hub 清单确认三项版本标签含 Linux amd64/arm64。隔离 Git 仓库和 Docker 命令桩检查首次发布、更新、备份顺序及回滚版本门禁。临时证书核对域名、期限和密钥匹配。3 个 Markdown、29 个链接/锚点、27 段 Shell、3 段内嵌 Python、Ruff 和 diff 检查通过。§5 原样保留 | 本轮未在云机签发证书、构建或运行 Docker 镜像、执行真实迁移或语音验收 |
+| 2026-11-26 四步部署命令 | 13 个 Shell 命令块语法、25 个链接及锚点通过。Compose v2.39.4 用示例配置核对部署与回滚的镜像标签、项目名和数据卷。§5 原样保留 | 仅文档和 Compose 静态检查，未运行云端部署 |
 
 2026-11-23 同 Compose 核查发现并修复配置阻塞：SOPHON_LIVE_MAX_DELEGATIONS_PER_INPUT 的环境字符串 1 被 Literal[1] 拒绝；改为整数且上下界均为 1，仍拒绝 0/2/非整数。新增测试从实际模板读取字符串配置并执行 Settings.validate_deployment，不连接服务。主部署脚本拒绝缺少任一查询能力、假值、非 WSS、非法 IPv4、过短/不安全 LiveKit 凭据及 mock 天气；这些检查不证明真实依赖可用。
 
