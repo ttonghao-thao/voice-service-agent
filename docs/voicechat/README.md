@@ -4,7 +4,7 @@
 
 当前 `model.py` 已包含音频消费/结果注入优化，以及 PAD 与 RNNT 补丁，可直接用于更新独立 VoiceChat/Speech 的同路径文件，**不要再对它应用 patch**。部署顺序和运行参数仍以 [`deploy/voicechat/README.md`](../../deploy/voicechat/README.md) 为准；精确 SHA-256 见 [`snapshot-manifest.json`](snapshot-manifest.json)。PAD 保护仍需在 Triton backend 启动前设置 `S2S_INFERENCE_CLOSE_ON_PAD_TAIL=true`；RNNT 转写修正随完整文件加载，不新增开关。
 
-完整 `docker run` 命令见 [`docker-run.md`](docker-run.md)：重建容器时直接从本目录的绝对路径只读挂载六个运行文件，不复制到其他宿主目录。以后修改本目录中的 VoiceChat 运行文件、环境变量、挂载、镜像、端口或 entrypoint 时，必须在同一提交中同步更新该命令。运行文件挂载到 Speech 的实际加载路径，CPU 测试文件只收录、不挂载。
+重建命令和当前挂载见 [`docker-run.md`](docker-run.md)。
 
 所有验证步骤与精简回传统一见 [验证操作手册](../validation.md)，本目录不再保留独立验证文档。
 
@@ -34,3 +34,11 @@ PAD 补丁前的完整快照保存在 Git commit `b924c72a295bdca428ea3c841fdfca
 `s2s/tests/` 是外接 Speech 项目的 CPU 测试文件，不需要复制到 GPU 生产运行目录。本项目 `tests/contract/test_voicechat_pad_tail_completion.py` 核验完整文件 hash，并在临时副本上依次撤销 RNNT/PAD 补丁再按顺序应用，分别核对固定 PAD 基线和当前完整文件，不改写旧补丁 hash。
 
 本目录用于云端留存、完整文件交付与代码审查。文件/hash 一致只证明收录源码与 manifest 一致，不代表 GPU 推理、真实音频、原生工具调用或 CueKB 链路已通过现场验收。
+
+## 快照维护与交付
+
+- 上游为 NVIDIA-NeMo/Speech 的 `nemotron-labs-voicechat` 分支，维护基线以 `snapshot-manifest.json` 为准。更新基线使用明确指定的版本。[上游源码](https://github.com/NVIDIA-NeMo/Speech/tree/nemotron-labs-voicechat)
+- 修改外部源码或测试时，在同一提交按 Speech 相对路径同步修改过的完整文件，并更新 manifest 的日期、hash、来源和补丁。推送前核对外部文件与快照及 hash，完成相关编译和契约检查。
+- 运行文件从本仓库绝对路径只读挂载到容器实际加载路径，新增时同步补挂载与身份核对。CPU 测试文件只收录到快照。
+- 运行文件、env、GPU、卷、端口、镜像或 entrypoint 变化时，同提交更新 [`docker-run.md`](docker-run.md)。新增 env 或挂载时重建容器。
+- 按实测记录 GPU、原生工具、CueKB 和听音结果，标明未验证的阶段。[验证操作手册](../validation.md)

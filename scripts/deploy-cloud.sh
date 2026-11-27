@@ -134,17 +134,29 @@ case "$(environment_value AGENT_PROVIDER disabled)" in
   disabled) ;;
   *) echo "Native voice routing requires AGENT_PROVIDER=disabled." >&2; exit 1 ;;
 esac
-for key in WEB_TLS_CERT_FILE WEB_TLS_KEY_FILE; do
-  path=$(environment_value "$key")
-  case "$path" in
+require_host_file() {
+  case "$2" in
     /*) ;;
-    *) echo "$key must be an absolute host path." >&2; exit 1 ;;
+    *) echo "$1 must be an absolute host path." >&2; exit 1 ;;
   esac
-  if [ ! -f "$path" ] || [ ! -r "$path" ]; then
-    echo "$key must point to a readable file: $path" >&2
+  if [ ! -f "$2" ] || [ ! -r "$2" ]; then
+    echo "$1 must point to a readable file: $2" >&2
     exit 1
   fi
-done
+}
+
+require_host_file WEB_TLS_CERT_FILE "$(environment_value WEB_TLS_CERT_FILE)"
+require_host_file WEB_TLS_KEY_FILE "$(environment_value WEB_TLS_KEY_FILE)"
+api_ca_bundle_file=$(environment_value API_CA_BUNDLE_FILE)
+case "$api_ca_bundle_file" in
+  \"*\"|\'*\')
+    api_ca_bundle_file=${api_ca_bundle_file#?}
+    api_ca_bundle_file=${api_ca_bundle_file%?}
+    ;;
+esac
+if [ -n "$api_ca_bundle_file" ]; then
+  require_host_file API_CA_BUNDLE_FILE "$api_ca_bundle_file"
+fi
 
 if ! grep -Eq '^PUBLIC_ORIGIN=https://[^/?#@[:space:]]+$' "$environment_file"; then
   echo "PUBLIC_ORIGIN must be an HTTPS origin without a path." >&2
@@ -152,6 +164,9 @@ if ! grep -Eq '^PUBLIC_ORIGIN=https://[^/?#@[:space:]]+$' "$environment_file"; t
 fi
 
 compose() {
+  if [ -n "$api_ca_bundle_file" ]; then
+    set -- -f "$project_dir/deploy/compose.api-ca.yaml" "$@"
+  fi
   docker compose --env-file "$environment_file" -f "$compose_file" "$@"
 }
 
@@ -163,6 +178,7 @@ export PUBLIC_ORIGIN="$(environment_value PUBLIC_ORIGIN)"
 export VOICE_PROVIDER="$voice_provider"
 export WEB_TLS_CERT_FILE="$(environment_value WEB_TLS_CERT_FILE)"
 export WEB_TLS_KEY_FILE="$(environment_value WEB_TLS_KEY_FILE)"
+export API_CA_BUNDLE_FILE="$api_ca_bundle_file"
 export POSTGRES_PASSWORD="$(environment_value POSTGRES_PASSWORD)"
 export REDIS_PASSWORD="$(environment_value REDIS_PASSWORD)"
 # Let Compose parse these settings from --env-file without inherited overrides.

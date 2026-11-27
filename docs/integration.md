@@ -13,7 +13,7 @@
 | CueKB | `/v2/evidence/query` 后 `/v2/evidence/validate` | KB UUID、scoped Key、证据与权限修订、tokenizer/预算 |
 | PostgreSQL / Redis | 角色/业务/审计、协调租约 | Compose 内网、真实凭据、持久卷 |
 
-三类查询同时属于产品范围。config/tools.yaml 中后台名是 weather、web_search、search_knowledge；模型原生函数名称和数量由 Provider 决定，不能与三类能力混为一谈。工具可执行集合为部署启用 ∩ 管理员当前启用 ∩ 用户授权，执行前后仍检查版本与范围；临时缺项不是受支持的裁剪部署。
+三类查询同时属于产品范围。`config/tools.yaml` 的后台名是 `weather`、`web_search`、`search_knowledge`，原生函数的名称和数量按 Provider 契约生成。可执行工具取部署启用、管理员当前启用和用户授权的交集，执行前后复核版本与范围。Sophon 部署按 `ENABLED_TOOLS` 选接服务并保留 `web_search`。[查询配置](deployment.md#查询服务的选择)
 
 CueKB 的专业资料不能因查询失败转成公网问题。通用知识兜底仅对合法公开的独立 query；敏感信息、已回填企业上下文、资料属性不明必须按确定性边界拒绝/澄清。真实服务错误、未命中、冲突和权限拒绝分别保留。QWeather/Tavily 的供应商 JSON 只在 adapter 内映射，不能泄漏为核心业务协议。
 

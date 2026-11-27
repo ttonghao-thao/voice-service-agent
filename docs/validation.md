@@ -20,7 +20,7 @@ Sophon 部署保留通用知识及受控兜底，天气和专业知识库按 `EN
 
 ### Sophon Live 验证
 
-生产在部署机项目根目录操作，先按 [部署手册](deployment.md) 部署同一 Compose 和已启用的依赖。以下命令在 API 容器内检查 LiveKit TLS、服务端 API 凭据和 Sophon 会话控制。使用私有 CA 时，API 从 `SSL_CERT_FILE` 加载合并后的 CA bundle。此检查不发送录音，媒体和工具查询按后续流程验证。完整 Compose 配置包含凭据，配置语法用 `config --quiet` 核对。
+生产在部署机项目根目录操作，先按 [部署手册](deployment.md) 部署同一 Compose 和已启用的依赖。下列命令在 API 容器内检查 LiveKit TLS、服务端 API 凭据和 Sophon 会话控制。配置 `API_CA_BUNDLE_FILE` 时，API 从 `SSL_CERT_FILE` 加载合并后的 CA bundle。媒体和工具查询按后续流程验证。配置语法核对用 `config --quiet`，完整展开会包含凭据。
 
 ```bash
 export DEPLOY_ENV_FILE="$PWD/.env"
@@ -73,9 +73,9 @@ PYTHON
 
 #### Start call 信令失败
 
-2026-11-27 联调入口复核时，`8087/TCP` 与 `7880/TCP` 出示同一张私有 CA 证书，IP SAN 匹配，默认系统信任校验失败。诊断请求读取到门户 `ready`、LiveKit 根路径 `200 OK` 和未带凭据的 `/rtc/v1` 返回 `401`。公网 `80/TCP` 的 Nginx 对探测的 ACME 文件返回 `404`。
+2026-11-28 公网入口复核通过。门户 `8087` 与 LiveKit `7880` 出示同一张 Let’s Encrypt 证书，默认信任库和 IP 校验通过，两个 HTTPS 请求均返回 `200`。公网 `80` 的挑战测试路径返回 `acme-ready`。本次检查覆盖当前公网 TLS 和 HTTP-01 入口，实际续期和双向音频需分别验证。[公网证书与续期](deployment.md#公网证书与续期)
 
-本机 Web 单测 49 项、定向 Python 回归 39 项通过，TypeScript/Web 构建和 Ruff 通过。Chromium 使用假麦克风和受控信令响应，确认 `503` 和 `401` 分别显示信令失败及入房拒绝，会话清理成功且未打开控制 WS。API 回归确认票据签发、控制 WS 接受和提前关闭日志可关联，日志不含票据正文。目标环境的公信证书签发和续期、iPhone 入房以及双向音频仍待现场验证。[证书配置与排查](deployment.md#公网-ipv4-与公信证书)
+2026-11-27 私有 CA 阶段，默认信任校验失败，HTTP-01 测试路径返回 `404`。该轮本机 Web 单测 49 项、定向 Python 回归 39 项通过，TypeScript/Web 构建和 Ruff 通过。Chromium 使用假麦克风和受控信令响应，确认 `503` 和 `401` 分别显示信令失败及入房拒绝，会话清理成功且未打开控制 WS。API 回归确认票据签发、控制 WS 接受和提前关闭日志可关联，日志不含票据正文。
 
 #### Start call 媒体未建连
 
@@ -300,6 +300,7 @@ SQLite 0006→head(0011)→0007/0006→head 与 Alembic check 保留旧历史；
 | 2026-11-26 Sophon 可选查询依赖 | 语音项目定向回归 220 项、CueKB 证据测试 14 项通过。Compose v2.39.4 静态展开四种工具组合，Settings 均通过。启动脚本接受各可选组合并拒绝已启用工具缺少必填值。受控 `web_search` 单工具测试覆盖公开兜底和私有问题澄清 | 使用合成配置和受控上游。公网签证、真实服务和生产容器未运行 |
 | 2026-11-27 配置复核与公网 IPv4 私有 CA | 定向回归 290 项通过。审计模板 24 个生效字段和 19 个沿用的默认值。Compose v2.39.4 展开四种 Sophon 工具组合的两种证书配置，以及 NVIDIA 兼容配置，均通过应用启动校验。本机临时 CA 签发、续签、IP SAN 验证和 LiveKit SDK 的回环 WSS 信任通过 | 使用合成配置与证书。未运行生产 Docker、真实 LiveKit 房间及浏览器媒体，也未连接生产依赖 |
 | 2026-11-27 API 镜像依赖下载 | 部署契约 16 项通过。按 Linux/amd64 与 CPython 3.12 解析全部 101 个锁定包，下载并校验 `json-repair==0.63.5` wheel 的 SHA-256。构建命令覆盖无 Secret、单独传入 CA、单独传入 pip 配置及两者共存四种情况 | 使用本机 PyPI 访问与命令桩。目标 BuildKit builder 的重建结果待验 |
+| 2026-11-28 公信 TLS 标准流程和 API CA 固化 | 部署与 LiveKit 定向检查 38 项通过。Compose 2.20.3 和 2.39.4 共 12 组静态展开通过，涵盖原 `.env`、公网 IPv4、Sophon/NVIDIA、可选只读 CA 及回滚。命令桩验证两类 webroot 参数、续期钩子和迁移版本不一致时停止回滚。文档链接、Shell、Ruff 和 diff 检查通过 | Compose 与命令桩均在本机验证。公网已有入口的 TLS 复核见 §2，未应用本次提交、实际续期或重跑语音 |
 
 2026-11-23 同 Compose 核查发现并修复配置阻塞：SOPHON_LIVE_MAX_DELEGATIONS_PER_INPUT 的环境字符串 1 被 Literal[1] 拒绝；改为整数且上下界均为 1，仍拒绝 0/2/非整数。测试从实际模板读取字符串配置并执行 Settings.validate_deployment。当前生产启动时，脚本按启用的查询校验连接配置。[部署手册](deployment.md#查询服务的选择)
 

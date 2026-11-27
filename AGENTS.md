@@ -6,10 +6,9 @@
 
 ## 按需读取
 
-1. 先 `git status --short`，用 `rg` 定位代码/调用方。只有范围不清楚时读[短索引](docs/README.md)。
-2. 长文先查标题/关键词，再读相关行；链接不是递归加载指令。同任务不重复读取有效信息。
-3. 不默认整读 docs、任务板、Git 历史、生成 JSON、锁文件、测试夹具或 VoiceChat 快照。跨模块按实际依赖扩读；文档冲突以代码核对，不能为节省上下文跳过必要检查。
-4. 需求归 [delivery.md](docs/delivery.md)，实际行为归 [architecture.md](docs/architecture.md)，未实施方案归 [implementation-plan.md](docs/implementation-plan.md)，操作归 [deployment.md](docs/deployment.md)，待办归 TASK_BOARD.md。验证方法/执行记录只在 [validation.md](docs/validation.md)，先查章节；旧流水由 Git 追溯，不重建归档副本。
+1. 先 `git status --short`，用 `rg` 定位代码和调用方。需要文档时从[按需索引](docs/README.md)选择当前任务对应的小节。
+2. 先查标题和关键词，再读相关段落。实际依赖需要时再扩读，文档与代码冲突时核对实现。
+3. 默认跳过归档、Git 历史、生成 JSON、锁文件、夹具和 VoiceChat 快照。同一任务复用已读信息。
 
 ## 不变边界
 
@@ -29,12 +28,8 @@
 
 只更新受影响主题；契约变更执行 scripts/export_contracts.py，同步客户端并回归。纯文档只改 Markdown，检查链接/锚点/命令语法/diff，无需跑应用测试。状态变化更新任务板，新验证才更新证据，勿追加全仓流水。维护规则按需读 [documentation.md](docs/development/documentation.md)。
 
-## VoiceChat 修改必须配套交付
-
-上游是 [NVIDIA-NeMo/Speech nemotron-labs-voicechat](https://github.com/NVIDIA-NeMo/Speech/tree/nemotron-labs-voicechat)，实际基线以 manifest 为准，不自动升级 HEAD。
-
-修改外部源码/测试必须在同一提交按 Speech 相对路径同步**完整文件**到 docs/voicechat，更新 snapshot-manifest.json 的日期、hash、来源和补丁；不能只交补丁，不重写未改文件凑快照。推送前核对外部文件与快照、相关编译/契约及 hash。
-
-受维护运行文件从本仓库绝对路径只读 bind mount 到容器实际路径。新增运行文件须补挂载与身份检查，测试文件不挂推理容器。运行文件、env、GPU、卷、端口、镜像或 entrypoint 变化，必须同提交更新 docs/voicechat/docker-run.md；新增 env/挂载需重建容器，不能只 restart。未实际验证 GPU/原生工具/CueKB/听音就明确标未验证。
-
 生产验证在容器执行，宿主单入口自动提取窗口/会话并输出有界摘要；操作者只执行回传，不承担诊断选择。
+
+## VoiceChat 修改
+
+涉及外部 VoiceChat 源码、测试或运行配置时，先读并执行[快照维护与交付要求](docs/voicechat/README.md#快照维护与交付)。

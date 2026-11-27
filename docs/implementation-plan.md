@@ -10,9 +10,7 @@
 
 ## 1. 容器发布剩余实施
 
-2026-11-26 用户确认 Sophon 部署可省略专业知识库或天气，保留 Tavily 公开检索。模板显式填写 `ENABLED_TOOLS`，启动脚本按启用项核对依赖。部署手册包含固定公网 IPv4 加私有 CA 的签发、信任与验证步骤。目标容器和实际语音验收按下表继续。
-
-LiveKit/Redis 同 Compose。部署配置和启动操作见 [deployment.md](deployment.md)，验证见 validation §7。生产验收剩余顺序如下。
+部署配置和启动操作见 [deployment.md](deployment.md)，验证记录见 [validation §7](validation.md#7-开发检查与文档执行记录)。生产验收剩余顺序如下。
 
 | 顺序 | 实施内容 | 涉及现有模块 | 完成条件 |
 | --- | --- | --- | --- |

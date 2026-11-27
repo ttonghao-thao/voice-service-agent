@@ -1,0 +1,11 @@
+services:
+  api:
+    environment:
+      SSL_CERT_FILE: /app/ca-bundle.pem
+    volumes:
+      - type: bind
+        source: ${API_CA_BUNDLE_FILE:?Set the API CA bundle path in .env}
+        target: /app/ca-bundle.pem
+        read_only: true
+        bind:
+          create_host_path: false

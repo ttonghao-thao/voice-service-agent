@@ -36,6 +36,20 @@ def test_cloud_compose_is_a_production_only_container_topology():
         assert services["api"]["environment"][name] == f"${{{name}:-{value}}}"
     assert services["api"]["environment"]["VOICE_PROVIDER"] == "${VOICE_PROVIDER:-sophon_live}"
     assert services["api"]["env_file"] == "${DEPLOY_ENV_FILE:-../.env}"
+    assert "SSL_CERT_FILE" not in services["api"]["environment"]
+    assert "/app/ca-bundle.pem" not in str(services["api"].get("volumes", []))
+    api_ca = yaml.safe_load((ROOT / "deploy/compose.api-ca.yaml").read_text())["services"]
+    assert set(api_ca) == {"api"}
+    assert api_ca["api"]["environment"] == {"SSL_CERT_FILE": "/app/ca-bundle.pem"}
+    assert api_ca["api"]["volumes"] == [
+        {
+            "type": "bind",
+            "source": "${API_CA_BUNDLE_FILE:?Set the API CA bundle path in .env}",
+            "target": "/app/ca-bundle.pem",
+            "read_only": True,
+            "bind": {"create_host_path": False},
+        }
+    ]
     assert services["api"]["image"] == services["migrate"]["image"]
     assert (
         services["api"]["image"] == "voice-service-agent-api:${IMAGE_TAG:?Set the prebuilt IMAGE_TAG in .env}"
@@ -124,6 +138,7 @@ def test_cloud_environment_template_cannot_enable_development_fallbacks():
         "PUBLIC_ORIGIN",
         "WEB_TLS_CERT_FILE",
         "WEB_TLS_KEY_FILE",
+        "API_CA_BUNDLE_FILE",
         "POSTGRES_PASSWORD",
         "REDIS_PASSWORD",
         "KNOWLEDGE_BASE_IDS",
@@ -151,6 +166,7 @@ def test_cloud_environment_template_cannot_enable_development_fallbacks():
     assert origin.scheme == "https" and origin.port == 8087 and origin.path == ""
     assert values["WEB_TLS_CERT_FILE"].startswith("/")
     assert values["WEB_TLS_KEY_FILE"].startswith("/")
+    assert values["API_CA_BUNDLE_FILE"] == ""
     assert values["IMAGE_TAG"]
     assert urlparse(values["CUEKB_BASE_URL"]).scheme in {"http", "https"}
     for key in (
@@ -279,8 +295,8 @@ def test_deployment_rejects_incomplete_config_before_starting_containers(tmp_pat
         'printf "%s | profiles=%s\\n" "$*" "$COMPOSE_PROFILES" >> "$DOCKER_CALLS"\n'
         'case "$*" in\n'
         '  *" config --quiet")\n'
-        '    printf "%s,%s\\n%s\\n%s\\n" "${AGENT_PROVIDER-unset}" "${WEATHER_MODE-unset}" \\\n'
-        '      "$LIVEKIT_RTC_INTERFACE" "$ENABLED_TOOLS" > "$COMPOSE_INPUTS" ;;\n'
+        '    printf "%s,%s\\n%s\\n%s\\n%s\\n" "${AGENT_PROVIDER-unset}" "${WEATHER_MODE-unset}" \\\n'
+        '      "$LIVEKIT_RTC_INTERFACE" "$API_CA_BUNDLE_FILE" "$ENABLED_TOOLS" > "$COMPOSE_INPUTS" ;;\n'
         'esac\nexit 0\n'
     )
     docker.chmod(0o755)
@@ -294,6 +310,7 @@ def test_deployment_rejects_incomplete_config_before_starting_containers(tmp_pat
         "AGENT_PROVIDER": "mock",
         "WEATHER_MODE": "mock",
         "LIVEKIT_RTC_INTERFACE": "inherited0",
+        "API_CA_BUNDLE_FILE": "/missing/inherited-ca.pem",
     }
     values = {
         "IMAGE_TAG": "test",
@@ -355,7 +372,8 @@ def test_deployment_rejects_incomplete_config_before_starting_containers(tmp_pat
     values["PUBLIC_ORIGIN"] = "https://voice.test:8087"
     accepted_https = check()
     assert accepted_https.returncode == 0
-    assert compose_inputs.read_text().splitlines() == ["unset,unset", "", COMPOSE_DEFAULTS["ENABLED_TOOLS"]]
+    assert compose_inputs.read_text().splitlines() == ["unset,unset", "", "", COMPOSE_DEFAULTS["ENABLED_TOOLS"]]
+    assert "compose.api-ca.yaml" not in calls.read_text()
     assert all(line.endswith(" | profiles=sophon") for line in calls.read_text().splitlines()[1:])
     commands = [line.split(" | profiles=", 1)[0] for line in calls.read_text().splitlines()]
     infrastructure = next(i for i, command in enumerate(commands) if command.endswith("postgres redis livekit"))
@@ -365,6 +383,25 @@ def test_deployment_rejects_incomplete_config_before_starting_containers(tmp_pat
     web = next(i for i, command in enumerate(commands) if command.endswith("--force-recreate web"))
     assert infrastructure < migration < api < verification < web
     assert not any("configure_native_cuekb.py" in command for command in commands)
+    bundle = tmp_path / "api trust bundle.pem"
+    bundle.write_text("test CA bundle")
+    values["API_CA_BUNDLE_FILE"] = f'"{bundle}"'
+    accepted_bundle = check()
+    assert accepted_bundle.returncode == 0, accepted_bundle.stderr
+    assert compose_inputs.read_text().splitlines()[2] == str(bundle)
+    compose_calls = [line for line in calls.read_text().splitlines() if line.startswith("compose --env-file")]
+    assert compose_calls and all("compose.api-ca.yaml" in line for line in compose_calls)
+    for invalid_bundle, error in (
+        ("relative.pem", "an absolute host path"),
+        (str(tmp_path / "missing.pem"), "a readable file"),
+        (str(tmp_path), "a readable file"),
+    ):
+        values["API_CA_BUNDLE_FILE"] = invalid_bundle
+        rejected_bundle = check()
+        assert rejected_bundle.returncode != 0
+        assert "API_CA_BUNDLE_FILE" in rejected_bundle.stderr and error in rejected_bundle.stderr
+        assert "compose --env-file" not in calls.read_text()
+    del values["API_CA_BUNDLE_FILE"]
     values["LIVEKIT_RTC_INTERFACE"] = '"eth2"'
     accepted_interface = check()
     assert accepted_interface.returncode == 0, accepted_interface.stderr
