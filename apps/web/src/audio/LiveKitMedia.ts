@@ -1,4 +1,4 @@
-import { Room, RoomEvent, Track } from "livekit-client";
+import { ConnectionError, Room, RoomEvent, Track } from "livekit-client";
 import type { PreparedRecording } from "./recordedAudio";
 
 export interface RoomCredentials {
@@ -6,6 +6,13 @@ export interface RoomCredentials {
   token: string;
   agent_identity: string;
 }
+
+const startupErrors = {
+  signal: "Could not connect to the audio room. Check your network and the server certificate. (LIVEKIT_SIGNAL_FAILED)",
+  media: "The audio room was reached, but its audio connection could not be established. (LIVEKIT_MEDIA_FAILED)",
+  playback: "The browser could not start audio playback. Start a new call. (LIVEKIT_PLAYBACK_FAILED)",
+  publish: "The audio room could not send your selected audio. (LIVEKIT_PUBLISH_FAILED)",
+};
 
 export class LiveKitMedia {
   private room = new Room();
@@ -16,7 +23,15 @@ export class LiveKitMedia {
   private volume = 0.8;
 
   async connect(credentials: RoomCredentials, context: AudioContext, mic: MediaStreamTrack | undefined, onClose: () => void) {
-    this.room.on(RoomEvent.Disconnected, onClose);
+    let stage: keyof typeof startupErrors = "signal";
+    let started = false;
+    let disconnectedAt: keyof typeof startupErrors | undefined;
+    this.room.once(RoomEvent.SignalConnected, () => { stage = "media"; });
+    this.room.on(RoomEvent.Disconnected, () => {
+      // The SDK emits Disconnected before rejecting an initial connection.
+      if (started) onClose();
+      else disconnectedAt ??= stage;
+    });
     this.room.on(RoomEvent.TrackSubscribed, (track, _publication, participant) => {
       if (track.kind !== Track.Kind.Audio || participant.identity !== credentials.agent_identity) return;
       this.playback?.remove();
@@ -32,15 +47,27 @@ export class LiveKitMedia {
         element.remove();
       });
     });
-    await this.room.connect(credentials.url, credentials.token);
-    await this.room.startAudio();
-    if (mic) {
-      await this.room.localParticipant.publishTrack(mic, { source: Track.Source.Microphone });
-    } else {
-      this.destination = context.createMediaStreamDestination();
-      this.fileTrack = this.destination.stream.getAudioTracks()[0];
-      await this.room.localParticipant.publishTrack(this.fileTrack, { source: Track.Source.Microphone });
+    try {
+      await this.room.connect(credentials.url, credentials.token);
+      stage = "playback";
+      await this.room.startAudio();
+      stage = "publish";
+      if (mic) {
+        await this.room.localParticipant.publishTrack(mic, { source: Track.Source.Microphone });
+      } else {
+        this.destination = context.createMediaStreamDestination();
+        this.fileTrack = this.destination.stream.getAudioTracks()[0];
+        await this.room.localParticipant.publishTrack(this.fileTrack, { source: Track.Source.Microphone });
+      }
+    } catch (error) {
+      if (stage === "signal" && error instanceof ConnectionError &&
+          (error.status === 401 || error.status === 403)) {
+        throw new Error("The audio room refused the connection. Start a new call. (LIVEKIT_JOIN_REJECTED)");
+      }
+      throw new Error(startupErrors[disconnectedAt ?? stage]);
     }
+    if (disconnectedAt) throw new Error(startupErrors[disconnectedAt]);
+    started = true;
   }
 
   private destination?: MediaStreamAudioDestinationNode;

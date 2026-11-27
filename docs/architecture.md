@@ -28,7 +28,7 @@ VOICE_PROVIDER 是唯一后端选择，生产只接受 sophon_live 或 nvidia，
 | NVIDIA 兼容 | 原生 call/batch/response、ASR 绑定、精确 NeMo 包预算 | [provider](../apps/api/app/voice/provider.py)、[relay](../apps/api/app/voice/relay.py)、[batches](../apps/api/app/voice/batches.py)、[native_cuekb](../apps/api/app/agent_runtime/native_cuekb.py)、[voice_budget](../apps/api/app/agent_runtime/voice_budget.py) |
 | 外部 VoiceChat | 配套模型/模板/服务端完整文件 | [manifest](../docs/voicechat/snapshot-manifest.json) |
 
-Sophon 主链：浏览器与 LiveKit 直接收发 WebRTC；门户 WS 传状态和字幕。API 签发限定 Room/身份/时效的 Token，并在 Room 中运行 AgentSession，通过 GPTLiveModel 连接 Sophon `/v1/live/sessions`。收到原生 `session.delegation.created` 后才运行 Router；业务方向保持 Gateway → Coordinator → Runtime → Registry → Adapter。供应商字段只在 voice/adapter 边界解释。
+Sophon 主链：API 签发限定 Room/身份/时效的 Token。浏览器在 LiveKit 入房并发布音轨后打开门户控制 WS。WebRTC 传音频，门户 WS 传状态和字幕。API 在控制 WS 建立后进入 Room 并运行 AgentSession，通过 GPTLiveModel 连接 Sophon `/v1/live/sessions`。收到原生 `session.delegation.created` 后才运行 Router；业务方向保持 Gateway → Coordinator → Runtime → Registry → Adapter。供应商字段只在 voice/adapter 边界解释。
 
 LiveKit 根据 SDK 已发送的 PCM 观察输入，短停顿合并。只有唯一、仍有效的候选输入才执行每输入一次的查询；处理中、回执未知或重叠输入保守拒绝。已在新发声前结清的旧输入退出后续委派竞争，字幕归属不套用该排除规则。重复 ID 不重执行，不同输入允许主动重复同一问题；没有上游稳定 input ID 时，延迟旧任务的新 ID 仍不能可靠认证为新问题。
 

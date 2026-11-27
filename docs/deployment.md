@@ -35,6 +35,7 @@ git stash pop
 ### 选择证书
 
 - 已有公信证书时，确认它覆盖实际访问的域名或 IPv4，填写证书和私钥路径。
+- 用公网 IPv4 直接提供语音服务时，按[公网 IPv4 与公信证书](#公网-ipv4-与公信证书)签发，客户端使用系统证书信任。
 - 使用公网 IPv4 加私有证书时，按[公网 IPv4 与私有 CA](#公网-ipv4-与私有-ca)在服务器上生成证书并配置两端信任。
 - 需要签发域名公信证书时，先确认域名解析指向服务器，再选择下面的 Certbot 验证方式。
 
@@ -176,6 +177,58 @@ curl -fsS --max-time 15 --cacert /etc/voice-tls/root-ca.crt https://203.0.113.10
 
 第一条应返回 `"status":"ready"`，`enabled_tools` 应与 `.env` 的工具清单一致。第二条应返回 HTTP 2xx。按[Sophon 容器内检查](validation.md#sophon-live-验证)确认 API 容器也能通过 LiveKit TLS 和凭据校验。然后从客户端打开 `.env` 中的 `PUBLIC_ORIGIN`，点 **Start call**，允许使用麦克风，核对入房、双向音频和已启用的查询。[浏览器检查](validation.md#上线时的浏览器检查)
 
+## 公网 IPv4 与公信证书
+
+Let’s Encrypt 可以为固定公网 IPv4 签发浏览器信任的证书。以下用 `203.0.113.10` 举例。IP 证书的有效期为 160 小时，部署时配置自动续期。Certbot 的 IP `webroot` 模式需要 5.4 或更高版本。用 `certbot --version` 核对，版本较低时按官方说明安装新版。[IP 证书签发](https://letsencrypt.org/2026/03/11/shorter-certs-certbot) · [证书有效期](https://letsencrypt.org/2026/01/15/6day-and-ip-general-availability) · [Certbot 安装](https://certbot.eff.org/instructions?os=snap&ws=other)
+
+### 签发并加载证书
+
+公网 `80/TCP` 已由 Nginx 提供服务时，在该 IP 对应的 `listen 80` 虚拟主机中加入以下配置。Certbot 与 Nginx 要能访问同一个挑战目录。Nginx 在容器里时，将宿主机的目录只读挂载给 Nginx。若虚拟主机需要跳转到 HTTPS，把跳转放在 `location /`，让挑战路径直接返回文件。[HTTP-01 验证规则](https://letsencrypt.org/docs/challenge-types/#http-01-challenge)
+
+```nginx
+location ^~ /.well-known/acme-challenge/ {
+    root /var/www/letsencrypt;
+    default_type text/plain;
+    try_files $uri =404;
+}
+```
+
+创建测试文件，检查 Nginx 配置并重载，然后从外网用 `curl -fsS http://203.0.113.10/.well-known/acme-challenge/voice-check` 确认响应为 `acme-ready`。
+
+```sh
+sudo install -d -m 0755 /var/www/letsencrypt/.well-known/acme-challenge
+printf '%s\n' acme-ready | sudo tee /var/www/letsencrypt/.well-known/acme-challenge/voice-check >/dev/null
+```
+
+验证路径可用后，在部署机签发证书。若 `80/TCP` 可达且没有进程监听，也可用 `--standalone` 替换下面的 `--webroot --webroot-path /var/www/letsencrypt`。续期同样要求 `80/TCP` 上的验证方式可用。[Certbot 签发方式](https://eff-certbot.readthedocs.io/en/stable/using.html#getting-certificates-and-choosing-plugins)
+
+```sh
+sudo certbot certonly --webroot --webroot-path /var/www/letsencrypt \
+  --preferred-profile shortlived --cert-name 203.0.113.10 --ip-address 203.0.113.10
+```
+
+在 `.env` 填写以下证书路径。门户使用 `https://203.0.113.10:8087`，`LIVEKIT_URL` 使用 `wss://203.0.113.10:7880`。首次部署继续完成第二步。现有部署只更换证书时，用[续期证书的命令](#需要时执行)重建 `web`，再按[第四步](#第四步访问-url-验证)检查两个端口的证书信任。
+
+```dotenv
+WEB_TLS_CERT_FILE=/etc/letsencrypt/live/203.0.113.10/fullchain.pem
+WEB_TLS_KEY_FILE=/etc/letsencrypt/live/203.0.113.10/privkey.pem
+```
+
+### 配置 IP 证书自动续期
+
+用 `systemctl list-timers --all` 核对 Certbot 的续期任务。续期会更新 `live` 目录下的文件链接，Compose 按文件挂载证书，需要在更新后重建 `web`，届时正在进行的通话会断开。将下面的内容写入 `/etc/letsencrypt/renewal-hooks/deploy/voice-service-web`，把 IP 和项目绝对路径替换为现场值，再执行 `sudo chmod 0755 /etc/letsencrypt/renewal-hooks/deploy/voice-service-web`。[Certbot 自动续期与钩子](https://eff-certbot.readthedocs.io/en/stable/using.html#renewing-certificates)
+
+```sh
+#!/bin/sh
+set -eu
+[ "${RENEWED_LINEAGE:-}" = /etc/letsencrypt/live/203.0.113.10 ] || exit 0
+cd /srv/voice-service-agent
+exec docker compose --env-file .env --profile sophon -f deploy/compose.production.yaml \
+  up -d --no-deps --force-recreate --wait web
+```
+
+运行 `sudo certbot renew --cert-name 203.0.113.10 --dry-run` 验证续期挑战。期望 Certbot 报告模拟续期成功。安排可中断通话的时间时，加 `--run-deploy-hooks` 可同时验证钩子加载当前有效证书。
+
 ## 公网 IPv4 与私有 CA
 
 固定公网 IPv4 可以直接用于门户 HTTPS 和 LiveKit WSS。以下使用 `203.0.113.10` 作为示例，统一替换成实际地址。服务端证书的 `subjectAltName` 必须以 `IP` 类型包含这个地址。私有 CA 可以在同一台服务器签发，无需 DNS 权限或开放 `80/TCP`。此方式适用于可以在访问设备上安装私有根证书的部署。[TLS IP 身份校验](https://www.rfc-editor.org/rfc/rfc9525.html#section-6.4)
@@ -247,7 +300,11 @@ WEB_TLS_KEY_FILE=/etc/voice-tls/privkey.pem
 
 ### 配置浏览器与 API 的证书信任
 
-在使用门户的客户端设备上导入 `/etc/voice-tls/root-ca.crt` 并设为受信任的根证书。API 容器也会用 `LIVEKIT_URL` 加入房间。在部署机的同一份 [Compose](../deploy/compose.production.yaml) 中，将以下字段合并到 `api` 服务。`SSL_CERT_FILE` 加入现有 `environment`，`volumes` 与 `env_file` 同级。
+在使用门户的客户端设备上导入 `/etc/voice-tls/root-ca.crt` 并设为受信任的根证书。
+
+iPhone 手动安装根证书后，进入「设置 → 通用 → 关于本机 → 证书信任设置」，对部署用的根证书开启完全信任。用同一台 iPhone 的 Safari 打开 `https://实际公网IPv4:7880/`，应无证书警告并直接显示 `OK`，再回到门户发起通话。[Apple 证书信任步骤](https://support.apple.com/zh-cn/102390)
+
+API 容器也会用 `LIVEKIT_URL` 加入房间。在部署机的同一份 [Compose](../deploy/compose.production.yaml) 中，将以下字段合并到 `api` 服务。`SSL_CERT_FILE` 加入现有 `environment`，`volumes` 与 `env_file` 同级。
 
 ```yaml
     environment:
@@ -271,6 +328,15 @@ sudo docker compose --env-file .env --profile sophon \
 
 ```sh
 sudo docker compose --env-file .env --profile sophon -f deploy/compose.production.yaml logs --tail=100 web api livekit postgres redis
+```
+
+**排查 Start call**。`LIVEKIT_SIGNAL_FAILED` 时先在出错的设备检查 `LIVEKIT_URL` 所对应的 HTTPS 根路径，预期返回 `OK`。证书警告按客户端信任步骤处理，连接超时检查 `7880/TCP`。出现 `LIVEKIT_JOIN_REJECTED` 时核对 API 和 LiveKit 的密钥配置。出现 `LIVEKIT_MEDIA_FAILED` 时核对 `LIVEKIT_NODE_IP`、`7881/TCP`、`7882/UDP` 及 NAT 映射。
+
+复现一次后在部署机采集最近的日志。API 用 `voice_session_id` 关联 `livekit_session_issued`、`livekit_stream_accepted` 和 `livekit_session_closed_before_stream`。签发后在控制连接建立前结束时，重点查看浏览器上的错误码。TLS 握手在 HTTP 请求前失败时，容器里可能没有对应的 HTTP 记录。
+
+```sh
+sudo docker compose --env-file .env --profile sophon -f deploy/compose.production.yaml \
+  logs --since=3m --tail=80 web api livekit
 ```
 
 **续期证书**。手动 DNS-01 使用第二步的签发命令更新 TXT 并续期。自动续期的 Certbot 配置可运行 `sudo certbot renew --cert-name voice.example.com`。私有 CA 使用[同机签发命令](#在部署机签发证书)续签，它会复用已有根 CA 和服务端私钥。证书更新后重建 Web，再执行第四步。若同时更新了 CA 信任文件，重建 API 并将新的根 CA 加入客户端信任。[Certbot 续期文档](https://eff-certbot.readthedocs.io/en/stable/using.html#renewing-certificates)

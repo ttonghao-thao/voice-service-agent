@@ -2,14 +2,17 @@
 
 import asyncio
 import json
+import logging
 from datetime import UTC, datetime
 from types import SimpleNamespace
+from urllib.parse import parse_qs, urlsplit
 
 import httpx
 import pytest
 from app.config import Settings
 from app.main import create_app
 from app.voice.livekit_room import RoomCall, RoomInputs, browser_credentials
+from fastapi.testclient import TestClient
 from livekit import api
 from pydantic import SecretStr
 from test_native_cuekb import evidence_v21, validate_v21
@@ -85,6 +88,42 @@ def test_room_token_allows_audio_only_in_its_own_room(tmp_path):
     assert claims.video.room == "voice-session-a"
     assert not claims.video.can_publish_data
     assert claims.video.can_publish_sources == ["microphone"]
+
+
+def test_livekit_session_logs_correlate_issuance_and_stream_start(tmp_path, monkeypatch, caplog):
+    config = settings(tmp_path)
+    app = create_app(config)
+    monkeypatch.setattr(logging.getLogger("app"), "propagate", True)
+
+    async def close_test_room(gateway, ws, session):
+        await ws.close()
+
+    monkeypatch.setattr("app.voice.livekit_room.run_room", close_test_room)
+    with TestClient(app) as client, caplog.at_level(logging.INFO):
+        cid = client.post("/api/v1/conversations", json={}).json()["id"]
+        path = f"/api/v1/conversations/{cid}/voice-sessions"
+        before_stream = client.post(path)
+        assert before_stream.status_code == 201
+        abandoned = before_stream.json()
+        closed_sid = abandoned["voice_session_id"]
+        assert client.delete(f"{path}/{closed_sid}").json()["status"] == "closed"
+        after_stream = client.post(path)
+        assert after_stream.status_code == 201
+        connected = after_stream.json()
+        streaming_sid = connected["voice_session_id"]
+        with client.websocket_connect(connected["ws_url"], headers={"Origin": config.public_origin}) as ws:
+            assert ws.receive()["type"] == "websocket.close"
+
+    assert [message for message in caplog.messages if message.startswith("livekit_")] == [
+        f"livekit_session_issued conversation_id={cid} voice_session_id={closed_sid}",
+        f"livekit_session_closed_before_stream conversation_id={cid} voice_session_id={closed_sid}",
+        f"livekit_session_issued conversation_id={cid} voice_session_id={streaming_sid}",
+        f"livekit_stream_accepted conversation_id={cid} voice_session_id={streaming_sid}",
+    ]
+    for session in (abandoned, connected):
+        ticket = parse_qs(urlsplit(session["ws_url"]).query)["ticket"][0]
+        assert ticket not in caplog.text
+        assert session["livekit"]["token"] not in caplog.text
 
 
 def test_stale_and_competing_speech_have_no_owner():

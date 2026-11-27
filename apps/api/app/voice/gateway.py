@@ -187,6 +187,7 @@ class VoiceGateway:
             if s.livekit_enabled:
                 from app.voice.livekit_room import browser_credentials
                 response["livekit"] = browser_credentials(s, sid)
+                logger.info("livekit_session_issued conversation_id=%s voice_session_id=%s", cid, sid)
             return response
 
     async def close_conversation(self, cid):
@@ -194,6 +195,8 @@ class VoiceGateway:
             if session.conversation_id == cid:
                 session.stopped = True
                 self.sessions.pop(sid, None)
+                if not session.used and self.settings.livekit_enabled:
+                    logger.info("livekit_session_closed_before_stream conversation_id=%s voice_session_id=%s", cid, sid)
                 if session.task and not session.closing and session.task is not asyncio.current_task():
                     session.task.cancel()
 
@@ -242,6 +245,7 @@ class VoiceGateway:
         await ws.accept()
         if self.settings.livekit_enabled:
             from app.voice.livekit_room import run_room
+            logger.info("livekit_stream_accepted conversation_id=%s voice_session_id=%s", session.conversation_id, sid)
             await run_room(self, ws, session)
             return
         provider = self.provider_factory(self.settings)
