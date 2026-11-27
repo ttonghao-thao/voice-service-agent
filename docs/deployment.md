@@ -163,6 +163,27 @@ sudo docker buildx build --load -f deploy/Dockerfile.api -t "voice-service-agent
 sudo docker buildx build --load -f deploy/Dockerfile.web -t "voice-service-agent-web:$vsa_image_tag" .
 ```
 
+### API 镜像的依赖下载
+
+API 镜像按 `requirements.txt` 安装固定版本。未提供构建配置时，pip 的网络读取超时为 60 秒。依赖下载复用当前 BuildKit builder 的缓存。如果出现下载超时或已发布的固定版本提示 `from versions: none`，先用同一 builder 和 `--progress=plain` 重试上面的 API 构建命令。保留缓存可复用先前下载的包。[pip 超时与重试](https://pip.pypa.io/en/stable/cli/pip/#general-options)
+
+如果部署网络需要指定可达的 PyPI 兼容源，在项目目录外准备 pip 配置。以下以官方 PyPI 为例，使用内部源时填部署方提供的 HTTPS `index-url`。[pip 配置格式](https://pip.pypa.io/en/stable/topics/configuration/#pip-config-file)
+
+```ini
+[global]
+index-url = https://pypi.org/simple
+timeout = 60
+retries = 5
+```
+
+将路径换成部署机上的实际配置。构建过程通过 `pip_config` 读取该文件，使用代理 CA 时可以同时传入 `--secret id=proxy_ca,src=/实际路径/ca-bundle.crt`。[BuildKit 构建 Secret](https://docs.docker.com/build/building/secrets/)
+
+```sh
+sudo docker buildx build --progress=plain --load \
+  --secret id=pip_config,src=/实际路径/pip.conf \
+  -f deploy/Dockerfile.api -t "voice-service-agent-api:$vsa_image_tag" .
+```
+
 ## 第三步：启动服务
 
 检查配置并拉取本机缺少的依赖镜像。LiveKit 与 Redis、PostgreSQL 由同一份 Compose 管理。

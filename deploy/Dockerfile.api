@@ -3,7 +3,13 @@ WORKDIR /app
 COPY requirements.txt ./
 RUN --mount=type=cache,id=voice-service-agent-api-pip,target=/root/.cache/pip,sharing=locked \
     --mount=type=secret,id=proxy_ca \
+    --mount=type=secret,id=pip_config \
     if [ -f /run/secrets/proxy_ca ]; then export PIP_CERT=/run/secrets/proxy_ca; fi; \
+    if [ -f /run/secrets/pip_config ]; then \
+        export PIP_CONFIG_FILE=/run/secrets/pip_config; \
+    else \
+        export PIP_DEFAULT_TIMEOUT=60; \
+    fi; \
     python -m pip install --disable-pip-version-check -r requirements.txt
 COPY apps/api apps/api
 COPY config config

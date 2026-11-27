@@ -299,6 +299,7 @@ SQLite 0006→head(0011)→0007/0006→head 与 Alembic check 保留旧历史；
 | 2026-11-26 本机 CueKB `30970e9` 契约复核 | 源码和 OpenAPI 均包含 `POST /v2/evidence/query`、`POST /v2/evidence/validate`，契约为 `cuekb.evidence/2.1`。CueKB 证据测试 14 项通过。语音服务 Adapter 通过进程内 ASGI 调用两个实际路由，均返回 HTTP 200，签名包复验 `valid`，语音证据通过 Adapter 校验 | 使用内存库、合成资料和 tokenizer。目标实例版本、实际业务 Key、库授权、生产容器和语音验收仍待验证 |
 | 2026-11-26 Sophon 可选查询依赖 | 语音项目定向回归 220 项、CueKB 证据测试 14 项通过。Compose v2.39.4 静态展开四种工具组合，Settings 均通过。启动脚本接受各可选组合并拒绝已启用工具缺少必填值。受控 `web_search` 单工具测试覆盖公开兜底和私有问题澄清 | 使用合成配置和受控上游。公网签证、真实服务和生产容器未运行 |
 | 2026-11-27 配置复核与公网 IPv4 私有 CA | 定向回归 290 项通过。审计模板 24 个生效字段和 19 个沿用的默认值。Compose v2.39.4 展开四种 Sophon 工具组合的两种证书配置，以及 NVIDIA 兼容配置，均通过应用启动校验。本机临时 CA 签发、续签、IP SAN 验证和 LiveKit SDK 的回环 WSS 信任通过 | 使用合成配置与证书。未运行生产 Docker、真实 LiveKit 房间及浏览器媒体，也未连接生产依赖 |
+| 2026-11-27 API 镜像依赖下载 | 部署契约 16 项通过。按 Linux/amd64 与 CPython 3.12 解析全部 101 个锁定包，下载并校验 `json-repair==0.63.5` wheel 的 SHA-256。构建命令覆盖无 Secret、单独传入 CA、单独传入 pip 配置及两者共存四种情况 | 使用本机 PyPI 访问与命令桩。目标 BuildKit builder 的重建结果待验 |
 
 2026-11-23 同 Compose 核查发现并修复配置阻塞：SOPHON_LIVE_MAX_DELEGATIONS_PER_INPUT 的环境字符串 1 被 Literal[1] 拒绝；改为整数且上下界均为 1，仍拒绝 0/2/非整数。测试从实际模板读取字符串配置并执行 Settings.validate_deployment。当前生产启动时，脚本按启用的查询校验连接配置。[部署手册](deployment.md#查询服务的选择)
 
