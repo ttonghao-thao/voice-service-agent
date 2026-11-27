@@ -6,7 +6,7 @@
 
 产品支持天气、通用知识和专业知识库三类查询。Sophon Live + LiveKit 默认启用三类，按 `ENABLED_TOOLS` 可省略天气和专业知识库，保留通用知识检索及受控兜底。NVIDIA 和旧 WebSocket 路径保留各自的兼容能力。
 
-Python 3.12/FastAPI、React/TypeScript/AudioWorklet、PostgreSQL/Redis。API/Web 独立镜像，迁移复用 API 镜像。LiveKit 与 PostgreSQL/Redis/API/Web 同属生产 Compose，使用同一 Redis 实例的 DB1，应用使用 DB0；Web 终止 7880/TCP 的 LiveKit TLS，7881/TCP、7882/UDP 由 LiveKit 直接发布。Sophon、NVIDIA VoiceChat、CueKB 独立部署；每 Room 的官方 AgentSession 已在 API 内，不另设业务 Agent 服务。
+Python 3.12/FastAPI、React/TypeScript/AudioWorklet、PostgreSQL/Redis。API/Web 独立镜像，迁移复用 API 镜像。LiveKit 与 PostgreSQL/Redis/API/Web 同属生产 Compose，使用同一 Redis 实例的 DB1，应用使用 DB0。Web 终止 7880/TCP 的 LiveKit TLS，7881/TCP、7882/UDP 由 LiveKit 直接发布。`LIVEKIT_RTC_INTERFACE` 可将 LiveKit 的 ICE 候选收集限制在指定容器网卡。Sophon、NVIDIA VoiceChat、CueKB 独立部署。每 Room 的官方 AgentSession 在 API 内运行。
 
 VOICE_PROVIDER 是唯一后端选择，生产只接受 sophon_live 或 nvidia，模板默认只配置 Sophon。工厂每次创建一个 Provider；livekit_enabled 同时检查选择为 Sophon 和 URL，避免残留字段让 NVIDIA 会话误走 Room。启动脚本据选择派生 Compose profile：Sophon 启动同 Compose 的 LiveKit，NVIDIA 停止该实例且不要求 Sophon/LiveKit/Qwen 凭据；Web 对未选择的 LiveKit 入口返回 404，并延迟 DNS 解析以允许 SFU 缺席。保留的未选后端字段不会激活服务。本期仅验证 Sophon；双后端配置契约不认证 NVIDIA 的业务能力。
 

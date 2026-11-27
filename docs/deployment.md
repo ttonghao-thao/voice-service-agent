@@ -76,6 +76,7 @@ nano .env
 | `VOICE_PROVIDER` | 模板为 `sophon_live`。切换 `nvidia` 见[兼容后端](#nvidia-兼容后端) |
 | `LIVEKIT_URL` | LiveKit 的 WSS origin。填证书覆盖的域名或 IPv4 和 `7880`，浏览器和 API 容器均须可达 |
 | `LIVEKIT_NODE_IP` | 客户端可达的服务器 IPv4，公网部署填实际公网地址 |
+| `LIVEKIT_RTC_INTERFACE` | 可选。填 LiveKit 容器处理 `7881/TCP` 和 `7882/UDP` 入站流量的网卡名，留空使用默认候选收集。按[选择 LiveKit 媒体网卡](#选择-livekit-媒体网卡)确认 |
 | `LIVEKIT_API_KEY`、`LIVEKIT_API_SECRET` | LiveKit 服务端和 API 共用的密钥对。分别用 URL-safe 随机值，Secret 至少 32 字符 |
 | `SOPHON_LIVE_WS_URL`、`SOPHON_LIVE_API_KEY` | Sophon 的完整 WSS 地址，含 `/v1/live/sessions`。上游允许匿名时 Key 可留空 |
 | `SOPHON_LIVE_LOCALE` | 本部署的语音语言，按上游选择 `zh-CN` 或 `en-US` |
@@ -84,6 +85,39 @@ nano .env
 | `WEATHER_BASE_URL`、`WEATHER_API_KEY` | 启用天气时填写和风天气专属 HTTPS API Host 和 Key |
 
 同一份 Compose 内，Web 的 Nginx 反代到 `livekit:7880`。API 按 `LIVEKIT_URL` 加入房间，并把同一地址随房间 Token 下发给浏览器。两端都需要访问该 WSS 入口。经 NAT 访问时，核对 API 容器的回环访问以及 `7881/TCP`、`7882/UDP` 原端口映射。
+
+### 选择 LiveKit 媒体网卡
+
+Sophon 部署使用固定 `LIVEKIT_NODE_IP` 时，若浏览器已通过信令却无法建立媒体连接，可只收集实际接收媒体流量的容器网卡上的 ICE 候选。将抓包中 Docker 转发的目标地址与容器网卡地址对照。以下命令显示现有 LiveKit 容器的 Compose 网络和网卡地址。[LiveKit 网卡过滤配置](https://github.com/livekit/livekit/blob/v1.13.11/config-sample.yaml#L174-L181)
+
+```sh
+vsa_livekit_id=$(sudo docker compose --env-file .env --profile sophon \
+  -f deploy/compose.production.yaml ps -q livekit)
+sudo docker inspect -f '{{range $name, $network := .NetworkSettings.Networks}}{{println $name $network.IPAddress}}{{end}}' "$vsa_livekit_id"
+vsa_livekit_pid=$(sudo docker inspect -f '{{.State.Pid}}' "$vsa_livekit_id")
+sudo nsenter -t "$vsa_livekit_pid" -n ip -o -4 addr show
+```
+
+在部署机 `.env` 中填写匹配目标地址的容器网卡名。若 `ip` 显示 `eth2@if47`，填 `eth2`。安排维护窗口重建 `livekit`，正在进行的通话会断开。
+
+```dotenv
+LIVEKIT_RTC_INTERFACE=eth2
+```
+
+```sh
+sudo docker compose --env-file .env --profile sophon -f deploy/compose.production.yaml \
+  up -d --no-deps --force-recreate --wait livekit
+```
+
+预期 `livekit` 为 healthy。如果重建返回 unhealthy，用下列命令查看健康检查输出。网卡不存在时检查新容器的接口名。需要恢复默认候选收集时，将 `LIVEKIT_RTC_INTERFACE` 留空并再次重建 `livekit`。
+
+```sh
+vsa_livekit_id=$(sudo docker compose --env-file .env --profile sophon \
+  -f deploy/compose.production.yaml ps -q livekit)
+sudo docker inspect -f '{{range .State.Health.Log}}{{println .Output}}{{end}}' "$vsa_livekit_id"
+```
+
+重建成功后核对网卡地址与媒体流量的转发目标一致，再按[浏览器媒体检查](validation.md#start-call-媒体未建连)复测。
 
 ### 查询服务的选择
 
@@ -330,7 +364,7 @@ sudo docker compose --env-file .env --profile sophon \
 sudo docker compose --env-file .env --profile sophon -f deploy/compose.production.yaml logs --tail=100 web api livekit postgres redis
 ```
 
-**排查 Start call**。`LIVEKIT_SIGNAL_FAILED` 时先在出错的设备检查 `LIVEKIT_URL` 所对应的 HTTPS 根路径，预期返回 `OK`。证书警告按客户端信任步骤处理，连接超时检查 `7880/TCP`。出现 `LIVEKIT_JOIN_REJECTED` 时核对 API 和 LiveKit 的密钥配置。出现 `LIVEKIT_MEDIA_FAILED` 时核对 `LIVEKIT_NODE_IP`、`7881/TCP`、`7882/UDP` 及 NAT 映射。
+**排查 Start call**。`LIVEKIT_SIGNAL_FAILED` 时先在出错的设备检查 `LIVEKIT_URL` 所对应的 HTTPS 根路径，预期返回 `OK`。证书警告按客户端信任步骤处理，连接超时检查 `7880/TCP`。出现 `LIVEKIT_JOIN_REJECTED` 时核对 API 和 LiveKit 的密钥配置。出现 `LIVEKIT_MEDIA_FAILED` 时核对 `LIVEKIT_NODE_IP`、`7881/TCP`、`7882/UDP` 及 NAT 映射。媒体包已进入容器时，按[选择 LiveKit 媒体网卡](#选择-livekit-媒体网卡)核对候选接口。
 
 复现一次后在部署机采集最近的日志。API 用 `voice_session_id` 关联 `livekit_session_issued`、`livekit_stream_accepted` 和 `livekit_session_closed_before_stream`。签发后在控制连接建立前结束时，重点查看浏览器上的错误码。TLS 握手在 HTTP 请求前失败时，容器里可能没有对应的 HTTP 记录。
 

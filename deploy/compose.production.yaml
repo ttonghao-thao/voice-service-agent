@@ -49,6 +49,7 @@ services:
     profiles: [sophon]
     image: livekit/livekit-server:v1.13.11
     environment:
+      LIVEKIT_RTC_INTERFACE: ${LIVEKIT_RTC_INTERFACE:-}
       LIVEKIT_CONFIG: |
         port: 7880
         bind_addresses: ["0.0.0.0"]
@@ -57,6 +58,8 @@ services:
           udp_port: 7882
           node_ip: "${LIVEKIT_NODE_IP:-}"
           use_external_ip: false
+          interfaces:
+            includes: ${LIVEKIT_RTC_INTERFACE:+["${LIVEKIT_RTC_INTERFACE}"]}
         redis:
           address: redis:6379
           password: "${REDIS_PASSWORD:?Set REDIS_PASSWORD in .env}"
@@ -69,7 +72,14 @@ services:
     depends_on:
       redis: {condition: service_healthy}
     healthcheck:
-      test: ["CMD-SHELL", "wget -q -O /dev/null http://127.0.0.1:7880/"]
+      test:
+        - CMD-SHELL
+        - |
+          if [ -n "$${LIVEKIT_RTC_INTERFACE}" ] && [ ! -r "/sys/class/net/$${LIVEKIT_RTC_INTERFACE}/ifindex" ]; then
+            echo "LIVEKIT_RTC_INTERFACE '$${LIVEKIT_RTC_INTERFACE}' was not found in the LiveKit container." >&2
+            exit 1
+          fi
+          wget -q -O /dev/null http://127.0.0.1:7880/
       interval: 5s
       timeout: 3s
       retries: 20

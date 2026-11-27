@@ -67,6 +67,8 @@ def test_cloud_compose_is_a_production_only_container_topology():
     assert services["api"]["environment"]["REDIS_URL"].endswith("@redis:6379/0")
     assert config["rtc"]["node_ip"] == "${LIVEKIT_NODE_IP:-}"
     assert config["rtc"]["use_external_ip"] is False
+    assert config["rtc"]["interfaces"]["includes"] == '${LIVEKIT_RTC_INTERFACE:+["${LIVEKIT_RTC_INTERFACE}"]}'
+    assert livekit["environment"]["LIVEKIT_RTC_INTERFACE"] == "${LIVEKIT_RTC_INTERFACE:-}"
     assert config["rtc"]["udp_port"] == 7882 and config["rtc"]["tcp_port"] == 7881
     assert livekit["ports"] == ["0.0.0.0:7881:7881/tcp", "0.0.0.0:7882:7882/udp"]
     assert livekit["depends_on"]["redis"]["condition"] == "service_healthy"
@@ -84,6 +86,29 @@ def test_cloud_compose_is_a_production_only_container_topology():
     assert compose["networks"]["app"]["internal"] is True
 
 
+@pytest.mark.parametrize(("interface", "status"), [("", 0), ("eth2", 0), ("eth9", 1)])
+def test_livekit_healthcheck_requires_configured_interface(tmp_path, interface, status):
+    compose = yaml.safe_load((ROOT / "deploy/compose.production.yaml").read_text())
+    check = compose["services"]["livekit"]["healthcheck"]["test"][1]
+    interfaces = tmp_path / "interfaces"
+    (interfaces / "eth2").mkdir(parents=True)
+    (interfaces / "eth2" / "ifindex").write_text("3\n")
+    wget = tmp_path / "wget"
+    wget.write_text('#!/bin/sh\nprintf "HTTP readiness checked\\n"\n')
+    wget.chmod(0o755)
+    result = subprocess.run(
+        ["sh", "-c", check.replace("$$", "$").replace("/sys/class/net", str(interfaces))],
+        env={"PATH": f"{tmp_path}:{os.environ['PATH']}", "LIVEKIT_RTC_INTERFACE": interface},
+        capture_output=True, text=True, check=False,
+    )
+    assert result.returncode == status
+    if status:
+        assert f"LIVEKIT_RTC_INTERFACE '{interface}' was not found" in result.stderr
+        assert result.stdout == ""
+    else:
+        assert result.stdout == "HTTP readiness checked\n"
+
+
 def test_cloud_environment_template_cannot_enable_development_fallbacks():
     values = {}
     for line in (ROOT / ".env.example").read_text().splitlines():
@@ -92,7 +117,8 @@ def test_cloud_environment_template_cannot_enable_development_fallbacks():
             values[key] = value
 
     assert set(values) == {
-        "LIVEKIT_URL", "LIVEKIT_NODE_IP", "LIVEKIT_API_KEY", "LIVEKIT_API_SECRET", "WEB_SEARCH_API_KEY",
+        "LIVEKIT_URL", "LIVEKIT_NODE_IP", "LIVEKIT_RTC_INTERFACE", "LIVEKIT_API_KEY", "LIVEKIT_API_SECRET",
+        "WEB_SEARCH_API_KEY",
         "WEATHER_BASE_URL", "WEATHER_API_KEY",
         "IMAGE_TAG",
         "PUBLIC_ORIGIN",
@@ -120,6 +146,7 @@ def test_cloud_environment_template_cannot_enable_development_fallbacks():
     assert urlparse(values["LIVEKIT_URL"]).scheme == "wss"
     assert urlparse(values["LIVEKIT_URL"]).port == 7880
     assert values["LIVEKIT_NODE_IP"].startswith("REPLACE_")
+    assert values["LIVEKIT_RTC_INTERFACE"] == ""
     origin = urlparse(values["PUBLIC_ORIGIN"])
     assert origin.scheme == "https" and origin.port == 8087 and origin.path == ""
     assert values["WEB_TLS_CERT_FILE"].startswith("/")
@@ -251,7 +278,9 @@ def test_deployment_rejects_incomplete_config_before_starting_containers(tmp_pat
         '#!/bin/sh\n'
         'printf "%s | profiles=%s\\n" "$*" "$COMPOSE_PROFILES" >> "$DOCKER_CALLS"\n'
         'case "$*" in\n'
-        '  *" config --quiet") printf "%s,%s\\n%s\\n" "${AGENT_PROVIDER-unset}" "${WEATHER_MODE-unset}" "$ENABLED_TOOLS" > "$COMPOSE_INPUTS" ;;\n'
+        '  *" config --quiet")\n'
+        '    printf "%s,%s\\n%s\\n%s\\n" "${AGENT_PROVIDER-unset}" "${WEATHER_MODE-unset}" \\\n'
+        '      "$LIVEKIT_RTC_INTERFACE" "$ENABLED_TOOLS" > "$COMPOSE_INPUTS" ;;\n'
         'esac\nexit 0\n'
     )
     docker.chmod(0o755)
@@ -264,6 +293,7 @@ def test_deployment_rejects_incomplete_config_before_starting_containers(tmp_pat
         "COMPOSE_INPUTS": str(compose_inputs),
         "AGENT_PROVIDER": "mock",
         "WEATHER_MODE": "mock",
+        "LIVEKIT_RTC_INTERFACE": "inherited0",
     }
     values = {
         "IMAGE_TAG": "test",
@@ -325,7 +355,7 @@ def test_deployment_rejects_incomplete_config_before_starting_containers(tmp_pat
     values["PUBLIC_ORIGIN"] = "https://voice.test:8087"
     accepted_https = check()
     assert accepted_https.returncode == 0
-    assert compose_inputs.read_text().splitlines() == ["unset,unset", COMPOSE_DEFAULTS["ENABLED_TOOLS"]]
+    assert compose_inputs.read_text().splitlines() == ["unset,unset", "", COMPOSE_DEFAULTS["ENABLED_TOOLS"]]
     assert all(line.endswith(" | profiles=sophon") for line in calls.read_text().splitlines()[1:])
     commands = [line.split(" | profiles=", 1)[0] for line in calls.read_text().splitlines()]
     infrastructure = next(i for i, command in enumerate(commands) if command.endswith("postgres redis livekit"))
@@ -335,6 +365,11 @@ def test_deployment_rejects_incomplete_config_before_starting_containers(tmp_pat
     web = next(i for i, command in enumerate(commands) if command.endswith("--force-recreate web"))
     assert infrastructure < migration < api < verification < web
     assert not any("configure_native_cuekb.py" in command for command in commands)
+    values["LIVEKIT_RTC_INTERFACE"] = '"eth2"'
+    accepted_interface = check()
+    assert accepted_interface.returncode == 0, accepted_interface.stderr
+    assert compose_inputs.read_text().splitlines()[1] == "eth2"
+    del values["LIVEKIT_RTC_INTERFACE"]
     values["QA_ANSWER_POLICY"] = "knowledge_required"
     rejected_strict = check()
     assert rejected_strict.returncode != 0
@@ -345,6 +380,9 @@ def test_deployment_rejects_incomplete_config_before_starting_containers(tmp_pat
         ("LIVEKIT_URL", "ws://voice.test:7880", "WSS origin"),
         ("LIVEKIT_URL", "", "real value for LIVEKIT_URL"),
         ("LIVEKIT_NODE_IP", "203.0.113.999", "host IPv4"),
+        ("LIVEKIT_RTC_INTERFACE", "eth2,eth0", "one container network interface name"),
+        ("LIVEKIT_RTC_INTERFACE", "..", "one container network interface name"),
+        ("LIVEKIT_RTC_INTERFACE", "very-long-interface0", "one container network interface name"),
         ("LIVEKIT_API_KEY", 'key\": injected', "URL-safe"),
         ("LIVEKIT_API_SECRET", "too-short", "at least 32"),
         ("LIVEKIT_API_SECRET", "", "real value for LIVEKIT_API_SECRET"),
@@ -396,9 +434,11 @@ def test_deployment_rejects_incomplete_config_before_starting_containers(tmp_pat
     for name in list(values):
         if name.startswith(("SOPHON_", "LIVEKIT_", "DELEGATION_ROUTER_")):
             values.pop(name)
+    values["LIVEKIT_RTC_INTERFACE"] = "eth2,eth0"
     env["COMPOSE_PROFILES"] = "sophon"
     accepted_nvidia = check()
     assert accepted_nvidia.returncode == 0, accepted_nvidia.stderr
+    assert compose_inputs.read_text().splitlines()[1] == ""
     commands = calls.read_text().splitlines()[1:]
     assert all(command.endswith(" | profiles=") for command in commands)
     assert any("--profile sophon stop livekit" in command for command in commands)

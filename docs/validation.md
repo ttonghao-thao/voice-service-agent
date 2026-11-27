@@ -77,6 +77,14 @@ PYTHON
 
 本机 Web 单测 49 项、定向 Python 回归 39 项通过，TypeScript/Web 构建和 Ruff 通过。Chromium 使用假麦克风和受控信令响应，确认 `503` 和 `401` 分别显示信令失败及入房拒绝，会话清理成功且未打开控制 WS。API 回归确认票据签发、控制 WS 接受和提前关闭日志可关联，日志不含票据正文。目标环境的公信证书签发和续期、iPhone 入房以及双向音频仍待现场验证。[证书配置与排查](deployment.md#公网-ipv4-与公信证书)
 
+#### Start call 媒体未建连
+
+2026-11-27 联调抓包确认 `7881/TCP` 数据经过 Docker 转发进入 LiveKit 容器，采集窗口内从容器回出的 TCP 包均为零载荷。采集被包数上限提前终止，现场 UDP 可达性待查。本机使用 LiveKit `v1.13.11` 所锁定的 ICE `v4.4.0-warp.3` 完成两轮对照。将两个本地地址改写成同一候选时 TCP 2/2 超时，仅保留入站接口时 TCP 2/2 建连，UDP 在两组均成功。现场采用网卡过滤后的结果待复测。
+
+接口配置的定向 Python 回归 42 项通过，覆盖指定网卡、留空、无效值和网卡缺失时的健康检查。Compose v2.20.3、v2.39.4 均使用合成配置验证了 `rtc.interfaces.includes` 的展开结果和 NVIDIA 路径的服务选择。目标部署机的 LiveKit 重建和通话仍待验证。
+
+在部署机[配置媒体网卡](deployment.md#选择-livekit-媒体网卡)后，从原故障客户端发起新通话。先在浏览器 WebRTC 统计中确认有选中的 ICE 候选对，再从 LiveKit 观察 `caller` 与 `agent` 加入同一 Room，并确认门户出现 `Voice ready`，最后按本节问候用例确认双向音频。记录候选对使用 TCP 或 UDP、入房和听音结果。
+
 ### LiveKit 门户与工具验收
 
 以下是开发复现入口，需 Web 开发依赖、Chromium、ffmpeg，以及对应 locale 的真实 API/Web/LiveKit。默认生产验收仍在容器执行；本轮用户明确允许本机且排除真实 CueKB，范围见 §8。不得用纯音/替身引擎替代真实录音。固定官方源，不升级 HEAD：

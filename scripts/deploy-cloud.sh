@@ -64,6 +64,7 @@ if tool_enabled weather; then
 fi
 
 voice_provider=$(environment_value VOICE_PROVIDER)
+livekit_rtc_interface=
 case "$voice_provider" in
   sophon_live)
     require_values SOPHON_LIVE_WS_URL LIVEKIT_URL LIVEKIT_API_KEY LIVEKIT_API_SECRET LIVEKIT_NODE_IP \
@@ -86,6 +87,19 @@ case "$voice_provider" in
       { for (i=1; i<=4; i++) if ($i !~ /^[0-9]+$/ || $i > 255) exit 1 }
     '; then
       echo "LIVEKIT_NODE_IP must be the deployment host IPv4 reachable by clients and the API." >&2
+      exit 1
+    fi
+    livekit_rtc_interface=$(environment_value LIVEKIT_RTC_INTERFACE)
+    case "$livekit_rtc_interface" in
+      \"*\"|\'*\')
+        livekit_rtc_interface=${livekit_rtc_interface#?}
+        livekit_rtc_interface=${livekit_rtc_interface%?}
+        ;;
+    esac
+    if ! printf '%s\n' "$livekit_rtc_interface" | LC_ALL=C awk '
+      length($0) > 15 || $0 == "." || $0 == ".." || /[^A-Za-z0-9_.-]/ { exit 1 }
+    '; then
+      echo "LIVEKIT_RTC_INTERFACE must be empty or one container network interface name (for example eth2)." >&2
       exit 1
     fi
     export COMPOSE_PROFILES=sophon
@@ -158,6 +172,7 @@ export ENABLED_TOOLS="$enabled_tools"
 for key in LIVEKIT_URL LIVEKIT_NODE_IP LIVEKIT_API_KEY LIVEKIT_API_SECRET; do
   export "$key=$(environment_value "$key")"
 done
+export LIVEKIT_RTC_INTERFACE="$livekit_rtc_interface"
 compose config --quiet
 for image in "$api_image" "$web_image"; do
   if ! docker image inspect "$image" >/dev/null 2>&1; then
