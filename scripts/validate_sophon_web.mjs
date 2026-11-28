@@ -43,10 +43,11 @@ const browser = await chromium.launch({ headless: true,
 const results = [];
 const voiceProfile = values["profile-json"] ? JSON.parse(await readFile(resolve(values["profile-json"]), "utf8")) : null;
 const sourceFiles = ["apps/api/app/voice/livekit_room.py", "apps/api/app/voice/delegation_router.py",
+  "apps/api/app/voice/sophon_diagnostics.py", "apps/api/app/contracts.py", "apps/api/app/storage/store.py",
   "apps/api/app/config.py", "apps/api/app/tools/registry.py", "config/delegation-router-prompt.txt",
   "apps/api/app/voice/profiles.py", "apps/api/app/voice/sophon_gpt_live.py",
   "apps/api/app/voice/gateway.py", "apps/api/app/api/routes.py", "apps/web/src/App.tsx", "apps/web/src/VoiceProfiles.tsx",
-  "apps/web/src/audio/VoiceClient.ts", "apps/web/src/audio/LiveKitMedia.ts",
+  "apps/web/src/audio/VoiceClient.ts", "apps/web/src/audio/LiveKitMedia.ts", "apps/web/src/SophonInteraction.tsx",
   "config/sophon-livekit-prompt-zh.txt", "config/sophon-livekit-prompt-en.txt"];
 const fileHashes = Object.fromEntries(await Promise.all(sourceFiles.map(async (name) =>
   [name, createHash("sha256").update(await readFile(join(root, name))).digest("hex")])));
@@ -196,6 +197,8 @@ try {
           return response.json();
         }, { id: r.conversation_id, token: accessToken });
         r.route_records = history.records.filter((item) => item.kind === "sophon_route");
+        r.interaction_records = history.records.filter((item) => item.kind === "sophon_interaction");
+        r.interaction_status_visible = (await page.locator(".sophon-status").count()) > 0;
         r.business_outcomes = history.items.map((item) => ({ delegation_id: item.native_call_id,
           tool: item.selected_tool, status: item.answer?.status ?? item.status,
           reason_code: item.answer?.reason_code ?? null }));
@@ -221,6 +224,30 @@ try {
       r.tool_executed = r.tool_runs.length > 0;
       r.tool_status = r.tool_runs.map((line) => line.match(/status=(\S+)/)?.[1] ?? "unknown");
       r.commentary_ack = r.server_events.some((line) => line.includes("sophon_room_commentary_ack "));
+    }
+    const observations = (r.interaction_records || []).map((row) => row.payload);
+    const delegated = observations.filter((item) => item.kind === "delegation" && item.structure !== "unavailable");
+    const inputs = observations.filter((item) => item.kind === "input");
+    if (delegated.length || inputs.length) {
+      if (delegated.length || inputs.every((item) => item.observation_complete &&
+          ["sophon_replied", "no_reply_or_delegation"].includes(item.status))) {
+        r.native_delegation = delegated.length > 0;
+        r.delegation_matches = r.observation_complete && (r.native_delegation === (c.expect === "delegate"));
+      } else {
+        delete r.native_delegation;
+        r.delegation_matches = false;
+      }
+      const intent = delegated.find((item) => item.intent)?.intent;
+      r.route = intent?.route ?? null;
+      r.parse_method = intent?.parse_method ?? null;
+      r.route_matches = r.expected_route && r.native_delegation ? r.route === r.expected_route : null;
+      const adapters = delegated.flatMap((item) => item.tool_executions)
+        .filter((run) => run.operation === "adapter" && run.entered);
+      r.tool_executed = adapters.length > 0;
+      r.tool_status = adapters.map((run) => run.status === "completed" ? "ok" : run.reason_code || run.status);
+      r.gateway_received_results = delegated.filter((item) => item.delivery?.kind === "tool_result"
+        && item.delivery.status === "gateway_received").length;
+      r.invalid_native_structures = delegated.filter((item) => item.structure === "invalid").length;
     }
     r.asr_text = r.input_transcript;
     r.speech_observed = r.media?.active_frames > 0;
@@ -250,6 +277,8 @@ await writeFile(join(output, "summary.json"), JSON.stringify({ application_commi
     correctly_routed_supported_cases: results.filter((r) => r.route_matches === true).length,
     llm_parsed_cases: results.filter((r) => r.parse_method === "llm").length,
     llm_failure_cases: results.filter((r) => r.delegation_tasks?.some((task) => task.reason?.startsWith("llm_"))).map((r) => r.id),
+    diagnostics_visible_cases: results.filter((r) => r.interaction_status_visible).length,
+    invalid_native_structure_cases: results.filter((r) => r.invalid_native_structures > 0).map((r) => r.id),
     tools_executed: results.filter((r) => r.tool_executed).length,
     tools_succeeded: results.filter((r) => r.tool_executed && r.tool_status.every((s) => s === "ok")).length,
     business_answered_cases: results.filter((r) => r.business_outcomes?.some((item) => item.status === "answered")).length,

@@ -31,6 +31,17 @@ import {
 } from "./audio/VoiceClient";
 import { prepareRecording, PreparedRecording } from "./audio/recordedAudio";
 import { answerLabel, sourceNotice, spokenReplyUnverified } from "./answerPresentation";
+import {
+  DelegationObservation,
+  InputObservation,
+  restrictDelegation,
+  SophonInteraction,
+  sophonInteractionEvent,
+  sophonInteractionRecord,
+  SophonObservation,
+  SophonUnassigned,
+  UnassignedObservation,
+} from "./SophonInteraction";
 import { VoiceProfiles } from "./VoiceProfiles";
 
 const stateLabels: Record<VoiceState, string> = {
@@ -62,6 +73,17 @@ const recordingStageLabels: Record<RecordingProgress["stage"], string> = {
 
 function visibleTurnStatus(turn: Turn) {
   return turn.answer?.status || turn.status;
+}
+
+type ObservationUpdate = { epoch: number; serverSeq: number; item: SophonObservation };
+
+function mergeObservations(old: Record<string, ObservationUpdate>, updates: ObservationUpdate[]) {
+  const next = { ...old };
+  for (const row of updates) {
+    const key = `${row.epoch}:${row.item.interaction_id}`;
+    if (!next[key] || next[key].serverSeq <= row.serverSeq) next[key] = row;
+  }
+  return next;
 }
 
 export default function App() {
@@ -111,6 +133,8 @@ export default function App() {
   const [presentations, setPresentations] = useState<Record<string, {
     turnId: string; inputKey?: string; status: string; reason: string;
   }>>({});
+  const [observations, setObservations] = useState<Record<string, ObservationUpdate>>({});
+  const observationAccess = useRef(0);
   const epoch = useRef(0),
     requestRevision = useRef(0),
     active = useRef(""),
@@ -132,7 +156,35 @@ export default function App() {
     setProgress("");
     setInputState("quiet");
   }, []);
+  const restrictObservations = useCallback((ended = false) => {
+    ++observationAccess.current;
+    setObservations((old) => Object.fromEntries(
+      Object.entries(old).map(([key, row]) => {
+        const item = restrictDelegation(row.item);
+        if (ended && item.kind === "input" && !item.observation_complete) {
+          return [key, { ...row, item: {
+            ...item,
+            observation_complete: true,
+            reason_code: "OBSERVATION_INTERRUPTED",
+            status: item.status === "delegation_received" ? item.status : "observation_interrupted",
+          } }];
+        }
+        if (ended && item.kind === "delegation" && (item.status === "received" || item.status === "processing")) {
+          return [key, { ...row, item: {
+            ...item,
+            status: "interrupted",
+            reason_code: "OBSERVATION_INTERRUPTED",
+            delivery: item.delivery?.status === "queued"
+              ? { ...item.delivery, status: "receipt_unknown" }
+              : item.delivery,
+          } }];
+        }
+        return [key, { ...row, item }];
+      }),
+    ));
+  }, []);
   const refresh = useCallback(async (id: string, older?: string) => {
+    const access = observationAccess.current;
     const data = await api<{
       items: Turn[];
       records: RecordItem[];
@@ -179,6 +231,13 @@ export default function App() {
         : data.items,
     );
     const records = data.records || [];
+    const diagnosticRecords = access === observationAccess.current
+      ? records.filter((record) => record.kind === sophonInteractionRecord && record.server_seq !== undefined)
+      : [];
+    const diagnostics = diagnosticRecords.map((record) => ({
+      epoch: record.epoch, serverSeq: record.server_seq!, item: record.payload as unknown as SophonObservation,
+    }));
+    if (diagnostics.length) setObservations((old) => mergeObservations(old, diagnostics));
     setPresentations((old) => {
       const next = { ...old };
       for (const r of records) {
@@ -247,6 +306,10 @@ export default function App() {
           key: `input:${record.epoch}:${record.source_id}`,
           time: Date.parse(record.created_at || "") || 0,
         })),
+      ...diagnostics.flatMap(({ epoch, item }, i) => item.input_item_id ? [{
+        key: `input:${epoch}:${item.input_item_id}`,
+        time: Date.parse(diagnosticRecords[i].created_at) || 0,
+      }] : []),
     ].sort((a, b) => a.time - b.time);
     setTimeline((previous) => {
       const added = entries
@@ -262,11 +325,19 @@ export default function App() {
   }, []);
   const handleEvent = useCallback(
     (event: PortalEvent) => {
-      if (
-        event.conversation_id !== active.current ||
-        event.epoch < epoch.current
-      )
+      if (event.conversation_id !== active.current) return;
+      if (event.type === sophonInteractionEvent) {
+        const item = event.payload as unknown as SophonObservation;
+        setObservations((old) => mergeObservations(old, [{
+          epoch: event.epoch, serverSeq: event.server_seq, item,
+        }]));
+        if (item.input_item_id) {
+          const key = `input:${event.epoch}:${item.input_item_id}`;
+          setTimeline((old) => old.includes(key) ? old : [...old, key]);
+        }
         return;
+      }
+      if (event.epoch < epoch.current) return;
       if (lastEvent.current.has(event.event_id)) return;
       lastEvent.current.add(event.event_id);
       if (lastEvent.current.size > 2048)
@@ -475,21 +546,24 @@ export default function App() {
       `/conversations/${cid}/events`,
       handleEvent,
       (message) => setError(message),
+      restrictObservations,
+      () => void refresh(cid).catch((e) => setError(e.message)),
     );
     stopEvents.current = stop;
     return () => {
       stop();
       if (stopEvents.current === stop) stopEvents.current = null;
     };
-  }, [cid, refresh, handleEvent]);
+  }, [cid, refresh, handleEvent, restrictObservations]);
   useEffect(() => {
     if (followBottom.current) end.current?.scrollIntoView({ block: "end" });
-  }, [turns, progress, inputs, spoken, timeline]);
+  }, [turns, progress, inputs, spoken, timeline, observations]);
   async function closeCurrentCall() {
+    await voice.current?.stop();
     stopEvents.current?.();
     stopEvents.current = null;
-    await voice.current?.stop();
     const id = active.current;
+    restrictObservations(true);
     active.current = "";
     if (id)
       await api(`/conversations/${id}`, { method: "DELETE" }).catch(() => {});
@@ -529,6 +603,7 @@ export default function App() {
       setInputs({});
       setSpoken({});
       setPresentations({});
+      setObservations({});
       setTimeline([]);
       setFinishedTurns(new Set());
       followBottom.current = true;
@@ -707,6 +782,19 @@ export default function App() {
       turn,
     ]),
   );
+  const observationsByInput = new Map<string, { input?: InputObservation; delegations: DelegationObservation[] }>();
+  const unassigned: (DelegationObservation | UnassignedObservation)[] = [];
+  for (const { epoch, item } of Object.values(observations)) {
+    if (item.kind === "unassigned" || (item.kind === "delegation" && !item.input_item_id)) {
+      unassigned.push(item);
+      continue;
+    }
+    const key = `input:${epoch}:${item.input_item_id}`;
+    const group = observationsByInput.get(key) || { delegations: [] };
+    if (item.kind === "input") group.input = item;
+    else group.delegations.push(item);
+    observationsByInput.set(key, group);
+  }
   const nav = (
     <>
       <div className="brand">
@@ -1057,7 +1145,8 @@ export default function App() {
                 const input = key.startsWith("input:")
                   ? inputs[key.slice(6)]
                   : null;
-                if (!t && !input) return null;
+                const observation = observationsByInput.get(key);
+                if (!t && !input && !observation) return null;
                 const speechParts = Object.values(spoken).filter(
                   (part) => part.inputKey ? part.inputKey === key : part.turnId === (t?.id || key),
                 );
@@ -1085,9 +1174,12 @@ export default function App() {
                         {input?.unbound ? "You · Unassociated caption" : delegated ? "Delegated request" : t?.channel === "text" ? "You · Text" : "You · Voice request"}
                       </span>
                       <p aria-live={t ? undefined : "polite"}>
-                        {t?.user_text || input?.text || (candidateSpeech ? "Voice input · Transcript unavailable" : "…")}
+                        {t?.user_text || input?.text || (observation ? "Voice input" :
+                          candidateSpeech ? "Voice input · Transcript unavailable" : "…")}
                       </p>
-                      {!t && !speech && (
+                      {observation && <SophonInteraction {...observation} />}
+                      {delegated && !observation && <small className="input-status">Interaction details unavailable</small>}
+                      {!t && !speech && !observation && (
                         <small className="input-status">
                           {input?.done
                             ? linkedReply ? "Included in the knowledge reply above."
@@ -1234,6 +1326,7 @@ export default function App() {
                   </article>
                 );
               })}
+              {!!unassigned.length && <SophonUnassigned items={unassigned} />}
               <div ref={end} />
             </div>
             {!atBottom && (

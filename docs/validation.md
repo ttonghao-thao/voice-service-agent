@@ -1,6 +1,6 @@
 # 验证方法与执行记录
 
-类型：唯一验证入口。先查 §1；本轮 Qwen 接入与用户授权的本机验证见 §8，复跑按 Provider 读 §2 或 §3。通用放行见 §4，其他能力待验项见 §6，旧开发/部署检查见 §7。§5 是已解决历史，仅追溯时读取。部署操作只看 [deployment.md](deployment.md)，未实施的验收容器看 [方案](implementation-plan.md)。
+类型：唯一验证入口。先查 §1。Qwen 接入及本机验证见 §8，逐轮诊断见 §9。复跑按 Provider 读 §2 或 §3。通用放行见 §4，其他能力待验项见 §6，旧开发/部署检查见 §7。§5 是已解决历史，仅追溯时读取。部署操作见 [deployment.md](deployment.md)，验收容器计划见 [方案](implementation-plan.md)。
 
 ## 1. 当前结论与证据边界
 
@@ -9,6 +9,7 @@ Sophon 部署保留通用知识及受控兜底，天气和专业知识库按 `EN
 | 检查 | 最近已执行事实 | 尚不能证明 |
 | --- | --- | --- |
 | 当前 Qwen 原生任务链 | 接入、官方录音重复、角色/同 Room 两问及回归结果见 §8 | 不等于真实 CueKB、完整口述或生产容器放行 |
+| Sophon 逐轮委派诊断 | 受控 Gateway、权限过滤和 Chromium 门户回归见 §9 | 本版本的官方录音、真实查询和听音验收待完成 |
 | 专业知识库 | 问题/权限/失败有受控回归；本轮按用户要求排除真实服务 | 不以契约/部分服务代表真实 query/validate 或完整三类交付 |
 | 天气/通用知识 | 真实 QWeather/Tavily 执行和回执，公开来源保留 | Melbourne 同名地点仅澄清；§6 的语音型号保真缺口仍需独立验收 |
 | 角色/ASR | 名字、快照、隔离、五种 ASR 状态的业务独立性有证据 | 完整 Persona 遵循、真实 ASR 开关对照、人耳听音 |
@@ -112,6 +113,8 @@ node scripts/validate_sophon_web.mjs \
 ```
 
 每次整组运行保存应用/source/WAV hash、原 delegation ID/task、route/parse_method、工具次数/status、business_outcomes、回执、ASR/候选语音和时间。asr_enabled 不能确认时为 null，字幕是否可见单列；Registry status=ok 只是调用正常，business_answered_cases 才区分可用结果/澄清，但依然不证明最终口述。
+
+新版本同时保存 interaction_records 和门户状态是否可见。使用原生结构记录区分格式不匹配，用实际进入 Adapter 的证据计算工具执行，将工具结果的 Gateway 回执与处置提示的回执分开。归属不确定或中断的观察保留在原样本集。
 
 固定录音重复分别比较 ASR 开/关原生率和执行率，不要求逐字相同。补测同一合法 task 的 ASR 正常/迟到/空/错/关闭；角色 CRUD/跨用户/删除回退/新会话/重连，以及改角色后三类工具、缺地点、同名城市、超日期、未知/重复 ID、超时、隐私外发、快速追问和打断。原查询在普通发声时继续结清，旧结果不能注入新问题。需至少三十条有实际音频/结果的样本、两个以上真实会话及分层指标；纯文本规则不替代它们。
 
@@ -383,3 +386,18 @@ publication-source-manifest.json 标记公网门禁阶段 hash，同 Room 复测
 ```
 
 真实 CueKB、生产迁移/公网媒体、更多表达/真实交错打断、型号语音保真、完整 Persona、最终口述关联及听音仍按任务板分别验收；本轮结果不重新打开 §5 已解决的原问题，也不覆盖这些未验范围。
+
+## 9. Sophon 逐轮委派诊断
+
+2026-11-28 使用隔离 SQLite、固定依赖的 GPT-Live SDK、受控 WebSocket Gateway 和 HTTP 工具替身。新增用例覆盖 ASR 关闭时的输入、候选回复、无输出、欢迎语重叠、归属不明和中断。委派路径覆盖坏结构、缺 ID、重复/冲突、初始意图和实际误路由、CueKB query/validate、工具停用、失败、无结果、回执缺失、重放授权、读取脱敏和写入重试。
+
+Sophon 和 Router 定向回归 104 项通过。Python 扩展回归 349 通过、2 失败。将本机回环加入 NO_PROXY 后，剩余两项均在隔离的 9e09cd6 基线重现，分别是 delivery lifecycle 的 `lookup_knowledge` 用例和 QA routing 的 `evidence_ready_is_not_final` 成功口述用例。二者均在旧 Provider 续答检查报 KeyError。Web 单测 49 项和 Chromium 6 项通过，覆盖移动端展开、历史回放顺序和权限状态变化。应用本地启动、Web 构建、Ruff、Alembic 迁移回归和生成契约检查通过。
+
+```bash
+.venv/bin/python -m pytest -q tests/integration/test_sophon_diagnostics.py \
+  tests/integration/test_livekit_delegation.py tests/contract/test_delegation_router.py tests/contract/test_delegation_llm.py
+npm --prefix apps/web test
+(cd apps/web && npx playwright test sophon-diagnostics.spec.ts voice-audio.spec.ts)
+```
+
+真实 Sophon 模型、生产容器、完整官方录音、生产三类查询及人耳听音仍按原验收要求执行。已核对的受控结果供定位诊断事件与业务行为。

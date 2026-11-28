@@ -9,7 +9,7 @@ from uuid import UUID
 from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
 import httpx
-from app.contracts import Citation, DomainError, now, uid
+from app.contracts import Citation, DomainError, ToolExecutionObservation, now, uid
 from app.task_context import REFERENCE
 from app.tools.entity_context import catalog_rows, context_binding
 from app.tools.evidence_contract import (
@@ -243,12 +243,21 @@ class CueKBAdapter:
         if self.settings.cuekb_mode == "mock":
             data = self._mock_evidence(ctx, original, request_id, input_revision, facets)
             return EvidenceQueryResponse.model_validate(data).model_dump(mode="json", by_alias=True)
+
+        def observe(operation, status, result_status=None):
+            if ctx.tool_observer:
+                ctx.tool_observer(ToolExecutionObservation(
+                    operation=operation, tool="search_knowledge", service="CueKB", mode="real",
+                    status=status, entered=True, result_status=result_status,
+                ))
+
         endpoint = self.settings.cuekb_base_url.rstrip("/") + "/v2/evidence/query"
         parsed = urlparse(endpoint)
         logger.info("cuekb_evidence_request_started conversation_id=%s turn_id=%s endpoint=%s://%s%s kb_count=%s facets=%s",
                     ctx.conversation_id, ctx.turn_id, parsed.scheme, parsed.hostname or "unknown", parsed.path,
                     len(ctx.principal.knowledge_base_ids), len(facets))
         headers = {"Authorization": "Bearer " + self.settings.cuekb_api_key.get_secret_value()}
+        observe("cuekb_query", "started")
         data = await bounded_json(
             self.client, "POST", endpoint, headers=headers, json=request.model_dump(mode="json", by_alias=True),
             limit=262144, retry=False, on_error=lambda response: self._log_http_error(response, ctx),
@@ -280,7 +289,9 @@ class CueKBAdapter:
             or result.continuation.allowed
         ):
             raise DomainError("CUEKB_CONTRACT_ERROR", "Knowledge evidence response does not match the request", 502)
+        observe("cuekb_query", "completed", result.decision)
         validation = EvidenceValidateRequest(package_id=result.package.id, request_id=result.request_id)
+        observe("cuekb_validate", "started")
         validate_data = await bounded_json(
             self.client, "POST", self.settings.cuekb_base_url.rstrip("/") + "/v2/evidence/validate",
             headers=headers, json=validation.model_dump(mode="json"), limit=32768, retry=False,
@@ -305,6 +316,7 @@ class CueKBAdapter:
             or validated.authorization_revisions != result.authorization_revisions
         ):
             raise DomainError("CUEKB_CONTRACT_ERROR", "Knowledge evidence validation does not match the package", 502)
+        observe("cuekb_validate", "completed", validated.status)
         logger.info("cuekb_evidence_response_validated conversation_id=%s turn_id=%s trace_id=%s decision=%s facets=%s groups=%s tokens=%s duration_ms=%s",
                     ctx.conversation_id, ctx.turn_id, result.trace_id, result.decision, len(result.facets),
                     len(result.evidence), result.delivery.token_count, round((time.monotonic() - started) * 1000))

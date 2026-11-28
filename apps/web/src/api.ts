@@ -132,6 +132,7 @@ export interface RecordItem {
   epoch: number;
   source_id: string;
   created_at: string;
+  server_seq?: number;
   payload: {
     text?: string;
     response_id?: string;
@@ -233,10 +234,13 @@ export function streamEvents(
   path: string,
   onEvent: (event: PortalEvent) => void,
   onError: (message: string) => void,
+  onDisconnect?: () => void,
+  onReconnect?: () => void,
 ) {
   const controller = new AbortController();
   const token = callAccessToken;
   let cursor = 0;
+  let reconnecting = false;
 
   const pause = () =>
     new Promise<void>((resolve) => {
@@ -264,6 +268,8 @@ export function streamEvents(
         });
         if (!response.ok || !response.body)
           throw new Error(`Event stream failed (${response.status})`);
+        if (reconnecting) onReconnect?.();
+        reconnecting = false;
         const reader = response.body.getReader();
         const decoder = new TextDecoder();
         let buffer = "";
@@ -291,6 +297,11 @@ export function streamEvents(
         onError(
           error instanceof Error ? error.message : "Event stream disconnected",
         );
+      } finally {
+        if (!controller.signal.aborted) {
+          reconnecting = true;
+          onDisconnect?.();
+        }
       }
       await pause();
     }

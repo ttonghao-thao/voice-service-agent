@@ -298,6 +298,95 @@ class PortalErrorPayload(StrictModel):
     trace_id: str = Field(min_length=1, max_length=128)
 
 
+class SophonFieldIssue(StrictModel):
+    path: str
+    expected: str
+    received: str
+    length: int | None = None
+
+
+class SophonIntentDiagnostic(StrictModel):
+    initial_route: str | None = None
+    route: str
+    parse_method: str
+    router_model: str | None = None
+    selected_tool: str | None = None
+    parameters: dict[str, str | None] | None = None
+    parameters_redacted: bool = False
+    reason_code: str | None = None
+    policy_reason: str | None = None
+
+
+class ToolExecutionObservation(StrictModel):
+    operation: Literal["adapter", "cuekb_query", "cuekb_validate"] = "adapter"
+    tool: str
+    service: str
+    mode: str
+    status: Literal["started", "completed", "blocked", "failed", "canceled"]
+    entered: bool = False
+    result_status: str | None = None
+    reason_code: str | None = None
+    duration_ms: int | None = None
+
+
+class SophonDeliveryDiagnostic(StrictModel):
+    kind: Literal["tool_result", "disposition"]
+    status: Literal["queued", "gateway_received", "receipt_unknown", "discarded"]
+    reason_code: str | None = None
+
+
+class _SophonDiagnosticBase(StrictModel):
+    interaction_id: str
+    voice_session_id: str
+    input_item_id: str | None = None
+    reason_code: str | None = None
+
+
+class SophonInputDiagnostic(_SophonDiagnosticBase):
+    kind: Literal["input"] = "input"
+    input_item_id: str
+    status: Literal[
+        "awaiting_sophon", "delegation_received", "sophon_replied",
+        "no_reply_or_delegation", "attribution_uncertain", "observation_interrupted",
+    ] = "awaiting_sophon"
+    observation_complete: bool = False
+    candidate_reply: bool = False
+
+
+class SophonDelegationDiagnostic(_SophonDiagnosticBase):
+    kind: Literal["delegation"] = "delegation"
+    delegation_id: str | None = None
+    status: Literal["received", "processing", "finished", "interrupted"] = "received"
+    native_event: dict[str, Any] | None = None
+    structure: Literal["valid", "invalid", "unavailable"]
+    field_issues: list[SophonFieldIssue] = Field(default_factory=list)
+    task_chars: int | None = None
+    redacted_fields: list[str] = Field(default_factory=list)
+    omitted_fields: int = 0
+    duplicates: int = 0
+    details_restricted: bool = False
+    intent: SophonIntentDiagnostic | None = None
+    turn_id: str | None = None
+    request_revision: int | None = None
+    tool_executions: list[ToolExecutionObservation] = Field(default_factory=list)
+    result_status: str | None = None
+    result_reason: str | None = None
+    delivery: SophonDeliveryDiagnostic | None = None
+
+
+class SophonUnassignedDiagnostic(_SophonDiagnosticBase):
+    kind: Literal["unassigned"] = "unassigned"
+    status: Literal["attribution_uncertain", "protocol_error", "diagnostics_incomplete"]
+
+
+SophonInteractionPayload = Annotated[
+    SophonInputDiagnostic | SophonDelegationDiagnostic | SophonUnassignedDiagnostic,
+    Field(discriminator="kind"),
+]
+SOPHON_INTERACTION_EVENT = "portal.sophon_interaction.updated"
+SOPHON_INTERACTION_RECORD = "sophon_interaction"
+
+
 class _ServerEventBase(StrictModel):
     event_id: str = Field(default_factory=uid)
     conversation_id: str = Field(min_length=1, max_length=128)
@@ -368,6 +457,11 @@ class PresentationEvent(_ServerEventBase):
     payload: PresentationAssessment
 
 
+class SophonInteractionEvent(_ServerEventBase):
+    type: Literal["portal.sophon_interaction.updated"]
+    payload: SophonInteractionPayload
+
+
 PortalServerEvent = Annotated[
     SessionReadyEvent
     | TranscriptDeltaEvent
@@ -380,6 +474,7 @@ PortalServerEvent = Annotated[
     | PlaybackClearEvent
     | SessionEndedEvent
     | PresentationEvent
+    | SophonInteractionEvent
     | ErrorEvent,
     Field(discriminator="type"),
 ]

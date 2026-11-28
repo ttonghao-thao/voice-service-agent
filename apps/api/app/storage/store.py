@@ -4,7 +4,15 @@ from contextlib import asynccontextmanager, contextmanager
 from datetime import timedelta
 
 import anyio
-from app.contracts import DomainError, PortalEvent, now, portal_server_event_adapter, uid
+from app.contracts import (
+    SOPHON_INTERACTION_EVENT,
+    SOPHON_INTERACTION_RECORD,
+    DomainError,
+    PortalEvent,
+    now,
+    portal_server_event_adapter,
+    uid,
+)
 from app.storage.models import Base, Conversation, DeliveryAttempt, Event, Record, ToolConfig, Turn, Utterance
 from app.task_context import bind_arguments, observe, snapshot, task_status, values
 from sqlalchemy import delete, event, select, text
@@ -115,14 +123,14 @@ class Store:
             c = await self.get(db, cid, principal, lock=True)
             c.access_token_hash = None
 
-    async def event(self, db, c, kind, payload, turn_id=None):
+    async def event(self, db, c, kind, payload, turn_id=None, *, observed_epoch=None):
         db.info.setdefault("event_conversations", set()).add(c.id)
         c.event_seq += 1
         c.updated_at = now()
         e = PortalEvent(
             type=kind,
             conversation_id=c.id,
-            epoch=c.epoch,
+            epoch=c.epoch if observed_epoch is None else observed_epoch,
             request_revision=c.request_revision,
             turn_id=turn_id,
             server_seq=c.event_seq,
@@ -133,6 +141,9 @@ class Store:
         # of the public presentation contract.
         if kind == "portal.presentation.updated":
             wire["payload"].pop("_authorized_kb_ids", None)
+        elif kind == SOPHON_INTERACTION_EVENT:
+            wire["payload"].pop("_authorized_kb_ids")
+            wire["payload"].pop("_required_scopes")
         portal_server_event_adapter.validate_python(wire)
         db.add(
             Event(
@@ -632,6 +643,31 @@ class Store:
                 return False
             db.add(Record(conversation_id=cid, epoch=epoch, kind=kind, source_id=source_id, payload=payload))
             return True
+
+    async def write_sophon_interactions(self, cid, epoch, principal, snapshots):
+        async with self.transaction() as db:
+            c = await self.get(db, cid, principal, lock=True)
+            # Closing an obsolete Room may finish its historical audit. The
+            # event retains the observed epoch and has no business authority.
+            records = {r.source_id: r for r in (await db.execute(select(Record).where(
+                Record.conversation_id == cid, Record.epoch == epoch, Record.kind == SOPHON_INTERACTION_RECORD,
+                Record.source_id.in_([snapshot["interaction_id"] for snapshot in snapshots]),
+            ))).scalars()}
+            for snapshot in snapshots:
+                key = snapshot["interaction_id"]
+                payload = {**snapshot, "_authorized_kb_ids": sorted(principal.knowledge_base_ids),
+                           "_required_scopes": sorted(principal.scopes)}
+                row = records.get(key)
+                if row and all(row.payload.get(k) == v for k, v in payload.items()):
+                    continue
+                event = await self.event(db, c, SOPHON_INTERACTION_EVENT, payload,
+                                         snapshot.get("turn_id"), observed_epoch=epoch)
+                record = {**payload, "_server_seq": event.server_seq}
+                if row:
+                    row.payload = record
+                else:
+                    db.add(Record(conversation_id=cid, epoch=epoch, kind=SOPHON_INTERACTION_RECORD,
+                                  source_id=key, payload=record))
 
     async def enabled(self, name):
         async with self.sessions() as db:

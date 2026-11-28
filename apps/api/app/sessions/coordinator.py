@@ -138,6 +138,7 @@ class SessionCoordinator:
         native_search=None,
         execute_search=True,
         delegated_text=False,
+        tool_observer=None,
     ):
         async with self.lock(cid):
             await self.ensure_owner(principal, cid)
@@ -194,6 +195,7 @@ class SessionCoordinator:
                 native_result_overhead=native_search.result_overhead if native_search else 0,
                 answer_policy=conversation.answer_policy,
                 task_context=dict(turn.task_context or {}),
+                tool_observer=tool_observer,
             )
             visible_history = self.authorized_history(conversation.history, principal)
             ctx.task_context["history"] = combined_history(

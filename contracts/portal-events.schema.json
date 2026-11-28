@@ -1735,6 +1735,611 @@
       "title": "SessionReadyPayload",
       "type": "object"
     },
+    "SophonDelegationDiagnostic": {
+      "additionalProperties": false,
+      "properties": {
+        "interaction_id": {
+          "title": "Interaction Id",
+          "type": "string"
+        },
+        "voice_session_id": {
+          "title": "Voice Session Id",
+          "type": "string"
+        },
+        "input_item_id": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Input Item Id"
+        },
+        "reason_code": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Reason Code"
+        },
+        "kind": {
+          "const": "delegation",
+          "default": "delegation",
+          "title": "Kind",
+          "type": "string"
+        },
+        "delegation_id": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Delegation Id"
+        },
+        "status": {
+          "default": "received",
+          "enum": [
+            "received",
+            "processing",
+            "finished",
+            "interrupted"
+          ],
+          "title": "Status",
+          "type": "string"
+        },
+        "native_event": {
+          "anyOf": [
+            {
+              "additionalProperties": true,
+              "type": "object"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Native Event"
+        },
+        "structure": {
+          "enum": [
+            "valid",
+            "invalid",
+            "unavailable"
+          ],
+          "title": "Structure",
+          "type": "string"
+        },
+        "field_issues": {
+          "items": {
+            "$ref": "#/$defs/SophonFieldIssue"
+          },
+          "title": "Field Issues",
+          "type": "array"
+        },
+        "task_chars": {
+          "anyOf": [
+            {
+              "type": "integer"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Task Chars"
+        },
+        "redacted_fields": {
+          "items": {
+            "type": "string"
+          },
+          "title": "Redacted Fields",
+          "type": "array"
+        },
+        "omitted_fields": {
+          "default": 0,
+          "title": "Omitted Fields",
+          "type": "integer"
+        },
+        "duplicates": {
+          "default": 0,
+          "title": "Duplicates",
+          "type": "integer"
+        },
+        "details_restricted": {
+          "default": false,
+          "title": "Details Restricted",
+          "type": "boolean"
+        },
+        "intent": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/SophonIntentDiagnostic"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null
+        },
+        "turn_id": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Turn Id"
+        },
+        "request_revision": {
+          "anyOf": [
+            {
+              "type": "integer"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Request Revision"
+        },
+        "tool_executions": {
+          "items": {
+            "$ref": "#/$defs/ToolExecutionObservation"
+          },
+          "title": "Tool Executions",
+          "type": "array"
+        },
+        "result_status": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Result Status"
+        },
+        "result_reason": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Result Reason"
+        },
+        "delivery": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/SophonDeliveryDiagnostic"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null
+        }
+      },
+      "required": [
+        "interaction_id",
+        "voice_session_id",
+        "structure"
+      ],
+      "title": "SophonDelegationDiagnostic",
+      "type": "object"
+    },
+    "SophonDeliveryDiagnostic": {
+      "additionalProperties": false,
+      "properties": {
+        "kind": {
+          "enum": [
+            "tool_result",
+            "disposition"
+          ],
+          "title": "Kind",
+          "type": "string"
+        },
+        "status": {
+          "enum": [
+            "queued",
+            "gateway_received",
+            "receipt_unknown",
+            "discarded"
+          ],
+          "title": "Status",
+          "type": "string"
+        },
+        "reason_code": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Reason Code"
+        }
+      },
+      "required": [
+        "kind",
+        "status"
+      ],
+      "title": "SophonDeliveryDiagnostic",
+      "type": "object"
+    },
+    "SophonFieldIssue": {
+      "additionalProperties": false,
+      "properties": {
+        "path": {
+          "title": "Path",
+          "type": "string"
+        },
+        "expected": {
+          "title": "Expected",
+          "type": "string"
+        },
+        "received": {
+          "title": "Received",
+          "type": "string"
+        },
+        "length": {
+          "anyOf": [
+            {
+              "type": "integer"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Length"
+        }
+      },
+      "required": [
+        "path",
+        "expected",
+        "received"
+      ],
+      "title": "SophonFieldIssue",
+      "type": "object"
+    },
+    "SophonInputDiagnostic": {
+      "additionalProperties": false,
+      "properties": {
+        "interaction_id": {
+          "title": "Interaction Id",
+          "type": "string"
+        },
+        "voice_session_id": {
+          "title": "Voice Session Id",
+          "type": "string"
+        },
+        "input_item_id": {
+          "title": "Input Item Id",
+          "type": "string"
+        },
+        "reason_code": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Reason Code"
+        },
+        "kind": {
+          "const": "input",
+          "default": "input",
+          "title": "Kind",
+          "type": "string"
+        },
+        "status": {
+          "default": "awaiting_sophon",
+          "enum": [
+            "awaiting_sophon",
+            "delegation_received",
+            "sophon_replied",
+            "no_reply_or_delegation",
+            "attribution_uncertain",
+            "observation_interrupted"
+          ],
+          "title": "Status",
+          "type": "string"
+        },
+        "observation_complete": {
+          "default": false,
+          "title": "Observation Complete",
+          "type": "boolean"
+        },
+        "candidate_reply": {
+          "default": false,
+          "title": "Candidate Reply",
+          "type": "boolean"
+        }
+      },
+      "required": [
+        "interaction_id",
+        "voice_session_id",
+        "input_item_id"
+      ],
+      "title": "SophonInputDiagnostic",
+      "type": "object"
+    },
+    "SophonIntentDiagnostic": {
+      "additionalProperties": false,
+      "properties": {
+        "initial_route": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Initial Route"
+        },
+        "route": {
+          "title": "Route",
+          "type": "string"
+        },
+        "parse_method": {
+          "title": "Parse Method",
+          "type": "string"
+        },
+        "router_model": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Router Model"
+        },
+        "selected_tool": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Selected Tool"
+        },
+        "parameters": {
+          "anyOf": [
+            {
+              "additionalProperties": {
+                "anyOf": [
+                  {
+                    "type": "string"
+                  },
+                  {
+                    "type": "null"
+                  }
+                ]
+              },
+              "type": "object"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Parameters"
+        },
+        "parameters_redacted": {
+          "default": false,
+          "title": "Parameters Redacted",
+          "type": "boolean"
+        },
+        "reason_code": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Reason Code"
+        },
+        "policy_reason": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Policy Reason"
+        }
+      },
+      "required": [
+        "route",
+        "parse_method"
+      ],
+      "title": "SophonIntentDiagnostic",
+      "type": "object"
+    },
+    "SophonInteractionEvent": {
+      "additionalProperties": false,
+      "properties": {
+        "event_id": {
+          "title": "Event Id",
+          "type": "string"
+        },
+        "conversation_id": {
+          "maxLength": 128,
+          "minLength": 1,
+          "title": "Conversation Id",
+          "type": "string"
+        },
+        "epoch": {
+          "minimum": 0,
+          "title": "Epoch",
+          "type": "integer"
+        },
+        "request_revision": {
+          "default": 0,
+          "minimum": 0,
+          "title": "Request Revision",
+          "type": "integer"
+        },
+        "turn_id": {
+          "anyOf": [
+            {
+              "maxLength": 128,
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Turn Id"
+        },
+        "server_seq": {
+          "minimum": 0,
+          "title": "Server Seq",
+          "type": "integer"
+        },
+        "timestamp": {
+          "format": "date-time",
+          "title": "Timestamp",
+          "type": "string"
+        },
+        "type": {
+          "const": "portal.sophon_interaction.updated",
+          "title": "Type",
+          "type": "string"
+        },
+        "payload": {
+          "discriminator": {
+            "mapping": {
+              "delegation": "#/$defs/SophonDelegationDiagnostic",
+              "input": "#/$defs/SophonInputDiagnostic",
+              "unassigned": "#/$defs/SophonUnassignedDiagnostic"
+            },
+            "propertyName": "kind"
+          },
+          "oneOf": [
+            {
+              "$ref": "#/$defs/SophonInputDiagnostic"
+            },
+            {
+              "$ref": "#/$defs/SophonDelegationDiagnostic"
+            },
+            {
+              "$ref": "#/$defs/SophonUnassignedDiagnostic"
+            }
+          ],
+          "title": "Payload"
+        }
+      },
+      "required": [
+        "conversation_id",
+        "epoch",
+        "server_seq",
+        "type",
+        "payload"
+      ],
+      "title": "SophonInteractionEvent",
+      "type": "object"
+    },
+    "SophonUnassignedDiagnostic": {
+      "additionalProperties": false,
+      "properties": {
+        "interaction_id": {
+          "title": "Interaction Id",
+          "type": "string"
+        },
+        "voice_session_id": {
+          "title": "Voice Session Id",
+          "type": "string"
+        },
+        "input_item_id": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Input Item Id"
+        },
+        "reason_code": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Reason Code"
+        },
+        "kind": {
+          "const": "unassigned",
+          "default": "unassigned",
+          "title": "Kind",
+          "type": "string"
+        },
+        "status": {
+          "enum": [
+            "attribution_uncertain",
+            "protocol_error",
+            "diagnostics_incomplete"
+          ],
+          "title": "Status",
+          "type": "string"
+        }
+      },
+      "required": [
+        "interaction_id",
+        "voice_session_id",
+        "status"
+      ],
+      "title": "SophonUnassignedDiagnostic",
+      "type": "object"
+    },
     "SourceAnchor": {
       "additionalProperties": false,
       "properties": {
@@ -1969,6 +2574,93 @@
       "title": "SpeechTextPayload",
       "type": "object"
     },
+    "ToolExecutionObservation": {
+      "additionalProperties": false,
+      "properties": {
+        "operation": {
+          "default": "adapter",
+          "enum": [
+            "adapter",
+            "cuekb_query",
+            "cuekb_validate"
+          ],
+          "title": "Operation",
+          "type": "string"
+        },
+        "tool": {
+          "title": "Tool",
+          "type": "string"
+        },
+        "service": {
+          "title": "Service",
+          "type": "string"
+        },
+        "mode": {
+          "title": "Mode",
+          "type": "string"
+        },
+        "status": {
+          "enum": [
+            "started",
+            "completed",
+            "blocked",
+            "failed",
+            "canceled"
+          ],
+          "title": "Status",
+          "type": "string"
+        },
+        "entered": {
+          "default": false,
+          "title": "Entered",
+          "type": "boolean"
+        },
+        "result_status": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Result Status"
+        },
+        "reason_code": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Reason Code"
+        },
+        "duration_ms": {
+          "anyOf": [
+            {
+              "type": "integer"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Duration Ms"
+        }
+      },
+      "required": [
+        "tool",
+        "service",
+        "mode",
+        "status"
+      ],
+      "title": "ToolExecutionObservation",
+      "type": "object"
+    },
     "ToolStartedEvent": {
       "additionalProperties": false,
       "properties": {
@@ -2190,6 +2882,7 @@
       "portal.presentation.updated": "#/$defs/PresentationEvent",
       "portal.session.ended": "#/$defs/SessionEndedEvent",
       "portal.session.ready": "#/$defs/SessionReadyEvent",
+      "portal.sophon_interaction.updated": "#/$defs/SophonInteractionEvent",
       "portal.speech_text.delta": "#/$defs/SpeechTextEvent",
       "portal.speech_text.done": "#/$defs/SpeechTextEvent",
       "portal.tool.started": "#/$defs/ToolStartedEvent",
@@ -2231,6 +2924,9 @@
     },
     {
       "$ref": "#/$defs/PresentationEvent"
+    },
+    {
+      "$ref": "#/$defs/SophonInteractionEvent"
     },
     {
       "$ref": "#/$defs/ErrorEvent"

@@ -38,6 +38,8 @@ class RouteResult:
     parse_method: str = "rule"
     source: str = "delegation"
     reason: str = ""
+    initial_route: str | None = None
+    policy_reason: str | None = None
 
 
 class IntentResult(StrictModel):
@@ -145,7 +147,8 @@ class DelegationRouter:
             return RouteResult("CLARIFY", parse_method="llm", reason="llm_unavailable")
         except (ValidationError, ValueError, TypeError, KeyError, IndexError):
             return RouteResult("CLARIFY", parse_method="llm", reason="llm_invalid_output")
-        return replace(self.from_intent(intent, task, catalog), parse_method="llm")
+        return replace(self.from_intent(intent, task, catalog),
+                       parse_method="llm", initial_route=intent.route)
 
     def from_intent(self, intent, task, catalog):
         unused = (intent.place, intent.date, intent.units, intent.query, intent.freshness)
@@ -168,7 +171,8 @@ class DelegationRouter:
                 parsed = WebSearchInput(query=task, freshness=intent.freshness)
             except ValidationError:
                 return RouteResult("CLARIFY", reason="llm_invalid_parameters")
-            return RouteResult("WEB_SEARCH", ExecutionDecision(self.tools["WEB_SEARCH"], parsed), task)
+            return RouteResult("WEB_SEARCH", ExecutionDecision(self.tools["WEB_SEARCH"], parsed), task,
+                               policy_reason="public_fallback_kb_unconfigured" if intent.route == "CUEKB" else None)
         date = intent.date or "today"
         hinted = re.findall(r"\d{4}-\d{2}-\d{2}|今天|明天|\btoday\b|\btomorrow\b", task, re.I)
         date_matches = (date in task if date not in {"today", "今天", "tomorrow", "明天"}
@@ -206,11 +210,15 @@ class DelegationRouter:
         method = "structured" if structured else "rule"
         if not structured:
             route, arguments = natural_task(task.strip())
+        return replace(self.from_task_parts(route, arguments, catalog, method), initial_route=route)
+
+    def from_task_parts(self, route, arguments, catalog, method):
         if route in {"CLARIFY", "UNSUPPORTED"}:
             return RouteResult(route, parse_method=method)
         if not arguments:
             return RouteResult("CLARIFY", parse_method=method, reason="missing_arguments")
-        if route == "CUEKB":
+        public_fallback = route == "CUEKB"
+        if public_fallback:
             result = self.knowledge_result(arguments, catalog, method)
             if result is not None:
                 return result
@@ -228,7 +236,8 @@ class DelegationRouter:
                 parsed = WebSearchInput(query=argument.strip(), freshness=qualifier.strip() or None)
         except ValidationError:
             return RouteResult("CLARIFY", parse_method=method, reason="invalid_arguments")
-        return RouteResult(route, ExecutionDecision(tool, parsed), arguments, method)
+        return RouteResult(route, ExecutionDecision(tool, parsed), arguments, method,
+                           policy_reason="public_fallback_kb_unconfigured" if public_fallback else None)
 
     async def run_external(self, name, request, ctx, history, progress):
         output = await self.registry.invoke(name, ctx.tool_arguments, ctx)

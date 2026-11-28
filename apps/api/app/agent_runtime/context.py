@@ -1,7 +1,8 @@
+from collections.abc import Callable
 from dataclasses import dataclass, field
 from typing import Any
 
-from app.contracts import Citation, Principal, uid
+from app.contracts import Citation, Principal, ToolExecutionObservation, uid
 
 
 @dataclass
@@ -33,3 +34,4 @@ class RunContext:
     answer_policy: str | None = None
     tool_arguments: dict[str, Any] = field(default_factory=dict)
     task_context: dict[str, Any] = field(default_factory=dict)
+    tool_observer: Callable[[ToolExecutionObservation], None] | None = None

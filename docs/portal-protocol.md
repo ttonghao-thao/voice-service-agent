@@ -76,6 +76,7 @@ finished=true 只在该 response 收到 audio.done 且 Worklet 对应队列排�
 | `portal.speech_text.delta` / `done` | WS | response_id、segment_index、phase、text，Q07 可选 input_item_id/answer_kind；知识回答关联 turn_id，一般回答 turn_id 可空；状态阶段不进正文 |
 | `portal.audio.delta` / `done` | WS | response_id、delta 的 audio；done 的 phase 区分状态提示和答案，表示服务端发完，客户端仍须排空缓冲；过期 epoch 一律丢弃 |
 | `portal.input.state` | WS | state=speaking/quiet；仅输入状态，不自动等于取消业务 |
+| `portal.sophon_interaction.updated` | SSE / WS | Sophon LiveKit 输入、委派尝试或未归属观察的结构化状态。仅诊断记录写入受阻的提示走 WS |
 | `portal.tool.started` | SSE | 客户可理解的查询状态；不暴露私有工具参数 |
 | `portal.answer.final` | SSE | canonical AnswerBundle 及终态；D2 在续答结束/事后检查后才提交，一般无工具回答不伪造该知识事件 |
 | `portal.presentation.updated` | SSE / WS | response_id、answer_id、input_item_id、mode、status、reason_code；实际 Provider 转写的呈现检查结果，after_audio；失败警告与完整文字答案分开 |
@@ -84,6 +85,14 @@ finished=true 只在该 response 收到 audio.done 且 Worklet 对应队列排�
 | `portal.error` | WS；HTTP 使用错误响应 | code、message、retryable、trace_id；按错误恢复，不无限重试 |
 
 下行 delta 长度可不同于上行固定帧长，按真实字节计算 samples。并非所有事件都在 SSE 与 WS 重复发送。实际呈现检查与 answer/input/Turn/call/response 关联规则归 [口述与交付](architecture.md#4-全双工与生命周期)。
+
+#### 逐轮委派诊断
+
+原有语音气泡显示本轮状态。没有输入字幕时使用 Voice input 占位。用 `(epoch, interaction_id)` 更新同一记录，委派尝试通过 input_item_id 放到相应输入。无法可靠归属的事件在 Unassigned events 展示。Sophon replied · no delegation observed 表示在完整的服务端观察期看到可归属的候选回复，期间未收到本轮委派。
+
+展开委派可核对收到的 type、delegation.id/type/target/task 以及随事件提供的 offset_ms。可见 task 保留原有空白与内容，敏感或超长值显示类型和长度，未知字段值省略。Interpreted intent 显示初始意图、最终路由、参数及策略原因。Tool execution 显示实际进入 Adapter 的证据及返回结果。Delivery 分别显示工具结果、处置提示和 Gateway 回执。
+
+`GET /conversations/{cid}/messages` 额外返回最近 100 条 `kind=sophon_interaction` 快照，每条带持久 server_seq。较旧历史与重复投递不覆盖较新状态。记录与 SSE 共用通话身份、权限和当前 KB 范围校验。访问范围收窄后保留状态，移除受限 payload 和解析参数。SSE 断开时门户隐藏敏感值，重连后重新读取授权历史。通话关闭后，已失效会话的未结观察按中断显示。
 
 ### 3.3 播放、时序与背压
 

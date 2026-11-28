@@ -65,7 +65,15 @@ Sophon WS 兼容路径只执行可归属的 CueKB 请求。NVIDIA 使用自己�
 
 生产配置 `DELEGATION_ROUTER_PROVIDER=openai_compatible`。`Router.parse_native` 优先校验结构化前缀，否则经共享 HTTP client 调用 Chat Completions，使用 JSON Schema 限制类型与参数。Qwen 只解析已收到的原生 task，工具执行和答案仍走现有业务链路。`rule` 仅用于旧版本或受控兼容。请求关闭重试和重定向，默认总期限 4 秒、响应上限 16 KiB。错误、超时、截断、拒绝和越界输出按失败结清。
 
-query 必须与完整原 task 一致；天气地点必须出现在原 task，日期/单位和参数 schema 另验。私有/敏感 task 或私有 Room 不发外部 LLM，结构化专业库任务仍按原授权路径执行。模型不接收 ASR、历史或证据，不能纠正 Sophon 已写错的型号。模型等待后的 epoch/输入窗口和提交前归属再次复核，防止补充发声或换题时执行旧意图。原 task、parse_method、配置 model 与结果写入按权限过滤的 sophon_route；原生触发、模型解析、真实工具和口述分别统计。
+query 必须与完整原 task 一致；天气地点必须出现在原 task，日期/单位和参数 schema 另验。私有/敏感 task 或私有 Room 不发外部 LLM，结构化专业库任务仍按原授权路径执行。模型不接收 ASR、历史或证据，不能纠正 Sophon 已写错的型号。模型等待后的 epoch/输入窗口和提交前归属再次复核，防止补充发声或换题时执行旧意图。可见的 task、parse_method、配置 model 与结果写入按权限过滤的 sophon_route；原生触发、模型解析、真实工具和口述分别统计。
+
+### 逐轮委派诊断
+
+LiveKit 根据已送上游的音频建立输入记录，短停顿沿用同一 input_item_id。诊断在 SDK 的原始事件回调中保留委派结构，再按原有窗口绑定输入。字段缺失、类型不匹配和同 ID 冲突在业务校验之前有记录。已收件但无法归属的尝试留在通话的独立区域。
+
+输入记录在现有八秒归属窗口结束后归纳结果。归属明确的输出活动以候选回复标识，交错发声、粘连欢迎语或其他未结清委派造成歧义时显示归属不明。诊断输出观察使用上游的有效输出字幕或有声 PCM，支持无 ASR。连接中断会保留已观察到的事件及未完成状态。观察窗口外的迟到事件仍可记录为未归属。
+
+Router 保留初始意图、验证后的路由及公开兜底原因。Registry 在进入 Adapter 时记录实际运行，并保留技术状态与业务结果。CueKB Adapter 分别记录 evidence query/validate 的实际检查进度。Gateway 回执按原 commentary 事件 ID 匹配。逐阶段及终态日志通过 conversation_id、voice_session_id、epoch、input_item_id、delegation_id 和可选 turn_id 关联，内容使用字段结构与状态码。后台写入诊断快照及 SSE 事件，沿用既有历史、授权和游标。 [诊断采集](../apps/api/app/voice/sophon_diagnostics.py) · [门户协议](portal-protocol.md#逐轮委派诊断)
 
 ### 公开检索与兜底
 

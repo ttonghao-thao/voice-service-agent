@@ -411,6 +411,70 @@ a:focus-visible {
   line-height: 1.8;
   font-size: 13px;
 }
+.sophon-interaction {
+  margin: 8px 0 0 auto;
+  width: min(88%, 510px);
+  text-align: left;
+  color: #4b5c46;
+  font-size: 12px;
+  overflow-wrap: anywhere;
+}
+.sophon-status {
+  font-weight: 600;
+  text-align: right;
+}
+.sophon-interaction small {
+  display: block;
+  margin-top: 4px;
+}
+.sophon-interaction > small {
+  text-align: right;
+}
+.sophon-delegation {
+  margin-top: 6px;
+  padding: 8px 10px;
+  background: #f6f8f4;
+  border: 1px solid #dce6d7;
+  border-radius: 8px;
+}
+.sophon-delegation summary {
+  cursor: pointer;
+}
+.sophon-delegation summary code {
+  margin-left: 8px;
+}
+.sophon-delegation dl {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr);
+  gap: 5px;
+  margin: 10px 0 0;
+}
+.sophon-delegation dt {
+  font-weight: 650;
+}
+.sophon-delegation dd {
+  min-width: 0;
+  margin: 0 0 5px;
+}
+.sophon-delegation pre {
+  margin: 4px 0;
+  padding: 8px;
+  max-height: 180px;
+  overflow: auto;
+  border-radius: 4px;
+  background: #edf2ea;
+  white-space: pre-wrap;
+}
+.sophon-delegation ul {
+  margin: 4px 0;
+  padding-left: 18px;
+}
+.sophon-unassigned {
+  margin: 12px 0 0;
+}
+.sophon-unassigned > small {
+  text-align: left;
+}
 .assistant-label {
   display: flex;
   align-items: center;

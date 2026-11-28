@@ -8,6 +8,7 @@
 | 容器、端口、TLS、数据卷 | [运行拓扑与数据](architecture.md#运行拓扑与数据) | [公网证书](deployment.md#公网证书与续期)、[API 私有根](deployment.md#私有-ca-与-api-信任) |
 | Start call、入房、控制 WS | [Sophon 通话链路](architecture.md#sophon-通话链路) | [源码入口](architecture.md#源码入口)、[错误排查](deployment.md#日志与-start-call) |
 | 原生委派、意图 LLM、输入归属 | [输入与委派绑定](architecture.md#输入与委派绑定)、[原生 task 解析](architecture.md#原生-task-解析) | [Sophon 接入](integration.md#2-sophon-与原生委派) |
+| 每轮有没有委派、如何解析和执行 | [逐轮委派诊断](architecture.md#逐轮委派诊断) | [门户协议](portal-protocol.md#逐轮委派诊断)、[日志](deployment.md#日志与-start-call)、[验证 §9](validation.md#9-sophon-逐轮委派诊断) |
 | 查询路由、公开兜底、证据 | [查询类型](architecture.md#查询类型)、[公开兜底](architecture.md#公开检索与兜底) | [证据交付](architecture.md#证据与结果交付)、[CueKB 契约](interfaces/cuekb.md) |
 | 字幕、文件音频、打断、播放 | [字幕与播放](architecture.md#字幕与播放)、[回执与听音](architecture.md#回执与听音) | [门户协议](portal-protocol.md) |
 | 身份授权、角色、多轮 | [会话授权](architecture.md#会话授权)、[角色与多轮](architecture.md#角色与多轮) | [独立通话与知识范围](integration.md#5-独立通话与知识范围) |

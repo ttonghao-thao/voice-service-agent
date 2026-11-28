@@ -257,12 +257,39 @@ async def test_room_delegation_executes_and_settles_once(
                         assert json.loads(content[content.index("{"):])["search"] == "finished"
                     assert requests == expected_urls
                     assert call.calls.empty()
+                    observed = call.raw_tasks["task1"].observed
+                    async with asyncio.timeout(2):
+                        while observed.status != "finished":
+                            call.diagnostics.changed.clear()
+                            await call.diagnostics.changed.wait()
+                    assert await call.diagnostics.flush()
+                    history = (await client.get(f"/api/v1/conversations/{cid}/messages")).json()
+                    (diagnostic,) = [row["payload"] for row in history["records"]
+                                     if row["kind"] == "sophon_interaction" and row["payload"]["kind"] == "delegation"]
+                    assert diagnostic["delegation_id"] == "task1"
+                    assert diagnostic["intent"]["selected_tool"] == ("web_search" if private_context else expected_tool)
+                    if expected_tool:
+                        adapter, *steps = diagnostic["tool_executions"]
+                        assert adapter["entered"]
+                        if expected_tool == "search_knowledge_base":
+                            assert adapter["tool"] == "search_knowledge"
+                            assert [step["operation"] for step in steps] == ["cuekb_query", "cuekb_validate"]
+                            assert all(step["status"] == "completed" for step in steps)
+                        if "launch" in task_text:
+                            assert adapter["status"] == diagnostic["result_status"] == "failed"
+                        if "outdated" in task_text:
+                            assert diagnostic["delivery"]["status"] == "discarded"
+                        else:
+                            assert diagnostic["delivery"]["status"] == "gateway_received"
+                    else:
+                        assert diagnostic["tool_executions"] == []
+                        assert diagnostic["delivery"]["kind"] == "disposition"
                     if transcript:
                         call.transcript_finished(SimpleNamespace(is_final=True, transcript=transcript))
                         events = [call.outgoing.get_nowait() for _ in range(call.outgoing.qsize())]
                         assert [e["payload"]["text"] for e in events if e["type"] == "portal.transcript.done"] == [transcript]
                     if expected_tool:
-                        rows = (await client.get(f"/api/v1/conversations/{cid}/messages")).json()["items"]
+                        rows = history["items"]
                         assert len(rows) == 1 and rows[0]["selected_tool"] == expected_tool
                         assert rows[0]["user_text"] == task_text.split(":", 1)[1].strip()
                         assert rows[0]["request_origin"] == "delegation"
@@ -329,6 +356,10 @@ async def test_two_fast_turns_can_repeat_query_without_reexecuting_duplicate_ids
                                 await call.inputs.changed.wait()
                         assert call.inputs.latest.settled_at is not None
                     assert len(requests) == 2 and call.calls.empty()
+                    fallback = call.raw_tasks["task-2"].observed
+                    assert fallback.intent.initial_route == "CUEKB"
+                    assert fallback.intent.route == "WEB_SEARCH"
+                    assert fallback.intent.policy_reason == "public_fallback_kb_unconfigured"
                     rows = (await client.get(f"/api/v1/conversations/{cid}/messages")).json()["items"]
                     assert len(rows) == 2 and {row["selected_tool"] for row in rows} == {"web_search"}
                 finally:

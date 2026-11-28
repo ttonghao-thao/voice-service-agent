@@ -10,6 +10,8 @@ import yaml
 from app.agent_runtime.tool_catalog import NativeToolCatalogUpdate, NativeToolReload
 from app.api.auth import principal
 from app.contracts import (
+    SOPHON_INTERACTION_EVENT,
+    SOPHON_INTERACTION_RECORD,
     ConversationInput,
     DomainError,
     InterruptInput,
@@ -121,7 +123,34 @@ def _answer_for_principal(answer, user, settings):
     return visible
 
 
-def _event_for_principal(payload, user, settings):
+def _sophon_for_principal(payload, user, settings, voice_session_id):
+    body = dict(payload)
+    kb_ids = body.pop("_authorized_kb_ids", None)
+    scopes = body.pop("_required_scopes", None)
+    kind = body["kind"]
+    if kind == "delegation" and (
+        kb_ids is None or scopes is None
+        or not set(kb_ids) <= set(user.knowledge_base_ids) & _configured_kbs(settings)
+        or not set(scopes) <= user.scopes
+    ):
+        body.update(native_event=None, details_restricted=True)
+        if intent := body.get("intent"):
+            body["intent"] = {**intent, "parameters": None, "parameters_redacted": True}
+    if body["voice_session_id"] != voice_session_id:
+        if kind == "input" and not body["observation_complete"]:
+            body.update(observation_complete=True, reason_code="OBSERVATION_INTERRUPTED")
+            if body["status"] != "delegation_received":
+                body["status"] = "observation_interrupted"
+        elif kind == "delegation" and body["status"] in {"received", "processing"}:
+            body.update(status="interrupted", reason_code="OBSERVATION_INTERRUPTED")
+            if (delivery := body.get("delivery")) and delivery["status"] == "queued":
+                body["delivery"] = {**delivery, "status": "receipt_unknown"}
+    return body
+
+
+def _event_for_principal(payload, user, settings, voice_session_id=None):
+    if payload.get("type") == SOPHON_INTERACTION_EVENT:
+        return {**payload, "payload": _sophon_for_principal(payload["payload"], user, settings, voice_session_id)}
     if payload.get("type") == "portal.presentation.updated":
         body = dict(payload.get("payload", {}))
         scope = set(body.pop("_authorized_kb_ids", ()))
@@ -136,8 +165,12 @@ def _event_for_principal(payload, user, settings):
     }
 
 
-def _record_for_principal(record, user, settings):
+def _record_for_principal(record, user, settings, voice_session_id=None):
     payload = dict(record.payload)
+    position = {}
+    if record.kind == SOPHON_INTERACTION_RECORD:
+        position["server_seq"] = payload.pop("_server_seq")
+        payload = _sophon_for_principal(payload, user, settings, voice_session_id)
     scope = payload.pop("_authorized_kb_ids", None)
     if record.kind in ("voicechat_transcript", "speech_validation", "native_cuekb_result", "native_answer_check",
                        "sophon_delegation", "sophon_commentary", "sophon_commentary_ack",
@@ -154,6 +187,7 @@ def _record_for_principal(record, user, settings):
         "source_id": record.source_id,
         "payload": payload,
         "created_at": record.created_at.isoformat(),
+        **position,
     }
 
 
@@ -278,12 +312,18 @@ async def messages(
             (
                 await db.execute(
                     select(Record)
-                    .where(Record.conversation_id == cid)
+                    .where(Record.conversation_id == cid, Record.kind != SOPHON_INTERACTION_RECORD)
                     .order_by(Record.created_at.desc())
                     .limit(100)
                 )
             ).scalars()
         )
+        diagnostics = (await db.execute(
+            select(Record).where(Record.conversation_id == cid, Record.kind == SOPHON_INTERACTION_RECORD)
+            .order_by(Record.created_at.desc()).limit(100)
+        )).scalars()
+        records.extend(diagnostics)
+        records.sort(key=lambda record: (record.created_at, record.id), reverse=True)
         items = []
         for t in reversed(turns):
             answer = _answer_for_principal(t.answer, user, request.app.state.settings)
@@ -320,7 +360,7 @@ async def messages(
             "records": [
                 visible
                 for r in reversed(records)
-                if (visible := _record_for_principal(r, user, request.app.state.settings))
+                if (visible := _record_for_principal(r, user, request.app.state.settings, c.voice_session_id))
                 is not None
             ],
             "next_before": turns[-1].id if len(turns) == limit else None,
@@ -368,6 +408,7 @@ async def events(
         nonlocal cursor
         with store.listen(cid) as changed:
             checked = 0
+            saw_diagnostics = False
             while not await request.is_disconnected():
                 # Clear before reading: a commit during the read must not be lost.
                 changed.clear()
@@ -376,14 +417,9 @@ async def events(
                 # cancellation inside the driver can leave rollback/close broken.
                 # Never shield network writes or the wait for subsequent events.
                 with anyio.CancelScope(shield=True):
-                    if checked % 100 == 0:
-                        try:
-                            await principal(request)
-                        except DomainError:
-                            return
                     checked += 1
                     async with store.sessions() as db:
-                        await store.get(db, cid, user)
+                        c = await store.get(db, cid, user)
                         rows = (
                             (
                                 await db.execute(
@@ -396,10 +432,18 @@ async def events(
                             .scalars()
                             .all()
                         )
+                    has_diagnostics = any(row.payload.get("type") == SOPHON_INTERACTION_EVENT for row in rows)
+                    saw_diagnostics |= has_diagnostics
+                    if has_diagnostics or checked % (10 if saw_diagnostics else 100) == 1:
+                        try:
+                            if await principal(request) != user:
+                                return
+                        except DomainError:
+                            return
                 for e in rows:
                     cursor = e.server_seq
                     safe_payload = _event_for_principal(
-                        e.payload, user, request.app.state.settings
+                        e.payload, user, request.app.state.settings, c.voice_session_id
                     )
                     if safe_payload is None:
                         continue

@@ -309,6 +309,8 @@ sudo docker compose --env-file .env --profile sophon -f deploy/compose.productio
   logs --since=3m --tail=80 web api livekit
 ```
 
+逐轮委派诊断可在 API 日志按 `sophon_interaction` 和对应 `conversation_id` 查找。日志包含收件、字段错误、意图、执行结果与回执状态。可见任务原文和参数在授权门户展开。
+
 ### 回滚应用
 
 使用[备份的配置](#第一步获取仓库代码)和本机旧镜像恢复 API/Web。命令先核对数据库迁移版本。如果版本不同，由维护人员根据备份处理。重新登录后将 `vsa_backup` 设为实际备份目录。

@@ -6,7 +6,7 @@ from typing import Literal
 
 import yaml
 from app.config import ROOT
-from app.contracts import DomainError, StrictModel
+from app.contracts import DomainError, StrictModel, ToolExecutionObservation
 from app.storage.models import ToolRun
 from app.task_context import affirmative, resolved_request
 from app.tools.adapters import CueKBAdapter, WeatherAdapter
@@ -78,6 +78,15 @@ class ToolRegistry:
     async def invoke(self, name, arguments, ctx):
         started = time.monotonic()
         status, output = "ok", {}
+        entered = False
+        observer = ctx.tool_observer
+        spec = self.specs.get(name)
+        if observer:
+            service = {"search_knowledge": "CueKB", "web_search": "Tavily",
+                       "weather": "QWeather" if self.settings.weather_provider == "qweather" else "Weather HTTP"}
+            tool = ToolExecutionObservation(tool=name, service=service.get(name, name),
+                mode=getattr(self.settings, spec.mode_ref, "real") if spec else "real", status="started",
+                entered=True)
         logger.info(
             "tool_run_started conversation_id=%s turn_id=%s tool=%s",
             ctx.conversation_id,
@@ -91,7 +100,6 @@ class ToolRegistry:
             list(ctx.retrievals),
         )
         try:
-            spec = self.specs.get(name)
             if not spec or name not in ctx.allowed_tools or name not in await self.allowed(ctx.principal):
                 raise DomainError("FORBIDDEN", "This tool is unauthorized or disabled", 403)
             if not await self.store.current(
@@ -127,6 +135,9 @@ class ToolRegistry:
             if ctx.deadline is not None:
                 budget = min(budget, max(0, ctx.deadline - time.monotonic()))
             async with asyncio.timeout(budget):
+                entered = True
+                if observer:
+                    observer(tool)
                 output = await adapter.invoke(args, ctx)
                 output = adapter.output_adapter.validate_python(output).model_dump(mode="json")
             if len(json.dumps(output, ensure_ascii=False).encode()) > spec.result_limit:
@@ -157,6 +168,28 @@ class ToolRegistry:
             return {"status": "failed", "code": status, "message": "Search service failed. Please try again later."}
         finally:
             duration_ms = int((time.monotonic() - started) * 1000)
+            if observer:
+                reason = None if status == "ok" else status
+                result_status = None
+                # An invalid Adapter response may still be in output when its
+                # schema check fails. Observe details from validated values.
+                if status == "ok" and isinstance(output, dict):
+                    if output.get("status") == "failed":
+                        reason = output.get("code") or "TOOL_FAILED"
+                    result_status = output.get("decision") or output.get("status")
+                    if "sources" in output:
+                        result_status = "results_found" if output["sources"] else "no_results"
+                    if output.get("stale"):
+                        result_status = "stale"
+                if status == "canceled":
+                    tool_status = "canceled"
+                elif not entered:
+                    tool_status = "blocked"
+                else:
+                    tool_status = "failed" if reason else "completed"
+                observer(tool.model_copy(update={"status": tool_status, "reason_code": reason,
+                                                "entered": entered, "result_status": result_status,
+                                                "duration_ms": duration_ms}))
             logger.info(
                 "tool_run_finished conversation_id=%s turn_id=%s tool=%s status=%s duration_ms=%s",
                 ctx.conversation_id,
